@@ -1,0 +1,139 @@
+# Huginn — Functional Specification
+
+> `huginn` is a CLI/TUI orchestrator that drives the opencode
+> spec → execute → validate → test → secure → review → doc → commit cycle.
+> It executes iterations from `plan.md` against a git repository through
+> opencode subagents and slash commands, gates every step with a verdict,
+> routes fixes to a "thinker" model, and persists full state so runs can be
+> resumed after an interruption.
+
+This document describes what huginn *does*, as evidenced by the source in
+`src/`. Requirement IDs are traceable: each REQ lists the module(s) that
+implement it, and most are covered by the unit tests under `src/**/*.test.ts`.
+
+## 1. Purpose
+
+Huginn is a **build-cycle orchestrator for a single git repository**. It does
+not write code itself; it drives the opencode agent runtime, which must be
+installed, configured, and authenticated separately. The orchestrator's job is
+to run each iteration of a plan through a fixed pipeline of eight phases, gate
+each phase on a machine-parseable verdict, fix blocking findings by re-running
+the build agent on a designated "thinker" model, and never lose progress: every
+state change is persisted under `<project>/.harness/`.
+
+## 2. Personas
+
+| Persona | What they do with huginn |
+|---|---|
+| **Developer running builds** | Runs `huginn run --project <repo> --thinker <m> --executor <m>` to execute the cycle. Watches the TUI dashboard (or stdout in headless mode), answers gate/permission decisions, pauses, aborts, and resumes. |
+| **Developer bootstrapping a project** | Runs `huginn plan --project <repo> --thinker <m> "<idea>"` to have the thinker draft `spec.md`, `adr.md`, and `plan.md` from one idea. |
+| **CI / automation** | Runs `huginn install --yes` (non-interactive install) and `huginn run --headless` with piped stdin. Unattended runs abort at gate decisions instead of hanging, preserving state for a later interactive `--resume`. |
+| **huginn maintainer** | Reads `SPEC.md` / `DESIGN.md` / `ADR.md` / `AGENTS.md` and the unit tests; runs `bun test`, `bun run typecheck`, `bun run build`. |
+
+## 3. System boundaries and integrations
+
+- **Input documents** (all read-only to the harness): `plan.md`, `spec.md`, `adr.md` (paths overridable via `--plan/--spec/--adr`). The harness never edits them.
+- **opencode runtime**: huginn spawns `opencode serve --port <n> --hostname 127.0.0.1` (`src/server/lifecycle.ts`) and talks to it over HTTP using the `@opencode-ai/sdk` (`src/server/client.ts`). Agents/commands it invokes are installed into the opencode config dir by `huginn install` (`src/setup/install.ts`).
+- **git**: required. The project must be a git repo; git is used for module inference, session bookkeeping, and context (`src/engine/diff.ts`).
+- **Two models**: `--thinker` (fixes + plan drafting) and `--executor` (all gates, execution, docs, commits), both in `provider/model` form.
+- **Persistence**: everything the harness writes lives under `<project>/.harness/` (`state.json`, `PROGRESS.md`, `reports/`, `logs/server.log`).
+
+## 4. Functional requirements
+
+### 4.1 CLI and entry point — `src/cli.ts`
+
+- **REQ-1** — The CLI exposes exactly four commands: `run` (default), `plan`, `install`, and `help` (`--help`/`-h` prints usage and exits 0). Unknown commands exit 1 with usage.
+- **REQ-2** — `huginn run` requires `--project <path>` (a directory containing `.git` and, by default, `plan.md`, `spec.md`, `adr.md`), plus `--thinker <provider/model>` and `--executor <provider/model>`. Missing required values exit 1 before any server is started.
+- **REQ-3** — Model strings are validated to the `provider/model` shape: a string with no `/`, an empty provider, or an empty model is rejected (`resolveModel` in `src/engine/modelRouter.ts`). The provider portion is additionally checked against the opencode server's configured provider list at startup, but the check is advisory: mismatches print a warning and the run continues (`validateModels`, `src/cli.ts`).
+- **REQ-4** — Numeric flag values are parsed by `num()` which falls back to a default for non-numeric input and **clamps to ≥ 0**, so negative values (e.g. `--max-retries -1`) can never invert a loop or skip a phase.
+- **REQ-5** — Paths are canonicalized (`canonicalize`, `src/cli.ts`): symlinks are resolved via `realpathSync` so paths embedded in agent prompts match what the opencode server resolves; non-existent paths fall back to `resolve()` (needed by `plan` mode before documents exist).
+- **REQ-6** — Flags `--mode auto|supervised` (default `auto`), `--permissions auto|ask|deny` (default `auto`), `--max-retries <n>` (default 3), `--from-iteration <n>`, `--only-phase <name>` (validated against the 8 main phases), `--phase-timeout <ms>` (default 1 200 000 = 20 min; 0 disables), `--server-timeout <ms>` (default 60 000), `--port <n>` (default: an ephemeral free port on 127.0.0.1), `--tui`/`--headless` (default: TUI when stdout is a TTY), `--resume`, `--force-restart`, `--ignore-plan-changes` are honored exactly as documented in `usage()`.
+- **REQ-7** — `SIGINT`/`SIGTERM` trigger a graceful abort: the engine's abort flag is set and the process force-exits after 3 s if the engine has not finished persisting state.
+- **REQ-8** — On exit, the outcome is reported: `✓ plan completed`, `🛑 aborted. State saved for --resume`, or `✗ failed: <error>`. A thrown/fatal error exits non-zero; completed and aborted outcomes are reported on the normal path.
+
+### 4.2 Plan parsing — `src/plan/parser.ts`
+
+- **REQ-9** — `plan.md` is parsed into iterations: any `#`–`####` heading matching `iteration <n>` with `—`, `-`, or `:` separators (case-insensitive) starts an iteration; everything up to the next such heading is that iteration's verbatim prompt. Headings in other languages (e.g. Spanish `Iteración`) are ignored.
+- **REQ-10** — An optional `modules:` line immediately below the heading is parsed into a list of comma-separated paths; otherwise the iteration has no explicit modules.
+- **REQ-11** — Iterations are executed in ascending numeric order regardless of their order in the file. A plan with zero iterations is an error at load time.
+
+### 4.3 The cycle — `src/engine/cycle.ts`, `src/engine/phases.ts`
+
+- **REQ-12** — Each iteration runs the eight main phases in this fixed order: `SPEC_AUDIT`, `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE`, `SECURE_CHECK`, `REVIEW`, `DOC_SYNC`, `COMMIT_ALL` (the `PIPELINE` table; `MAIN_PHASES` in `src/engine/types.ts`).
+- **REQ-13** — `SPEC_AUDIT` invokes the `spec-auditor` subagent directly with the spec, ADR, plan, the current iteration, and `git status`, asking for the `Overall fidelity: 🟢/🟡/🔴` verdict line.
+- **REQ-14** — `EXECUTE` sends the iteration's prompt verbatim to the built-in `build` agent (model: executor). It is non-blocking (never gated).
+- **REQ-15** — `VALIDATE_STEP`, `TEST_MODULE`, `SECURE_CHECK`, `REVIEW`, `DOC_SYNC`, `COMMIT_ALL` are run as opencode slash commands (`/validate-step <modules> <spec>`, `/test-module <modules>`, `/secure-check`, `/review`, `/doc-sync`, `/commit-all`) via `runCommand`.
+- **REQ-16** — The module list for `VALIDATE_STEP`/`TEST_MODULE` comes from the iteration's `modules:` line when present; otherwise it is inferred from git changes since the iteration's base commit (`inferModules`, `src/engine/diff.ts`).
+- **REQ-17** — `DOC_SYNC` and `COMMIT_ALL` are informative: their verdicts are recorded but they can never block the run (`blocking: false` in the pipeline).
+- **REQ-18** — Blocked, blocking gates trigger a fix pass: the relevant finding report is given to the `build` agent running on the **thinker** model (`fixFindings`/`fixSpec`/`fixSecurity`), up to `--max-retries` fix attempts per gate. `FIX_SPEC` carries spec-specific instructions (implement as written; align the spec only if objectively wrong); `FIX_SECURITY` carries an absolute no-advance-past-breach instruction.
+- **REQ-19** — After the retry budget is exhausted the run escalates: it requests a human decision (retry with a reset budget, force-continue past the gate, or abort). In `supervised` mode the same decision is requested at every blocked gate; in `auto` mode only when the budget is exhausted.
+- **REQ-20** — A phase that fails with an exception (provider stall, timeout, API error) is retried up to `maxRetries` times, then escalated to the same three-way decision — one failed phase must not kill the whole run.
+- **REQ-21** — `--only-phase <name>` runs a single phase per iteration for debugging and leaves the state resumable (no completion marker is written); `--from-iteration <n>` skips earlier iterations.
+
+### 4.4 Verdicts and gates — `src/engine/gate.ts`
+
+- **REQ-22** — A verdict is one of `pass | warning | blocked`. `VALIDATE_STEP` verdicts come from `parseValidateStepVerdict`: the trailing human-handoff marker lines `✅ AUTO-APPROVED`, `⚠️ REVIEW REQUESTED`, `🛑 BLOCKED`, or the secondary `### Overall gate: 🟢/🟡/🔴` line. `SPEC_AUDIT` verdicts come from `parseSpecAuditVerdict`: `Overall fidelity: 🟢/🟡/🔴` or the words `ALIGNED`/`MINOR DRIFT`/`MAJOR DEVIATION`.
+- **REQ-23** — **Gates fail closed.** A report with no parseable verdict marker (empty, truncated, or hallucinated output) yields `null` from the parsers, which the engine converts to `BLOCKED` with a warning log entry — never to a silent pass (`gatedVerdict`, `src/engine/cycle.ts`).
+- **REQ-24** — `TEST_MODULE`, `SECURE_CHECK`, and `REVIEW` are gated by a "judge": a separate executor-model pass that classifies the phase report into strict JSON `{"status","summary","actionItems"}` (`judgePhase`). Structured output is preferred; if the judge's output is unparseable, text heuristics apply, and if those fail the gate fails closed to `blocked` with `parsed: false` (logged).
+
+### 4.5 Decisions — `src/engine/decisionBroker.ts`, `src/engine/types.ts`
+
+- **REQ-25** — Decisions are requested as `gate-blocked`, `permission`, or `spec-deviation` requests and answered with one of `retry | continue | abort | allow | deny`. Multiple requests may be in flight concurrently (e.g. a blocked gate while a permission request arrives).
+- **REQ-26** — Pending decisions are presented and resolved strictly in arrival order (FIFO). Only the head of the queue is surfaced to the UI at a time, and resolving it surfaces the next. A pending decision can never be silently overwritten.
+- **REQ-27** — On abort (or any error path), all pending decisions are resolved with `abort` so no promise is left orphaned (which previously hung the run).
+- **REQ-28** — Headless + TTY: one-key answers (`r`/`c`/`a` for gates, `a`/`o`/`d` for permissions). Headless + non-TTY (CI, piped stdin): permission requests are denied, gate decisions abort the run so state is preserved for a later `--resume`.
+
+### 4.6 State and resumability — `src/state/store.ts`, `src/state/schema.ts`
+
+- **REQ-29** — The harness writes only under `<project>/.harness/`: `state.json` (source of truth, zod-validated schema `version: 1`), `PROGRESS.md` (regenerated after every phase), `reports/II-PHASE-N.md` (one file per attempt), and `logs/server.log` (the opencode server's output).
+- **REQ-30** — State is persisted atomically: `saveState` writes `state.json.tmp` then renames over `state.json`, so an interrupted write cannot corrupt the previous state. Corrupt state fails loudly at load rather than being silently reset.
+- **REQ-31** — `state.json` records `currentIteration`, `currentPhase`, per-`iteration:phase` attempt counts, the full history of phase attempts (verdict, model, session, message, summary, report path, timestamps), the iteration's session id and base commit, and the models/mode in use.
+- **REQ-32** — `computePlanHash` is a SHA-256 over the basename + contents of `plan.md`/`spec.md`/`adr.md`. Hashing by basename makes the hash survive the repo being moved or re-cloned to a different directory.
+- **REQ-33** — On a plain re-run, existing state is resumed automatically. `--resume` additionally *requires* saved state (error otherwise); `--force-restart` discards it; if the saved plan hash differs from the current documents, the run refuses to start unless `--ignore-plan-changes` is passed.
+- **REQ-34** — `PROGRESS.md` shows per-iteration phase progress as `done/8`, counting only the 8 main phases with `pass`/`warning` verdicts (fix-phase entries never inflate the count), plus status (RUNNING / ✅ COMPLETED / 🛑 ABORTED).
+- **REQ-35** — On resume, the opencode session for the current iteration is reused if it still exists; a new session (`iter N: <title>`) is created otherwise. The model and mode are always taken from the current CLI flags on resume.
+
+### 4.7 Plan mode — `src/engine/planMode.ts`
+
+- **REQ-36** — `huginn plan --project <repo> --thinker <m> "<idea>"` drafts the three input documents in sequence, all on the thinker model in one opencode session: `spec.md` (numbered, traceable requirements), then `adr.md` given the spec (ADR entries with alternatives/tradeoffs), then `plan.md` given spec + ADR (strict `## Iteration N — Title` format, optional `modules:` lines, 3–8 iterations).
+- **REQ-37** — A long prompt may be supplied via `--prompt-file <file>` instead of a positional argument; the positional idea is otherwise required.
+- **REQ-38** — Plan mode refuses to overwrite any existing `spec.md`/`adr.md`/`plan.md`; `--force` is required to overwrite (checked in both `src/cli.ts` and `runPlanMode`).
+- **REQ-39** — Each drafting prompt has a hard 20-minute timeout (`PLAN_PROMPT_TIMEOUT_MS`); the thinker's streamed text deltas are printed live to stdout; on completion the exact `huginn run ...` command is printed.
+- **REQ-40** — `huginn run`/`huginn plan` both warn (but do not block) when required opencode agents/commands are missing, pointing at `huginn install`.
+
+### 4.8 Installer — `src/setup/install.ts`, `scripts/postinstall.ts`
+
+- **REQ-41** — The installer ships exactly 11 templates: 5 agents (`spec-auditor`, `qa`, `security`, `doc-writer`, `reviewing`) and 6 commands (`validate-step`, `test-module`, `secure-check`, `review`, `doc-sync`, `commit-all`), copied from `templates/{agents,commands}/*.md` into `~/.config/opencode/{agents,commands}/`.
+- **REQ-42** — Installation never overwrites an existing destination file unless `--force` is passed (personalized config is left alone); it is idempotent without `--force`. `--only agents|commands` restricts the operation.
+- **REQ-43** — `huginn install` lists what is missing, asks for confirmation (skipped with `--yes` or in CI), installs, and reports installed/overwritten/skipped/still-missing. The `postinstall` hook runs on `bun install`: silent when everything is present, prompts when interactive, prints a hint to `huginn install --yes` when unattended.
+- **REQ-44** — Paths are overridable: `HUGINN_TEMPLATES_DIR` (templates source, also auto-detected by walking up from the module location so it works from `src/`, `dist/`, and `scripts/`) and `HUGINN_OPENCODE_CONFIG_DIR` (install destination).
+
+### 4.9 TUI / headless — `src/tui/*`, `src/headless.ts`
+
+- **REQ-45** — The TUI is an Ink/React dashboard showing the 8-phase checklist with verdict icons and attempt counts, live stream tail (last 12 lines), log tail, the last report summary, and the pending decision box. Keyboard: `space`/`p` pause–resume, `q`/`Esc` abort, and the decision keys `r`/`c`/`a` (gates) or `a`/`o`/`d` (permissions).
+- **REQ-46** — Headless mode renders the same events as stdout text lines and answers decisions via stdin, with the non-TTY behavior from REQ-28. Pausing is engine-level (`pause()`/`resume()` poll every 200 ms) and works identically in both frontends.
+
+### 4.10 Permissions — `src/engine/permissions.ts`
+
+- **REQ-47** — Permission requests from the opencode event stream are handled per `--permissions`: `auto` approves (`always`) and logs every auto-approval; `deny` rejects and logs; `ask` routes the request through the decision flow (answers map to `always`/`once`/`reject`).
+
+## 5. Non-functional requirements
+
+| ID | Area | Requirement |
+|---|---|---|
+| NFR-1 | Failure handling | No single phase failure or provider stall may hang the run: phase exceptions are retried up to `maxRetries`, then escalated to a human decision (REQ-20). Every phase step has a hard deadline (`--phase-timeout`, default 20 min) enforced with `AbortController` + `session.abort`; the deadline being 0 disables it. |
+| NFR-2 | Fail-closed | A gate with no parseable verdict is treated as BLOCKED and logged, never silently passed (REQ-23, REQ-24). The judge fails closed to `blocked` on unreadable output. |
+| NFR-3 | Auditability | Every phase attempt, verdict, fix, error, and permission auto-approval/denial is recorded: in `state.json` history, in `reports/`, in `PROGRESS.md`, and/or in the event log. Model and attempt number accompany each entry. |
+| NFR-4 | Resumability | Full execution state is persisted after every phase via atomic writes; interrupted runs resume from the exact phase on re-run; the resume hash is path-independent (REQ-29–35). |
+| NFR-5 | Portability | Runtime is Bun only; the target repo must have `git` and a working `opencode` CLI with authenticated providers. No state is stored outside `<project>/.harness/` and the opencode config dir. Paths are canonicalized to resolve symlink mismatch; env overrides cover templates source/destination for unusual layouts. |
+| NFR-6 | Determinism of parsing | Plan parsing, verdict parsing, and plan hashing are pure functions covered by unit tests (`src/plan/parser.test.ts`, `src/engine/gate.test.ts`, `src/state/store.test.ts`). |
+| NFR-7 | Non-interference | The harness never modifies `plan.md`/`spec.md`/`adr.md` or source code; all fixes are produced by the opencode agents, and `.harness/` is excluded from git-change detection (`.gitignore`, `src/engine/diff.ts`). |
+
+## 6. Out of scope
+
+- Writing application code, tests, or commits itself — all build actions are performed by opencode agents/commands.
+- Multi-repository or multi-project orchestration, scheduling, and CI/CD orchestration (though it is *usable* from CI).
+- Editing the plan/spec/adr documents during `run` (only `plan` mode writes them, and only at creation time).
+- Model/provider authentication or credential management — that is opencode's domain.
+- Anything beyond the single local `opencode serve` process for server orchestration (no TLS, no remote endpoints).
+- Support for non-git workspaces — a git repo is a hard prerequisite for `run`.
