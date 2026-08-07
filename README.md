@@ -1,5 +1,7 @@
 # Huginn
 
+[![npm](https://img.shields.io/npm/v/huginn)](https://www.npmjs.com/package/huginn) [![license](https://img.shields.io/github/license/dahch/huginn)](https://github.com/dahch/huginn/blob/main/LICENSE) [![ci](https://img.shields.io/github/actions/workflow/status/dahch/huginn/publish.yml)](https://github.com/dahch/huginn/actions) [![stars](https://img.shields.io/github/stars/dahch/huginn)](https://github.com/dahch/huginn/stargazers) [![issues](https://img.shields.io/github/issues/dahch/huginn)](https://github.com/dahch/huginn/issues) [![bun](https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun)](https://bun.sh) [![TypeScript](https://img.shields.io/badge/stack-TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+
 CLI/TUI orchestrator for the opencode-based build cycle:
 
 > **spec-auditor → execute → validate-step → test-module → secure-check → review → doc-sync → commit-all**
@@ -11,7 +13,7 @@ saves full execution state so any run can be resumed after an interruption, and 
 
 ## Requirements
 
-- [Bun](https://bun.sh) (runtime)
+- [Bun](https://bun.sh) >= 1.0 (runtime)
 - [opencode](https://opencode.ai) CLI on `$PATH` with authenticated providers
 - The opencode agents/commands that huginn drives — these are **installed by huginn
   itself** (see below), not something you set up by hand.
@@ -21,6 +23,14 @@ saves full execution state so any run can be resumed after an interruption, and 
 > three (see `templates/agents/reviewing.md`).
 
 ## Install
+
+```sh
+npm install -g huginn        # npm
+# or
+bun install -g huginn        # bun
+```
+
+For development, from the repo:
 
 ```sh
 bun install
@@ -56,7 +66,9 @@ huginn run \
   --executor opencode/gpt-5.1-codex
 ```
 
-Run `huginn --help` for all flags:
+Run `huginn help` (or `huginn -h`) for all flags — note a bare `--help` is parsed
+as a run-mode flag and falls through to argument validation (it prints usage, but
+exits 1); `huginn help` exits 0:
 
 | Flag | Default | Meaning |
 |------|---------|---------|

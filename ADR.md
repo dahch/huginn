@@ -1,16 +1,15 @@
 # Huginn — Architecture Decision Records
 
-These ADRs are inferred from the codebase as it exists today (no git history is
-available in this working copy). Each record states the context, the decision
-as implemented, and the consequences — including the alternatives that the code
-structure rules out or deliberately avoids. They are ordered by how central the
-decision is to the design.
+These ADRs are inferred from the codebase as it exists today. Each record
+states the context, the decision as implemented, and the consequences —
+including the alternatives that the code structure rules out or deliberately
+avoids. They are ordered by how central the decision is to the design.
 
 ---
 
 ## ADR-1: Pipeline-as-data over imperative control flow
 
-- **Date**: 2026-08-07 (inferred — no history available)
+- **Date**: 2026-08-07 (inferred)
 - **Status**: Accepted
 - **Context**: Huginn must run the same eight-phase cycle on every iteration of
   a plan, with retry, fix, and escalation behavior that is nearly identical

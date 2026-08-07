@@ -42,7 +42,7 @@ state change is persisted under `<project>/.harness/`.
 
 ### 4.1 CLI and entry point — `src/cli.ts`
 
-- **REQ-1** — The CLI exposes exactly four commands: `run` (default), `plan`, `install`, and `help` (`--help`/`-h` prints usage and exits 0). Unknown commands exit 1 with usage.
+- **REQ-1** — The CLI exposes exactly four commands: `run` (default), `plan`, `install`, and `help`. A positional `help` or `-h` prints the banner + usage and exits 0; a bare `--help` flag is *not* intercepted (it parses as a run-mode flag) and falls through to run-mode argument validation, exiting 1 with an error plus usage. Unknown commands exit 1 with usage.
 - **REQ-2** — `huginn run` requires `--project <path>` (a directory containing `.git` and, by default, `plan.md`, `spec.md`, `adr.md`), plus `--thinker <provider/model>` and `--executor <provider/model>`. Missing required values exit 1 before any server is started.
 - **REQ-3** — Model strings are validated to the `provider/model` shape: a string with no `/`, an empty provider, or an empty model is rejected (`resolveModel` in `src/engine/modelRouter.ts`). The provider portion is additionally checked against the opencode server's configured provider list at startup, but the check is advisory: mismatches print a warning and the run continues (`validateModels`, `src/cli.ts`).
 - **REQ-4** — Numeric flag values are parsed by `num()` which falls back to a default for non-numeric input and **clamps to ≥ 0**, so negative values (e.g. `--max-retries -1`) can never invert a loop or skip a phase.
@@ -78,7 +78,7 @@ state change is persisted under `<project>/.harness/`.
 
 ### 4.5 Decisions — `src/engine/decisionBroker.ts`, `src/engine/types.ts`
 
-- **REQ-25** — Decisions are requested as `gate-blocked`, `permission`, or `spec-deviation` requests and answered with one of `retry | continue | abort | allow | deny`. Multiple requests may be in flight concurrently (e.g. a blocked gate while a permission request arrives).
+- **REQ-25** — Decisions are answered with one of `retry | continue | abort | allow | deny`. Two request kinds are actually emitted at runtime: `gate-blocked` (engine escalations) and `permission` (permission subscriber); a third kind, `spec-deviation`, exists in the `DecisionKind` type but is not currently requested by any code path. Multiple requests may be in flight concurrently (e.g. a blocked gate while a permission request arrives).
 - **REQ-26** — Pending decisions are presented and resolved strictly in arrival order (FIFO). Only the head of the queue is surfaced to the UI at a time, and resolving it surfaces the next. A pending decision can never be silently overwritten.
 - **REQ-27** — On abort (or any error path), all pending decisions are resolved with `abort` so no promise is left orphaned (which previously hung the run).
 - **REQ-28** — Headless + TTY: one-key answers (`r`/`c`/`a` for gates, `a`/`o`/`d` for permissions). Headless + non-TTY (CI, piped stdin): permission requests are denied, gate decisions abort the run so state is preserved for a later `--resume`.
