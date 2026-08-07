@@ -2,3 +2,4 @@ node_modules/
 dist/
 .harness/
 *.log
+package-lock.json
