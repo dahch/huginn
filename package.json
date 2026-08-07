@@ -1,17 +1,19 @@
 {
   "name": "huginn",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "CLI/TUI orchestrator for the opencode spec → execute → validate → test → secure → review → doc → commit cycle",
   "type": "module",
   "bin": {
     "huginn": "dist/cli.js"
   },
+  "files": ["dist", "templates", "scripts"],
   "scripts": {
     "dev": "bun run src/cli.ts",
     "build": "bun build src/cli.ts --target=bun --outdir=dist --minify",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "postinstall": "bun run scripts/postinstall.ts"
+    "postinstall": "node -e \"try{require('child_process').execSync('bun --version')}catch(e){console.warn('[huginn] Bun is required. Install it from https://bun.sh');process.exit(0)}\" && bun run scripts/postinstall.ts",
+    "prepublishOnly": "bun run build && bun test && bun run typecheck"
   },
   "dependencies": {
     "@opencode-ai/sdk": "^1.18.14",
@@ -25,5 +27,17 @@
     "@types/bun": "^1.3.14",
     "@types/react": "^19.2.0",
     "typescript": "^5.9.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dahch/huginn"
+  },
+  "keywords": ["opencode", "cli", "orchestrator", "spec", "build-cycle"],
+  "homepage": "https://github.com/dahch/huginn#readme",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
