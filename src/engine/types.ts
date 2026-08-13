@@ -1,6 +1,6 @@
 export type ModelRef = { providerID: string; modelID: string };
 
-export type Verdict = "pass" | "warning" | "blocked";
+export type Verdict = "pass" | "warning" | "blocked" | "skipped";
 
 export type Mode = "auto" | "supervised";
 

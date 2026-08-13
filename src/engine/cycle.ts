@@ -24,6 +24,7 @@ import {
   headCommit,
   inferModules,
   isGitRepo,
+  hasImplementationCode,
 } from "./diff";
 import {
   saveState,
@@ -253,7 +254,12 @@ export class CycleEngine {
         }
       }
 
-      await this.runPhase(step, ctx, sessionId, iteration);
+      if (step.phase === "SPEC_AUDIT" && !hasImplementationCode(this.cfg.projectPath)) {
+        // greenfield: nothing to audit until the iteration produces code
+        this.recordSkippedSpecAudit(iteration);
+      } else {
+        await this.runPhase(step, ctx, sessionId, iteration);
+      }
 
       if (this.abortRequested) return;
       this.persist();
@@ -507,11 +513,56 @@ export class CycleEngine {
     };
     this.state.history.push(entry);
     this.state.phaseAttempts[this.attemptKey(iteration, step.phase)] = attempt;
-    events.emit("verdict", {
-      iteration,
-      phase: step.phase,
-      verdict: result.verdict ?? "warning",
-      attempt,
+    this.emitVerdict(iteration, step.phase, result.verdict ?? "warning", attempt);
+  }
+
+  private emitVerdict(iteration: number, phase: PhaseName, verdict: Verdict, attempt: number): void {
+    events.emit("verdict", { iteration, phase, verdict, attempt });
+  }
+
+  private recordSkippedSpecAudit(iteration: Iteration): void {
+    const now = new Date().toISOString();
+    const model = formatModel(this.models.executor);
+    events.emit("phaseStart", {
+      iteration: iteration.index,
+      phase: "SPEC_AUDIT",
+      attempt: 1,
+      model,
+    });
+    events.emit("log", {
+      level: "info",
+      message: "[SPEC_AUDIT] skipped — no implementation code to audit (greenfield)",
+    });
+    const entry: HistoryEntry = {
+      iteration: iteration.index,
+      phase: "SPEC_AUDIT",
+      attempt: 1,
+      verdict: "skipped",
+      model,
+      sessionId: "",
+      messageId: "",
+      summary: "Skipped — no implementation code to audit (greenfield).",
+      startedAt: now,
+      finishedAt: now,
+    };
+    this.state.history.push(entry);
+    // a skip is not an attempt: leave phaseAttempts untouched so a later real
+    // audit on resume still starts at attempt 1.
+    this.emitVerdict(iteration.index, "SPEC_AUDIT", "skipped", 1);
+    events.emit("phaseEnd", {
+      result: {
+        iteration: iteration.index,
+        phase: "SPEC_AUDIT",
+        attempt: 1,
+        verdict: "skipped",
+        model,
+        sessionId: "",
+        messageId: "",
+        summary: entry.summary,
+        raw: "",
+        startedAt: now,
+        finishedAt: now,
+      },
     });
   }
 

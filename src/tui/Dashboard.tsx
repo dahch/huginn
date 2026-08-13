@@ -164,8 +164,20 @@ function PhasesTable({
         let mark = "  ";
         let color: string | undefined = undefined;
         if (st) {
-          mark = st.verdict === "pass" ? "✅" : st.verdict === "warning" ? "🟡" : "🔴";
-          color = st.verdict === "pass" ? "green" : st.verdict === "warning" ? "yellow" : "red";
+          mark =
+            st.verdict === "pass"
+              ? "✅"
+              : st.verdict === "warning"
+                ? "🟡"
+                : st.verdict === "skipped"
+                  ? "⏭️"
+                  : "🔴";
+          color =
+            st.verdict === "pass" || st.verdict === "skipped"
+              ? "green"
+              : st.verdict === "warning"
+                ? "yellow"
+                : "red";
         } else if (isCurrent) {
           mark = "⏳";
         }
@@ -208,9 +220,9 @@ function Logs({ lines }: { lines: string[] }) {
 
 function ReportBar({ report }: { report: PhaseResult }) {
   const v = report.verdict;
-  const mark = v === "pass" ? "✅" : v === "warning" ? "🟡" : "🔴";
+  const mark = v === "pass" ? "✅" : v === "warning" ? "🟡" : v === "skipped" ? "⏭️" : "🔴";
   return (
-    <Box marginTop={1} borderStyle="round" borderColor={v === "pass" ? "green" : v === "warning" ? "yellow" : "red"} paddingX={1}>
+    <Box marginTop={1} borderStyle="round" borderColor={v === "pass" || v === "skipped" ? "green" : v === "warning" ? "yellow" : "red"} paddingX={1}>
       <Text>
         {mark} <Text bold>{report.phase}</Text> · verdict <Text bold>{report.verdict ?? "n/a"}</Text> · model {report.model}
       </Text>

@@ -67,7 +67,8 @@ export async function runHeadless(engine: CycleEngine): Promise<void> {
   );
   offs.push(
     events.on("verdict", (e) => {
-      const icon = e.verdict === "pass" ? "✅" : e.verdict === "warning" ? "🟡" : "🔴";
+      const icon =
+        e.verdict === "pass" ? "✅" : e.verdict === "warning" ? "🟡" : e.verdict === "skipped" ? "⏭️" : "🔴";
       writeLine(`${icon} iter ${e.iteration} | ${e.phase} | ${e.verdict}`);
     }),
   );

@@ -146,14 +146,24 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
     }
     const mainPhaseSet = new Set<string>(MAIN_PHASES);
     const done = entries.filter(
-      (e) => (e.verdict === "pass" || e.verdict === "warning") && mainPhaseSet.has(e.phase),
+      (e) =>
+        (e.verdict === "pass" || e.verdict === "warning" || e.verdict === "skipped") &&
+        mainPhaseSet.has(e.phase),
     ).length;
     const phaseCount = MAIN_PHASES.length;
     lines.push(`- Phase progress: ${done}/${phaseCount}`);
     for (const e of entries) {
       const meta = PHASE_LABEL[e.phase] ?? { label: e.phase, icon: "•" };
       const mark =
-        e.verdict === "pass" ? "✅" : e.verdict === "warning" ? "🟡" : e.verdict === "blocked" ? "🔴" : "🔵";
+        e.verdict === "pass"
+          ? "✅"
+          : e.verdict === "warning"
+            ? "🟡"
+            : e.verdict === "blocked"
+              ? "🔴"
+              : e.verdict === "skipped"
+                ? "⏭️"
+                : "🔵";
       lines.push(`- ${mark} ${meta.icon} **${meta.label}** (attempt ${e.attempt}, ${e.model}) — ${e.summary}`);
       if (e.reportPath) lines.push(`  - report: \`${e.reportPath}\``);
     }

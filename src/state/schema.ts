@@ -4,7 +4,7 @@ export const historyEntrySchema = z.object({
   iteration: z.number(),
   phase: z.string(),
   attempt: z.number(),
-  verdict: z.enum(["pass", "warning", "blocked"]).optional(),
+  verdict: z.enum(["pass", "warning", "blocked", "skipped"]).optional(),
   model: z.string(),
   sessionId: z.string(),
   messageId: z.string(),
