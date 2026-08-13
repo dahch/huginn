@@ -117,7 +117,7 @@ When done it prints the `huginn run ...` command to start the build cycle.
 
 ## The cycle (per iteration of `plan.md`)
 
-1. **SPEC_AUDIT** — invokes the `spec-auditor` subagent against `spec.md`. 🔴 deviations → fix with thinker, re-audit.
+1. **SPEC_AUDIT** — invokes the `spec-auditor` subagent against `spec.md`. 🔴 deviations → fix with thinker, re-audit. On a repo with no implementation code yet (greenfield), the audit is skipped with a ⏭️ verdict until an iteration has produced code.
 2. **EXECUTE** — sends the iteration's prompt verbatim to the `build` agent (executor).
 3. **VALIDATE_STEP** — runs `/validate-step <modules> <spec.md>`; consumes its `✅/⚠️/🛑` verdict.
 4. **TEST_MODULE** — runs `/test-module <modules>`; verdict via a small "judge" pass.

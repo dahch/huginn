@@ -60,7 +60,7 @@ state change is persisted under `<project>/.harness/`.
 ### 4.3 The cycle — `src/engine/cycle.ts`, `src/engine/phases.ts`
 
 - **REQ-12** — Each iteration runs the eight main phases in this fixed order: `SPEC_AUDIT`, `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE`, `SECURE_CHECK`, `REVIEW`, `DOC_SYNC`, `COMMIT_ALL` (the `PIPELINE` table; `MAIN_PHASES` in `src/engine/types.ts`).
-- **REQ-13** — `SPEC_AUDIT` invokes the `spec-auditor` subagent directly with the spec, ADR, plan, the current iteration, and `git status`, asking for the `Overall fidelity: 🟢/🟡/🔴` verdict line.
+- **REQ-13** — `SPEC_AUDIT` invokes the `spec-auditor` subagent directly with the spec, ADR, plan, the current iteration, and `git status`, asking for the `Overall fidelity: 🟢/🟡/🔴` verdict line. **Greenfield skip**: if the repo contains no implementation code (`hasImplementationCode`, `src/engine/diff.ts` — git-tracked or untracked files with a source extension, excluding config/scaffolding/docs), the audit is *skipped* instead: a `skipped`-verdict history entry is recorded and the agent is never invoked, because there is nothing to audit until the iteration produces code.
 - **REQ-14** — `EXECUTE` sends the iteration's prompt verbatim to the built-in `build` agent (model: executor). It is non-blocking (never gated).
 - **REQ-15** — `VALIDATE_STEP`, `TEST_MODULE`, `SECURE_CHECK`, `REVIEW`, `DOC_SYNC`, `COMMIT_ALL` are run as opencode slash commands (`/validate-step <modules> <spec>`, `/test-module <modules>`, `/secure-check`, `/review`, `/doc-sync`, `/commit-all`) via `runCommand`.
 - **REQ-16** — The module list for `VALIDATE_STEP`/`TEST_MODULE` comes from the iteration's `modules:` line when present; otherwise it is inferred from git changes since the iteration's base commit (`inferModules`, `src/engine/diff.ts`).
@@ -72,7 +72,7 @@ state change is persisted under `<project>/.harness/`.
 
 ### 4.4 Verdicts and gates — `src/engine/gate.ts`
 
-- **REQ-22** — A verdict is one of `pass | warning | blocked`. `VALIDATE_STEP` verdicts come from `parseValidateStepVerdict`: the trailing human-handoff marker lines `✅ AUTO-APPROVED`, `⚠️ REVIEW REQUESTED`, `🛑 BLOCKED`, or the secondary `### Overall gate: 🟢/🟡/🔴` line. `SPEC_AUDIT` verdicts come from `parseSpecAuditVerdict`: `Overall fidelity: 🟢/🟡/🔴` or the words `ALIGNED`/`MINOR DRIFT`/`MAJOR DEVIATION`.
+- **REQ-22** — A verdict is one of `pass | warning | blocked | skipped`. The three gate styles produce only `pass`/`warning`/`blocked` (see REQ-23/REQ-24); `skipped` is produced solely by the greenfield `SPEC_AUDIT` skip (REQ-13) and never by a parser or the judge. `VALIDATE_STEP` verdicts come from `parseValidateStepVerdict`: the trailing human-handoff marker lines `✅ AUTO-APPROVED`, `⚠️ REVIEW REQUESTED`, `🛑 BLOCKED`, or the secondary `### Overall gate: 🟢/🟡/🔴` line. `SPEC_AUDIT` verdicts come from `parseSpecAuditVerdict`: `Overall fidelity: 🟢/🟡/🔴` or the words `ALIGNED`/`MINOR DRIFT`/`MAJOR DEVIATION`.
 - **REQ-23** — **Gates fail closed.** A report with no parseable verdict marker (empty, truncated, or hallucinated output) yields `null` from the parsers, which the engine converts to `BLOCKED` with a warning log entry — never to a silent pass (`gatedVerdict`, `src/engine/cycle.ts`).
 - **REQ-24** — `TEST_MODULE`, `SECURE_CHECK`, and `REVIEW` are gated by a "judge": a separate executor-model pass that classifies the phase report into strict JSON `{"status","summary","actionItems"}` (`judgePhase`). Structured output is preferred; if the judge's output is unparseable, text heuristics apply, and if those fail the gate fails closed to `blocked` with `parsed: false` (logged).
 
@@ -90,7 +90,7 @@ state change is persisted under `<project>/.harness/`.
 - **REQ-31** — `state.json` records `currentIteration`, `currentPhase`, per-`iteration:phase` attempt counts, the full history of phase attempts (verdict, model, session, message, summary, report path, timestamps), the iteration's session id and base commit, and the models/mode in use.
 - **REQ-32** — `computePlanHash` is a SHA-256 over the basename + contents of `plan.md`/`spec.md`/`adr.md`. Hashing by basename makes the hash survive the repo being moved or re-cloned to a different directory.
 - **REQ-33** — On a plain re-run, existing state is resumed automatically. `--resume` additionally *requires* saved state (error otherwise); `--force-restart` discards it; if the saved plan hash differs from the current documents, the run refuses to start unless `--ignore-plan-changes` is passed.
-- **REQ-34** — `PROGRESS.md` shows per-iteration phase progress as `done/8`, counting only the 8 main phases with `pass`/`warning` verdicts (fix-phase entries never inflate the count), plus status (RUNNING / ✅ COMPLETED / 🛑 ABORTED).
+- **REQ-34** — `PROGRESS.md` shows per-iteration phase progress as `done/8`, counting only the 8 main phases with `pass`/`warning`/`skipped` verdicts (fix-phase entries never inflate the count), plus status (▶ RUNNING / ✅ COMPLETED / 🛑 ABORTED).
 - **REQ-35** — On resume, the opencode session for the current iteration is reused if it still exists; a new session (`iter N: <title>`) is created otherwise. The model and mode are always taken from the current CLI flags on resume.
 
 ### 4.7 Plan mode — `src/engine/planMode.ts`

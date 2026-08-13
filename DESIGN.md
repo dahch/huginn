@@ -33,7 +33,7 @@ src/
 │   ├── permissions.ts      opencode event subscription: permission handling + stream forwarding
 │   ├── planMode.ts         `huginn plan`: drafts spec/adr/plan via the thinker
 │   ├── modelRouter.ts      "provider/model" → {providerID, modelID} + back
-│   ├── diff.ts             git helpers + inferModules
+│   ├── diff.ts             git helpers, inferModules, hasImplementationCode (greenfield detection)
 │   ├── engineEvents.ts     global typed event emitter
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
 ├── server/
@@ -127,6 +127,15 @@ flowchart TD
 
 Key behaviors:
 
+- **Greenfield skip**: `SPEC_AUDIT` never runs against a repo with no
+  implementation code. `hasImplementationCode` (`src/engine/diff.ts`)
+  classifies the repo from `git ls-files --cached --others` — a file counts
+  when it has a source extension from `SOURCE_EXTENSIONS` and is not in an
+  ignored dir (config/scaffolding/docs don't count). When false, the phase is
+  recorded with verdict `skipped` (`recordSkippedSpecAudit`): a history entry
+  and verdict event, but no agent call and **no attempt counted**
+  (`phaseAttempts` untouched, so a later real audit on resume still starts at
+  attempt 1).
 - **Attempt counting** is per `iteration:phase` and persisted in
   `state.phaseAttempts`, so resume continues the numbering (`state.phaseAttempts[key]`).
 - **Phase exceptions** (provider stall, timeout, API error) are treated like a
@@ -211,6 +220,11 @@ flowchart LR
   so unreadable-judge events are distinguishable).
 - Non-blocking steps (`EXECUTE`, `DOC_SYNC`, `COMMIT_ALL`) record their verdict
   but never stop the pipeline.
+- `skipped` is a fourth `Verdict` value that lives *outside* the gate model: it
+  is never returned by the two parsers or the judge — only by the greenfield
+  `SPEC_AUDIT` skip — and it neither passes nor blocks the pipeline. The
+  progress renderer and both frontends treat it as a pass-equivalent
+  (`⏭️` icon) for display.
 
 ## 6. Timeout model
 
@@ -278,8 +292,8 @@ stateDiagram-v2
   flags (`state = { ...existing, models, mode }`), so re-running with different
   models is intentional and allowed.
 - **Progress counting**: `renderProgressMarkdown` counts only `MAIN_PHASES`
-  entries with `pass`/`warning` — the `done/8` gauge can never exceed 8 no
-  matter how many `FIX_*` attempts happened.
+  entries with `pass`/`warning`/`skipped` — the `done/8` gauge can never
+  exceed 8 no matter how many `FIX_*` attempts happened.
 
 ## 8. Concurrency and event model
 

@@ -255,3 +255,45 @@ avoids. They are ordered by how central the decision is to the design.
     wrapper (e.g. `bin/huginn.js` importing `src/cli.ts`) — rejected for
     distribution simplicity; a Node/tsx wrapper — rejected, Bun is the declared
     runtime and `bun run`/`bun link` is the documented install path.
+
+## ADR-10: Greenfield SPEC_AUDIT skip with a `skipped` verdict
+
+- **Date**: 2026-08-13
+- **Status**: Accepted
+- **Context**: The first gate of every iteration is `SPEC_AUDIT`, which has a
+  subagent audit semantic alignment between `spec.md` and the implementation.
+  On a greenfield repo — typically the first iteration after `huginn plan`
+  bootstraps the documents, when nothing has been built yet — there is no
+  implementation to audit. Running the auditor would burn a model call and
+  produce vacuous MAJOR DEVIATION noise against an empty tree, and the
+  `spec-auditor` prompt embeds documents the agent has nothing to check
+  against. The pipeline needed a way to record "this gate is intentionally
+  not run yet" without weakening fail-closed semantics.
+- **Decision**: Before invoking the auditor, the engine classifies the repo
+  with `hasImplementationCode` (`src/engine/diff.ts`): a file from
+  `git ls-files --cached --others` counts as implementation code when it has a
+  source extension from `SOURCE_EXTENSIONS` and is not in an ignored directory
+  (`.harness`, `.git`, `node_modules`, `dist`, …). Config/scaffolding/docs
+  (`.json`, `tsconfig`, lockfiles, markdown) do not count. When no such file
+  exists, `recordSkippedSpecAudit` writes a history entry with verdict
+  `skipped` — no agent call, and `phaseAttempts` is deliberately *not*
+  incremented so a real audit later (e.g. on resume after code appears) still
+  starts at attempt 1. `skipped` is a fourth member of the `Verdict` union
+  (`pass | warning | blocked | skipped`) that no gate parser or judge ever
+  produces; it is exclusive to this skip path. The progress renderer and both
+  frontends render it as a pass-equivalent (`⏭️`).
+- **Consequences**:
+  - *Positive*: greenfield bootstraps skip a pointless audit cheaply; the skip
+    is fully visible (`state.json` history, `PROGRESS.md`, TUI, headless) and
+    resumable; fail-closed semantics are untouched because `skipped` is
+    recorded directly, not parsed, and never blocks or passes a gate.
+  - *Negative*: a fourth verdict value that every consumer (schema, progress
+    renderer, TUI, headless) must handle; a repo whose implementation exists
+    only in non-source files (e.g. pure JSON config) is misclassified as
+    greenfield — mitigated by the wide `SOURCE_EXTENSIONS` set and by counting
+    untracked files; the classification adds a git call per iteration.
+  - *Alternative considered*: running the auditor anyway and trusting a 🟢 on an
+    empty repo — rejected, wasteful and misleading; treating greenfield as a
+    plain `pass` — rejected, that would hide a broken `hasImplementationCode`
+    classification behind a gate that never ran.
+
