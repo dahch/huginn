@@ -297,3 +297,38 @@ avoids. They are ordered by how central the decision is to the design.
     plain `pass` — rejected, that would hide a broken `hasImplementationCode`
     classification behind a gate that never ran.
 
+## ADR-11: npm trusted publishing — scoped package, provenance on version tags
+
+- **Date**: 2026-08-13
+- **Status**: Accepted
+- **Context**: huginn is distributed as a public npm package. For 1.0.0 it was
+  renamed from the unscoped `huginn` to the scoped `@dahch/huginn`
+  (`publishConfig.access: "public"`). Publishing must be deliberate (not on
+  every push), tamper-evident, and consistent between the git tag and the
+  published version. The repo also dropped `package-lock.json` in favor of
+  Bun's `bun.lock`.
+- **Decision**: `.github/workflows/publish.yml` publishes only when a `v*`
+  tag is pushed. The workflow first verifies that the tag version
+  (`GITHUB_REF_NAME` minus the `v` prefix) equals `package.json`'s `version`,
+  failing the job otherwise; it then installs with
+  `bun install --frozen-lockfile`, runs `bun run build`, `bun test` and
+  `bun run typecheck`, and finally runs `npm publish --provenance` with the
+  workflow's `id-token: write` permission — npm provenance via OIDC, so the
+  published artifact is attestation-signed by GitHub. The publish step runs on
+  **Node 24** (`actions/setup-node`), which npm's trusted-publishing/OIDC flow
+  requires. `prepublishOnly` (`bun run build && bun test && bun run typecheck`)
+  is an additional npm-side guard. The LICENSE is MIT.
+- **Consequences**:
+  - *Positive*: releases are tag-driven and reproducible; the tag↔version
+    check prevents mislabeled publishes; npm provenance gives consumers
+    machine-verifiable attestations; scoped naming avoids squatting on the
+    bare `huginn` name.
+  - *Negative*: publishing is all-or-nothing on a tag push — there is no
+    manual "publish this exact commit" path; a version bump requires both
+    `package.json` and a matching tag (`huginn`'s own release flow, e.g. the
+    `huginn run` cycle, is what produces them); OIDC publishing pins the
+    workflow to Node ≥ 24 for the npm step.
+  - *Alternative considered*: publishing from `main` on every push — rejected,
+    no version control and no provenance story; publishing manually via
+    `npm publish` locally — rejected, no OIDC provenance and no
+    tag↔version guard.
