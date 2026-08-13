@@ -1,6 +1,6 @@
 {
   "name": "@dahch/huginn",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CLI/TUI orchestrator for the opencode spec → execute → validate → test → secure → review → doc → commit cycle",
   "type": "module",
   "bin": {
