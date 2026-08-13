@@ -25,9 +25,9 @@ saves full execution state so any run can be resumed after an interruption, and 
 ## Install
 
 ```sh
-npm install -g huginn        # npm
+npm install -g @dahch/huginn        # npm
 # or
-bun install -g huginn        # bun
+bun install -g @dahch/huginn        # bun
 ```
 
 For development, from the repo:
