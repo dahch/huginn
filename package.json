@@ -6,7 +6,11 @@
   "bin": {
     "huginn": "dist/cli.js"
   },
-  "files": ["dist", "templates", "scripts"],
+  "files": [
+    "dist",
+    "templates",
+    "scripts"
+  ],
   "scripts": {
     "dev": "bun run src/cli.ts",
     "build": "bun build src/cli.ts --target=bun --outdir=dist --minify",
@@ -32,7 +36,13 @@
     "type": "git",
     "url": "https://github.com/dahch/huginn"
   },
-  "keywords": ["opencode", "cli", "orchestrator", "spec", "build-cycle"],
+  "keywords": [
+    "opencode",
+    "cli",
+    "orchestrator",
+    "spec",
+    "build-cycle"
+  ],
   "homepage": "https://github.com/dahch/huginn#readme",
   "engines": {
     "bun": ">=1.0.0"
