@@ -16,7 +16,49 @@ describe("parseValidateStepVerdict", () => {
     expect(parseValidateStepVerdict("### Overall gate: 🟡 PASS WITH WARNINGS")).toBe("warning");
     expect(parseValidateStepVerdict("### Overall gate: 🔴 BLOCKED")).toBe("blocked");
   });
-  it("returns null for unparseable output (caller fails closed)", () => {
+  it("parses near-miss prose verdicts the reviewing agent actually emits", () => {
+    expect(
+      parseValidateStepVerdict(
+        "The `/validate-step` gate returned **🟡 PASS WITH WARNINGS — REVIEW REQUESTED**. I addressed all feasible required actions.",
+      ),
+    ).toBe("warning");
+    expect(
+      parseValidateStepVerdict(
+        "The `/validate-step` re-run returned **🟡 PASS WITH WARNINGS — REVIEW REQUESTED** (not blocked, but with required actions).",
+      ),
+    ).toBe("warning");
+    expect(parseValidateStepVerdict("gate: PASS WITH WARNINGS — address items")).toBe("warning");
+    expect(parseValidateStepVerdict("All green, AUTO-APPROVED for merge")).toBe("pass");
+    expect(parseValidateStepVerdict("do not proceed, BLOCKED until fixed")).toBe("blocked");
+  });
+  it("never downgrades a blocked report to warning (fail-open guard)", () => {
+    // A 🔴 report mentioning the warning phrase must stay blocked.
+    expect(parseValidateStepVerdict("🔴 BLOCKED — REVIEW REQUESTED")).toBe("blocked");
+    expect(parseValidateStepVerdict("### Overall gate: 🔴 BLOCKED\n⚠️ REVIEW REQUESTED — address items")).toBe("blocked");
+    // The reverse contradiction too: a 🟢 overall gate must not mask a 🛑 handoff.
+    expect(parseValidateStepVerdict("### Overall gate: 🟢 PASS\n🛑 BLOCKED — do not proceed")).toBe("blocked");
+  });
+  it("respects negated phrases and word boundaries in prose fallbacks", () => {
+    expect(parseValidateStepVerdict("the gate is not blocked anymore")).toBeNull();
+    expect(parseValidateStepVerdict("this was unblocked after the fix")).toBeNull();
+    expect(parseValidateStepVerdict("cannot proceed: not auto-approved")).toBeNull();
+    expect(parseValidateStepVerdict("the flow is no longer auto-approved")).toBeNull();
+    expect(parseValidateStepVerdict("cannot be auto-approved until reviewed")).toBeNull();
+    expect(parseValidateStepVerdict("not yet auto-approved, pending review")).toBeNull();
+  });
+  it("does not misread a clean report listing what it does not contain", () => {
+    // Real reviewing-agent output: "🟡 PASS WITH WARNINGS (no 🔴, no MAJOR
+    // DEVIATION, no Critical/High)". The negated "no 🔴" must not trip blocked.
+    expect(
+      parseValidateStepVerdict("Gate **🟡 PASS WITH WARNINGS** (no 🔴, no MAJOR DEVIATION, no Critical/High)"),
+    ).toBe("warning");
+    expect(parseValidateStepVerdict("no 🔴 findings, all clear")).toBeNull();
+    expect(parseValidateStepVerdict("All 🟢 — no 🟡, no 🔴")).toBe("pass");
+    expect(parseValidateStepVerdict("PASS — no blockers, no 🟡 remaining")).toBeNull();
+  });
+  it("still fails closed for prose that carries no verdict", () => {
+    expect(parseValidateStepVerdict("Both platforms fully green. Here's the summary and the fixes applied.")).toBeNull();
+    expect(parseValidateStepVerdict("The tests passed, coverage is above threshold.")).toBeNull();
     expect(parseValidateStepVerdict("nothing here")).toBeNull();
     expect(parseValidateStepVerdict("")).toBeNull();
   });
