@@ -5,21 +5,76 @@ import { prompt } from "../server/client";
 const MAX_JUDGE_REPORT_LENGTH = 24000;
 const MAX_FALLBACK_SUMMARY_LENGTH = 500;
 
+const VERDICT_SEVERITY: Record<"pass" | "warning" | "blocked", number> = {
+  pass: 1,
+  warning: 2,
+  blocked: 3,
+};
+
+// Negators that can precede a verdict phrase. Checked on the last few words of
+// the signal's clause so forms like "no longer", "cannot be", "not yet" are
+// caught even when not directly adjacent, while an unrelated "not" in an
+// earlier clause ("do not proceed, BLOCKED") does not negate the signal.
+const NEGATION = /(?:^|\s)(?:no|not|never|no longer|cannot|can't|isn't|doesn't|won't|wasn't|hasn't|without)(?:\s|$)/i;
+
+/** True when the first occurrence of `pattern` is negated in its own clause. */
+function negatedKeyword(text: string, pattern: RegExp): boolean {
+  const m = pattern.exec(text);
+  if (!m || m.index === undefined) return false;
+  const before = text.slice(Math.max(0, m.index - 80), m.index);
+  // Walk back to the nearest clause boundary; a comma/paren/dash separates
+  // "do not proceed, BLOCKED" from the signal that governs it.
+  const clause = before.split(/[,;.()—–]\s*/).pop() ?? "";
+  const words = clause.trim().split(/\s+/).slice(-5).join(" ");
+  return NEGATION.test(words);
+}
+
 /**
  * Returns the verdict carried by the report's markers, or `null` when the
  * report contains no parseable verdict (empty / truncated / hallucinated).
  * Callers must fail closed on `null` (treat as blocked).
+ *
+ * All signal sources are merged by severity (blocked > warning > pass) rather
+ * than short-circuiting, so a contradiction between the `### Overall gate:`
+ * line and the trailing handoff marker can never downgrade a report (e.g.
+ * "🟢 PASS" + "🛑 BLOCKED" stays blocked).
  */
 export function parseValidateStepVerdict(text: string): Verdict | null {
-  if (/🛑\s*BLOCKED|^\s*🛑/m.test(text)) return "blocked";
-  if (/⚠️\s*REVIEW REQUESTED|^\s*⚠️/m.test(text)) return "warning";
-  if (/✅\s*AUTO-APPROVED|^\s*✅/m.test(text)) return "pass";
-  // secondary markers
-  if (/overall gate:\s*🔴/i.test(text)) return "blocked";
-  if (/overall gate:\s*🟡/i.test(text)) return "warning";
-  if (/overall gate:\s*🟢/i.test(text)) return "pass";
-  if (/🔴\s*(PASS|WARN)/.test(text)) return "warning";
-  return null;
+  let best: "pass" | "warning" | "blocked" | null = null;
+  const merge = (v: "pass" | "warning" | "blocked") => {
+    if (best === null || VERDICT_SEVERITY[v] > VERDICT_SEVERITY[best]) best = v;
+  };
+
+  // Consolidated verdict line.
+  if (/overall gate:\s*🔴/i.test(text)) merge("blocked");
+  else if (/overall gate:\s*🟡/i.test(text)) merge("warning");
+  else if (/overall gate:\s*🟢/i.test(text)) merge("pass");
+
+  // Mandated trailing handoff markers.
+  if (/🛑\s*BLOCKED|^\s*🛑/m.test(text)) merge("blocked");
+  if (/⚠️\s*REVIEW REQUESTED|^\s*⚠️/m.test(text)) merge("warning");
+  if (/✅\s*AUTO-APPROVED|^\s*✅/m.test(text)) merge("pass");
+  if (/🔴\s*(PASS|WARN)/.test(text)) merge("warning");
+
+  // Near-miss prose the reviewing agent occasionally emits (e.g. "🟡 PASS WITH
+  // WARNINGS") instead of the exact mandated marker. Negation-aware so a clean
+  // report listing what it does NOT contain ("no 🔴", "not blocked", "not yet
+  // auto-approved") is never misread as a verdict. No explicit verdict → null.
+  const proseSignals: Array<["pass" | "warning" | "blocked", RegExp]> = [
+    ["blocked", /(?<![a-z])BLOCKED/i],
+    ["blocked", /🛑/],
+    ["blocked", /🔴/],
+    ["warning", /PASS WITH WARNINGS/i],
+    ["warning", /REVIEW REQUESTED/i],
+    ["warning", /🟡/],
+    ["pass", /AUTO-APPROVED/i],
+    ["pass", /🟢/],
+  ];
+  for (const [verdict, pattern] of proseSignals) {
+    if (pattern.test(text) && !negatedKeyword(text, pattern)) merge(verdict);
+  }
+
+  return best;
 }
 
 export function parseSpecAuditVerdict(text: string): Verdict | null {
