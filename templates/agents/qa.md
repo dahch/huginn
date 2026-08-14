@@ -59,6 +59,18 @@ This distinction is hard. In AUDIT mode, even if coverage is 0%, you report it a
 
 ---
 
+## Search guardrails
+
+- **Never** recursively glob or list package-manager / build-cache directories:
+  `~/.gradle`, `~/.m2`, `~/.npm`, `~/.yarn`, `~/.cache`, `node_modules`,
+  `build/`, `dist/`, `.git/`, `Pods/`, `.build/`. A `**` glob over one of
+  these can hang for tens of minutes and stall the whole pipeline.
+- Scope every search to the project's own source tree with bounded, specific
+  patterns. To locate a dependency jar/artifact, resolve it through the build
+  system (`./gradlew dependencies`, `swift package show-dependencies`, the
+  lockfile) or a single `find <path> -maxdepth N -name '*.jar'` piped through
+  `head` — never a broad glob over a cache directory.
+
 ## Workflow
 
 ### Step 1 — Codebase analysis (BOTH MODES)

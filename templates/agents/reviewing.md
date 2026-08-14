@@ -91,3 +91,12 @@ What's done well — reinforce good patterns.
 ```
 
 Always be specific: include file names, line references if available, and concrete examples of how to fix each issue. Be constructive, not prescriptive — explain *why* something is a problem, not just *that* it is.
+
+## Search guardrails
+
+Scope every search to the project's own source tree. Never recursively glob
+package-manager/build-cache directories (`~/.gradle`, `~/.m2`, `~/.npm`,
+`node_modules`, `build/`, `dist/`, `.git/`, `Pods/`, `.build/`) — a `**` glob
+over those can hang for tens of minutes and stall the pipeline. Use bounded
+patterns (`find <path> -maxdepth N ... | head`) and grep scoped to project
+paths instead.
