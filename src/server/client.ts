@@ -9,7 +9,7 @@ export class PhaseTimeoutError extends Error {
   }
 }
 
-async function abortSession(client: OpencodeClient, sessionId: string): Promise<void> {
+export async function abortSession(client: OpencodeClient, sessionId: string): Promise<void> {
   try {
     await client.session.abort({ path: { id: sessionId } } as never);
   } catch {

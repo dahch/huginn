@@ -34,7 +34,7 @@ import {
   computePlanHash,
 } from "../state/store";
 import type { HarnessState, HistoryEntry } from "../state/schema";
-import { createClient, createSession, sessionExists } from "../server/client";
+import { createClient, createSession, sessionExists, abortSession } from "../server/client";
 
 type PhaseFn = (ctx: PhaseContext) => Promise<{ text: string; messageId: string }>;
 
@@ -78,7 +78,6 @@ export class CycleEngine {
   private decisions = new DecisionBroker();
   private paused = false;
   private abortRequested = false;
-  private done = false;
   private outcome: { reason: "completed" | "aborted" | "error"; error?: string } = { reason: "completed" };
 
   constructor(opts: CycleEngineOptions) {
@@ -124,6 +123,12 @@ export class CycleEngine {
   requestAbort(): void {
     this.abortRequested = true;
     this.decisions.resolveAll("abort");
+    // Interrupt the in-flight agent request so the loop can observe the abort
+    // immediately instead of waiting out a long phase timeout: aborting the
+    // session server-side rejects the pending `session.prompt`/`command`.
+    if (this.state.iterationSessionId) {
+      void abortSession(this.client, this.state.iterationSessionId);
+    }
   }
 
   resolveDecision(choice: DecisionChoice): void {
@@ -149,6 +154,12 @@ export class CycleEngine {
     try {
       await this.runLoop();
     } catch (err) {
+      // A deliberate abort interrupts the in-flight agent request, which can
+      // surface as a transport rejection from judge/fix awaits outside the
+      // per-phase try — report it as an abort, not an error. The underlying
+      // error is still attached so a genuine failure during shutdown isn't
+      // silently swallowed.
+      if (this.abortRequested) return this.finishAborted((err as Error).message);
       this.decisions.resolveAll("abort");
       this.outcome = { reason: "error", error: (err as Error).message };
       this.state.finishedAt = new Date().toISOString();
@@ -158,15 +169,7 @@ export class CycleEngine {
       return this.outcome;
     }
 
-    if (this.abortRequested) {
-      this.decisions.resolveAll("abort");
-      this.outcome = { reason: "aborted" };
-      this.state.finishedAt = new Date().toISOString();
-      this.state.aborted = true;
-      this.persist();
-      events.emit("done", { reason: "aborted" });
-      return this.outcome;
-    }
+    if (this.abortRequested) return this.finishAborted();
 
     this.outcome = { reason: "completed" };
     if (!this.cfg.onlyPhase) {
@@ -184,6 +187,17 @@ export class CycleEngine {
     events.emit("stateUpdated", this.state);
   }
 
+  private finishAborted(error?: string): { reason: "aborted"; error?: string } {
+    this.decisions.resolveAll("abort");
+    const outcome = error ? { reason: "aborted" as const, error } : { reason: "aborted" as const };
+    this.outcome = outcome;
+    this.state.finishedAt = new Date().toISOString();
+    this.state.aborted = true;
+    this.persist();
+    events.emit("done", { reason: "aborted", error });
+    return outcome;
+  }
+
   private async runLoop(): Promise<void> {
     const iterations = this.plan.iterations;
     for (const iteration of iterations) {
@@ -194,11 +208,12 @@ export class CycleEngine {
       events.emit("log", { level: "info", message: `▶ Iteration ${iteration.index} — ${iteration.title}` });
       await this.runIteration(iteration);
 
-      if (this.done) return;
+      // don't mark an aborted iteration as complete, or a resume would skip
+      // it entirely even though its phases never finished
+      if (this.abortRequested) return;
 
       if (this.cfg.onlyPhase) {
         // debug mode: run the phase on a single iteration, leave state resumable
-        this.done = true;
         return;
       }
       // mark iteration complete
@@ -310,6 +325,7 @@ export class CycleEngine {
       try {
         result = await this.runOnce(step, ctx, sessionId, iteration, curAttempt, model);
       } catch (err) {
+        if (this.abortRequested) return; // deliberate abort, not a phase failure
         // Phase-level failure (provider stall / timeout / API error): retry the
         // phase, then escalate instead of letting one stall kill the whole run.
         const msg = err instanceof Error ? err.message : String(err);
