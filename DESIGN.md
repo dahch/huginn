@@ -129,18 +129,22 @@ Key behaviors:
 
 - **Greenfield skip**: `SPEC_AUDIT` never runs against a repo with no
   implementation code. `hasImplementationCode` (`src/engine/diff.ts`)
-  classifies the repo from `git ls-files --cached --others` — a file counts
-  when it has a source extension from `SOURCE_EXTENSIONS` and is not in an
-  ignored dir (config/scaffolding/docs don't count). When false, the phase is
-  recorded with verdict `skipped` (`recordSkippedSpecAudit`): a history entry
-  and verdict event, but no agent call and **no attempt counted**
-  (`phaseAttempts` untouched, so a later real audit on resume still starts at
-  attempt 1).
+  classifies the repo from `git ls-files --cached --others --exclude-standard`
+  — a file counts when it has a source extension from `SOURCE_EXTENSIONS`, is
+  not in an ignored dir, and is not a hidden or doc file (config/scaffolding/
+  docs don't count). When false, the phase is recorded with verdict `skipped`
+  (`recordSkippedSpecAudit`): a history entry and verdict event, but no agent
+  call and **no attempt counted** (`phaseAttempts` untouched, so a later real
+  audit on resume still starts at attempt 1).
 - **Attempt counting** is per `iteration:phase` and persisted in
   `state.phaseAttempts`, so resume continues the numbering (`state.phaseAttempts[key]`).
 - **Phase exceptions** (provider stall, timeout, API error) are treated like a
   blocked gate for retry purposes but *never* trigger a thinker fix — they retry
   then escalate (`recordError` writes a `blocked` history entry with a report).
+- **Empty `EXECUTE` reports fail closed**: `session.prompt` can resolve on a
+  step boundary (e.g. a reasoning-only turn) while the build agent is still
+  working, yielding a report with no output. An empty `EXECUTE` result is
+  thrown as a phase failure — retried, then escalated — never counted as a pass.
 - **`retry` from a decision resets the whole budget** (`attemptRun = -1`), so a
   human can keep fixing manually and re-running.
 - **`--only-phase`** runs just one step per iteration and leaves state
@@ -208,8 +212,13 @@ flowchart LR
 - The two parser functions return `Verdict | null`. `null` means "no parseable
   marker" and the engine's `gatedVerdict()` maps it to `blocked` with a warning
   — **fail closed**.
-- `validate-step` markers (from `templates/commands/validate-step.md`'s human
-  handoff) are checked before the secondary `Overall gate:` line.
+- `validate-step` verdicts merge every signal by severity (`blocked > warning >
+  pass`): the `### Overall gate:` line, the trailing handoff markers from
+  `templates/commands/validate-step.md`, and near-miss prose. Severity merging
+  means a contradiction (e.g. a 🟢 overall gate plus a `🛑 BLOCKED` handoff)
+  can never downgrade the report; the prose signals are negation-aware so a
+  clean report listing what it does NOT contain (`no 🔴`, `not blocked`) is not
+  misread.
 - `spec-audit` verdicts come from the `Overall fidelity:` line or the bare
   keywords `MAJOR DEVIATION` / `MINOR DRIFT` / `ALIGNED`.
 - `judgePhase` asks the **executor** model to classify a report as strict JSON
@@ -264,7 +273,7 @@ stateDiagram-v2
     RUNNING --> RUNNING: per phase → persist()
     RUNNING --> COMPLETED: all iterations done
     RUNNING --> ABORTED: abort/error → resolveAll + persist(aborted=true)
-    RUNNING --> [*]: SIGINT → abort flag at next checkpoint
+    RUNNING --> [*]: SIGINT/SIGTERM → requestAbort (interrupts agent + sets flag)
     COMPLETED --> [*]
     ABORTED --> RUNNING: re-run (auto-resume) or --resume
     ABORTED --> [*]: --force-restart wipes .harness/
@@ -274,7 +283,10 @@ stateDiagram-v2
   regenerate `PROGRESS.md`, emit `stateUpdated`) runs after every phase, after
   fixes, after session creation, and at iteration boundaries. The engine only
   checks the abort flag between steps, so an abort always lands on a consistent
-  checkpoint.
+  checkpoint. Requesting an abort (`requestAbort`) additionally interrupts the
+  in-flight agent session (`abortSession`, `src/server/client.ts`) so the loop
+  observes the abort immediately instead of waiting out a long phase timeout;
+  the run's catch path then reports the outcome as *aborted*, not *error*.
 - **Resume hash**: `computePlanHash([plan, spec, adr])` is SHA-256 over
   `basename \0 contents \0` per file. Because it uses basenames, the hash is
   identical after the repo is moved/cloned elsewhere (verified by
@@ -369,6 +381,10 @@ flowchart LR
    and filtered out of every git-diff-based helper.
 5. **The pipeline table is the only place phase wiring lives**: adding a phase
    is adding one row (plus its `phases.ts` function and template command).
+   The phase-name lists that mirror the pipeline — `MAIN_PHASES`
+   (`src/engine/types.ts`), the TUI's `PHASE_ORDER` (`src/tui/Dashboard.tsx`)
+   and `PHASE_LABEL` (`src/state/store.ts`) — are duplicated by hand and must
+   be updated in the same change.
 6. **The engine never blocks on a human forever in unattended mode**: non-TTY
    headless aborts gate decisions rather than hanging.
 

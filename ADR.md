@@ -22,9 +22,11 @@ avoids. They are ordered by how central the decision is to the design.
   `fn`, `gate` kind, `fixPhase`, `fixLabel`, and `blocking` flag. One generic
   `runPhase()` loop drives every step: run once → gate → record → fix on the
   thinker → retry → escalate. The eight phases of `MAIN_PHASES` in
-  `src/engine/types.ts` are the single source of truth for order, and the
-  `PhasesTable` in the TUI and the progress markdown renderer both re-derive
-  from it.
+  `src/engine/types.ts` are the single source of truth for order; the progress
+  markdown renderer (`renderProgressMarkdown`, `src/state/store.ts`) re-derives
+  from it. The TUI's `PhasesTable` keeps its own local `PHASE_ORDER` copy
+  (`src/tui/Dashboard.tsx`) that must be kept in sync with `MAIN_PHASES` by
+  hand.
 - **Consequences**:
   - *Positive*: adding a phase is adding one table row plus its `phases.ts`
     function; retry/escalation semantics cannot diverge per phase; the
@@ -271,17 +273,17 @@ avoids. They are ordered by how central the decision is to the design.
   not run yet" without weakening fail-closed semantics.
 - **Decision**: Before invoking the auditor, the engine classifies the repo
   with `hasImplementationCode` (`src/engine/diff.ts`): a file from
-  `git ls-files --cached --others` counts as implementation code when it has a
-  source extension from `SOURCE_EXTENSIONS` and is not in an ignored directory
-  (`.harness`, `.git`, `node_modules`, `dist`, …). Config/scaffolding/docs
-  (`.json`, `tsconfig`, lockfiles, markdown) do not count. When no such file
-  exists, `recordSkippedSpecAudit` writes a history entry with verdict
-  `skipped` — no agent call, and `phaseAttempts` is deliberately *not*
-  incremented so a real audit later (e.g. on resume after code appears) still
-  starts at attempt 1. `skipped` is a fourth member of the `Verdict` union
-  (`pass | warning | blocked | skipped`) that no gate parser or judge ever
-  produces; it is exclusive to this skip path. The progress renderer and both
-  frontends render it as a pass-equivalent (`⏭️`).
+  `git ls-files --cached --others --exclude-standard` counts as implementation
+  code when it has a source extension from `SOURCE_EXTENSIONS` and is not in an
+  ignored directory (`.harness`, `.git`, `node_modules`, `dist`, …).
+  Config/scaffolding/docs (`.json`, `tsconfig`, lockfiles, markdown) do not
+  count. When no such file exists, `recordSkippedSpecAudit` writes a history
+  entry with verdict `skipped` — no agent call, and `phaseAttempts` is
+  deliberately *not* incremented so a real audit later (e.g. on resume after
+  code appears) still starts at attempt 1. `skipped` is a fourth member of the
+  `Verdict` union (`pass | warning | blocked | skipped`) that no gate parser or
+  judge ever produces; it is exclusive to this skip path. The progress renderer
+  and both frontends render it as a pass-equivalent (`⏭️`).
 - **Consequences**:
   - *Positive*: greenfield bootstraps skip a pointless audit cheaply; the skip
     is fully visible (`state.json` history, `PROGRESS.md`, TUI, headless) and
@@ -301,8 +303,9 @@ avoids. They are ordered by how central the decision is to the design.
 
 - **Date**: 2026-08-13
 - **Status**: Accepted
-- **Context**: huginn is distributed as a public npm package. For 1.0.0 it was
-  renamed from the unscoped `huginn` to the scoped `@dahch/huginn`
+- **Context**: huginn is distributed as a public npm package. The initial
+  1.0.0 was published under the unscoped name `huginn`; ahead of the 1.0.1
+  release it was renamed to the scoped `@dahch/huginn`
   (`publishConfig.access: "public"`). Publishing must be deliberate (not on
   every push), tamper-evident, and consistent between the git tag and the
   published version. The repo also dropped `package-lock.json` in favor of

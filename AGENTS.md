@@ -94,7 +94,7 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` +
 
 | Work | Model | How |
 |---|---|---|
-| `SPEC_AUDIT` (spec-auditor invocation) | **executor** | `prompt({ agent: "spec-auditor", model: executor })` |
+| `SPEC_AUDIT` (spec-auditor invocation) | **executor** | `prompt({ agent: "spec-auditor", model: executor })` — unless the repo has no implementation code yet, in which case the audit is **skipped** (`hasImplementationCode`, `src/engine/diff.ts`) and the agent is never invoked |
 | `EXECUTE` (build agent) | **executor** | `prompt({ agent: "build", model: executor })` |
 | All 6 slash commands | **executor** | `runCommand({ command, arguments, model: "provider/model" (executor) })` |
 | Judge pass for TEST_MODULE / SECURE_CHECK / REVIEW | **executor** | `judgePhase(client, session, executor, ...)` |
@@ -134,7 +134,8 @@ bun install            # runs scripts/postinstall.ts — prompts to install
                        # prints "huginn install --yes" hint when unattended
 bun link               # exposes the global `huginn` bin → dist/cli.js
 bun test               # unit tests: cli, gate, decisionBroker, plan parser,
-                       # state store, installer, client timeouts
+                       # state store, installer, client timeouts, diff
+                       # (greenfield detection)
 bun run typecheck      # tsc --noEmit (strict)
 bun run dev -- ...     # run from source, e.g.
                        #   bun run dev -- run --project ../repo --thinker a/b --executor c/d
