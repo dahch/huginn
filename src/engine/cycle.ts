@@ -488,6 +488,13 @@ export class CycleEngine {
   ): Promise<PhaseResult & { raw: string }> {
     const startedAt = new Date().toISOString();
     const res = await step.fn(ctx);
+    // Fail closed on an empty EXECUTE result: `session.prompt` can resolve on
+    // a step boundary (e.g. a reasoning-only turn) while the build agent is
+    // still working, yielding a report with no output. That must never count
+    // as a pass — throw before any (empty) report artifact is persisted.
+    if (step.phase === "EXECUTE" && res.text.trim() === "") {
+      throw new Error("EXECUTE produced an empty report (the build agent returned no output)");
+    }
     const finishedAt = new Date().toISOString();
 
     const reportPath = writeReport(this.cfg.projectPath, iteration.index, step.phase, attempt, res.text);
