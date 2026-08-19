@@ -105,7 +105,7 @@ invokes them is `src/engine/phases.ts` and `src/engine/cycle.ts`.
 ## 3. Which model runs what
 
 The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` +
-`src/engine/cycle.ts`:
+`src/engine/cycle.ts` (run) and `src/engine/liveMode.ts` (live):
 
 | Work | Model | How |
 |---|---|---|
@@ -115,6 +115,7 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` +
 | Judge pass for TEST_MODULE / SECURE_CHECK / REVIEW | **executor** | `judgePhase(client, session, executor, ...)` |
 | `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_SECURITY` / `FIX_REVIEW` | **thinker** | `fixSpec` / `fixFindings` / `fixSecurity` → `prompt({ agent: "build", model: thinker })` |
 | `huginn plan` drafts (spec → adr → plan) | **thinker** | `prompt({ model: thinker })`, 20-min timeout each |
+| `huginn live` chat refinement / scope extraction / doc drafts (LiveEngine) | **thinker** | `prompt({ model: thinker })` via `liveMode.ts`, 20-min timeout each (`LIVE_PROMPT_TIMEOUT_MS`); after handoff the resulting `CycleEngine` uses the executor per the rows above |
 
 Subagent delegation *inside* a command (e.g. `/validate-step`'s chain) is
 handled by opencode via the Task tool with the orchestrating agent's
@@ -135,11 +136,12 @@ fail-closed `🛑 BLOCKED` at the `VALIDATE_STEP` gate.
 2. **opencode CLI** on `$PATH` with authenticated providers, started by huginn
    itself via `opencode serve --port <n> --hostname 127.0.0.1` in the project
    dir (logs to `.harness/logs/server.log`).
-3. **git repo** — required for `run` (module inference, base commits, agent
-   context). Plan/spec/adr files must exist.
+3. **git repo** — required for `run` and `live` (module inference, base commits,
+   agent context, doc staging). Plan/spec/adr files must exist for `run` (but
+   not for `plan`/`live`, which create or update them).
 4. **Templates installed** — `huginn install` (or the `bun install`
-   postinstall). Missing pieces only produce a warning at `run`/`plan`, but the
-   corresponding gates will fail closed without them.
+   postinstall). Missing pieces only produce a warning at `run`/`plan`/`live`,
+   but the corresponding gates will fail closed without them.
 
 ## 6. Developer workflow (working on huginn itself)
 
@@ -150,8 +152,10 @@ bun install            # runs scripts/postinstall.ts — prompts to install
 bun link               # exposes the global `huginn` bin → dist/cli.js
 bun test               # unit tests: cli, gate, decisionBroker, plan parser,
                        # state store, installer, client timeouts, diff
-                       # (greenfield detection), cycle (run-loop regression:
-                       # abort interruption, empty EXECUTE fail-closed)
+                       # (greenfield detection), update check (version compare
+                       # + cache), live mode (scope extraction, draft format
+                       # contract, handoff), cycle (run-loop regression: abort
+                       # interruption, empty EXECUTE fail-closed)
 bun run typecheck      # tsc --noEmit (strict)
 bun run dev -- ...     # run from source, e.g.
                        #   bun run dev -- run --project ../repo --thinker a/b --executor c/d
@@ -163,7 +167,8 @@ bun run build          # bun build src/cli.ts --target=bun --outdir=dist --minif
 | Variable | Effect |
 |---|---|
 | `HUGINN_TEMPLATES_DIR` | Where `templates/` is read from (default: auto-detected by walking up from the module location — works from `src/`, `dist/`, `scripts/`). |
-| `HUGINN_OPENCODE_CONFIG_DIR` | Install destination (default `~/.config/opencode`). The installer tests use this to isolate a temp config dir. |
+| `HUGINN_OPENCODE_CONFIG_DIR` | Install destination (default `~/.config/opencode`). The installer tests use this to isolate a temp config dir; also where the update-check cache (`huginn-update-cache.json`) lives. |
+| `HUGINN_NO_UPDATE_CHECK` | Any non-empty value disables the background npm version check (`src/update.ts`). |
 | `HUGINN_DEBUG` | Print full error stack traces on fatal errors (`src/cli.ts`). |
 | `CI` | `huginn install` skips its prompt (`--yes` implied); `promptYesNo` returns the fallback. |
 

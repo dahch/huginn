@@ -14,7 +14,8 @@ rationalized in [`ADR.md`](./ADR.md).
   - `zod` — `HarnessState` schema validation.
   - `chalk` — ANSI colors in the banner (`src/banner.ts`), headless frontend
     (`src/headless.ts`), CLI output (`src/cli.ts`), plan mode
-    (`src/engine/planMode.ts`), and shared formatting (`src/format.ts`).
+    (`src/engine/planMode.ts`), shared formatting (`src/format.ts`), and the
+    update reminder (`src/update.ts`).
 - `react-devtools-core` is declared in `package.json` but not imported
   anywhere in `src/` (declared, unused — do not rely on it).
 - **External executables**: `opencode` (spawned as a local server), `git`
@@ -24,18 +25,22 @@ rationalized in [`ADR.md`](./ADR.md).
 
 ```
 src/
-├── cli.ts                  entry point; arg parsing (run/plan/install), config, banner, lifecycle wiring
+├── cli.ts                  entry point; arg parsing (run/live/plan/install), config, banner, lifecycle wiring
 ├── config.ts               RunConfig type (all run-mode knobs)
 ├── banner.ts               ASCII banner + path shortening
 ├── format.ts               shared formatting: durations, verdict badges/icons/colors
-├── headless.ts             stdout frontend; stdin decision answering
+├── headless.ts             stdout frontend; stdin decision answering; runLiveHeadless
+├── update.ts               background npm version check (cache + semver compare + reminder)
 ├── engine/
 │   ├── cycle.ts            CycleEngine: pipeline-as-data, retry/fix/escalate loop, state machine
 │   ├── phases.ts           the 8 phase functions + 3 fix functions; builds prompts/commands
 │   ├── gate.ts             verdict parsers, JSON judge, fail-closed logic
 │   ├── decisionBroker.ts   FIFO queue of pending human/permission decisions
 │   ├── permissions.ts      opencode event subscription: permission handling + stream forwarding
-│   ├── planMode.ts         `huginn plan`: drafts spec/adr/plan via the thinker
+│   ├── planMode.ts         `huginn plan`: drafts spec/adr/plan via the thinker; exported prompt
+│   │                       builders + draft-format contract reused by live mode
+│   ├── liveMode.ts         LiveEngine: chat-refine → scope → draft → approve → handoff to CycleEngine
+│   ├── liveRepo.ts         live-mode git helpers: repo context, intent-to-add staging, docs commit
 │   ├── modelRouter.ts      "provider/model" → {providerID, modelID} + back
 │   ├── diff.ts             git helpers, inferModules, hasImplementationCode (greenfield detection)
 │   ├── engineEvents.ts     global typed event emitter
@@ -53,8 +58,9 @@ src/
 │   └── types.ts            Iteration type
 └── tui/
     ├── app.tsx             runTui entry
-    ├── render.tsx          ink render + engine.run() error bridge
-    └── Dashboard.tsx       the dashboard component
+    ├── render.tsx          ink render + engine.run() error bridge; renderLiveTui
+    ├── Dashboard.tsx       the run-cycle dashboard component
+    └── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box)
 scripts/postinstall.ts       bun install hook → installer prompt
 templates/{agents,commands}/ opencode agent/command definitions bundled as markdown
 ```
@@ -160,10 +166,10 @@ Key behaviors:
 
 ## 4. The decision flow (DecisionBroker)
 
-Decisions come from two independent producers:
+Decisions come from multiple producers:
 
-1. The **engine** — `gate-blocked` escalations (`requestDecision`).
-2. The **permission event subscription** — `permission` requests in
+1. The **engine** — `gate-blocked` escalations, `approve-draft`, `scope-extraction`, and `draft-format` decisions (`requestDecision`).
+2. The **event subscription** — `permission` and `question` requests in
    `--permissions ask` mode (`subscribeToEvents` in `src/engine/permissions.ts`).
 
 Both funnel into one FIFO broker (`src/engine/decisionBroker.ts`):
@@ -269,7 +275,8 @@ sequenceDiagram
   left churning.
 - Settlements that race the timeout are logged (`request settled after its
   timeout; the provider may still be processing`) instead of corrupting results.
-- The same mechanism backs `huginn plan`'s 20-minute draft prompts.
+- The same mechanism backs `huginn plan`'s and `huginn live`'s 20-minute
+  drafting/chat prompts (`PLAN_PROMPT_TIMEOUT_MS` / `LIVE_PROMPT_TIMEOUT_MS`).
 
 ## 7. State machine and resume
 
@@ -315,7 +322,64 @@ stateDiagram-v2
   entries with `pass`/`warning`/`skipped` — the `done/8` gauge can never
   exceed 8 no matter how many `FIX_*` attempts happened.
 
-## 8. Concurrency and event model
+## 8. Live mode
+
+`huginn live` is a second frontend-agnostic engine, `LiveEngine`
+(`src/engine/liveMode.ts`), that deliberately reuses the pieces `run` already
+has instead of inventing new ones:
+
+- **One opencode session** per live session (`huginn live: <project>`), exactly
+  like the cycle's per-iteration session; every model call is `prompt` with the
+  **thinker** model and the same 20-minute `withTimeout` budget.
+- **The DecisionBroker** (`src/engine/decisionBroker.ts`) answers the three
+  live decision kinds (`approve-draft`, `scope-extraction`, `draft-format`).
+  After handoff to the cycle, `ask`/`resolveDecision`/`requestAbort` delegate
+  to the `CycleEngine` instance, so the FIFO queue is shared, not doubled.
+- **The plan-mode prompt builders** (`updateSpecPrompt`, `appendAdrPrompt`,
+  `remainingPlanPrompt`, `validateDraftFormat`, `OUTPUT_FORMAT_CONTRACT`,
+  `unwrapFences` — all exported from `src/engine/planMode.ts`) do the actual
+  drafting; live mode adds the format-contract loop around them (validate →
+  retry once with feedback → `draft-format` human decision).
+- **git as the review surface**: drafted docs are staged as intent-to-add
+  (`git add -N`, `stageDocsForReview`) so `git diff HEAD -- spec.md adr.md
+  plan.md` shows the drafts; abort drops the staging (`unstageDocs`); approval
+  commits them (`commitDocs`, subject `docs(scope): <first line of scope>`)
+  and clears stale `.harness/` state before a fresh `CycleEngine` takes over.
+
+```mermaid
+sequenceDiagram
+    participant U as User (TUI chat / headless idea)
+    participant L as LiveEngine
+    participant B as DecisionBroker
+    participant P as planMode builders
+    participant C as CycleEngine
+
+    U->>L: chat(msg) ×N (refine stage)
+    U->>L: /draft
+    L->>L: extractScope (SCOPE: block, fail-closed)
+    L->>P: updateSpecPrompt / appendAdrPrompt / remainingPlanPrompt
+    P-->>L: drafted docs (format-contract validated)
+    L->>U: stageDocsForReview → git diff HEAD review
+    L->>B: approve-draft decision
+    B-->>U: head surfaced; choice → L
+    U-->>B: continue
+    L->>C: commitDocs + resetHarnessState → new CycleEngine
+    C-->>U: full 8-phase cycle (same dashboard/session)
+```
+
+Scope extraction is the one genuinely new contract: the thinker must answer
+with a `SCOPE:` line + fenced markdown block; a missing/unparseable block is
+treated like any other gate — fail closed to a human decision
+(`scope-extraction`: retry, or fall back to the user's last message).
+
+- **Interactive TUI & Markdown Rendering** (`src/tui/LiveDashboard.tsx`, `src/tui/markdown.tsx`):
+  - Two parallel scrollable cards (`ScrollableChatCard` for human-thinker dialogue, `ScrollableStreamCard` for real-time thinking and reasoning tokens) rendered concurrently.
+  - `[Tab]` toggles active card focus with visual border highlighting (`cyanBright` on the active panel).
+  - `[PageUp]` / `[PageDown]` scrolls the focused card by 4 lines at any time without losing in-flight input; arrow keys `[↑]` / `[↓]` scroll line-by-line when input is empty or stream is focused.
+  - Native terminal Markdown token rendering via `MarkdownLine` formats inline bold, italic, code backticks, headers, bullet points, numbered lists, and code blocks natively in Ink.
+  - Post-execution continuous loop: upon completing all plan iterations in `live` mode, a `post-cycle-live` decision modal prompts the user to either exit cleanly (`[c]` / `[a]`) or return to the live refinement loop (`[r]`) with state and thinker context preserved for the next set of tasks.
+
+## 9. Concurrency and event model
 
 The engine is single-threaded and awaits everything, but three sources of
 asynchrony interleave:
@@ -329,6 +393,9 @@ asynchrony interleave:
    …`), and file-edit / todo-update events into `log`.
 2. **The engine's own retry/escalation loop** — driven by the same await chain.
 3. **Frontends** — subscribe to `events` and resolve decisions independently.
+   Live mode adds two more subscribers (`LiveDashboard.tsx` in the TUI,
+   `runLiveHeadless` in headless) consuming `liveStage`/`liveChat`, which hand
+   off to the same run-cycle rendering once the docs are approved.
 
 Communication is via a single **global typed emitter**
 (`src/engine/engineEvents.ts`):
@@ -344,15 +411,17 @@ Communication is via a single **global typed emitter**
 | `verdict` | iteration, phase, verdict, attempt, durationMs | phase checklist |
 | `log` | level + message + timestamp | log tail |
 | `stateUpdated` | HarnessState | emitted after every `persist()`; currently no subscriber (reserved for future state UI) |
+| `liveStage` | stage (`refine`/`draft`/`approve`/`execute`) + optional message | LiveDashboard stage header |
+| `liveChat` | role (`user`/`assistant`/`system`) + text | LiveDashboard chat panel, headless live chat lines |
 | `done` | reason + optional error | TUI exit, run summary |
 
 Listener exceptions are caught and logged per-listener, so a broken subscriber
-can't kill the engine. Both frontends subscribe and unsubscribe in `finally`
-blocks. The only cross-cutting wiring done outside the engine is
-`subscribeToEvents`, which is handed `engine.ask()` as its decision callback —
-one line in `cli.ts` (`(req) => engine.ask(req)`).
+can't kill the engine. All frontends subscribe and unsubscribe in `finally`
+blocks. The only cross-cutting wiring done outside the engines is
+`subscribeToEvents`, which is handed the engine's `ask()` as its decision
+callback — one line in `cli.ts` (`(req) => engine.ask(req)` / `(req) => live.ask(req)`).
 
-## 9. Installer design
+## 10. Installer design
 
 ```mermaid
 flowchart LR
@@ -384,13 +453,14 @@ flowchart LR
   agent/command files are the user's, not huginn's. `--force` exists for
   re-bundling.
 
-## 10. Key invariants
+## 11. Key invariants
 
 1. **Fail closed**: no path exists where an unparseable gate report becomes a
    pass. (`gatedVerdict`, judge fallback, both tests.)
 2. **Every decision gets exactly one answer**: FIFO + `resolveAll` on abort.
-3. **No state loss**: `state.json` is only ever replaced atomically; the run
-   never touches plan/spec/adr.
+3. **No state loss**: `state.json` is only ever replaced atomically; the `run`
+   cycle never touches plan/spec/adr — the only writers are `plan` mode (at
+   creation time) and live mode (human-approved drafts, committed via git).
 4. **`.harness/` never participates in the build**: excluded in `.gitignore`
    and filtered out of every git-diff-based helper.
 5. **The pipeline table is the only place phase wiring lives**: adding a phase
@@ -402,7 +472,7 @@ flowchart LR
 6. **The engine never blocks on a human forever in unattended mode**: non-TTY
    headless aborts gate decisions rather than hanging.
 
-## 11. Key tradeoffs (summary; full rationale in ADR.md)
+## 12. Key tradeoffs (summary; full rationale in ADR.md)
 
 - Pipeline-as-data buys uniform retry/escalation logic at the cost of
   phase-specific control flow living inside the table's `fixPhase`/`fixLabel`

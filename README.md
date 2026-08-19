@@ -9,7 +9,9 @@ CLI/TUI orchestrator for the opencode-based build cycle:
 It drives your existing opencode subagents and slash commands headlessly (or from a live dashboard),
 saves full execution state so any run can be resumed after an interruption, and routes fixes to a
 "thinker" model while everything else runs on an "executor" model. It can also draft the initial
-`spec.md`, `adr.md` and `plan.md` from a single idea using the thinker model (`huginn plan`).
+`spec.md`, `adr.md` and `plan.md` from a single idea using the thinker model — either in one shot
+(`huginn plan`) or interactively, by chatting with the thinker to refine the idea before drafting
+and then executing the resulting plan in the same session (`huginn live`).
 
 ## Requirements
 
@@ -115,6 +117,50 @@ documents (it refuses by default), `--port`/`--server-timeout` like `run`.
 
 When done it prints the `huginn run ...` command to start the build cycle.
 
+## Live mode (`huginn live`)
+
+Interactive refinement + autonomous execution in one dashboard: chat with the thinker to refine
+the idea (or extend an existing project), draft/update the documents, approve them, then run the
+build cycle in the same session:
+
+```sh
+huginn live \
+  --project /path/to/repo \
+  --thinker anthropic/claude-opus-4-5 \
+  --executor opencode/gpt-5.1-codex \
+  "Add a podcast notification CLI to this project"   # optional initial idea
+```
+
+What happens (stages shown in the dashboard: refine → draft → approve → execute):
+
+1. **Refine** — an opencode session is created and you chat with the thinker, which is grounded in
+   the current repo state (git log/status, source tree) and any existing `spec.md`/`adr.md`/`plan.md`.
+2. **Draft** — typing `/draft` makes the thinker emit a `SCOPE:` block (goals, non-goals,
+   constraints); if it can't be parsed the run asks you to retry or fall back to your last message.
+   The docs are then drafted with a **format contract** — spec.md (rewritten or created), adr.md
+   (new entries *appended* to the existing file), plan.md (remaining iterations). A draft that
+   violates the contract is retried once, then a human decision is requested (retry / accept
+   as-is / abort).
+3. **Approve** — the docs are staged as intent-to-add so `git diff HEAD -- spec.md adr.md plan.md`
+   shows them for review; you choose re-draft, OK — commit & execute, or abort.
+4. **Execute** — on approval the docs are committed (`docs(scope): …`) and a fresh
+   [`huginn run`](#usage) cycle runs the plan in the same dashboard. When all iterations complete,
+   the TUI presents an interactive modal allowing you to either exit (`[c]` / `[a]`) or return to
+   Live mode (`[r]`) to continue refining and adding new tasks. Aborting before approval drops the
+   intent-to-add staging so nothing review-only lingers in the index.
+
+**Live TUI Features**:
+- **Dual Cards**: parallel scrollable cards for **Refinement Conversation** and **Thinking Stream**.
+- **Interactive Controls**: `[Tab]` toggles active card focus; `[PageUp]`/`[PageDown]` scrolls the focused history by 4 lines; `[↑]`/`[↓]` scrolls line-by-line.
+- **Native Markdown Rendering**: bold, italic, inline code backticks, headers, quotes, bullet points, and code fences are styled natively in the terminal.
+- **Immediate Abort**: `[Esc]` or typing `/quit` cancels execution immediately.
+
+Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
+plus the run-mode flags `--mode`, `--permissions`, `--max-retries`, `--port`,
+`--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless mode the chat
+refinement is skipped (the CLI idea is used as-is) and approvals are answered on stdin;
+non-interactive stdin aborts with a hint to use the TUI.
+
 ## The cycle (per iteration of `plan.md`)
 
 1. **SPEC_AUDIT** — invokes the `spec-auditor` subagent against `spec.md`. 🔴 deviations → fix with thinker, re-audit. On a repo with no implementation code yet (greenfield), the audit is skipped with a ⏭️ verdict until an iteration has produced code.
@@ -161,8 +207,9 @@ for `/validate-step` and `/test-module`; otherwise they are inferred from git.
 
 ## State & resumability (`.harness/`)
 
-The harness never edits `plan.md`/`spec.md`/`adr.md`. Everything it needs is written under
-`<project>/.harness/`:
+The `run` cycle never edits `plan.md`/`spec.md`/`adr.md` (only `plan` mode writes them at creation
+time, and `live` mode writes/commits them after explicit human approval). Everything the harness
+needs is written under `<project>/.harness/`:
 
 - `state.json` — machine-readable source of truth (current iteration/phase, history, sessions).
 - `PROGRESS.md` — human-readable checklist regenerated after every phase.
@@ -171,6 +218,27 @@ The harness never edits `plan.md`/`spec.md`/`adr.md`. Everything it needs is wri
 
 If a run is interrupted, just re-run the same command and it auto-resumes from the exact phase.
 `--force-restart` wipes saved state; `--ignore-plan-changes` resumes even after editing the docs.
+
+## Environment variables
+
+All optional:
+
+| Variable | Type | Default | Effect |
+|---|---|---|---|
+| `HUGINN_TEMPLATES_DIR` | path | auto-detected (walk up from module location) | Where `templates/` is read from — works from `src/`, `dist/`, `scripts/`. |
+| `HUGINN_OPENCODE_CONFIG_DIR` | path | `~/.config/opencode` | Install destination for agents/commands; also where the update-check cache lives. |
+| `HUGINN_NO_UPDATE_CHECK` | string | unset | Any non-empty value disables the background npm version check. |
+| `HUGINN_DEBUG` | string | unset | Print full error stack traces on fatal errors. |
+| `CI` | string | unset | `huginn install` skips its confirmation prompt (`--yes` implied). |
+
+### Background update check
+
+Every `huginn run` / `plan` / `live` fires a **non-blocking** check against the npm registry
+(`https://registry.npmjs.org/@dahch/huginn/latest`, 3 s fetch timeout). It never delays or fails
+the run: the result is only a yellow `⬆ A new version of huginn is available: vX → vY` reminder on
+stderr with the update command. Results are cached in
+`<opencode-config-dir>/huginn-update-cache.json` for 24 hours, and a stale cache is used as a
+fallback when the registry is unreachable. Set `HUGINN_NO_UPDATE_CHECK=1` to disable.
 
 ## Development
 

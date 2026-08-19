@@ -335,3 +335,81 @@ avoids. They are ordered by how central the decision is to the design.
     no version control and no provenance story; publishing manually via
     `npm publish` locally — rejected, no OIDC provenance and no
     tag↔version guard.
+
+## ADR-12: Live mode as a thin orchestrator that reuses the cycle engine and plan-mode drafting
+
+- **Date**: 2026-08-19
+- **Status**: Accepted
+- **Context**: `huginn plan` drafts the three documents in one shot and prints
+  a `huginn run` command; the developer then manually edits/approves and runs
+  the cycle separately. The iteration loop between "idea" and "execution" is
+  where requirements actually get shaped, and it happened outside huginn.
+  Building a separate drafting stack for an interactive mode would have
+  duplicated the plan-mode prompts, the format contract, the decision flow, and
+  the cycle itself.
+- **Decision**: `huginn live` is implemented as `LiveEngine`
+  (`src/engine/liveMode.ts`), a small state machine (refine → draft → approve
+  → execute) that **reuses existing machinery** rather than replacing it:
+  - the same opencode session + `prompt`/`withTimeout` path as the cycle, all
+    on the thinker model with a 20-minute budget;
+  - the same `DecisionBroker` FIFO queue for the three new decision kinds
+    (`approve-draft`, `scope-extraction`, `draft-format`), with
+    `ask`/`resolveDecision`/`requestAbort` delegating to the `CycleEngine`
+    after handoff;
+  - the plan-mode prompt builders and `OUTPUT_FORMAT_CONTRACT` /
+    `validateDraftFormat` / `unwrapFences` (exported from `src/engine/planMode.ts`)
+    for all drafting; live mode only adds the validate→retry-once→human-decision
+    loop around them;
+  - git as the review surface: `git add -N` intent-to-add staging so the human
+    reviews `git diff HEAD -- spec.md adr.md plan.md`, then a `docs(scope)`
+    commit and a fresh `CycleEngine` on approval.
+  The only genuinely new contract is scope extraction: the thinker must reply
+  to `/draft` with a `SCOPE:` line + fenced block, and a missing/unparseable
+  block fails closed to a human decision instead of inventing a scope.
+- **Consequences**:
+  - *Positive*: one drafting implementation, one decision path, one cycle — live
+    mode is ~400 lines of orchestration on top of existing code; the run-cycle
+    rendering (Dashboard, headless summary, `runHeadless`) is reused verbatim
+    after handoff; format-contract violations are caught mechanically instead of
+    being shipped to the cycle.
+  - *Negative*: live mode is the one path where huginn itself writes
+    `spec.md`/`adr.md`/`plan.md` (breaking the "read-only documents" invariant
+    for `run`) — mitigated by explicit human approval and a dedicated `docs(scope)`
+    commit; headless live mode cannot chat (the CLI idea is used as-is), so the
+    interactive value is TUI-only.
+  - *Alternative considered*: a full separate chat/agent product — rejected, it
+    would duplicate the session, decision, and drafting machinery; extending
+    `huginn plan` with a REPL — rejected, plan mode has no executor/handoff path
+    and the TUI would still be missing.
+
+## ADR-13: Handling Opencode question tools and SSE events
+
+- **Date**: 2026-08-19
+- **Status**: Accepted
+- **Context**: In Opencode, models have access to built-in tools including `question`
+  (for interactive multiple-choice and clarifying questions). When an agent
+  invokes the `question` tool during execution (e.g. during live refinement or
+  build execution), the Opencode server suspends session progress and emits a
+  `question.asked` SSE event waiting for an HTTP POST reply
+  (`/session/:id/question/:reqId/reply`) or reject (`/session/:id/question/:reqId/reject`).
+  Because huginn's event subscriber previously only handled `permission.updated`,
+  an agent's invocation of `question` caused `prompt()` to hang indefinitely,
+  freezing `live.chat()` and the TUI until timeout.
+- **Decision**:
+  - `subscribeToEvents` (`src/engine/permissions.ts`) handles `question.asked`,
+    `question.v2.asked`, and `question.updated` alongside permission events.
+  - In `--permissions auto` mode, huginn auto-answers with the first/recommended
+    option from each question item (`respondQuestion`, `src/server/client.ts`)
+    and logs the resolution, unblocking the agent immediately.
+  - In `--permissions deny` mode, huginn rejects the question (`rejectQuestion`).
+  - In `--permissions ask` mode, huginn creates a `question` decision request via
+    `DecisionBroker`, rendering interactive prompts in both TUI (`LiveDashboard.tsx`,
+    `Dashboard.tsx`) and headless mode (`src/headless.ts`).
+  - In `liveMode.ts`, `refineSystemPrompt` explicitly guides the thinker model to
+    emit clarifying questions directly in conversational markdown text.
+- **Consequences**:
+  - *Positive*: Opencode tools cannot deadlock or freeze the harness; consistent
+    permission/question policy enforcement (`auto`/`ask`/`deny`); robust fail-safe
+    with dynamic baseUrl resolution in `client.ts`.
+  - *Negative*: Adds `respondQuestion` and `rejectQuestion` endpoints to the client
+    adapter layer and adds `"question"` to the `DecisionKind` union.
