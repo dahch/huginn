@@ -322,7 +322,11 @@ asynchrony interleave:
 
 1. **The opencode event stream** (`subscribeToEvents`) — a long-lived SSE loop
    that can fire a `permission.updated` request *while* the engine awaits a
-   gate decision → this is exactly why the DecisionBroker exists.
+   gate decision → this is exactly why the DecisionBroker exists. It also
+   forwards agent activity to the frontends: text/reasoning deltas and
+   tool-execution status into `phaseStream` (as synthetic marker lines such as
+   `⚡ [tool: …] running` / `✓ … completed` / `✗ … error` and `📝 Edited file:
+   …`), and file-edit / todo-update events into `log`.
 2. **The engine's own retry/escalation loop** — driven by the same await chain.
 3. **Frontends** — subscribe to `events` and resolve decisions independently.
 
@@ -334,7 +338,7 @@ Communication is via a single **global typed emitter**
 | `iterationStart` | iteration, totalIterations, title, modules | TUI header, headless iteration banner |
 | `iterationEnd` | iteration, title | (currently no subscriber — reserved) |
 | `phaseStart` | iteration, totalIterations, iterationTitle, phase, attempt, model, startedAt | TUI header, headless |
-| `phaseStream` | text delta | live output tail |
+| `phaseStream` | text/reasoning deltas + tool-execution & file-edit marker lines | live output tail |
 | `phaseEnd` | full PhaseResult + durationMs | report bar |
 | `decision` / `decisionResolved` | request / id+choice | decision box |
 | `verdict` | iteration, phase, verdict, attempt, durationMs | phase checklist |

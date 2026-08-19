@@ -49,7 +49,7 @@ state change is persisted under `<project>/.harness/`.
 - **REQ-5** — Paths are canonicalized (`canonicalize`, `src/cli.ts`): symlinks are resolved via `realpathSync` so paths embedded in agent prompts match what the opencode server resolves; non-existent paths fall back to `resolve()` (needed by `plan` mode before documents exist).
 - **REQ-6** — Flags `--mode auto|supervised` (default `auto`), `--permissions auto|ask|deny` (default `auto`), `--max-retries <n>` (default 3), `--from-iteration <n>`, `--only-phase <name>` (validated against the 8 main phases), `--phase-timeout <ms>` (default 1 200 000 = 20 min; 0 disables), `--server-timeout <ms>` (default 60 000), `--port <n>` (default: an ephemeral free port on 127.0.0.1), `--tui`/`--headless` (default: TUI when stdout is a TTY), `--resume`, `--force-restart`, `--ignore-plan-changes` are honored exactly as documented in `usage()`.
 - **REQ-7** — `SIGINT`/`SIGTERM` trigger a graceful abort: the engine's abort flag is set and the in-flight agent session is interrupted (`abortSession`), so the loop stops promptly rather than waiting out a phase timeout; the process force-exits after 3 s if the engine has not finished persisting state.
-- **REQ-8** — On exit, the outcome is reported: `✓ plan completed`, `🛑 aborted. State saved for --resume`, or `✗ failed: <error>`. A thrown/fatal error exits non-zero; completed and aborted outcomes are reported on the normal path.
+- **REQ-8** — On exit, the outcome is reported: `✨ [huginn] Plan completed successfully!`, `🛑 [huginn] Run aborted. State saved for --resume.`, or `✗ [huginn] Run failed: <error>`. A thrown/fatal error exits non-zero; completed and aborted outcomes are reported on the normal path.
 
 ### 4.2 Plan parsing — `src/plan/parser.ts`
 
@@ -98,7 +98,7 @@ state change is persisted under `<project>/.harness/`.
 - **REQ-36** — `huginn plan --project <repo> --thinker <m> "<idea>"` drafts the three input documents in sequence, all on the thinker model in one opencode session: `spec.md` (numbered, traceable requirements), then `adr.md` given the spec (ADR entries with alternatives/tradeoffs), then `plan.md` given spec + ADR (strict `## Iteration N — Title` format, optional `modules:` lines, 3–8 iterations).
 - **REQ-37** — A long prompt may be supplied via `--prompt-file <file>` instead of a positional argument; the positional idea is otherwise required.
 - **REQ-38** — Plan mode refuses to overwrite any existing `spec.md`/`adr.md`/`plan.md`; `--force` is required to overwrite (checked in both `src/cli.ts` and `runPlanMode`).
-- **REQ-39** — Each drafting prompt has a hard 20-minute timeout (`PLAN_PROMPT_TIMEOUT_MS`); the thinker's streamed text deltas are printed live to stdout; on completion the exact `huginn run ...` command is printed.
+- **REQ-39** — Each drafting prompt has a hard 20-minute timeout (`PLAN_PROMPT_TIMEOUT_MS`); the thinker's streamed text and reasoning deltas are printed live to stdout; on completion the exact `huginn run ...` command is printed, with the configured thinker model filled in.
 - **REQ-40** — `huginn run`/`huginn plan` both warn (but do not block) when required opencode agents/commands are missing, pointing at `huginn install`.
 
 ### 4.8 Installer — `src/setup/install.ts`, `scripts/postinstall.ts`
@@ -110,7 +110,7 @@ state change is persisted under `<project>/.harness/`.
 
 ### 4.9 TUI / headless — `src/tui/*`, `src/headless.ts`
 
-- **REQ-45** — The TUI is an Ink/React dashboard showing the 8-phase checklist with verdict icons and attempt counts (fix phases as indented children of their gate), live stream tail (last 10 lines; 22 in verbose mode), log tail, the last report summary, and the pending decision box. Keyboard: `space`/`p` pause–resume, `v` toggle verbose stream, `q`/`Esc` abort, and the decision keys `r`/`c`/`a` (gates) or `a`/`o`/`d` (permissions).
+- **REQ-45** — The TUI is an Ink/React dashboard showing the 8-phase checklist with verdict icons and attempt counts (fix phases as indented children of their gate), live agent-stream tail — text/reasoning deltas plus tool-execution (`⚡`/`✓`/`✗`) and file-edit (`📝`) marker lines (last 10 lines; 22 in verbose mode), log tail, the last report summary, and the pending decision box. Keyboard: `space`/`p` pause–resume, `v` toggle verbose stream, `q`/`Esc` abort, and the decision keys `r`/`c`/`a` (gates) or `a`/`o`/`d` (permissions).
 - **REQ-46** — Headless mode renders the same events as stdout text lines (iteration banners, phase start lines with model + attempt, verdict badges with durations, timestamped log lines) and answers decisions via stdin, with the non-TTY behavior from REQ-28. On exit it prints a final execution summary box counting `pass`/`warning`/`blocked`/`skipped` verdicts plus total elapsed time. Pausing is engine-level (`pause()`/`resume()` poll every 200 ms) and works identically in both frontends.
 
 ### 4.10 Permissions — `src/engine/permissions.ts`

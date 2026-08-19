@@ -175,7 +175,7 @@ If a run is interrupted, just re-run the same command and it auto-resumes from t
 ## Development
 
 ```sh
-bun test              # unit tests (parsers, gates, state, installer)
+bun test              # unit tests (parsers, gates, state, installer, run-loop regressions)
 bun run typecheck     # tsc --noEmit
 bun run dev -- ...    # run from source
 bun run build         # bundle to dist/ for the global bin
