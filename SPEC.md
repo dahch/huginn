@@ -110,8 +110,8 @@ state change is persisted under `<project>/.harness/`.
 
 ### 4.9 TUI / headless — `src/tui/*`, `src/headless.ts`
 
-- **REQ-45** — The TUI is an Ink/React dashboard showing the 8-phase checklist with verdict icons and attempt counts, live stream tail (last 12 lines), log tail, the last report summary, and the pending decision box. Keyboard: `space`/`p` pause–resume, `q`/`Esc` abort, and the decision keys `r`/`c`/`a` (gates) or `a`/`o`/`d` (permissions).
-- **REQ-46** — Headless mode renders the same events as stdout text lines and answers decisions via stdin, with the non-TTY behavior from REQ-28. Pausing is engine-level (`pause()`/`resume()` poll every 200 ms) and works identically in both frontends.
+- **REQ-45** — The TUI is an Ink/React dashboard showing the 8-phase checklist with verdict icons and attempt counts (fix phases as indented children of their gate), live stream tail (last 10 lines; 22 in verbose mode), log tail, the last report summary, and the pending decision box. Keyboard: `space`/`p` pause–resume, `v` toggle verbose stream, `q`/`Esc` abort, and the decision keys `r`/`c`/`a` (gates) or `a`/`o`/`d` (permissions).
+- **REQ-46** — Headless mode renders the same events as stdout text lines (iteration banners, phase start lines with model + attempt, verdict badges with durations, timestamped log lines) and answers decisions via stdin, with the non-TTY behavior from REQ-28. On exit it prints a final execution summary box counting `pass`/`warning`/`blocked`/`skipped` verdicts plus total elapsed time. Pausing is engine-level (`pause()`/`resume()` poll every 200 ms) and works identically in both frontends.
 
 ### 4.10 Permissions — `src/engine/permissions.ts`
 

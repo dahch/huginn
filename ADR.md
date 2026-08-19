@@ -24,7 +24,7 @@ avoids. They are ordered by how central the decision is to the design.
   thinker → retry → escalate. The eight phases of `MAIN_PHASES` in
   `src/engine/types.ts` are the single source of truth for order; the progress
   markdown renderer (`renderProgressMarkdown`, `src/state/store.ts`) re-derives
-  from it. The TUI's `PhasesTable` keeps its own local `PHASE_ORDER` copy
+  from it. The TUI's `PipelineCard` keeps its own local `BASE_PHASES` copy
   (`src/tui/Dashboard.tsx`) that must be kept in sync with `MAIN_PHASES` by
   hand.
 - **Consequences**:

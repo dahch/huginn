@@ -35,9 +35,18 @@ invokes them is `src/engine/phases.ts` and `src/engine/cycle.ts`.
   any test file — it runs existing tests, reports coverage, and lists gaps
   (used by `/validate-step`); otherwise FIX mode, full test authoring.
 - **Permissions**: `edit` allowed; bash allows test runners (`npx *`,
-  `npm run test*`, `npm run coverage*`, `yarn test*`, `pnpm*`, `vitest*`,
-  `jest*`, `playwright*`, `cypress*`) and reading coverage/config files;
-  webfetch denied; websearch, todowrite allowed; task denied.
+  `npm run test*`, `npm run coverage*`, `npm test*`, `yarn test*`, `pnpm*`,
+  `bun test*`, `bun run test*`, `bun run coverage*`, `vitest*`, `jest*`,
+  `playwright*`, `cypress*`, `pytest*`, `cargo test*`, `go test*`) and
+  reading coverage/config files; webfetch denied; websearch, todowrite
+  allowed; task denied.
+- **Guardrails**: tests always run **non-interactively** — never watch mode
+  (`vitest run` / `jest --watchAll=false --ci --runInBand` / `bun test` /
+  `pytest -q`, never bare `vitest`, `cypress open`, `playwright test --ui`).
+  Searches must never recursively glob package-manager/build-cache
+  directories (`node_modules`, `build/`, `dist/`, `.git/`, `~/.gradle`,
+  `~/.m2`, `~/.npm`, `Pods/`, `.build/`) — scope to the project tree with
+  bounded patterns instead.
 - **Driven by**: `/test-module` (FIX mode) and `/validate-step` phase 1
   (AUDIT-ONLY mode).
 
@@ -73,6 +82,12 @@ invokes them is `src/engine/phases.ts` and `src/engine/cycle.ts`.
   webfetch/websearch allowed; todowrite denied; **`task` is restricted to
   exactly `qa`, `spec-auditor`, `security` — every other Task target is
   denied** (see delegation note below).
+- **Guardrails**: searches are scoped to the project's own source tree;
+  recursive globs over package-manager/build-cache directories
+  (`node_modules`, `build/`, `dist/`, `.git/`, `Pods/`, `.build/`,
+  `~/.gradle`, `~/.m2`, `~/.npm`) are banned — a `**` glob there can hang
+  for tens of minutes and stall the pipeline. Use bounded patterns
+  (`find <path> -maxdepth N ... | head`) and grep scoped to project paths.
 - **Driven by**: `/review` (pre-PR review of `main...HEAD`) and `/validate-step`
   (it is the `agent:` of that command and orchestrates the three-phase chain).
 
@@ -135,7 +150,8 @@ bun install            # runs scripts/postinstall.ts — prompts to install
 bun link               # exposes the global `huginn` bin → dist/cli.js
 bun test               # unit tests: cli, gate, decisionBroker, plan parser,
                        # state store, installer, client timeouts, diff
-                       # (greenfield detection)
+                       # (greenfield detection), cycle (run-loop regression:
+                       # abort interruption, empty EXECUTE fail-closed)
 bun run typecheck      # tsc --noEmit (strict)
 bun run dev -- ...     # run from source, e.g.
                        #   bun run dev -- run --project ../repo --thinker a/b --executor c/d

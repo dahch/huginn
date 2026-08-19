@@ -12,8 +12,11 @@ rationalized in [`ADR.md`](./ADR.md).
   - `@opencode-ai/sdk` — typed HTTP client for the opencode server.
   - `ink` + `react` — the TUI dashboard.
   - `zod` — `HarnessState` schema validation.
-- `chalk` and `react-devtools-core` are declared in `package.json` but not
-  imported anywhere in `src/` (declared, unused — do not rely on them).
+  - `chalk` — ANSI colors in the banner (`src/banner.ts`), headless frontend
+    (`src/headless.ts`), CLI output (`src/cli.ts`), plan mode
+    (`src/engine/planMode.ts`), and shared formatting (`src/format.ts`).
+- `react-devtools-core` is declared in `package.json` but not imported
+  anywhere in `src/` (declared, unused — do not rely on it).
 - **External executables**: `opencode` (spawned as a local server), `git`
   (spawned for diffs and module inference). Nothing else.
 
@@ -24,6 +27,7 @@ src/
 ├── cli.ts                  entry point; arg parsing (run/plan/install), config, banner, lifecycle wiring
 ├── config.ts               RunConfig type (all run-mode knobs)
 ├── banner.ts               ASCII banner + path shortening
+├── format.ts               shared formatting: durations, verdict badges/icons/colors
 ├── headless.ts             stdout frontend; stdin decision answering
 ├── engine/
 │   ├── cycle.ts            CycleEngine: pipeline-as-data, retry/fix/escalate loop, state machine
@@ -145,6 +149,10 @@ Key behaviors:
   step boundary (e.g. a reasoning-only turn) while the build agent is still
   working, yielding a report with no output. An empty `EXECUTE` result is
   thrown as a phase failure — retried, then escalated — never counted as a pass.
+- **Fix phases close their UI row**: `recordFix` emits a `pass` verdict and a
+  `phaseEnd` for the `FIX_*` phase (after `runPhase` already emitted its
+  `phaseStart`), so the dashboard's fix row terminates with a verdict instead
+  of hanging in a spinner state.
 - **`retry` from a decision resets the whole budget** (`attemptRun = -1`), so a
   human can keep fixing manually and re-running.
 - **`--only-phase`** runs just one step per iteration and leaves state
@@ -323,12 +331,14 @@ Communication is via a single **global typed emitter**
 
 | event | payload | consumers |
 |---|---|---|
-| `phaseStart` | iteration, phase, attempt, model | TUI header, headless |
+| `iterationStart` | iteration, totalIterations, title, modules | TUI header, headless iteration banner |
+| `iterationEnd` | iteration, title | (currently no subscriber — reserved) |
+| `phaseStart` | iteration, totalIterations, iterationTitle, phase, attempt, model, startedAt | TUI header, headless |
 | `phaseStream` | text delta | live output tail |
-| `phaseEnd` | full PhaseResult | report bar |
+| `phaseEnd` | full PhaseResult + durationMs | report bar |
 | `decision` / `decisionResolved` | request / id+choice | decision box |
-| `verdict` | iteration, phase, verdict, attempt | phase checklist |
-| `log` | level + message | log tail |
+| `verdict` | iteration, phase, verdict, attempt, durationMs | phase checklist |
+| `log` | level + message + timestamp | log tail |
 | `stateUpdated` | HarnessState | emitted after every `persist()`; currently no subscriber (reserved for future state UI) |
 | `done` | reason + optional error | TUI exit, run summary |
 
@@ -382,7 +392,7 @@ flowchart LR
 5. **The pipeline table is the only place phase wiring lives**: adding a phase
    is adding one row (plus its `phases.ts` function and template command).
    The phase-name lists that mirror the pipeline — `MAIN_PHASES`
-   (`src/engine/types.ts`), the TUI's `PHASE_ORDER` (`src/tui/Dashboard.tsx`)
+   (`src/engine/types.ts`), the TUI's `BASE_PHASES` (`src/tui/Dashboard.tsx`)
    and `PHASE_LABEL` (`src/state/store.ts`) — are duplicated by hand and must
    be updated in the same change.
 6. **The engine never blocks on a human forever in unattended mode**: non-TTY
