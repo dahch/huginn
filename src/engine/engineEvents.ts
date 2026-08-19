@@ -1,6 +1,8 @@
 import type { PhaseResult, DecisionRequest, Verdict, DecisionChoice } from "./types";
 import type { HarnessState } from "../state/schema";
 
+export type LiveStage = "refine" | "draft" | "approve" | "execute";
+
 export interface EngineEvents {
   iterationStart: { iteration: number; totalIterations: number; title: string; modules?: string[] };
   iterationEnd: { iteration: number; title: string };
@@ -12,6 +14,8 @@ export interface EngineEvents {
   stateUpdated: HarnessState;
   log: { level: "info" | "warn" | "error"; message: string; timestamp?: string };
   verdict: { iteration: number; phase: string; verdict: Verdict; attempt: number; durationMs?: number };
+  liveStage: { stage: LiveStage; message?: string };
+  liveChat: { role: "user" | "assistant" | "system"; text: string };
   done: { reason: "completed" | "aborted" | "error"; error?: string };
 }
 

@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import type { CycleEngine } from "./engine/cycle";
+import type { LiveEngine } from "./engine/liveMode";
 import { events } from "./engine/engineEvents";
 import type { DecisionChoice, DecisionRequest, Verdict } from "./engine/types";
 import { formatDuration, verdictBadge } from "./format";
@@ -84,6 +85,12 @@ export async function runHeadless(engine: CycleEngine): Promise<void> {
             padBox(`  ${chalk.cyan.bold("[a]")} Allow Always   ${chalk.cyan.bold("[o]")} Allow Once   ${chalk.red.bold("[d]")} Deny`) +
             chalk.yellow("│"),
         );
+      } else if (req.kind === "question") {
+        writeLine(
+          chalk.yellow("│") +
+            padBox(`  ${chalk.green.bold("[c/1]")} Accept / Recommended   ${chalk.red.bold("[d]")} Reject / Skip`) +
+            chalk.yellow("│"),
+        );
       } else {
         writeLine(
           chalk.yellow("│") +
@@ -100,6 +107,9 @@ export async function runHeadless(engine: CycleEngine): Promise<void> {
           if (c === "a") return resolve("continue");
           if (c === "o") return resolve("retry");
           if (c === "d") return resolve("deny");
+        } else if (req.kind === "question") {
+          if (c === "c" || c === "1" || c === "a" || c === "y") return resolve("continue");
+          if (c === "d" || c === "n") return resolve("deny");
         } else {
           if (c === "r") return resolve("retry");
           if (c === "c") return resolve("continue");
@@ -217,5 +227,109 @@ writeLine("");
         chalk.cyan("│"),
     );
     writeLine(chalk.cyan("└" + "─".repeat(BOX_WIDTH - 2) + "┘"));
+  }
+}
+
+/**
+ * Headless live mode: idea → draft → approve → execute, all on stdout. The
+ * refinement chat is skipped (the CLI idea is used as-is); approvals use the
+ * same decision prompt as `run`. Hands off to `runHeadless` once the docs are
+ * approved so the cycle shares the exact same rendering path.
+ */
+export async function runLiveHeadless(live: LiveEngine): Promise<void> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
+  const tty = Boolean(process.stdin.isTTY);
+
+  let streamEOL = true;
+  const writeLine = (line: string) => {
+    if (!streamEOL) process.stdout.write("\n");
+    process.stdout.write(line + "\n");
+    streamEOL = true;
+  };
+
+  const askDecision = (req: DecisionRequest): Promise<DecisionChoice> => {
+    return new Promise((resolve) => {
+      if (!tty) {
+        process.stdout.write(`\n${chalk.yellow.bold("⚠️  DECISION REQUIRED")} ${chalk.white(req.message)}\n`);
+        writeLine(chalk.yellow("   (non-interactive stdin — aborting; use the TUI for live mode)"));
+        resolve("abort");
+        return;
+      }
+      writeLine("");
+      writeLine(chalk.yellow("┌" + "─".repeat(BOX_WIDTH - 2) + "┐"));
+      writeLine(
+        chalk.yellow("│") +
+          padBox(
+            `  ${chalk.yellow.bold("⚠️  DECISION REQUIRED")} ` + chalk.dim(`(${req.kind}, ${req.phase})`),
+          ) +
+          chalk.yellow("│"),
+      );
+      writeLine(chalk.yellow("│") + padBox(`  ${chalk.white.bold(req.message)}`) + chalk.yellow("│"));
+      writeLine(chalk.yellow("├" + "─".repeat(BOX_WIDTH - 2) + "┤"));
+      writeLine(
+        chalk.yellow("│") +
+          padBox(
+            req.kind === "approve-draft"
+              ? `  ${chalk.cyan.bold("[r]")} Re-draft   ${chalk.green.bold("[c]")} OK — commit & execute   ${chalk.red.bold("[a]")} Abort`
+              : req.kind === "scope-extraction"
+                ? `  ${chalk.cyan.bold("[r]")} Retry   ${chalk.yellow.bold("[c]")} Use my last message   ${chalk.red.bold("[a]")} Abort`
+                : req.kind === "draft-format"
+                  ? `  ${chalk.cyan.bold("[r]")} Retry with contract   ${chalk.yellow.bold("[c]")} Accept as-is   ${chalk.red.bold("[a]")} Abort`
+                  : req.kind === "question"
+                    ? `  ${chalk.green.bold("[c/1]")} Accept / Recommended   ${chalk.red.bold("[d]")} Reject / Skip   ${chalk.red.bold("[a]")} Abort`
+                    : `  ${chalk.cyan.bold("[r]")} Retry with Thinker   ${chalk.yellow.bold("[c]")} Force Continue   ${chalk.red.bold("[a]")} Abort`,
+          ) +
+          chalk.yellow("│"),
+      );
+      writeLine(chalk.yellow("└" + "─".repeat(BOX_WIDTH - 2) + "┘"));
+      process.stdout.write(chalk.cyan.bold("  choice > "));
+
+      const onLine = (line: string) => {
+        const c = line.trim().toLowerCase().slice(0, 1);
+        if (req.kind === "question") {
+          if (c === "c" || c === "1" || c === "y") return resolve("continue");
+          if (c === "d" || c === "n") return resolve("deny");
+          if (c === "a") return resolve("abort");
+        }
+        if (c === "r") return resolve("retry");
+        if (c === "c") return resolve("continue");
+        if (c === "a") return resolve("abort");
+        process.stdout.write(chalk.cyan.bold("  choice > "));
+        rl.once("line", onLine);
+      };
+      rl.once("line", onLine);
+    });
+  };
+
+  const offs: Array<() => void> = [
+    events.on("phaseStream", (e) => {
+      process.stdout.write(e.text);
+      streamEOL = e.text.endsWith("\n");
+    }),
+    events.on("liveChat", (e) => {
+      const prefix =
+        e.role === "user" ? chalk.green.bold("you » ") : e.role === "assistant" ? chalk.cyanBright.bold("thinker » ") : chalk.dim("─ ");
+      writeLine(prefix + (e.text.replace(/\n/g, " ").length > 400 ? `${e.text.slice(0, 397)}...` : e.text));
+    }),
+    events.on("log", (e) => {
+      const time = chalk.dim(`[${formatTime(e.timestamp)}]`);
+      const level = logLevelBadge(e.level);
+      writeLine(`${time} ${level} │ ${e.message}`);
+    }),
+    events.on("decision", (req) => {
+      void askDecision(req).then((choice) => live.resolveDecision(choice));
+    }),
+  ];
+
+  try {
+    const engine = await live.runFromIdea();
+    if (engine) {
+      rl.close();
+      offs.forEach((off) => off());
+      await runHeadless(engine);
+    }
+  } finally {
+    offs.forEach((off) => off());
+    rl.close();
   }
 }

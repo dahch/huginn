@@ -17,6 +17,7 @@ import { startServer, type ServerHandle } from "./server/lifecycle";
 import { events } from "./engine/engineEvents";
 import { printBanner, type BannerInfo } from "./banner";
 import { runPlanMode } from "./engine/planMode";
+import { LiveEngine } from "./engine/liveMode";
 import { maybePrintUpdateReminder } from "./update";
 import {
   describeTemplates,
@@ -36,11 +37,15 @@ Orchestrator for the opencode spec→commit cycle.
 Usage:
   huginn run --project <repo> --thinker <provider/model> --executor <provider/model> [flags]
   huginn plan --project <repo> --thinker <provider/model> "<idea>" [flags]
+  huginn live --project <repo> --thinker <provider/model> --executor <provider/model> ["<idea>"] [flags]
   huginn install [--yes] [--force] [--only agents|commands]
 
 Commands:
   run     execute the build cycle against plan.md/spec.md/adr.md
   plan    use the thinker to draft spec.md, adr.md and plan.md from an idea
+  live    interactive refinement + autonomous execution: chat-refine the idea
+          (or extend an existing project), draft/update spec.md/adr.md/plan.md,
+          approve, then run the build cycles in the same dashboard
   install install the opencode subagents and slash commands huginn needs into
           ~/.config/opencode (agents/ and commands/)
 
@@ -53,6 +58,14 @@ Required (plan):
   --project <path>      git repo where spec.md/adr.md/plan.md will be written
   --thinker <m>         model that drafts the three documents
   <idea>                prompt/idea describing what should be built
+  --prompt-file <file>  alternative to <idea> for long prompts (reads the file)
+
+Required (live):
+  --project <path>      git repo being built/iterated (docs are drafted if missing)
+  --thinker <m>         model that refines the idea and drafts the documents
+  --executor <m>        model used for the build cycles after approval
+  <idea>                optional initial idea; in the TUI you can also type it
+                        in the chat and refine it together before /draft
   --prompt-file <file>  alternative to <idea> for long prompts (reads the file)
 
 Optional:
@@ -159,6 +172,10 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (command === "plan") {
     await runPlan(args);
+    return;
+  }
+  if (command === "live") {
+    await runLive(args);
     return;
   }
   if (command === "install") {
@@ -379,6 +396,125 @@ async function runPlan(args: ParsedArgs): Promise<void> {
   if (port === 0) port = await getFreePort();
   const serverTimeoutMs = num(args["--server-timeout"], 60000);
   await runPlanMode({ projectPath, idea, thinker, specPath, adrPath, planPath, port, serverTimeoutMs });
+}
+
+async function runLive(args: ParsedArgs): Promise<void> {
+  if (args["--help"] || args["-h"]) {
+    printBanner({});
+    console.log(usage());
+    return;
+  }
+  const projectPath = canonicalize(String(args["--project"] ?? ""));
+  if (!projectPath) {
+    console.error("Missing required --project.\n\n" + usage());
+    process.exit(1);
+  }
+  const thinker = String(args["--thinker"] ?? "");
+  const executor = String(args["--executor"] ?? "");
+  if (!thinker || !executor) {
+    console.error("Missing required --thinker and/or --executor.\n\n" + usage());
+    process.exit(1);
+  }
+  warnIfMissingTemplates();
+  if (!existsSync(join(projectPath, ".git"))) {
+    console.error(`"${projectPath}" is not a git repository.`);
+    process.exit(1);
+  }
+
+  const promptFile = String(args["--prompt-file"] ?? "");
+  let idea: string;
+  if (promptFile) {
+    const p = resolve(promptFile);
+    if (!existsSync(p)) {
+      console.error(`Prompt file not found: ${p}`);
+      process.exit(1);
+    }
+    idea = await Bun.file(p).text();
+  } else {
+    idea = String(args._positional ?? "").trim();
+  }
+
+  const cfg: RunConfig = {
+    projectPath,
+    planPath: canonicalize(resolve(join(projectPath, String(args["--plan"] ?? "plan.md")))),
+    specPath: canonicalize(resolve(join(projectPath, String(args["--spec"] ?? "spec.md")))),
+    adrPath: canonicalize(resolve(join(projectPath, String(args["--adr"] ?? "adr.md")))),
+    thinker,
+    executor,
+    mode: args["--mode"] === "supervised" ? "supervised" : "auto",
+    permissions:
+      args["--permissions"] === "ask"
+        ? "ask"
+        : args["--permissions"] === "deny"
+          ? "deny"
+          : "auto",
+    maxRetries: num(args["--max-retries"], 3),
+    fromIteration: typeof args["--from-iteration"] === "string" ? num(args["--from-iteration"], 1) : undefined,
+    onlyPhase: typeof args["--only-phase"] === "string" ? validatePhase(args["--only-phase"]) : undefined,
+    tui: args["--headless"] ? false : args["--tui"] ? true : process.stdout.isTTY,
+    port: num(args["--port"], 0),
+    serverTimeoutMs: num(args["--server-timeout"], 60000),
+    phaseTimeoutMs: num(args["--phase-timeout"], 20 * 60 * 1000),
+    ignorePlanChanges: Boolean(args["--ignore-plan-changes"]),
+  };
+
+  printBanner({ thinker, executor, projectPath, iteration: 1, phase: "LIVE" });
+
+  void maybePrintUpdateReminder();
+  console.log(
+    `[huginn] live mode · project=${projectPath}\n` +
+      `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}` +
+      (idea ? `\n[huginn] initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
+  );
+
+  if (cfg.port === 0) cfg.port = await getFreePort();
+
+  let server: ServerHandle;
+  try {
+    server = await startServer(projectPath, cfg.port, cfg.serverTimeoutMs);
+  } catch (err) {
+    console.error(chalk.red(`[huginn] failed to start opencode server: ${(err as Error).message}`));
+    process.exit(1);
+  }
+  console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
+
+  const live = new LiveEngine({ cfg, idea: idea || undefined });
+  await validateModels(live.client, cfg);
+  const sub = subscribeToEvents(live.client, cfg, (req) => live.ask(req));
+
+  const cleanup = async (code: number) => {
+    sub.close();
+    await server.close();
+    process.exit(code);
+  };
+  process.on("SIGINT", async () => {
+    live.requestAbort();
+    setTimeout(() => void cleanup(1), 3000).unref();
+  });
+  process.on("SIGTERM", async () => {
+    live.requestAbort();
+    setTimeout(() => void cleanup(1), 3000).unref();
+  });
+
+  try {
+    if (cfg.tui) {
+      const { renderLiveTui } = await import("./tui/render");
+      await renderLiveTui(live, cfg);
+    } else {
+      const { runLiveHeadless } = await import("./headless");
+      await runLiveHeadless(live);
+    }
+    console.log(
+      live.hasAborted
+        ? chalk.yellow.bold(`\n🛑 [huginn] Live session aborted.`)
+        : chalk.green.bold(`\n✨ [huginn] Live session completed.`),
+    );
+  } catch (err) {
+    console.error(chalk.red(`[huginn] fatal: ${(err as Error).message}`));
+  } finally {
+    sub.close();
+    await server.close();
+  }
 }
 
 async function runInstall(args: ParsedArgs): Promise<void> {
