@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import pkg from "../package.json";
 
 export interface BannerInfo {
@@ -25,8 +26,6 @@ const QUOTE = [
   "                                    — Grímnismál, Poetic Edda",
 ];
 
-const DIVIDER = "─".repeat(45);
-
 export function shortenPath(path?: string): string {
   if (!path) return "";
   const home = process.env.HOME;
@@ -38,22 +37,25 @@ export function shortenPath(path?: string): string {
 
 export function printBanner(info: BannerInfo): void {
   const version = info.version ?? pkg.version;
-  const models = [info.thinker && `thinker: ${info.thinker}`, info.executor && `executor: ${info.executor}`]
-    .filter(Boolean)
-    .join(" · ");
-
-  const runLine = [
-    info.projectPath && `project: ${shortenPath(info.projectPath)}`,
-    info.iteration && info.totalIterations && `iteration ${info.iteration}/${info.totalIterations}`,
-    info.phase && `phase ${info.phase}`,
+  const models = [
+    info.thinker && `${chalk.dim("thinker:")} ${chalk.magenta(info.thinker)}`,
+    info.executor && `${chalk.dim("executor:")} ${chalk.blueBright(info.executor)}`,
   ]
     .filter(Boolean)
     .join(" · ");
 
-  console.log("\n" + ART.join("\n"));
-  console.log("\n        the raven that thinks, builds, and remembers");
-  console.log(`        ${DIVIDER}`);
-  console.log(`        v${version}${models ? " · " + models : ""}`);
+  const runLine = [
+    info.projectPath && `${chalk.dim("project:")} ${chalk.cyan(shortenPath(info.projectPath))}`,
+    info.iteration && info.totalIterations && `${chalk.dim("iter:")} ${chalk.yellow(`${info.iteration}/${info.totalIterations}`)}`,
+    info.phase && `${chalk.dim("phase:")} ${chalk.green(info.phase)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  console.log("\n" + ART.map((l) => chalk.cyanBright.bold(l)).join("\n"));
+  console.log(chalk.dim("\n        the raven that thinks, builds, and remembers"));
+  console.log(chalk.cyan("        " + "─".repeat(50)));
+  console.log(`        ${chalk.bgCyan.black.bold(` v${version} `)}${models ? "  " + models : ""}`);
   if (runLine) console.log(`        ${runLine}`);
-  console.log("\n" + QUOTE.join("\n") + "\n");
+  console.log("\n" + QUOTE.map((q) => chalk.dim.italic(q)).join("\n") + "\n");
 }

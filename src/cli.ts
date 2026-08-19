@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import chalk from "chalk";
 import type { RunConfig } from "./config";
 import { MAIN_PHASES, type PhaseName } from "./engine/types";
 import { loadPlan } from "./plan/parser";
@@ -268,10 +269,10 @@ export async function main(argv: string[]): Promise<void> {
   try {
     server = await startServer(projectPath, cfg.port, cfg.serverTimeoutMs);
   } catch (err) {
-    console.error(`[huginn] failed to start opencode server: ${(err as Error).message}`);
+    console.error(chalk.red(`[huginn] failed to start opencode server: ${(err as Error).message}`));
     process.exit(1);
   }
-  console.log(`[huginn] opencode server ready at ${server.url}`);
+  console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
 
   const engine = new CycleEngine({ cfg, plan, state });
   await validateModels(engine.client, cfg);
@@ -302,13 +303,13 @@ export async function main(argv: string[]): Promise<void> {
     const outcome = engine.getOutcome();
     console.log(
       outcome.reason === "completed"
-        ? `[huginn] ✓ plan completed.`
+        ? chalk.green.bold(`\n✨ [huginn] Plan completed successfully!`)
         : outcome.reason === "aborted"
-          ? `[huginn] 🛑 aborted. State saved for --resume.`
-          : `[huginn] ✗ failed: ${outcome.error}`,
+          ? chalk.yellow.bold(`\n🛑 [huginn] Run aborted. State saved for --resume.`)
+          : chalk.red.bold(`\n✗ [huginn] Run failed: ${outcome.error}`),
     );
   } catch (err) {
-    console.error(`[huginn] fatal: ${(err as Error).message}`);
+    console.error(chalk.red(`[huginn] fatal: ${(err as Error).message}`));
   } finally {
     sub.close();
     await server.close();
