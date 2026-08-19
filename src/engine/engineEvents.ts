@@ -2,14 +2,16 @@ import type { PhaseResult, DecisionRequest, Verdict, DecisionChoice } from "./ty
 import type { HarnessState } from "../state/schema";
 
 export interface EngineEvents {
-  phaseStart: { iteration: number; phase: string; attempt: number; model: string };
+  iterationStart: { iteration: number; totalIterations: number; title: string; modules?: string[] };
+  iterationEnd: { iteration: number; title: string };
+  phaseStart: { iteration: number; totalIterations?: number; iterationTitle?: string; phase: string; attempt: number; model: string; startedAt?: string };
   phaseStream: { text: string };
-  phaseEnd: { result: PhaseResult };
+  phaseEnd: { result: PhaseResult; durationMs?: number };
   decision: DecisionRequest;
   decisionResolved: { id: string; choice: DecisionChoice };
   stateUpdated: HarnessState;
-  log: { level: "info" | "warn" | "error"; message: string };
-  verdict: { iteration: number; phase: string; verdict: Verdict; attempt: number };
+  log: { level: "info" | "warn" | "error"; message: string; timestamp?: string };
+  verdict: { iteration: number; phase: string; verdict: Verdict; attempt: number; durationMs?: number };
   done: { reason: "completed" | "aborted" | "error"; error?: string };
 }
 

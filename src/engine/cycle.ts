@@ -205,12 +205,27 @@ export class CycleEngine {
       if (iteration.index < this.state.currentIteration) continue;
       if (this.abortRequested) return;
 
-      events.emit("log", { level: "info", message: `▶ Iteration ${iteration.index} — ${iteration.title}` });
+      events.emit("iterationStart", {
+        iteration: iteration.index,
+        totalIterations: iterations.length,
+        title: iteration.title,
+        modules: iteration.modules,
+      });
+      events.emit("log", {
+        level: "info",
+        message: `▶ Iteration ${iteration.index}/${iterations.length} — ${iteration.title}`,
+        timestamp: new Date().toISOString(),
+      });
       await this.runIteration(iteration);
 
       // don't mark an aborted iteration as complete, or a resume would skip
       // it entirely even though its phases never finished
       if (this.abortRequested) return;
+
+      events.emit("iterationEnd", {
+        iteration: iteration.index,
+        title: iteration.title,
+      });
 
       if (this.cfg.onlyPhase) {
         // debug mode: run the phase on a single iteration, leave state resumable
@@ -309,9 +324,12 @@ export class CycleEngine {
 
     events.emit("phaseStart", {
       iteration: iteration.index,
+      totalIterations: this.plan.iterations.length,
+      iterationTitle: iteration.title,
       phase: step.phase,
       attempt,
       model: formatModel(this.models.executor),
+      startedAt: new Date().toISOString(),
     });
 
     for (let attemptRun = 0; attemptRun < this.cfg.maxRetries + 1; attemptRun++) {
@@ -332,6 +350,7 @@ export class CycleEngine {
         events.emit("log", {
           level: "warn",
           message: `[${step.phase}] attempt ${curAttempt} failed: ${msg}`,
+          timestamp: new Date().toISOString(),
         });
         this.recordError(iteration.index, step, curAttempt, sessionId, formatModel(model), msg);
         this.persist();
@@ -375,17 +394,20 @@ export class CycleEngine {
           events.emit("log", {
             level: "warn",
             message: `[judge ${step.phase}] judge output was unparseable; fail-closed verdict: ${judge.status}`,
+            timestamp: new Date().toISOString(),
           });
         }
         events.emit("log", {
           level: "info",
           message: `[judge ${step.phase}] ${judge.summary}`,
+          timestamp: new Date().toISOString(),
         });
       } else {
         verdict = "pass";
       }
       result.verdict = verdict;
-      this.record(result, iteration.index, step, curAttempt);
+      const durationMs = new Date(result.finishedAt).getTime() - new Date(result.startedAt).getTime();
+      this.record(result, iteration.index, step, curAttempt, durationMs);
       this.persist();
 
       if (verdict !== "blocked" || !step.blocking) {
@@ -395,6 +417,7 @@ export class CycleEngine {
       events.emit("log", {
         level: "warn",
         message: `[${step.phase}] blocked (attempt ${curAttempt})`,
+        timestamp: new Date().toISOString(),
       });
 
       // blocking → fix with thinker, unless out of retries
@@ -403,9 +426,12 @@ export class CycleEngine {
         if (this.abortRequested) return;
         events.emit("phaseStart", {
           iteration: iteration.index,
+          totalIterations: this.plan.iterations.length,
+          iterationTitle: iteration.title,
           phase: step.fixPhase,
           attempt: curAttempt,
           model: formatModel(this.models.thinker),
+          startedAt: new Date().toISOString(),
         });
         const fixCtx = ctx;
         let fixRes;
@@ -474,6 +500,7 @@ export class CycleEngine {
       message:
         `[${phase}] report had no parseable verdict marker; fail-closed → BLOCKED. ` +
         `Inspect ${result.reportPath ?? "the raw report"}.`,
+      timestamp: new Date().toISOString(),
     });
     return "blocked";
   }
@@ -496,6 +523,7 @@ export class CycleEngine {
       throw new Error("EXECUTE produced an empty report (the build agent returned no output)");
     }
     const finishedAt = new Date().toISOString();
+    const durationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
 
     const reportPath = writeReport(this.cfg.projectPath, iteration.index, step.phase, attempt, res.text);
     const result: PhaseResult = {
@@ -511,7 +539,7 @@ export class CycleEngine {
       startedAt,
       finishedAt,
     };
-    events.emit("phaseEnd", { result });
+    events.emit("phaseEnd", { result, durationMs });
     return result;
   }
 
@@ -520,6 +548,7 @@ export class CycleEngine {
     iteration: number,
     step: PipelineStep,
     attempt: number,
+    durationMs?: number,
   ): void {
     const entry: HistoryEntry = {
       iteration,
@@ -536,11 +565,11 @@ export class CycleEngine {
     };
     this.state.history.push(entry);
     this.state.phaseAttempts[this.attemptKey(iteration, step.phase)] = attempt;
-    this.emitVerdict(iteration, step.phase, result.verdict ?? "warning", attempt);
+    this.emitVerdict(iteration, step.phase, result.verdict ?? "warning", attempt, durationMs);
   }
 
-  private emitVerdict(iteration: number, phase: PhaseName, verdict: Verdict, attempt: number): void {
-    events.emit("verdict", { iteration, phase, verdict, attempt });
+  private emitVerdict(iteration: number, phase: PhaseName, verdict: Verdict, attempt: number, durationMs?: number): void {
+    events.emit("verdict", { iteration, phase, verdict, attempt, durationMs });
   }
 
   private recordSkippedSpecAudit(iteration: Iteration): void {
@@ -609,6 +638,24 @@ export class CycleEngine {
       finishedAt: now,
     };
     this.state.history.push(entry);
+    // A finished fix phase must terminate its UI row: runPhase already emitted
+    // `phaseStart` for the FIX phase, so close the loop with a pass verdict.
+    this.emitVerdict(iteration, step.fixPhase, "pass", attempt);
+    events.emit("phaseEnd", {
+      result: {
+        iteration,
+        phase: step.fixPhase,
+        attempt,
+        verdict: "pass",
+        model: entry.model,
+        sessionId: "",
+        messageId: res.messageId,
+        summary: entry.summary,
+        raw: res.text,
+        startedAt: now,
+        finishedAt: now,
+      },
+    });
   }
 
   private recordError(
