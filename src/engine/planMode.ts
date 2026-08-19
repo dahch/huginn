@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import chalk from "chalk";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { startServer } from "../server/lifecycle";
 import { createClient, createSession, prompt } from "../server/client";
@@ -106,7 +107,7 @@ function streamToStdout(client: OpencodeClient): () => void {
         if (!ev || typeof ev.type !== "string") continue;
         if (ev.type !== "message.part.updated") continue;
         const props = ev.properties as { part?: { type?: string; text?: string }; delta?: string };
-        if (props.delta && props.part?.type === "text") {
+        if (props.delta && (props.part?.type === "text" || props.part?.type === "reasoning")) {
           process.stdout.write(props.delta);
         }
       }
@@ -128,26 +129,33 @@ async function draftDoc(
   sessionId: string,
   thinkerLabel: string,
   model: { providerID: string; modelID: string },
+  stepNum: number,
+  totalSteps: number,
   label: string,
   path: string,
   text: string,
 ): Promise<void> {
-  console.log(`[huginn] drafting ${label} with ${thinkerLabel}...`);
+  const startedAt = Date.now();
+  console.log(`\n${chalk.bgCyan.black.bold(` STEP ${stepNum}/${totalSteps} `)} ${chalk.white.bold(`Drafting ${label}`)} ${chalk.dim(`with ${thinkerLabel}...`)}`);
   const res = await prompt(client, sessionId, { text, model, timeoutMs: PLAN_PROMPT_TIMEOUT_MS });
   const content = unwrapFences(res.text);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
-  console.log(`[huginn] ✓ wrote ${label}`);
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const bytes = Buffer.byteLength(content, "utf8");
+  console.log(`${chalk.green("✓")} ${chalk.white.bold(`Wrote ${label}`)} ${chalk.dim(`(${bytes} bytes in ${elapsed}s)`)} → ${chalk.cyan(path)}`);
 }
 
 export async function runPlanMode(opts: PlanModeOptions): Promise<void> {
-  for (const [label, path] of [
-    ["spec", opts.specPath],
-    ["adr", opts.adrPath],
-    ["plan", opts.planPath],
-  ] as const) {
-    if (existsSync(path)) {
-      throw new Error(`Refusing to overwrite ${path} (already exists). Pass --force to overwrite.`);
+  const steps: Array<{ label: string; path: string; build: (prior: string[]) => string }> = [
+    { label: "spec", path: opts.specPath, build: () => specPrompt(opts.idea) },
+    { label: "adr", path: opts.adrPath, build: (prior) => adrPrompt(prior[0]) },
+    { label: "plan", path: opts.planPath, build: (prior) => planPrompt(prior[0], prior[1]) },
+  ];
+
+  for (const step of steps) {
+    if (existsSync(step.path)) {
+      throw new Error(`Refusing to overwrite ${step.path} (already exists). Pass --force to overwrite.`);
     }
   }
 
@@ -162,14 +170,17 @@ export async function runPlanMode(opts: PlanModeOptions): Promise<void> {
     const session = await createSession(client, `huginn plan: ${opts.projectPath}`);
     const sessionId = session.id;
 
-    await draftDoc(client, sessionId, thinkerLabel, thinker, "spec.md", opts.specPath, specPrompt(opts.idea));
-    const spec = readDoc(opts.specPath);
-    await draftDoc(client, sessionId, thinkerLabel, thinker, "adr.md", opts.adrPath, adrPrompt(spec));
-    const adr = readDoc(opts.adrPath);
-    await draftDoc(client, sessionId, thinkerLabel, thinker, "plan.md", opts.planPath, planPrompt(spec, adr));
+    const prior: string[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      await draftDoc(client, sessionId, thinkerLabel, thinker, i + 1, steps.length, step.label, step.path, step.build(prior));
+      prior.push(readDoc(step.path));
+    }
 
+    console.log("");
+    console.log(chalk.green("✨ All architectural documents drafted successfully!"));
     console.log(
-      `[huginn] next: huginn run --project ${opts.projectPath} --thinker <provider/model> --executor <provider/model>`,
+      `${chalk.cyan("▶ Next step:")} huginn run --project ${opts.projectPath} --thinker ${opts.thinker} --executor <provider/model>`,
     );
   } finally {
     stopStream();
