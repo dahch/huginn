@@ -17,6 +17,7 @@ import { startServer, type ServerHandle } from "./server/lifecycle";
 import { events } from "./engine/engineEvents";
 import { printBanner, type BannerInfo } from "./banner";
 import { runPlanMode } from "./engine/planMode";
+import { maybePrintUpdateReminder } from "./update";
 import {
   describeTemplates,
   getMissing,
@@ -256,6 +257,8 @@ export async function main(argv: string[]): Promise<void> {
   };
   printBanner(bannerInfo);
 
+  void maybePrintUpdateReminder();
+
   console.log(
     `[huginn] project=${projectPath}\n` +
       `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}\n` +
@@ -369,6 +372,8 @@ async function runPlan(args: ParsedArgs): Promise<void> {
   }
 
   printBanner({ thinker, projectPath, phase: "PLAN" });
+
+  void maybePrintUpdateReminder();
 
   let port = num(args["--port"], 0);
   if (port === 0) port = await getFreePort();
