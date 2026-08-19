@@ -1,8 +1,8 @@
 import type { EventFileEdited, EventMessagePartUpdated, EventTodoUpdated, OpencodeClient } from "@opencode-ai/sdk";
 import type { RunConfig } from "../config";
 import { events } from "./engineEvents";
-import type { DecisionChoice, DecisionRequest } from "./types";
-import { respondPermission } from "../server/client";
+import type { DecisionChoice, DecisionRequest, QuestionItem } from "./types";
+import { rejectQuestion, respondPermission, respondQuestion } from "../server/client";
 
 export interface SubscriptionHandle {
   close(): void;
@@ -24,7 +24,7 @@ async function respond(
 /**
  * Subscribes to the server event stream:
  * - auto-approves / denies permission requests per config
- * - surfaces `permission.ask` requests through the engine decision flow
+ * - surfaces `permission.ask` and `question.asked` requests through the engine decision flow
  * - forwards streaming text, reasoning tokens, tool executions, and file edits to the TUI
  */
 export function subscribeToEvents(
@@ -44,19 +44,22 @@ export function subscribeToEvents(
         if (closed) break;
         if (!ev || typeof ev.type !== "string") continue;
         switch (ev.type) {
-          case "permission.updated": {
+          case "permission.updated":
+          case "permission.asked":
+          case "permission.v2.asked": {
             const p = ev.properties as {
               id: string;
               sessionID: string;
-              title: string;
+              title?: string;
               messageID?: string;
               pattern?: string | string[];
             };
+            const title = p.title || p.id;
             if (cfg.permissions === "auto") {
-              events.emit("log", { level: "info", message: `auto-approved permission: ${p.title}` });
+              events.emit("log", { level: "info", message: `auto-approved permission: ${title}` });
               await respond(client, p.sessionID, p.id, "always");
             } else if (cfg.permissions === "deny") {
-              events.emit("log", { level: "warn", message: `auto-denied permission: ${p.title}` });
+              events.emit("log", { level: "warn", message: `auto-denied permission: ${title}` });
               await respond(client, p.sessionID, p.id, "reject");
             } else {
               const choice = await requestDecision({
@@ -65,11 +68,72 @@ export function subscribeToEvents(
                 iteration: 0,
                 phase: "EXECUTE",
                 attempt: 1,
-                message: `Permission requested: ${p.title}`,
+                message: `Permission requested: ${title}`,
                 permissionId: p.id,
                 permissionSessionId: p.sessionID,
               });
               await respond(client, p.sessionID, p.id, choice === "deny" ? "reject" : choice === "continue" ? "always" : "once");
+            }
+            break;
+          }
+          case "question.asked":
+          case "question.v2.asked":
+          case "question.updated": {
+            const p = ev.properties as {
+              id: string;
+              sessionID: string;
+              questions?: QuestionItem[];
+            };
+            const questions = p.questions || [];
+            const defaultAnswers = questions.map((q) => {
+              if (q.options && q.options.length > 0) {
+                return [q.options[0].label];
+              }
+              return ["continue"];
+            });
+
+            if (cfg.permissions === "auto") {
+              const summary = questions.map((q) => q.question).join(" | ");
+              events.emit("log", { level: "info", message: `auto-answered question: ${summary.slice(0, 80)}` });
+              await respondQuestion(client, p.sessionID, p.id, defaultAnswers).catch((err) => {
+                events.emit("log", { level: "warn", message: `failed to answer question: ${(err as Error).message}` });
+              });
+            } else if (cfg.permissions === "deny") {
+              events.emit("log", { level: "warn", message: `auto-rejected question: ${p.id}` });
+              await rejectQuestion(client, p.sessionID, p.id).catch((err) => {
+                events.emit("log", { level: "warn", message: `failed to reject question: ${(err as Error).message}` });
+              });
+            } else {
+              const summary = questions
+                .map((q) => {
+                  const opts = (q.options || [])
+                    .map((o, i) => `  [${i + 1}] ${o.label}${o.description ? ` (${o.description})` : ""}`)
+                    .join("\n");
+                  return `${q.question}${opts ? `\n${opts}` : ""}`;
+                })
+                .join("\n\n");
+
+              const choice = await requestDecision({
+                id: crypto.randomUUID(),
+                kind: "question",
+                iteration: 0,
+                phase: "LIVE",
+                attempt: 1,
+                message: `Question asked:\n${summary}`,
+                questionId: p.id,
+                questionSessionId: p.sessionID,
+                questionItems: questions,
+              });
+
+              if (choice === "deny" || choice === "abort") {
+                await rejectQuestion(client, p.sessionID, p.id).catch((err) => {
+                  events.emit("log", { level: "warn", message: `failed to reject question: ${(err as Error).message}` });
+                });
+              } else {
+                await respondQuestion(client, p.sessionID, p.id, defaultAnswers).catch((err) => {
+                  events.emit("log", { level: "warn", message: `failed to answer question: ${(err as Error).message}` });
+                });
+              }
             }
             break;
           }

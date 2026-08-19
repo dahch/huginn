@@ -46,18 +46,37 @@ export interface PhaseResult {
   finishedAt: string;
 }
 
-export type DecisionKind = "gate-blocked" | "permission" | "spec-deviation";
+export type DecisionKind =
+  | "gate-blocked"
+  | "permission"
+  | "question"
+  | "spec-deviation"
+  | "approve-draft"
+  | "scope-extraction"
+  | "draft-format"
+  | "post-cycle-live";
 
 export type DecisionChoice = "retry" | "continue" | "abort" | "allow" | "deny";
+
+export interface QuestionItem {
+  question: string;
+  header?: string;
+  options?: Array<{ label: string; description?: string }>;
+  multiple?: boolean;
+  custom?: boolean;
+}
 
 export interface DecisionRequest {
   id: string;
   kind: DecisionKind;
   iteration: number;
-  phase: PhaseName;
+  phase: PhaseName | "LIVE";
   attempt: number;
   message: string;
   reportPath?: string;
   permissionId?: string;
   permissionSessionId?: string;
+  questionId?: string;
+  questionSessionId?: string;
+  questionItems?: QuestionItem[];
 }

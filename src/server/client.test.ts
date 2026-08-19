@@ -51,4 +51,26 @@ describe("client timeouts", () => {
     expect(res.messageId).toBe("msg_1");
     expect(res.text).toBe("done");
   });
+
+  it("respondQuestion and rejectQuestion send HTTP requests with correct payload", async () => {
+    const { respondQuestion, rejectQuestion } = await import("./client");
+    let lastPost: { url: string; path: unknown; body?: unknown } | undefined;
+    const mockClient = {
+      _client: {
+        post: async (opts: { url: string; path: unknown; body?: unknown }) => {
+          lastPost = opts;
+          return { response: { status: 200 } };
+        },
+      },
+    };
+
+    await respondQuestion(mockClient as never, "ses_123", "req_456", [["opt1"]]);
+    expect(lastPost?.url).toBe("/session/{sessionID}/question/{requestID}/reply");
+    expect((lastPost?.path as { sessionID: string; requestID: string }).sessionID).toBe("ses_123");
+    expect((lastPost?.path as { sessionID: string; requestID: string }).requestID).toBe("req_456");
+    expect((lastPost?.body as { answers: string[][] }).answers).toEqual([["opt1"]]);
+
+    await rejectQuestion(mockClient as never, "ses_123", "req_456");
+    expect(lastPost?.url).toBe("/session/{sessionID}/question/{requestID}/reject");
+  });
 });

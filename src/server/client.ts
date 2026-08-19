@@ -121,6 +121,54 @@ export async function respondPermission(
   });
 }
 
+function getClientBaseUrl(client: OpencodeClient): string {
+  const c = client as unknown as { _client?: { getConfig?: () => { baseUrl?: string }; baseUrl?: string }; baseUrl?: string };
+  return c._client?.getConfig?.()?.baseUrl || c._client?.baseUrl || c.baseUrl || "http://127.0.0.1:4096";
+}
+
+export async function respondQuestion(
+  client: OpencodeClient,
+  sessionID: string,
+  requestID: string,
+  answers: string[][],
+): Promise<void> {
+  const c = client as unknown as { _client?: { post?: (opts: unknown) => Promise<unknown> } };
+  if (c._client?.post) {
+    await c._client.post({
+      url: "/session/{sessionID}/question/{requestID}/reply",
+      path: { sessionID, requestID },
+      body: { answers },
+    });
+    return;
+  }
+  const baseUrl = getClientBaseUrl(client);
+  await fetch(`${baseUrl}/session/${sessionID}/question/${requestID}/reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answers }),
+  });
+}
+
+export async function rejectQuestion(
+  client: OpencodeClient,
+  sessionID: string,
+  requestID: string,
+): Promise<void> {
+  const c = client as unknown as { _client?: { post?: (opts: unknown) => Promise<unknown> } };
+  if (c._client?.post) {
+    await c._client.post({
+      url: "/session/{sessionID}/question/{requestID}/reject",
+      path: { sessionID, requestID },
+    });
+    return;
+  }
+  const baseUrl = getClientBaseUrl(client);
+  await fetch(`${baseUrl}/session/${sessionID}/question/${requestID}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export async function prompt(
   client: OpencodeClient,
   sessionId: string,
