@@ -155,7 +155,8 @@ bun test               # unit tests: cli, gate, decisionBroker, plan parser,
                        # (greenfield detection), update check (version compare
                        # + cache), live mode (scope extraction, draft format
                        # contract, handoff), cycle (run-loop regression: abort
-                       # interruption, empty EXECUTE fail-closed)
+                       # interruption, empty EXECUTE fail-closed),
+                       # permissions (question handling), markdown rendering
 bun run typecheck      # tsc --noEmit (strict)
 bun run dev -- ...     # run from source, e.g.
                        #   bun run dev -- run --project ../repo --thinker a/b --executor c/d
