@@ -78,13 +78,39 @@ export function parseValidateStepVerdict(text: string): Verdict | null {
 }
 
 export function parseSpecAuditVerdict(text: string): Verdict | null {
-  if (/overall fidelity:\s*🔴|🔴\s*MAJOR DEVIATION/i.test(text)) return "blocked";
-  if (/overall fidelity:\s*🟡|🟡\s*MINOR DRIFT/i.test(text)) return "warning";
-  if (/overall fidelity:\s*🟢|🟢\s*ALIGNED/i.test(text)) return "pass";
-  if (/🔴\s*MAJOR DEVIATION|MAJOR DEVIATION/.test(text)) return "blocked";
-  if (/🟡\s*MINOR DRIFT|MINOR DRIFT/.test(text)) return "warning";
-  if (/🟢\s*ALIGNED|ALIGNED/.test(text)) return "pass";
-  return null;
+  let best: "pass" | "warning" | "blocked" | null = null;
+  const merge = (v: "pass" | "warning" | "blocked") => {
+    if (best === null || VERDICT_SEVERITY[v] > VERDICT_SEVERITY[best]) best = v;
+  };
+
+  // Structured lines
+  if (/overall fidelity:\s*🔴/i.test(text)) merge("blocked");
+  else if (/overall fidelity:\s*🟡/i.test(text)) merge("warning");
+  else if (/overall fidelity:\s*🟢/i.test(text)) merge("pass");
+
+  // Exact emoji markers
+  if (/🔴\s*MAJOR DEVIATION/i.test(text) || /🔴/.test(text)) merge("blocked");
+  if (/🟡\s*MINOR DRIFT/i.test(text) || /🟡/.test(text)) merge("warning");
+  if (/🟢\s*ALIGNED/i.test(text) || /🟢/.test(text)) merge("pass");
+
+  // Prose patterns with negation awareness
+  const proseSignals: Array<["pass" | "warning" | "blocked", RegExp]> = [
+    ["blocked", /\bMAJOR DEVIATION\b/i],
+    ["blocked", /\bMAJOR_DEVIATION\b/i],
+    ["blocked", /\bNOT ALIGNED\b/i],
+    ["warning", /\bMINOR DRIFT\b/i],
+    ["warning", /\bMINOR_DRIFT\b/i],
+    ["warning", /\bPARTIALLY ALIGNED\b/i],
+    ["pass", /\bSEMANTICALLY ALIGNED\b/i],
+    ["pass", /\bFULLY ALIGNED\b/i],
+    ["pass", /\bALIGNED\b/i],
+  ];
+
+  for (const [verdict, pattern] of proseSignals) {
+    if (pattern.test(text) && !negatedKeyword(text, pattern)) merge(verdict);
+  }
+
+  return best;
 }
 
 export interface JudgeOutput {

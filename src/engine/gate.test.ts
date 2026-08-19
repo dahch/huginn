@@ -70,9 +70,20 @@ describe("parseSpecAuditVerdict", () => {
     expect(parseSpecAuditVerdict("### Overall fidelity: 🟡 MINOR DRIFT")).toBe("warning");
     expect(parseSpecAuditVerdict("### Overall fidelity: 🔴 MAJOR DEVIATION")).toBe("blocked");
   });
-  it("reads reversed wording", () => {
+  it("reads reversed wording and near-miss prose", () => {
     expect(parseSpecAuditVerdict("Overall fidelity: 🔴 MAJOR DEVIATION")).toBe("blocked");
     expect(parseSpecAuditVerdict("MAJOR DEVIATION")).toBe("blocked");
+    expect(
+      parseSpecAuditVerdict(
+        "### Verdict\nThe baseline implementation is semantically aligned with everything prior iterations were requested to build.",
+      ),
+    ).toBe("pass");
+    expect(parseSpecAuditVerdict("The implementation is fully aligned with the spec.")).toBe("pass");
+    expect(parseSpecAuditVerdict("There is minor drift in error formats.")).toBe("warning");
+  });
+  it("respects negations in spec audit prose", () => {
+    expect(parseSpecAuditVerdict("This is not aligned with the requirements.")).toBe("blocked");
+    expect(parseSpecAuditVerdict("No major deviation was found in domain logic.")).toBeNull();
   });
   it("returns null for unparseable output (caller fails closed)", () => {
     expect(parseSpecAuditVerdict("lorem ipsum")).toBeNull();
