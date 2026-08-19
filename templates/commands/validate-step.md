@@ -28,7 +28,7 @@ AUDIT-ONLY MODE — do NOT write, create, or modify any test files.
 
 Run QA audit for the module at path: <module-path>
 
-1. Execute existing tests only.
+1. Execute existing tests only in non-interactive mode (e.g. vitest run, bun test, jest --ci --watchAll=false).
 2. Parse coverage report.
 3. Identify untested critical paths and business logic branches.
 4. Report findings but do NOT generate new tests.

@@ -12,14 +12,21 @@ permission:
     "npx *": allow
     "npm run test*": allow
     "npm run coverage*": allow
+    "npm test*": allow
     "yarn test*": allow
     "yarn coverage*": allow
     "pnpm test*": allow
     "pnpm run test*": allow
+    "bun test*": allow
+    "bun run test*": allow
+    "bun run coverage*": allow
     "vitest*": allow
     "jest*": allow
     "playwright*": allow
     "cypress*": allow
+    "pytest*": allow
+    "cargo test*": allow
+    "go test*": allow
     "cat coverage/*": allow
     "cat jest.config*": allow
     "cat vitest.config*": allow
@@ -43,7 +50,16 @@ This distinction is hard. In AUDIT mode, even if coverage is 0%, you report it a
 
 ---
 
-## Testing philosophy
+## Testing philosophy & Execution Guardrails
+
+**CRITICAL: Non-interactive execution only (NEVER watch mode):**
+- When running test runners, **always** supply flags that ensure the process executes once and terminates immediately without waiting for stdin or watching files:
+  - `vitest run` (or `vitest --run`, NOT bare `vitest`)
+  - `jest --watchAll=false --ci --runInBand`
+  - `bun test`
+  - `npm test -- --watchAll=false` or `npm test -- --run`
+  - `pytest -q`
+- Never launch interactive UI test runners (e.g. `playwright test --ui`, `cypress open`).
 
 **Testing pyramid:**
 - Unit (70%): fast, isolated, no I/O — pure logic, transformations, domain rules
