@@ -5,6 +5,7 @@ import type { RunConfig } from "../config";
 import { events } from "../engine/engineEvents";
 import type { PhaseResult, DecisionRequest, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, verdictColor, verdictIcon } from "../format";
+import { MarkdownLine } from "./markdown";
 
 const BASE_PHASES = [
   "SPEC_AUDIT",
@@ -55,7 +56,7 @@ function renderProgressBar(current: number, total: number, width = 16): string {
   return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${Math.round(pct * 100)}%`;
 }
 
-export function Dashboard({ engine, cfg }: { engine: CycleEngine; cfg: RunConfig }) {
+export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngine; cfg: RunConfig; autoExit?: boolean }) {
   const { exit } = useApp();
   const [spinnerIndex, setSpinnerIndex] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -160,7 +161,7 @@ export function Dashboard({ engine, cfg }: { engine: CycleEngine; cfg: RunConfig
         setUi((s) => ({ ...s, logs: logBuf.current }));
       }),
       events.on("done", () => {
-        setTimeout(() => exit(), 500);
+        if (autoExit) setTimeout(() => exit(), 500);
       }),
     ];
     return () => offs.forEach((off) => off());
@@ -173,6 +174,9 @@ export function Dashboard({ engine, cfg }: { engine: CycleEngine; cfg: RunConfig
         if (c === "a") engine.resolveDecision("continue");
         else if (c === "o") engine.resolveDecision("retry");
         else if (c === "d") engine.resolveDecision("deny");
+      } else if (ui.decision.kind === "question") {
+        if (c === "c" || c === "a" || c === "1" || c === "y") engine.resolveDecision("continue");
+        else if (c === "d" || c === "n") engine.resolveDecision("deny");
       } else {
         if (c === "r") engine.resolveDecision("retry");
         else if (c === "c") engine.resolveDecision("continue");
@@ -411,7 +415,7 @@ function PipelineCard({
   );
 }
 
-function StreamCard({
+export function StreamCard({
   tail,
   chars,
   spinner,
@@ -439,22 +443,17 @@ function StreamCard({
           const trimmed = line.trim();
           const isTool = trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
           const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
-          const isHeading = trimmed.startsWith("#");
           const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
           const color = isTool
             ? "cyanBright"
             : isCmd
               ? "yellow"
-              : isHeading
-                ? "greenBright"
-                : isThought
-                  ? "magentaBright"
-                  : "white";
+              : isThought
+                ? "magentaBright"
+                : "white";
 
           return (
-            <Text key={i} wrap="truncate" color={color}>
-              {line || " "}
-            </Text>
+            <MarkdownLine key={i} text={line || " "} defaultColor={color} wrap="truncate" />
           );
         })
       )}
@@ -462,7 +461,7 @@ function StreamCard({
   );
 }
 
-function LogsCard({ logs }: { logs: Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }> }) {
+export function LogsCard({ logs }: { logs: Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }> }) {
   if (logs.length === 0) return null;
   return (
     <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={0}>
@@ -499,38 +498,94 @@ function ReportPill({ report }: { report: PhaseResult }) {
   );
 }
 
-function DecisionModal({ req }: { req: DecisionRequest }) {
+export function DecisionModal({ req }: { req: DecisionRequest }) {
   const isPerm = req.kind === "permission";
+  const isQuestion = req.kind === "question";
+  const title =
+    req.kind === "approve-draft"
+      ? "📋 DECISION REQUIRED · Approve drafted docs"
+      : req.kind === "scope-extraction"
+        ? "⚠️ DECISION REQUIRED · Scope extraction failed"
+        : req.kind === "draft-format"
+          ? "⚠️ DECISION REQUIRED · Draft format violated"
+          : req.kind === "post-cycle-live"
+            ? "🎉 CYCLE COMPLETE · Next Action"
+            : isQuestion
+              ? "❓ QUESTION FROM AGENT · Input required"
+              : `⚠️ DECISION REQUIRED · Gate ${req.phase} (Iteration ${req.iteration})`;
+  const keys =
+    req.kind === "approve-draft" ? (
+      <>
+        <Text bold color="cyan">[r] </Text>
+        <Text>Re-draft with latest chat   </Text>
+        <Text bold color="green">[c] </Text>
+        <Text>OK — commit & execute   </Text>
+        <Text bold color="red">[a] </Text>
+        <Text>Abort</Text>
+      </>
+    ) : req.kind === "scope-extraction" ? (
+      <>
+        <Text bold color="cyan">[r] </Text>
+        <Text>Retry extraction   </Text>
+        <Text bold color="yellow">[c] </Text>
+        <Text>Use my last message   </Text>
+        <Text bold color="red">[a] </Text>
+        <Text>Abort</Text>
+      </>
+    ) : req.kind === "draft-format" ? (
+      <>
+        <Text bold color="cyan">[r] </Text>
+        <Text>Retry with contract   </Text>
+        <Text bold color="yellow">[c] </Text>
+        <Text>Accept as-is   </Text>
+        <Text bold color="red">[a] </Text>
+        <Text>Abort</Text>
+      </>
+    ) : req.kind === "post-cycle-live" ? (
+      <>
+        <Text bold color="green">[c] </Text>
+        <Text>Exit / Finish   </Text>
+        <Text bold color="cyan">[r] </Text>
+        <Text>Return to Live mode   </Text>
+        <Text bold color="red">[a] </Text>
+        <Text>Exit</Text>
+      </>
+    ) : isPerm ? (
+      <>
+        <Text bold color="cyan">[a] </Text>
+        <Text>Allow Always   </Text>
+        <Text bold color="cyan">[o] </Text>
+        <Text>Allow Once   </Text>
+        <Text bold color="red">[d] </Text>
+        <Text>Deny</Text>
+      </>
+    ) : isQuestion ? (
+      <>
+        <Text bold color="green">[c/1] </Text>
+        <Text>Accept / Proceed with recommended   </Text>
+        <Text bold color="red">[d] </Text>
+        <Text>Reject / Skip question</Text>
+      </>
+    ) : (
+      <>
+        <Text bold color="cyan">[r] </Text>
+        <Text>Retry with Thinker   </Text>
+        <Text bold color="yellow">[c] </Text>
+        <Text>Force Continue   </Text>
+        <Text bold color="red">[a] </Text>
+        <Text>Abort Run</Text>
+      </>
+    );
   return (
     <Box marginTop={1} borderStyle="double" borderColor="yellow" paddingX={1} flexDirection="column">
       <Text bold color="yellow">
-        ⚠️ DECISION REQUIRED · Gate {req.phase} (Iteration {req.iteration})
+        {title}
       </Text>
       <Text color="white" bold>
         {req.message}
       </Text>
       <Box marginTop={1}>
-        <Text>
-          {isPerm ? (
-            <>
-              <Text bold color="cyan">[a] </Text>
-              <Text>Allow Always   </Text>
-              <Text bold color="cyan">[o] </Text>
-              <Text>Allow Once   </Text>
-              <Text bold color="red">[d] </Text>
-              <Text>Deny</Text>
-            </>
-          ) : (
-            <>
-              <Text bold color="cyan">[r] </Text>
-              <Text>Retry with Thinker   </Text>
-              <Text bold color="yellow">[c] </Text>
-              <Text>Force Continue   </Text>
-              <Text bold color="red">[a] </Text>
-              <Text>Abort Run</Text>
-            </>
-          )}
-        </Text>
+        <Text>{keys}</Text>
       </Box>
     </Box>
   );
