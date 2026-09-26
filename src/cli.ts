@@ -29,8 +29,9 @@ import {
   promptYesNo,
   type TemplateKind,
 } from "./setup/install";
+import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 
-function usage(): string {
+export function usage(): string {
   return `huginn — the raven that thinks, builds, and remembers.
 Orchestrator for the opencode spec→commit cycle.
 
@@ -39,6 +40,10 @@ Usage:
   huginn plan --project <repo> --thinker <provider/model> "<idea>" [flags]
   huginn live --project <repo> --thinker <provider/model> --executor <provider/model> ["<idea>"] [flags]
   huginn install [--yes] [--force] [--only agents|commands]
+  huginn memory init [--db <path>] [--project <path>]
+  huginn memory search <query> [--category <cat>] [--limit <n>] [--project <path>]
+  huginn memory sync [--import] [--file <path>] [--project <path>]
+  huginn mcp run [--db <path>] [--project <path>]
 
 Commands:
   run     execute the build cycle against plan.md/spec.md/adr.md
@@ -48,6 +53,8 @@ Commands:
           approve, then run the build cycles in the same dashboard
   install install the opencode subagents and slash commands huginn needs into
           ~/.config/opencode (agents/ and commands/)
+  memory  query and manage persistent codebase memory (init, search, sync)
+  mcp     start the Muninn MCP server for agent memory integration (run)
 
 Required (run):
   --project <path>      git repo being built (must contain plan.md, spec.md, adr.md)
@@ -93,12 +100,30 @@ Install:
 `;
 }
 
-interface ParsedArgs {
-  [key: string]: string | boolean | undefined;
+export interface ParsedArgs {
+  [key: string]: string | boolean | undefined | string[];
+  _command?: string;
+  _positional?: string;
+  _positionals?: string[];
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = {};
+const BOOLEAN_FLAGS = new Set([
+  "--yes",
+  "--force",
+  "--resume",
+  "--force-restart",
+  "--ignore-plan-changes",
+  "--tui",
+  "--headless",
+  "--import",
+  "--help",
+  "-h",
+]);
+
+export function parseArgs(argv: string[]): ParsedArgs {
+  const out: ParsedArgs = {
+    _positionals: [],
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
@@ -108,7 +133,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       if (eq !== -1) {
         key = arg.slice(0, eq);
         value = arg.slice(eq + 1);
-      } else {
+      } else if (!BOOLEAN_FLAGS.has(key)) {
         const next = argv[i + 1];
         if (next !== undefined && !next.startsWith("--")) {
           value = next;
@@ -116,16 +141,17 @@ function parseArgs(argv: string[]): ParsedArgs {
         }
       }
       out[key] = value;
-    } else if (i === 0) {
+    } else if (out._command === undefined) {
       out._command = arg;
     } else {
       out._positional = arg;
+      (out._positionals as string[]).push(arg);
     }
   }
   return out;
 }
 
-export function num(v: string | boolean | undefined, fallback: number): number {
+export function num(v: unknown, fallback: number): number {
   if (typeof v !== "string") return fallback;
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
@@ -182,18 +208,47 @@ export async function main(argv: string[]): Promise<void> {
     await runInstall(args);
     return;
   }
+  if (command === "memory") {
+    const positionals = (args._positionals as string[] | undefined) ?? [];
+    const subcommand =
+      typeof positionals[0] === "string"
+        ? positionals[0]
+        : (typeof args._positional === "string" ? args._positional : undefined);
+    const restPositionals = positionals.slice(1);
+    await handleMemoryCommand(
+      subcommand,
+      args as Record<string, string | boolean | undefined>,
+      restPositionals
+    );
+    return;
+  }
+  if (command === "mcp") {
+    const positionals = (args._positionals as string[] | undefined) ?? [];
+    const subcommand =
+      typeof positionals[0] === "string"
+        ? positionals[0]
+        : (typeof args._positional === "string" ? args._positional : undefined);
+    await handleMcpCommand(
+      subcommand,
+      args as Record<string, string | boolean | undefined>
+    );
+    return;
+  }
   if (command !== "run") {
     console.error(`Unknown command: ${command}\n\n${usage()}`);
     process.exit(1);
   }
 
-  const projectPath = canonicalize(String(args["--project"] ?? ""));
+  const projectPath = canonicalize(
+    typeof args["--project"] === "string" ? args["--project"] : ""
+  );
   if (!projectPath) {
     console.error("Missing required --project.\n\n" + usage());
     process.exit(1);
   }
-  const thinker = String(args["--thinker"] ?? "");
-  const executor = String(args["--executor"] ?? "");
+  const thinker = typeof args["--thinker"] === "string" ? args["--thinker"] : "";
+  const executor =
+    typeof args["--executor"] === "string" ? args["--executor"] : "";
   if (!thinker || !executor) {
     console.error("Missing required --thinker and/or --executor.\n\n" + usage());
     process.exit(1);
@@ -337,12 +392,14 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 async function runPlan(args: ParsedArgs): Promise<void> {
-  const projectPath = canonicalize(String(args["--project"] ?? ""));
+  const projectPath = canonicalize(
+    typeof args["--project"] === "string" ? args["--project"] : ""
+  );
   if (!projectPath) {
     console.error("Missing required --project.\n\n" + usage());
     process.exit(1);
   }
-  const thinker = String(args["--thinker"] ?? "");
+  const thinker = typeof args["--thinker"] === "string" ? args["--thinker"] : "";
   if (!thinker) {
     console.error("Missing required --thinker.\n\n" + usage());
     process.exit(1);
@@ -353,7 +410,8 @@ async function runPlan(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  const promptFile = String(args["--prompt-file"] ?? "");
+  const promptFile =
+    typeof args["--prompt-file"] === "string" ? args["--prompt-file"] : "";
   let idea: string;
   if (promptFile) {
     const p = resolve(promptFile);
@@ -404,13 +462,16 @@ async function runLive(args: ParsedArgs): Promise<void> {
     console.log(usage());
     return;
   }
-  const projectPath = canonicalize(String(args["--project"] ?? ""));
+  const projectPath = canonicalize(
+    typeof args["--project"] === "string" ? args["--project"] : ""
+  );
   if (!projectPath) {
     console.error("Missing required --project.\n\n" + usage());
     process.exit(1);
   }
-  const thinker = String(args["--thinker"] ?? "");
-  const executor = String(args["--executor"] ?? "");
+  const thinker = typeof args["--thinker"] === "string" ? args["--thinker"] : "";
+  const executor =
+    typeof args["--executor"] === "string" ? args["--executor"] : "";
   if (!thinker || !executor) {
     console.error("Missing required --thinker and/or --executor.\n\n" + usage());
     process.exit(1);
@@ -421,7 +482,8 @@ async function runLive(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  const promptFile = String(args["--prompt-file"] ?? "");
+  const promptFile =
+    typeof args["--prompt-file"] === "string" ? args["--prompt-file"] : "";
   let idea: string;
   if (promptFile) {
     const p = resolve(promptFile);
@@ -638,7 +700,7 @@ async function validateModels(
 if (import.meta.main) {
   main(process.argv.slice(2))
     .then(() => {
-      process.exit(0);
+      process.exit(process.exitCode ?? 0);
     })
     .catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
