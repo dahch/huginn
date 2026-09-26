@@ -6,4 +6,5 @@ package-lock.json
 .huginn/
 *.db
 *.db-wal
-*.db-shmcoverage/
+*.db-shm
+coverage/

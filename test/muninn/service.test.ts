@@ -11,6 +11,7 @@ import {
   normalizeSymbol,
   VALID_CATEGORIES,
   type SaveObservationInput,
+  type IMemoryService,
 } from "../../src/muninn/service/memory-service.js";
 
 describe("Muninn MemoryService & Persistence Engine", () => {
@@ -712,6 +713,67 @@ describe("Muninn MemoryService & Persistence Engine", () => {
       } finally {
         prepareSpy.mockRestore();
       }
+    });
+
+    it("throws and logs unexpected database fatal errors (disk I/O, database corruption)", () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      // Test SQLITE_CORRUPT
+      const corruptErr = new Error("database disk image is malformed");
+      (corruptErr as any).code = "SQLITE_CORRUPT";
+      const corruptSpy = vi.spyOn(db, "prepare").mockImplementationOnce(() => {
+        return {
+          all: () => {
+            throw corruptErr;
+          },
+        } as any;
+      });
+
+      try {
+        expect(() => service.search({ query: "architecture" })).toThrow(/malformed/);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Fatal SQLite error"),
+          corruptErr
+        );
+      } finally {
+        corruptSpy.mockRestore();
+      }
+
+      // Test SQLITE_IOERR
+      const ioErr = new Error("disk I/O error");
+      (ioErr as any).code = "SQLITE_IOERR_SHORT_READ";
+      const ioSpy = vi.spyOn(db, "prepare").mockImplementationOnce(() => {
+        return {
+          all: () => {
+            throw ioErr;
+          },
+        } as any;
+      });
+
+      try {
+        expect(() => service.search({ query: "architecture" })).toThrow(/disk I\/O/);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Fatal SQLite error"),
+          ioErr
+        );
+      } finally {
+        ioSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    it("verifies MemoryService satisfies IMemoryService interface", () => {
+      const ims: IMemoryService = service;
+      expect(ims.currentProject).toBeDefined();
+      expect(ims.db).toBeDefined();
+      expect(typeof ims.saveObservation).toBe("function");
+      expect(typeof ims.search).toBe("function");
+      expect(typeof ims.getContext).toBe("function");
+      expect(typeof ims.linkSymbol).toBe("function");
+      expect(typeof ims.getStats).toBe("function");
+      expect(typeof ims.syncToDisk).toBe("function");
+      expect(typeof ims.importFromDisk).toBe("function");
+      expect(typeof ims.close).toBe("function");
     });
 
     it("supports search filtering with snake_case project_id", () => {
