@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS observations (
 
 CREATE INDEX IF NOT EXISTS idx_observations_project_id ON observations(project_id);
 CREATE INDEX IF NOT EXISTS idx_observations_updated_at ON observations(updated_at);
+CREATE INDEX IF NOT EXISTS idx_observations_project_updated ON observations(project_id, updated_at DESC, created_at DESC);
 
 -- Observations FTS5 virtual table
 CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
