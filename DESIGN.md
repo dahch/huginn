@@ -27,7 +27,9 @@ rationalized in [`ADR.md`](./ADR.md).
 
 ```
 src/
-├── cli.ts                  entry point; arg parsing (run/live/plan/install), config, banner, lifecycle wiring
+├── cli.ts                  entry point; arg parsing (run/live/plan/install/memory/mcp), config, banner, lifecycle wiring
+├── commands/
+│   └── memory.ts           CLI commands: handleMemoryCommand (init, search, sync), handleMcpCommand (run), usage formatters
 ├── config.ts               RunConfig type (all run-mode knobs)
 ├── banner.ts               ASCII banner + path shortening
 ├── format.ts               shared formatting: durations, verdict badges/icons/colors
@@ -80,21 +82,33 @@ templates/{agents,commands}/ opencode agent/command definitions bundled as markd
 ### Runtime wiring (`src/cli.ts` → engine → frontends)
 
 ```mermaid
-flowchart LR
-    A[cli.ts main] --> B[startServer] --> C[CycleEngine]
-    A --> D[subscribeToEvents]
-    D -- permission / stream events --> C
-    C -- decision requests --> E[DecisionBroker FIFO]
-    E -- head-of-queue surfaced --> F{TUI or headless}
-    F -- choices --> E
-    C -- events --> G[engineEvents global emitter]
-    G --> F
-    C -- persist --> H[.harness/ state + PROGRESS.md + reports]
+flowchart TD
+    CLI["cli.ts main()"] --> CMD{"command?"}
+    CMD -- "run" --> RUN["startServer() → CycleEngine"]
+    CMD -- "plan" --> PLAN["runPlan()"]
+    CMD -- "live" --> LIVE["LiveEngine"]
+    CMD -- "install" --> INST["runInstall()"]
+    CMD -- "memory" --> MEM["handleMemoryCommand()"]
+    CMD -- "mcp" --> MCP["handleMcpCommand()"]
+
+    MEM --> MS["MemoryService"]
+    MCP --> SRV["startMcpServer() (stdio)"]
+
+    RUN --> SEV["subscribeToEvents()"]
+    SEV -- permission / stream events --> CE["CycleEngine"]
+    CE -- decision requests --> DB["DecisionBroker FIFO"]
+    DB -- head surfaced --> FE{"TUI or headless"}
+    FE -- choices --> DB
+    CE -- events --> EE["engineEvents global emitter"]
+    EE --> FE
+    CE -- persist --> HAR[".harness/ state + PROGRESS.md + reports"]
 ```
 
 `CycleEngine` is transport-agnostic: it never touches the terminal. Both
 frontends (Ink TUI, stdin headless) are thin adapters over the global `events`
-emitter plus `engine.resolveDecision()`.
+emitter plus `engine.resolveDecision()`. Memory persistence and MCP operations
+route cleanly through `handleMemoryCommand` and `handleMcpCommand` without
+spawning harness server instances.
 
 ## 3. The cycle: pipeline-as-data
 
@@ -492,6 +506,9 @@ flowchart LR
 13. **Prototype Pollution and Nullish Normalization**: All external MCP arguments pass through `normalizeArgs`, which prunes `__proto__`, `constructor`, and `prototype` keys, strips `null`/`undefined` values, and maps `snake_case` aliases before schema validation.
 14. **Bounded MCP Payloads**: Strict Zod length constraints on titles (1,000), content (1,000,000), topic keys (256), symbols (500), queries (2,000), and limits (500) prevent resource exhaustion from model-generated payloads.
 15. **Port Decoupling via `IMemoryService`**: The MCP server and its tool handlers depend exclusively on the `IMemoryService` port interface, keeping the transport protocol decoupled from concrete database handles or filesystem implementations.
+16. **Stdio Transport Stream Hygiene**: `huginn mcp run` maintains absolute silence on `stdout` (no banners, no startup logging, no ANSI color sequences) to ensure standard JSON-RPC 2.0 frames over stdio are never corrupted.
+17. **Disambiguated Keyword Positionals**: The CLI parser separates subcommand names from subsequent positional arguments (`_positionals[0]` vs `_positionals.slice(1)`), preventing argument shadowing when keywords like `"search"` or `"sync"` are searched or referenced.
+18. **Boolean Flag Ingestion Safety**: `BOOLEAN_FLAGS` enforcement in `parseArgs` guarantees that standalone flags (e.g. `--import`, `--yes`, `--force`) never consume subsequent positional tokens or flags.
 
 ## 12. Key tradeoffs (summary; full rationale in ADR.md)
 
@@ -984,5 +1001,120 @@ export const SymbolSchema = z
 
 - **`createMcpServer(serviceOrOptions?)`**: Instantiates `@modelcontextprotocol/sdk` `Server`, registers `ListToolsRequestSchema` and `CallToolRequestSchema` handlers, and binds the `IMemoryService` instance.
 - **`startMcpServer(options?)`**: Instantiates `StdioServerTransport`, creates the server, and establishes the stdio connection. Used by the CLI runner (`huginn mcp run`).
+
+## 16. Muninn Memory Engine — CLI Commands & Stdio Runner Architecture
+
+The CLI interface for Muninn memory (`src/commands/memory.ts`) connects human developers and terminal workflows to `MemoryService` and the `startMcpServer` runner without requiring agent tooling or MCP client configurations.
+
+### Command Routing & CLI Parsing Architecture
+
+CLI routing in `src/cli.ts` dispatches top-level commands to their respective subsystems:
+
+```mermaid
+flowchart TD
+    CLI["cli.ts parseArgs(argv)"] --> DISPATCH{"_command"}
+    DISPATCH -- "memory" --> MEM["handleMemoryCommand(subcommand, args, positionals)"]
+    DISPATCH -- "mcp" --> MCP["handleMcpCommand(subcommand, args)"]
+    DISPATCH -- "run / plan / live / install" --> CORE["Core Harness Engines"]
+
+    MEM --> SUBCMD{"subcommand"}
+    SUBCMD -- "init" --> INIT["MemoryService.init / ensureProject"]
+    SUBCMD -- "search" --> SRCH["MemoryService.search() (BM25)"]
+    SUBCMD -- "sync" --> SYNC["MemoryService.syncToDisk() / importFromDisk()"]
+    SUBCMD -- "help / unknown" --> USAGE["printMemoryUsage()"]
+
+    MCP --> MCPSUBCMD{"subcommand"}
+    MCPSUBCMD -- "run" --> RUN["startMcpServer() + Stdio Keepalive"]
+    MCPSUBCMD -- "help / unknown" --> MCPUSAGE["printMcpUsage()"]
+```
+
+### Argument Parser Enhancements (`parseArgs`)
+
+1. **Multi-Positional Capture (`_positionals`)**:
+   - Rather than retaining only the first non-command token in `_positional`, `parseArgs` populates `_positionals: string[]`.
+   - The first positional argument after the command name determines the subcommand (`init`, `search`, `sync`, `run`), while remaining entries (`positionals.slice(1)`) are forwarded as positional arguments (such as search queries or file paths).
+2. **Boolean Flag Protection (`BOOLEAN_FLAGS`)**:
+   - A dedicated `Set` flags boolean parameters (`--yes`, `--force`, `--resume`, `--force-restart`, `--ignore-plan-changes`, `--tui`, `--headless`, `--import`, `--help`, `-h`).
+   - For any flag in `BOOLEAN_FLAGS`, the parser assigns `true` immediately without consuming the next token, preventing flags like `--import` from consuming subsequent positional file paths.
+3. **Keyword Disambiguation & Anti-Shadowing**:
+   - By partitioning command arguments through `_positionals`, user search queries matching subcommands (e.g. `huginn memory search search`) and filenames matching subcommands (e.g. `huginn memory sync sync`) are parsed without routing ambiguity or argument swallowing.
+4. **Robust Value Conversions (`num`)**:
+   - The `num(v, fallback)` helper handles non-string and non-finite argument types safely without throwing `TypeError`.
+
+### Subcommand Implementations (`src/commands/memory.ts`)
+
+#### 1. `huginn memory init`
+- **Purpose**: Creates the SQLite database file and verifies that tables and triggers are ready.
+- **Workflow**:
+  - Accepts `--db <path>` and `--project <path>` (or `--root <path>`).
+  - Instantiates `MemoryService({ dbPath, projectRoot })`.
+  - Verifies project association via `service.currentProject`.
+  - Outputs formatted green status badge and summary:
+    ```
+    ✔ Muninn memory database initialized
+      Database: /path/to/.huginn/muninn.db
+      Project:  huginn (/path/to/huginn)
+      Status:   Tables ready
+    ```
+  - Calls `service.close?.()` in a mandatory `finally` block to release file locks.
+
+#### 2. `huginn memory search <query>`
+- **Purpose**: Searches stored observations using BM25 relevance ranking over FTS5.
+- **Workflow**:
+  - Resolves query from `positionals[0]` or `--query <text>`.
+  - If query is absent or empty whitespace: prints `chalk.red("Error: Search query is required.")` and sets `process.exitCode = 1`.
+  - Filters by `--category` and `--limit` (floors fractional numbers via `Math.floor`, falling back to `10` on negative or invalid limits).
+  - Queries `service.search({ query, category, limit })`.
+  - Formats output with ANSI styling:
+    - Bold category badge: `[DECISION]`, `[CONVENTION]`, `[BUGFIX]`, `[ARCHITECTURE]`, `[DISCOVERY]`
+    - Observation title and BM25 rank score: `(score: 0.123)`
+    - Topic key (when present): `Topic: <key>`
+    - Flattened content snippet clamped to 150 characters with trailing `...`
+    - Code symbol linkages: `Symbols: <path1>, <path2>`
+  - Guarantees database closure in `finally`.
+
+#### 3. `huginn memory sync [--import]`
+- **Purpose**: Exports observations to `.huginn/memories.jsonl` or imports them from an existing `.jsonl` file.
+- **Workflow**:
+  - Resolves target path from `--file <path>` or positional argument; defaults to `<project_root>/.huginn/memories.jsonl`.
+  - **Export Mode** (default):
+    - Invokes `service.syncToDisk(filePath)`.
+    - Outputs `Synced N memories to <path>.`
+  - **Import Mode** (`--import`):
+    - Invokes `service.importFromDisk(filePath)`.
+    - Outputs `Imported N memories (skipped M duplicates) from <path>.`
+  - Guarantees database closure in `finally`.
+
+#### 4. `huginn mcp run`
+- **Purpose**: Spawns and manages the long-running Model Context Protocol stdio server process.
+- **Workflow**:
+  - Accepts optional `--db <path>` and `--project <path>`.
+  - Invokes `startMcpServer({ dbPath, projectRoot })`.
+  - **Stdout Silence Guarantee**: Emits zero startup logs or banners to `stdout` to avoid corrupting MCP JSON-RPC frames.
+  - **Lifecycle Management**:
+    - Keeps the Node/Bun process alive via an unresolved `Promise<void>`.
+    - Monitors `transport.onclose` to detect client disconnections.
+    - Registers signal listeners for `SIGINT` and `SIGTERM`.
+    - On termination, safely shuts down `MemoryService` and closes `MuninnServer` in a `finally` block before exiting.
+
+### Error Handling & Process Exit Protocol
+
+To guarantee that asynchronous output streams flush completely and child handles terminate cleanly:
+- Validation errors and unknown subcommands set `process.exitCode = 1` rather than invoking immediate `process.exit(1)`.
+- The CLI main execution wrapper in `src/cli.ts` terminates cleanly:
+  ```ts
+  if (import.meta.main) {
+    main(process.argv.slice(2))
+      .then(() => {
+        process.exit(process.exitCode ?? 0);
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(chalk.red(msg));
+        process.exit(1);
+      });
+  }
+  ```
+
 
 

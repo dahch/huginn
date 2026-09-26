@@ -134,19 +134,43 @@ An MCP server must expose Muninn tools via `@modelcontextprotocol/sdk` over `Std
   - Automatically maps `snake_case` aliases (`topic_key` -> `topicKey`, `observation_id` -> `observationId`, `all_projects` -> `allProjects`) to canonical property names.
 - **AC-8.9 (Graceful Tool Error Handling & Zod Formatting)**: Errors during tool execution and schema validation are caught and formatted into human-readable error messages (`formatZodErrors`). Returns structured error objects `{ isError: true, content: [{ type: "text", text: ... }] }` without dropping the stdio JSON-RPC transport stream. Fatal SQLite errors (e.g. disk I/O, database corruption) are logged to stderr and rethrown.
 
-### REQ-9: CLI Commands Integration
-The Huginn CLI must expose memory operations and MCP runner.
-- **AC-9.1**: `huginn memory init` initializes the database and ensures schema readiness.
-- **AC-9.2**: `huginn memory search <query>` executes a search and displays formatted results in the console.
-- **AC-9.3**: `huginn memory sync [--import]` exports to or imports from `.huginn/memories.jsonl`.
-- **AC-9.4**: `huginn mcp run` launches the stdio MCP server process.
+### REQ-9: CLI Commands Integration & Subcommand Routing
+The Huginn CLI must expose memory persistence management and the MCP stdio runner via `huginn memory` and `huginn mcp`, integrated through `src/commands/memory.ts` and `src/cli.ts`.
+- **AC-9.1 (CLI Routing & Argument Parsing)**:
+  - `src/cli.ts` routes top-level `memory` commands to `handleMemoryCommand` and `mcp` commands to `handleMcpCommand`.
+  - `parseArgs(argv)` parses flags and captures multiple positionals in `_positionals: string[]` while maintaining backward-compatible `_positional`.
+  - `BOOLEAN_FLAGS` set (`--yes`, `--force`, `--resume`, `--force-restart`, `--ignore-plan-changes`, `--tui`, `--headless`, `--import`, `--help`, `-h`) prevents boolean flags from mistakenly consuming trailing arguments or flags.
+  - CLI runner in `import.meta.main` honors process exit codes (`process.exit(process.exitCode ?? 0)`).
+- **AC-9.2 (`huginn memory init`)**:
+  - Initializes the SQLite database and validates schema readiness via `MemoryService`.
+  - Accepts optional `--db <path>` and `--project <path>` (or `--root <path>`).
+  - Outputs formatted initialization status including database path, project name, root path, and table readiness, cleanly closing database handles in `finally`.
+- **AC-9.3 (`huginn memory search <query>`)**:
+  - Accepts search query as a positional argument (`huginn memory search <query>`) or via `--query <text>`. Disambiguates positional keywords so searching for the word "search" does not conflict with subcommand routing.
+  - Validates query input: missing or whitespace-only queries log a formatted error (`chalk.red`) and cleanly set `process.exitCode = 1` without throwing unhandled exceptions.
+  - Accepts optional `--category <cat>` filter, optional `--limit <n>` (floors fractional values via `Math.floor` and defaults invalid or negative limits to 10), and database/project path overrides.
+  - Formats results with ANSI colors: category badge (`[CATEGORY]`), BM25 score (`(score: X.XXX)`), optional `Topic: <key>`, truncated content preview (clamped to 150 characters with newlines flattened), and linked symbols (`Symbols: <list>`).
+- **AC-9.4 (`huginn memory sync [--import]`)**:
+  - Exports observations to disk or imports them from disk when `--import` is present.
+  - Target file defaults to `<project_root>/.huginn/memories.jsonl` (with fallback to git root or current working directory), overridable via `--file <path>` or positional filename. Disambiguates positional filenames named "sync".
+  - Export logs count of synced memories and resolved file path.
+  - Import (`--import`) logs number of imported memories and count of skipped duplicate memories.
+- **AC-9.5 (`huginn mcp run`)**:
+  - Launches the stdio MCP server process via `startMcpServer({ dbPath, projectRoot })`.
+  - Strictly preserves stdout purity: outputs zero console logs during startup or execution to prevent corrupting JSON-RPC frames.
+  - Keeps process alive while `StdioServerTransport` is connected (`transport.onclose`) and handles `SIGINT` / `SIGTERM` signals, cleanly disposing of the server and database connections upon termination.
+- **AC-9.6 (Usage & Help Information)**:
+  - `huginn memory` (without arguments or with `help`, `--help`, `-h`) displays detailed memory usage information via `printMemoryUsage()`.
+  - `huginn mcp` (without arguments or with `help`, `--help`, `-h`) displays MCP runner usage via `printMcpUsage()`.
+  - Unrecognized subcommands log a formatted error message, display usage, and set `process.exitCode = 1`.
 
-### REQ-10: Test Suite Coverage
-The subsystem must have full unit and integration test coverage under `test/muninn/` executed with `vitest`.
-- **AC-10.1**: Unit tests verify schema creation, FTS5 triggers, and connection handling in `test/muninn/db.test.ts`.
-- **AC-10.2**: Unit tests verify `saveObservation`, BM25 `search`, `getContext`, `linkSymbol`, `getStats`, and JSONL sync in `test/muninn/service.test.ts`.
-- **AC-10.3**: Integration tests verify MCP tool handlers and JSON-RPC dispatch in `test/muninn/mcp.test.ts`.
-- **AC-10.4**: All tests pass cleanly (`npm run test`).
+### REQ-10: Test Suite Coverage & Verification
+The subsystem must have full unit and integration test coverage under `test/muninn/` executed with `vitest` alongside Bun unit tests.
+- **AC-10.1**: Unit tests verify schema creation, foreign key constraints, FTS5 triggers, pragmas, and connection handling in `test/muninn/db.test.ts`.
+- **AC-10.2**: Unit tests verify `saveObservation`, BM25 `search`, `getContext`, `linkSymbol`, `getStats`, and JSONL sync/import in `test/muninn/service.test.ts`.
+- **AC-10.3**: Integration tests verify MCP tool handlers, schema validation, argument normalization, and JSON-RPC dispatch in `test/muninn/mcp.test.ts`.
+- **AC-10.4**: Integration and CLI unit tests verify argument parsing, multi-positional extraction, subcommand routing, search formatting, sync import/export, error exit codes, and signal teardown in `test/muninn/commands.test.ts`.
+- **AC-10.5**: All test suites pass cleanly via `npm test` (`bun test && vitest run`), enforced during package publishing via `prepublishOnly` (`bun run build && npm run test && bun run typecheck`).
 
 ---
 

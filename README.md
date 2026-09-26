@@ -62,15 +62,48 @@ warns you and points at `huginn install`.
 ## Usage
 
 ```sh
+# Run the 8-phase spec-build cycle against an existing plan
 huginn run \
   --project /path/to/repo \
   --thinker anthropic/claude-opus-4-5 \
   --executor opencode/gpt-5.1-codex
+
+# Interactive refinement & execution in a live dashboard
+huginn live \
+  --project /path/to/repo \
+  --thinker anthropic/claude-opus-4-5 \
+  --executor opencode/gpt-5.1-codex \
+  "Initial idea..."
+
+# Draft spec.md, adr.md, and plan.md from an idea
+huginn plan \
+  --project /path/to/repo \
+  --thinker anthropic/claude-opus-4-5 \
+  "Initial idea..."
+
+# Search persistent memory across codebase
+huginn memory search "database schema"
+
+# Start the MCP stdio server for agent integration
+huginn mcp run
 ```
 
 Run `huginn help` (or `huginn -h`) for all flags — note a bare `--help` is parsed
 as a run-mode flag and falls through to argument validation (it prints usage, but
-exits 1); `huginn help` exits 0:
+exits 1); `huginn help` exits 0.
+
+### Commands
+
+| Command | Usage | Description |
+|---|---|---|
+| `run` | `huginn run [flags]` | Execute the build cycle against `plan.md`/`spec.md`/`adr.md` |
+| `live` | `huginn live [flags] ["<idea>"]` | Interactive chat refinement with thinker model, drafting, approval, and execution |
+| `plan` | `huginn plan [flags] "<idea>"` | Generate `spec.md`, `adr.md`, and `plan.md` in one shot using thinker model |
+| `install` | `huginn install [flags]` | Install opencode subagents and slash commands into `~/.config/opencode` |
+| `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`) |
+| `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |
+
+### Run Flags
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -314,11 +347,64 @@ Configure the Muninn MCP server in your agent client (e.g. `.cursor/mcp.json` or
 {
   "mcpServers": {
     "muninn": {
+      "command": "huginn",
+      "args": ["mcp", "run"]
+    }
+  }
+}
+```
+
+For running from source during development:
+
+```json
+{
+  "mcpServers": {
+    "muninn": {
       "command": "bun",
       "args": ["run", "/path/to/huginn/src/cli.ts", "mcp", "run"]
     }
   }
 }
+```
+
+### Muninn CLI Commands (`huginn memory`)
+
+Muninn memory operations are accessible directly from the CLI:
+
+```sh
+# Initialize SQLite database and verify schema
+huginn memory init [--db <path>] [--project <path>]
+
+# Search observations with BM25 relevance ranking
+huginn memory search <query> [--category <cat>] [--limit <n>] [--project <path>]
+
+# Export observations to portable JSON Lines format (.huginn/memories.jsonl)
+huginn memory sync [--file <path>] [--project <path>]
+
+# Import observations from JSON Lines format
+huginn memory sync --import [--file <path>] [--project <path>]
+```
+
+| Subcommand | Flag / Option | Description |
+|---|---|---|
+| `init` | `--db <path>` | Path to SQLite database (defaults to `<git_root>/.huginn/muninn.db`). |
+| | `--project <path>` / `--root <path>` | Workspace root path to associate. |
+| `search` | `<query>` or `--query <q>` | Search query string (BM25 ranked over title, content, topic). |
+| | `--category <cat>` | Filter by category (`decision`, `convention`, `discovery`, `bugfix`, `architecture`). |
+| | `--limit <n>` | Max search results to display (default: `10`). |
+| `sync` | `--import` | Import from disk into SQLite database instead of exporting. |
+| | `--file <path>` | Path to `.jsonl` file (defaults to `<project_root>/.huginn/memories.jsonl`). |
+
+### Stdio MCP Server Runner (`huginn mcp run`)
+
+Run the MCP stdio server to connect Muninn memory with agent clients:
+
+```sh
+# Start stdio MCP server for current git workspace
+huginn mcp run
+
+# Start stdio MCP server with custom database and workspace
+huginn mcp run --db /custom/muninn.db --project /path/to/project
 ```
 
 ## Environment variables
@@ -345,7 +431,9 @@ fallback when the registry is unreachable. Set `HUGINN_NO_UPDATE_CHECK=1` to dis
 ## Development
 
 ```sh
-bun test              # unit tests (parsers, gates, state, installer, run-loop regressions)
+npm test              # full test suite (bun test unit tests + vitest muninn suite)
+bun test              # run core unit tests via bun test
+vitest run            # run muninn database, service, mcp, and command tests
 bun run typecheck     # tsc --noEmit
 bun run dev -- ...    # run from source
 bun run build         # bundle to dist/ for the global bin

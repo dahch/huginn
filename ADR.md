@@ -514,3 +514,39 @@ avoids. They are ordered by how central the decision is to the design.
 - **Consequences**:
   - *Positive*: Seamless compatibility with all modern MCP-compliant AI agents; complete protection against prototype pollution and payload flooding; resilience against erratic LLM null/snake_case serialization; rock-solid stdio transport stability with structured error reporting; testable and modular architecture via the `IMemoryService` port.
   - *Negative*: Schema definition duplication between TypeScript interfaces and Zod schemas; JSON serialization overhead for MCP tool payload responses over stdio.
+
+## ADR-17: CLI Command Integration for Muninn Memory Subsystem and Stdio MCP Runner
+
+- **Date**: 2026-09-26
+- **Status**: Accepted
+- **Context**: Muninn memory engine and its MCP server reside in `src/muninn/`, but developers and external tooling need direct command-line access to initialize databases, search observations with BM25 ranking, sync memories with git-portable `.jsonl` files, and launch the stdio MCP server. Huginn's CLI entry point (`src/cli.ts`) was historically designed for single-command executions (`run`, `plan`, `live`, `install`) with single positional argument parsing. Supporting hierarchical subcommands (`huginn memory init`, `huginn memory search <query>`, `huginn memory sync [--import]`, `huginn mcp run`) exposed several structural issues:
+  1. *Boolean Flag Ingestion*: A naive argv loop treats any non-flag token following `--flag` as that flag's value. For standalone boolean flags (`--import`, `--yes`, `--force`), this caused the flag to mistakenly consume subsequent positional arguments or filenames.
+  2. *Single Positional Loss*: `parseArgs` only stored the first non-command positional in `_positional`, dropping trailing arguments needed for subcommands and queries (e.g. `memory` -> command, `search` -> subcommand, `vector indexing` -> query).
+  3. *Keyword Shadowing*: If a search query or sync target filename matched a command name (e.g. `huginn memory search search` or `huginn memory sync sync`), positional extraction could confuse the argument with the subcommand.
+  4. *Stdio Transport Corruption*: When `huginn mcp run` launches, any standard output outputted to stdout (such as initialization banners or logs) corrupts JSON-RPC frame parsing in MCP clients (Cursor, Claude Code, OpenCode).
+  5. *Process Teardown & Exit Codes*: Command validation errors (e.g. missing query) must set `process.exitCode = 1` rather than calling `process.exit(1)` immediately, allowing asynchronous stdout/stderr streams to drain cleanly.
+  6. *Test Pipeline Orchestration*: Core unit tests run on `bun test` while Muninn's SQLite and MCP tests run on `vitest`. The test scripts needed unification.
+- **Decision**:
+  1. **Subcommand Module Architecture**:
+     - Implement `src/commands/memory.ts` encapsulating CLI interaction logic: `handleMemoryCommand`, `handleMcpCommand`, `printMemoryUsage`, and `printMcpUsage`.
+     - Route top-level `memory` and `mcp` commands from `src/cli.ts` without polluting the core harness engine.
+  2. **Enhanced CLI Argument Parser (`parseArgs`)**:
+     - Maintain an explicit `BOOLEAN_FLAGS` set (`--yes`, `--force`, `--resume`, `--force-restart`, `--ignore-plan-changes`, `--tui`, `--headless`, `--import`, `--help`, `-h`) so boolean flags never consume subsequent tokens.
+     - Capture all positional arguments in an ordered `_positionals: string[]` array while maintaining backwards compatibility with `_positional`.
+     - Implement robust numeric conversion helper `num(v: unknown, fallback: number)` handling non-string inputs safely.
+  3. **Disambiguated Positional Subcommand Dispatch**:
+     - Subcommands are extracted from `_positionals[0]`, passing the remaining `positionals.slice(1)` to command handlers.
+     - Handles searches for the literal word "search" and sync operations on files named "sync" without argument shadowing or routing collisions.
+  4. **Strict Stdio Hygiene for MCP Runner**:
+     - `huginn mcp run` outputs zero text to `stdout`, keeping the channel clean for JSON-RPC 2.0 communication.
+     - Manages process lifecycle via an unresolved Promise, listening on `transport.onclose` and binding `SIGINT` and `SIGTERM` signals for graceful teardown of both `MuninnServer` and `MemoryService`.
+  5. **Clean Exit Code Propagation**:
+     - Input validation failures log formatted messages via `chalk.red` and set `process.exitCode = 1`.
+     - `cli.ts`'s `main()` resolves cleanly and calls `process.exit(process.exitCode ?? 0)`.
+  6. **Unified Test Orchestration**:
+     - Update `package.json` script `"test": "bun test && vitest run"` to execute both the Bun harness test suite and the Vitest Muninn test suite.
+     - Update `"prepublishOnly": "bun run build && npm run test && bun run typecheck"`.
+- **Consequences**:
+  - *Positive*: Intuitive, Unix-compliant CLI interface for memory operations; robust parsing preventing flag ingestion bugs; immune to positional keyword collisions; perfectly compliant stdio MCP server execution; graceful process termination; unified CI test automation.
+  - *Negative*: `parseArgs` maintains a manual `BOOLEAN_FLAGS` registry rather than full schema-driven CLI parsing (such as `yargs` or `commander`), chosen to avoid adding heavy CLI dependencies to huginn.
+
