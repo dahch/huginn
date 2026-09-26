@@ -15,9 +15,9 @@
     "dev": "bun run src/cli.ts",
     "build": "bun build src/cli.ts --target=bun --outdir=dist --minify",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test && vitest run",
     "postinstall": "node -e \"try{require('child_process').execSync('bun --version')}catch(e){console.warn('[huginn] Bun is required. Install it from https://bun.sh');process.exit(0)}\" && bun run scripts/postinstall.ts",
-    "prepublishOnly": "bun run build && bun test && bun run typecheck"
+    "prepublishOnly": "bun run build && npm run test && bun run typecheck"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
