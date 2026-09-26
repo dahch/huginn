@@ -40,13 +40,13 @@ export const VALID_ENTITY_TYPES: ReadonlyArray<EntityType> = [
 ] as const;
 
 export interface SymbolInput {
-  name?: string;
-  filePath?: string;
-  file_path?: string;
-  identifier?: string;
-  type?: EntityType;
-  entity_type?: EntityType;
-  id?: string;
+  name?: string | null;
+  filePath?: string | null;
+  file_path?: string | null;
+  identifier?: string | null;
+  type?: EntityType | null;
+  entity_type?: EntityType | null;
+  id?: string | null;
 }
 
 export interface ObservationWithEntities extends Observation {
@@ -61,16 +61,16 @@ export interface SaveObservationInput {
   topic_key?: string | null;
   projectId?: string;
   project_id?: string;
-  symbols?: Array<SymbolInput | string>;
+  symbols?: Array<SymbolInput | string> | null;
 }
 
 export interface SearchOptions {
   query: string;
-  category?: ObservationCategory | string;
+  category?: ObservationCategory | string | null;
   projectId?: string | null;
   project_id?: string | null;
-  allProjects?: boolean;
-  limit?: number;
+  allProjects?: boolean | null;
+  limit?: number | null;
 }
 
 export interface SearchResult extends ObservationWithEntities {
@@ -78,13 +78,13 @@ export interface SearchResult extends ObservationWithEntities {
 }
 
 export interface ContextOptions {
-  limit?: number;
-  category?: ObservationCategory | string;
+  limit?: number | null;
+  category?: ObservationCategory | string | null;
   topicKey?: string | null;
   topic_key?: string | null;
   projectId?: string | null;
   project_id?: string | null;
-  allProjects?: boolean;
+  allProjects?: boolean | null;
 }
 
 export interface SyncToDiskOptions {
@@ -110,6 +110,25 @@ export interface MemoryServiceOptions {
   db?: Database.Database;
   dbPath?: string;
   projectRoot?: string;
+}
+
+export interface IMemoryService {
+  readonly currentProject: Project;
+  readonly db: Database.Database;
+  saveObservation(input: SaveObservationInput): ObservationWithEntities;
+  search(options: SearchOptions): SearchResult[];
+  getContext(options?: ContextOptions): ObservationWithEntities[];
+  linkSymbol(
+    inputOrObsId: LinkSymbolInput | string,
+    symbol?: SymbolInput | string
+  ): { observation: Observation; entity: Entity };
+  getStats(projectId?: string): MemoryStats;
+  syncToDisk(
+    targetPath?: string,
+    options?: { projectId?: string; allProjects?: boolean }
+  ): { path: string; count: number };
+  importFromDisk(sourcePath?: string): { imported: number; skipped: number };
+  close?(force?: boolean): void;
 }
 
 /**
@@ -260,7 +279,7 @@ export function sanitizeFtsQuery(query: string): string {
   return terms.join(" ");
 }
 
-export class MemoryService {
+export class MemoryService implements IMemoryService {
   private readonly _db: Database.Database;
   private readonly _currentProject: Project;
   private readonly isDbOwned: boolean;
@@ -533,7 +552,26 @@ export class MemoryService {
     let rows: RowType[];
     try {
       rows = this._db.prepare<any[], RowType>(sql).all(...params);
-    } catch {
+    } catch (err: unknown) {
+      const code =
+        typeof err === "object" && err !== null && "code" in err
+          ? String((err as any).code)
+          : "";
+      const message = err instanceof Error ? err.message : String(err);
+      const isFatal =
+        code.startsWith("SQLITE_IOERR") ||
+        code.startsWith("SQLITE_CORRUPT") ||
+        code === "SQLITE_NOTADB" ||
+        code === "SQLITE_FULL" ||
+        code === "SQLITE_CANTOPEN" ||
+        /disk i\/o|corrupt|not a database|disk is full/i.test(message);
+
+      if (isFatal) {
+        console.error("Fatal SQLite error during search query:", err);
+        throw err;
+      }
+
+      console.warn("FTS search query execution failed:", message);
       return [];
     }
 
