@@ -10,6 +10,8 @@ rationalized in [`ADR.md`](./ADR.md).
   produced by `bun build src/cli.ts --target=bun --outdir=dist --minify`.
 - **Dependencies actually imported in `src/`**:
   - `@opencode-ai/sdk` — typed HTTP client for the opencode server.
+  - `@modelcontextprotocol/sdk` — Model Context Protocol SDK for agent tooling.
+  - `better-sqlite3` — embedded SQLite database driver with WAL mode and FTS5 for the Muninn memory engine (`src/muninn/db/client.ts`).
   - `ink` + `react` — the TUI dashboard.
   - `zod` — `HarnessState` schema validation.
   - `chalk` — ANSI colors in the banner (`src/banner.ts`), headless frontend
@@ -45,6 +47,10 @@ src/
 │   ├── diff.ts             git helpers, inferModules, hasImplementationCode (greenfield detection)
 │   ├── engineEvents.ts     global typed event emitter
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
+├── muninn/
+│   └── db/
+│       ├── client.ts       better-sqlite3 initialization, pragmas, path resolution, ensureProject, sanitizeGitRemote
+│       └── schema.sql      DDL for projects, observations, observations_fts, entities, observation_entities
 ├── server/
 │   ├── lifecycle.ts        spawn/kill `opencode serve`, health polling, server.log
 │   └── client.ts           SDK wrapper: createClient, prompt/runCommand, withTimeout
@@ -471,6 +477,8 @@ flowchart LR
    be updated in the same change.
 6. **The engine never blocks on a human forever in unattended mode**: non-TTY
    headless aborts gate decisions rather than hanging.
+7. **Memory database integrity & privacy**: `muninn.db` runs in WAL mode with foreign keys enabled (`ON DELETE CASCADE`) and `recursive_triggers = ON`; FTS5 indexes are automatically synchronized via database triggers (`obs_ai`, `obs_ad`, `obs_au`); and git remote URLs are sanitized of basic auth credentials before persistence. Non-memory database directories are created with `0o700` (`rwx------`) permissions.
+8. **`.huginn/` storage isolation**: Project-local SQLite database files (`muninn.db`, `muninn.db-wal`, `muninn.db-shm`) reside under `<git_root>/.huginn/` and are excluded in `.gitignore`.
 
 ## 12. Key tradeoffs (summary; full rationale in ADR.md)
 
@@ -486,3 +494,142 @@ flowchart LR
 - All model traffic is synchronous request/response through one opencode
   session per iteration; parallelism (multiple agents at once) is deliberately
   not attempted, which keeps verdict ordering and state trivial.
+
+## 13. Muninn Memory Engine — Database Layer & SQLite FTS5 Schema
+
+The `src/muninn/db/` package provides embedded, local-first persistence for project memories, code symbol entity linkages, and BM25 full-text search without external network calls or vector API keys.
+
+### Path Resolution Architecture
+
+`resolveDatabasePath(customPath?, startDir?)` determines the SQLite database location based on repository context:
+
+```mermaid
+flowchart TD
+    A["resolveDatabasePath(customPath, startDir)"] --> B{"customPath provided and non-empty?"}
+    B -- Yes --> C["Return customPath (:memory: or explicit file)"]
+    B -- No --> D["findGitRoot(startDir)"]
+    D -- Git repository found --> E["Return <git_root>/.huginn/muninn.db"]
+    D -- Not inside git repo --> F["Return ~/.huginn/muninn.db"]
+```
+
+- When `customPath` is passed and not empty (`""`), it is returned directly (enabling `:memory:` for isolated unit tests or explicit file paths).
+- `findGitRoot(startDir)` searches upward through parent directories until it encounters a `.git` folder or file.
+- If a git root is discovered, the database path resolves to `<git_root>/.huginn/muninn.db`.
+- If no git repository is present, it falls back to the user's home profile at `~/.huginn/muninn.db`.
+- If the resolved path is not `:memory:`, `getDatabase` ensures the target directory exists by calling `fs.mkdirSync(dir, { recursive: true, mode: 0o700 })`, restricting filesystem permissions to the owner.
+
+### SQLite Connection & PRAGMA Configuration
+
+Every connection initialized via `getDatabase(dbPath?)` instantiates a `better-sqlite3` instance with a 5000ms connection timeout and configures four essential pragmas before executing migrations:
+
+```ts
+db.pragma("foreign_keys = ON");
+db.pragma("journal_mode = WAL");
+db.pragma("busy_timeout = 5000");
+db.pragma("recursive_triggers = ON");
+```
+
+| PRAGMA | Purpose & Operational Impact |
+|---|---|
+| `foreign_keys = ON` | Enforces referential integrity with `ON DELETE CASCADE`. Deleting a project cascades to its observations, entities, and observation_entities join rows. |
+| `journal_mode = WAL` | Enables Write-Ahead Logging. Permits concurrent readers alongside a writer, avoids table locks during read spikes, and protects against crash corruption. |
+| `busy_timeout = 5000` | Sets a 5-second wait queue when SQLite encounters database contention rather than throwing an immediate `SQLITE_BUSY` error. |
+| `recursive_triggers = ON` | Enables cascading deletes to activate triggers on child tables. **Crucial for FTS5 consistency**: when a project is deleted, cascade deletion removes rows in `observations`; `recursive_triggers = ON` ensures the `obs_ad` trigger fires and deletes the corresponding records from `observations_fts`. |
+
+If pragma initialization or DDL execution throws an exception, `getDatabase` immediately closes the database handle before re-throwing, ensuring no leaked file descriptors or locks.
+
+### Schema & Entity-Relationship Design
+
+The database DDL is defined in `src/muninn/db/schema.sql` and mirrored in `src/muninn/db/client.ts` (`SCHEMA_SQL` fallback):
+
+```mermaid
+erDiagram
+    PROJECTS ||--o{ OBSERVATIONS : "contains (CASCADE)"
+    PROJECTS ||--o{ ENTITIES : "contains (CASCADE)"
+    OBSERVATIONS ||--o{ OBSERVATION_ENTITIES : "links (CASCADE)"
+    ENTITIES ||--o{ OBSERVATION_ENTITIES : "links (CASCADE)"
+    OBSERVATIONS ||--|| OBSERVATIONS_FTS : "triggers sync"
+
+    PROJECTS {
+        text id PK
+        text name
+        text git_remote
+        text root_path UK
+        datetime created_at
+    }
+    OBSERVATIONS {
+        text id PK
+        text project_id FK
+        text category
+        text title
+        text content
+        text topic_key
+        datetime created_at
+        datetime updated_at
+    }
+    ENTITIES {
+        text id PK
+        text project_id FK
+        text entity_type
+        text identifier
+        text file_path
+    }
+    OBSERVATION_ENTITIES {
+        text observation_id PK_FK
+        text entity_id PK_FK
+    }
+    OBSERVATIONS_FTS {
+        text title
+        text content
+        text topic_key
+    }
+```
+
+#### Table Specifications
+
+1. **`projects`**:
+   - Primary key: `id TEXT PRIMARY KEY`.
+   - `root_path TEXT NOT NULL UNIQUE` indexed by `idx_projects_root_path`.
+   - `git_remote TEXT`: sanitized origin URL.
+   - `name TEXT NOT NULL`, `created_at DATETIME DEFAULT CURRENT_TIMESTAMP`.
+
+2. **`observations`**:
+   - Primary key: `id TEXT PRIMARY KEY`.
+   - `project_id TEXT NOT NULL` with `FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE`.
+   - `category TEXT NOT NULL` constrained by `CHECK(category IN ('decision', 'convention', 'discovery', 'bugfix', 'architecture'))`.
+   - `title TEXT NOT NULL`, `content TEXT NOT NULL`, `topic_key TEXT`.
+   - Timestamps `created_at` and `updated_at`.
+   - Indexes: `idx_observations_project_id`, `idx_observations_updated_at`.
+
+3. **`observations_fts` (SQLite FTS5 Virtual Table)**:
+   - External-content FTS5 table indexing `title`, `content`, and `topic_key` referencing `observations` via `content='observations', content_rowid='rowid'`.
+   - Synchronized by three database triggers:
+     - `obs_ai`: `AFTER INSERT ON observations` inserts `new.rowid`, `new.title`, `new.content`, `new.topic_key`.
+     - `obs_ad`: `AFTER DELETE ON observations` deletes `old.rowid` entry.
+     - `obs_au`: `AFTER UPDATE ON observations` deletes `old.rowid` and inserts updated fields for `new.rowid`.
+
+4. **`entities`**:
+   - Represents code symbols (AST functions, classes, interfaces, modules) or files.
+   - Primary key: `id TEXT PRIMARY KEY`.
+   - `project_id TEXT NOT NULL` with `FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE`.
+   - `entity_type TEXT NOT NULL` constrained by `CHECK(entity_type IN ('file', 'function', 'class', 'interface', 'module'))`.
+   - `identifier TEXT NOT NULL` (e.g. `src/auth.ts::login`), `file_path TEXT NOT NULL`.
+   - Unique index `idx_entities_project_identifier ON entities(project_id, identifier)` prevents duplicate symbols per project.
+
+5. **`observation_entities`**:
+   - Join table linking observations to code entities.
+   - Composite primary key: `PRIMARY KEY(observation_id, entity_id)`.
+   - Cascading foreign keys: `FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE CASCADE`, `FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE`.
+   - Index: `idx_observation_entities_entity_id ON observation_entities(entity_id)`.
+
+### Project Bootstrapping & Credential Sanitization
+
+- **`ensureProject(db, options?)`**:
+  - Resolves `rootPath` from options, nearest `.git` root, or `process.cwd()`.
+  - Performs an idempotent query `SELECT ... FROM projects WHERE root_path = ?`. If found, returns the existing record.
+  - If not found, generates a UUID, extracts project name (from directory basename or fallback `"project"`), reads origin URL from `.git/config` using `tryGetGitRemote`, and inserts the new project record.
+- **`sanitizeGitRemote(rawUrl)`**:
+  - Detects and strips user and password authentication tokens embedded in URLs (e.g. `https://oauth2:token@github.com/...` -> `https://github.com/...`).
+  - Supports standard HTTP(S) URLs as well as SSH and SCP-like syntax.
+  - Guarantees sensitive personal access tokens or credentials are never leaked into the database.
+

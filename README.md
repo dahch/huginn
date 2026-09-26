@@ -219,6 +219,28 @@ needs is written under `<project>/.harness/`:
 If a run is interrupted, just re-run the same command and it auto-resumes from the exact phase.
 `--force-restart` wipes saved state; `--ignore-plan-changes` resumes even after editing the docs.
 
+## Muninn Memory Engine (`.huginn/`)
+
+Huginn includes the **Muninn memory engine** (`src/muninn/db/`), an embedded, persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5:
+
+- **Path Resolution**:
+  - Automatically resolves to `<git_root>/.huginn/muninn.db` when operating inside a git repository.
+  - Falls back to `~/.huginn/muninn.db` when running outside of a git repository.
+  - Supports explicit custom file paths or `:memory:` for testing.
+  - Parent directories are created with secure permissions (`0o700`).
+  - `.huginn/` and SQLite WAL/SHM artifacts are excluded from version control via `.gitignore`.
+- **Database Reliability & Pragmas**:
+  - `journal_mode = WAL`: Write-Ahead Logging for high concurrency and crash durability.
+  - `foreign_keys = ON`: Strict foreign key enforcement with cascading deletions (`ON DELETE CASCADE`).
+  - `recursive_triggers = ON`: Ensures cascading row deletes activate FTS5 synchronization triggers.
+  - `busy_timeout = 5000`: 5-second queue wait during database lock contention.
+- **FTS5 Full-Text Search**:
+  - Real-time indexing of `title`, `content`, and `topic_key` via `observations_fts` virtual table.
+  - Kept in sync automatically by database triggers (`obs_ai`, `obs_ad`, `obs_au`).
+- **Security & Privacy**:
+  - Git remote URLs in the `projects` table have embedded basic auth credentials stripped prior to storage.
+
+
 ## Environment variables
 
 All optional:

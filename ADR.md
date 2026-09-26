@@ -413,3 +413,30 @@ avoids. They are ordered by how central the decision is to the design.
     with dynamic baseUrl resolution in `client.ts`.
   - *Negative*: Adds `respondQuestion` and `rejectQuestion` endpoints to the client
     adapter layer and adds `"question"` to the `DecisionKind` union.
+
+## ADR-14: Persistent Semantic and Symbol Memory Engine ("Muninn") via SQLite FTS5 & MCP
+
+- **Date**: 2026-09-26
+- **Status**: Accepted
+- **Context**: In AI-assisted development agent workflows (Claude Code, Cursor, Windsurf, OpenCode), every new session loses context regarding architectural decisions, local conventions, discoveries, and debugging findings. Existing tools like Engram provide plain-text SQLite FTS5 search, but plain text lacks topological code context: when an agent inspects a function or interface, it does not know which conventions or architectural decisions govern it. Huginn requires a persistent memory engine ("Muninn") that not only retains structured text observations, but also connects observations to AST symbols and file entities via a lightweight knowledge graph in SQLite, exposed through a standard Model Context Protocol (MCP) server.
+- **Decision**:
+  1. Structure the subsystem cleanly inside `src/muninn/` (`db/`, `service/`, `mcp/`).
+  2. Use embedded SQLite with `better-sqlite3` and FTS5 enabled, supporting deterministic path resolution rules in `src/muninn/db/client.ts`:
+     - If an explicit custom path (or `:memory:`) is provided, use it directly (empty string falls back to auto resolution).
+     - Otherwise, search upward from `process.cwd()` for the nearest `.git` directory (`findGitRoot`); if located, resolve to `<git_root>/.huginn/muninn.db`.
+     - When no git repository is present, fallback to user-global `~/.huginn/muninn.db`.
+     - Ensure the parent directory is created automatically with restricted permissions (`mode: 0o700`).
+  3. Configure essential SQLite PRAGMAs upon connection:
+     - `PRAGMA foreign_keys = ON;`: Enforces referential integrity and cascading deletes across projects, observations, and entities.
+     - `PRAGMA journal_mode = WAL;`: Enables Write-Ahead Logging for high concurrency, non-blocking reads, and crash resilience.
+     - `PRAGMA busy_timeout = 5000;`: Waits up to 5 seconds during lock contention rather than failing immediately with `SQLITE_BUSY`.
+     - `PRAGMA recursive_triggers = ON;`: Essential for cascade deletions to trigger FTS5 cleanup hooks (`obs_ad`) automatically when parent projects or observations are removed.
+  4. Implement automatic schema initialization and migrations in `src/muninn/db/client.ts` executing `src/muninn/db/schema.sql` (or embedded `SCHEMA_SQL` fallback) defining `projects`, `observations`, `observations_fts` virtual table with automatic synchronization triggers (`obs_ai`, `obs_ad`, `obs_au`), `entities`, and `observation_entities`.
+  5. Provide `ensureProject` for idempotent workspace registration, inspecting `.git/config` for origin URLs while stripping basic authentication credentials via `sanitizeGitRemote` to prevent token leakage.
+  6. Implement `MemoryService` in `src/muninn/service/memory-service.ts` providing `saveObservation`, `search` (BM25 FTS5 ranking), `getContext`, `linkSymbol`, `getStats`, and JSONL disk sync/import (`.huginn/memories.jsonl`) for git sharing.
+  7. Provide an MCP server in `src/muninn/mcp/server.ts` with `StdioServerTransport` and Zod-validated tool definitions: `muninn_save`, `muninn_search`, `muninn_context`, `muninn_link_symbol`, and `muninn_stats`.
+  8. Extend the Huginn CLI (`src/commands/memory.ts`, `src/cli.ts`) with `huginn memory init`, `huginn memory search <query>`, `huginn memory sync [--import]`, and `huginn mcp run`.
+  9. Maintain comprehensive test coverage using `vitest` under `test/muninn/`.
+- **Consequences**:
+  - *Positive*: Zero external dependencies or paid embedding APIs; lightning-fast BM25 lexical search combined with code symbol graph navigation; standard JSON-RPC 2.0 stdio MCP server pluggable into any agent IDE; deterministic context retrieval; portable JSONL git sync; robust data integrity via foreign keys, WAL mode, recursive triggers, and busy timeout.
+  - *Negative*: Native SQLite binary bindings must compile cleanly across platforms (macOS, Linux, Windows), mitigated by `better-sqlite3` prebuilds.
