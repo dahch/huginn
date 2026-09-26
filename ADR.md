@@ -473,3 +473,44 @@ avoids. They are ordered by how central the decision is to the design.
   - *Positive*: Complete immunity to SQLite FTS5 syntax injection/crashes; atomic writes ensure zero corrupt/partial `.jsonl` files; owner-only `0o600` permissions prevent local credential or architectural note leakage; chunked entity queries guarantee scalability over large result sets; symbol normalization simplifies agent integrations.
   - *Negative*: Two-tier data representation (SQLite relational database + `.huginn/memories.jsonl` export) requires deliberate synchronization via `syncToDisk` and `importFromDisk`.
 
+## ADR-16: Muninn Model Context Protocol (MCP) Server Architecture, Declarative Registry, and Security Hardening
+
+- **Date**: 2026-09-26
+- **Status**: Accepted
+- **Context**: Muninn needs to expose its memory persistence engine to autonomous AI coding agents (Claude Code, Cursor, OpenCode, Windsurf) through a standard protocol. The Model Context Protocol (MCP) using JSON-RPC 2.0 over standard I/O (`stdio`) is the designated standard. However, exposing database operations to LLM tool calls presents unique operational and security challenges:
+  1. *Erratic LLM Argument Serialization*: Different LLM clients serialize optional arguments inconsistently, often transmitting explicit `null` or `undefined` values for omitted fields (which fail naive Zod `.optional()` checks) or passing `snake_case` aliases instead of `camelCase`.
+  2. *Prototype Pollution*: Unsanitized JSON payloads from external tool invocations could contain `__proto__`, `constructor`, or `prototype` keys, leading to object prototype pollution vulnerabilities.
+  3. *Unbounded Payload & Resource Exhaustion*: LLMs could generate arbitrarily large string payloads or oversized symbol arrays, leading to memory spikes or database degradation.
+  4. *Transport Fragility*: Uncaught exceptions thrown during tool execution or schema validation crash the stdio stream, abruptly severing the agent's MCP session.
+  5. *Architectural Coupling*: Binding the MCP server directly to the concrete `MemoryService` implementation impedes isolated unit testing, mocking, and alternative storage backends.
+- **Decision**:
+  1. **Transport & Protocol**:
+     - Implement standard JSON-RPC 2.0 over stdio using `Server` and `StdioServerTransport` from `@modelcontextprotocol/sdk`.
+     - Expose `createMcpServer(serviceOrOptions?)` for dependency injection and `startMcpServer(options?)` for standalone process execution.
+  2. **Port Interface Decoupling (`IMemoryService`)**:
+     - Formalize the `IMemoryService` port interface in `src/muninn/service/memory-service.ts` (re-exported by `src/muninn/mcp/server.ts`).
+     - Decouple `createMcpServer` and tool handlers from concrete implementations, accepting any object satisfying `IMemoryService`.
+  3. **Declarative `TOOL_REGISTRY`**:
+     - Replace imperative routing with a declarative `TOOL_REGISTRY: Record<string, ToolDefinition>` mapping each tool to `{ name, description, schema, handler }`.
+     - Automatically derive the static `MUNINN_TOOLS` array and MCP tool metadata via `z.toJSONSchema`.
+  4. **Strict Payload Bounds & Zod Schemas**:
+     - Validate all tool inputs with dedicated Zod schemas:
+       - `muninn_save`: title bounded to 1–1,000 chars, content bounded to 1–1,000,000 chars, topicKey bounded to 256 chars, symbols array capped at 500 items.
+       - `muninn_search`: query bounded to 1–2,000 chars, limit clamped to 1–500 (default: 10).
+       - `muninn_context`: limit clamped to 1–500 (default: 20), topicKey bounded to 256 chars.
+       - `muninn_link_symbol`: requires non-empty observationId and valid symbol.
+       - `muninn_stats`: validates boolean `allProjects`.
+     - `SymbolSchema` enforces `.refine()` requiring at least one identifier property (`name`, `identifier`, `filePath`, or `file_path`), rejecting empty `{}` symbol objects.
+  5. **Nullish Argument Normalization & Prototype Pollution Defense**:
+     - Implement `normalizeArgs(args)` invoked prior to Zod validation:
+       - Skips `__proto__`, `constructor`, and `prototype` keys to prevent prototype pollution.
+       - Prunes `null` and `undefined` properties, allowing Zod `.nullish()` and defaults to resolve cleanly.
+       - Translates common `snake_case` aliases (`topic_key` -> `topicKey`, `observation_id` -> `observationId`, `all_projects` -> `allProjects`).
+     - Wrap argument extraction and normalization within a defensive `try...catch` block.
+  6. **Fail-Safe Tool Error Responses**:
+     - All tool execution and validation errors are intercepted within `CallToolRequestSchema` handler and returned as standard `{ isError: true, content: [{ type: "text", text: ... }] }` responses.
+     - Validation errors are formatted into readable property paths and messages via `formatZodErrors`.
+     - Fatal SQLite storage errors (disk corruption, full disk, I/O errors) are explicitly detected, logged to stderr, and rethrown, while non-fatal search query failures log warnings and return empty results.
+- **Consequences**:
+  - *Positive*: Seamless compatibility with all modern MCP-compliant AI agents; complete protection against prototype pollution and payload flooding; resilience against erratic LLM null/snake_case serialization; rock-solid stdio transport stability with structured error reporting; testable and modular architecture via the `IMemoryService` port.
+  - *Negative*: Schema definition duplication between TypeScript interfaces and Zod schemas; JSON serialization overhead for MCP tool payload responses over stdio.

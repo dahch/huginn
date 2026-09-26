@@ -51,9 +51,12 @@ src/
 │   ├── db/
 │   │   ├── client.ts       better-sqlite3 initialization, pragmas, path resolution, ensureProject, sanitizeGitRemote
 │   │   └── schema.sql      DDL for projects, observations, observations_fts, entities, observation_entities
+│   ├── mcp/
+│   │   ├── index.ts        re-exports createMcpServer, startMcpServer, TOOL_REGISTRY, schemas, and types
+│   │   └── server.ts       MCP server implementation: JSON-RPC over stdio, Zod schemas, normalizeArgs, error handling
 │   └── service/
-│       ├── index.ts        re-exports MemoryService and types
-│       └── memory-service.ts MemoryService core: saveObservation, search, getContext, linkSymbol, getStats, syncToDisk, importFromDisk
+│       ├── index.ts        re-exports MemoryService, IMemoryService, and types
+│       └── memory-service.ts MemoryService core + IMemoryService interface: saveObservation, search, getContext, linkSymbol, getStats, syncToDisk, importFromDisk
 ├── server/
 │   ├── lifecycle.ts        spawn/kill `opencode serve`, health polling, server.log
 │   └── client.ts           SDK wrapper: createClient, prompt/runCommand, withTimeout
@@ -485,6 +488,10 @@ flowchart LR
 9. **FTS5 Query Sanitization**: User-supplied search queries are never passed raw to SQLite FTS5 `MATCH`; `sanitizeFtsQuery` tokenizes input, wraps terms in double quotes, safely handles prefix `*` wildcards, and strips punctuation-only syntax operators to prevent FTS5 syntax errors.
 10. **Atomic JSONL Disk Writes with `0o600` Permissions**: `syncToDisk` writes to `.tmp` files with owner-only `0o600` permissions (`rw-------`) before atomic rename, preventing permission leakage and corrupted partial exports.
 11. **Chunked In-Memory Join Queries**: Entity hydration queries for observations are capped at 500 parameters per chunk to ensure queries never breach SQLite host parameter boundaries (`SQLITE_LIMIT_VARIABLE_NUMBER`).
+12. **MCP Error Isolation**: Tool execution and validation failures caught within `CallToolRequestSchema` return standard `{ isError: true }` responses and never terminate the JSON-RPC stdio transport. Fatal SQLite storage failures (corruption, I/O errors) are logged and rethrown.
+13. **Prototype Pollution and Nullish Normalization**: All external MCP arguments pass through `normalizeArgs`, which prunes `__proto__`, `constructor`, and `prototype` keys, strips `null`/`undefined` values, and maps `snake_case` aliases before schema validation.
+14. **Bounded MCP Payloads**: Strict Zod length constraints on titles (1,000), content (1,000,000), topic keys (256), symbols (500), queries (2,000), and limits (500) prevent resource exhaustion from model-generated payloads.
+15. **Port Decoupling via `IMemoryService`**: The MCP server and its tool handlers depend exclusively on the `IMemoryService` port interface, keeping the transport protocol decoupled from concrete database handles or filesystem implementations.
 
 ## 12. Key tradeoffs (summary; full rationale in ADR.md)
 
@@ -783,5 +790,199 @@ Idempotently imports observations and entities from `.jsonl` files into the data
   - Links observations and entities via `INSERT OR IGNORE`.
 - **Automatic FTS Synchronization**: As records are inserted, SQLite triggers (`obs_ai`) automatically index each observation in `observations_fts`.
 - **Single Transaction**: The entire import executes within a single `db.transaction()` block for speed and all-or-nothing consistency.
+
+## 15. Muninn Memory Engine — Model Context Protocol (MCP) Server Architecture
+
+The `src/muninn/mcp/` module implements a Model Context Protocol (MCP) server exposing Muninn memory operations directly to AI coding agents (Claude Code, Cursor, OpenCode, Windsurf) over standard input/output (`stdio`) using standard JSON-RPC 2.0.
+
+### Architectural Component Diagram & Request Flow
+
+```mermaid
+flowchart TD
+    subgraph AgentClient["AI Coding Agent (Claude Code / Cursor / OpenCode)"]
+        Agent["Agent Process"]
+    end
+
+    subgraph MCPTransport["MCP Transport Layer"]
+        Stdio["StdioServerTransport (JSON-RPC 2.0 over stdio)"]
+    end
+
+    subgraph MCPServerCore["Muninn MCP Server (src/muninn/mcp/server.ts)"]
+        Server["Server (@modelcontextprotocol/sdk)"]
+        Registry["TOOL_REGISTRY (Declarative Tool Map)"]
+        Norm["normalizeArgs() (Security & Alias Filter)"]
+        Zod["Zod Validation (Muninn*Schema)"]
+        ErrFormat["formatZodErrors()"]
+    end
+
+    subgraph ServiceLayer["Service Core (src/muninn/service/)"]
+        Port["IMemoryService (Port Interface)"]
+        ConcreteService["MemoryService"]
+    end
+
+    subgraph DatabaseLayer["Persistence Layer (src/muninn/db/)"]
+        SQLite[("better-sqlite3 (WAL Mode)")]
+        FTS[("observations_fts (BM25)")]
+    end
+
+    Agent <-->|"stdin / stdout (JSON-RPC)"| Stdio
+    Stdio <--> Server
+    Server --> Registry
+    Server --> Norm
+    Norm --> Zod
+    Zod -- "Invalid Args" --> ErrFormat --> Server
+    Zod -- "Valid (parsed.data)" --> Registry
+    Registry -->|"handler(service, data)"| Port
+    Port -. "implements" .-> ConcreteService
+    ConcreteService --> SQLite
+    SQLite -. "triggers" .-> FTS
+```
+
+### Request Lifecycle & Sequence
+
+Every tool invocation follows a strict, defensive pipeline ensuring the stdio connection never crashes:
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Client)
+    participant T as StdioServerTransport
+    participant S as MuninnServer
+    participant R as TOOL_REGISTRY
+    participant V as Zod Validator
+    participant M as IMemoryService
+
+    A->>T: JSON-RPC CallToolRequest (name, arguments)
+    T->>S: requestHandler(CallToolRequestSchema)
+    alt Unknown Tool Name
+        S-->>T: { isError: true, content: ["Error: Unknown tool ..."] }
+    else Known Tool
+        Note over S: normalizeArgs(arguments)
+        Note over S: Strip __proto__, constructor, prototype
+        Note over S: Prune null / undefined
+        Note over S: Map snake_case aliases
+        S->>V: tool.schema.safeParse(normalizedArgs)
+        alt Validation Failed
+            Note over S: formatZodErrors(error)
+            S-->>T: { isError: true, content: ["Validation error: ..."] }
+        else Validation Passed
+            S->>R: tool.handler(service, parsed.data)
+            R->>M: service[method](data)
+            alt Handler Throws
+                M-->>S: exception
+                S-->>T: { isError: true, content: ["Error: <message>"] }
+            else Handler Succeeds
+                M-->>S: result
+                S-->>T: { content: [{ type: "text", text: JSON.stringify(result) }] }
+            end
+        end
+    end
+    T-->>A: JSON-RPC Response
+```
+
+### Port Decoupling (`IMemoryService`)
+
+To maintain clean architectural boundaries and facilitate unit testing with mock implementations, the MCP server depends on the `IMemoryService` port interface rather than the concrete `MemoryService` class:
+
+```ts
+export interface IMemoryService {
+  readonly currentProject: Project;
+  readonly db: Database.Database;
+  saveObservation(input: SaveObservationInput): ObservationWithEntities;
+  search(options: SearchOptions): SearchResult[];
+  getContext(options?: ContextOptions): ObservationWithEntities[];
+  linkSymbol(
+    inputOrObsId: LinkSymbolInput | string,
+    symbol?: SymbolInput | string
+  ): { observation: Observation; entity: Entity };
+  getStats(projectId?: string): MemoryStats;
+  syncToDisk(
+    targetPath?: string,
+    options?: { projectId?: string; allProjects?: boolean }
+  ): { path: string; count: number };
+  importFromDisk(sourcePath?: string): { imported: number; skipped: number };
+  close?(force?: boolean): void;
+}
+```
+
+- `isMemoryService(obj)`: Runtime type guard verifying that an object satisfies the service interface.
+- `createMcpServer(serviceOrOptions?)`: Accepts an instance of `IMemoryService` directly or options to instantiate a default `MemoryService`.
+- Attaches the service reference as both `server.service` and `server.memoryService` on the returned `MuninnServer`.
+
+### Declarative Tool Registry (`TOOL_REGISTRY`)
+
+Instead of imperative `switch/case` routing, tools are declared in a centralized dictionary adhering to `ToolDefinition`:
+
+```ts
+export interface ToolDefinition<
+  TSchema extends z.ZodTypeAny = z.ZodTypeAny,
+  TOutput = unknown
+> {
+  name: string;
+  description: string;
+  schema: TSchema;
+  handler: (
+    service: IMemoryService,
+    input: z.infer<TSchema>
+  ) => TOutput | Promise<TOutput>;
+}
+```
+
+The exported `MUNINN_TOOLS: Tool[]` array is dynamically generated from `TOOL_REGISTRY` using `z.toJSONSchema(tool.schema)`.
+
+### Tool Inventory & Payload Bound Specifications
+
+| Tool | Schema | Bounds & Validation Constraints | Handler Action |
+|---|---|---|---|
+| `muninn_save` | `MuninnSaveSchema` | - `category`: Enum (`decision`, `convention`, `discovery`, `bugfix`, `architecture`)<br>- `title`: Trimmed string, 1–1,000 chars<br>- `content`: Trimmed string, 1–1,000,000 chars<br>- `topicKey`: Optional trimmed string, max 256 chars<br>- `symbols`: Optional array, max 500 items (string or `SymbolSchema`) | `service.saveObservation(input)` |
+| `muninn_search` | `MuninnSearchSchema` | - `query`: Trimmed string, 1–2,000 chars<br>- `category`: Optional category enum<br>- `limit`: Optional integer, 1–500, default: 10<br>- `allProjects`: Optional boolean | `service.search(input)` |
+| `muninn_context` | `MuninnContextSchema` | - `limit`: Optional integer, 1–500, default: 20<br>- `category`: Optional category enum<br>- `topicKey`: Optional trimmed string, max 256 chars<br>- `allProjects`: Optional boolean | `service.getContext(input)` |
+| `muninn_link_symbol` | `MuninnLinkSymbolSchema` | - `observationId`: Trimmed string, min 1 char<br>- `symbol`: String (min 1 char) or `SymbolSchema` object | `service.linkSymbol(input.observationId, input.symbol)` |
+| `muninn_stats` | `MuninnStatsSchema` | - `allProjects`: Optional boolean (default: false) | `service.getStats(allProjects ? undefined : currentProject.id)` |
+
+#### Symbol Schema Refinement (`SymbolSchema`)
+
+Entity symbols accept string shorthands or structured objects. `SymbolSchema` enforces `.refine()`:
+
+```ts
+export const SymbolSchema = z
+  .object({
+    name: z.string().trim().nullish(),
+    filePath: z.string().trim().nullish(),
+    file_path: z.string().trim().nullish(),
+    identifier: z.string().trim().nullish(),
+    type: z.enum(["file", "function", "class", "interface", "module"]).nullish(),
+    entity_type: z.enum(["file", "function", "class", "interface", "module"]).nullish(),
+    id: z.string().trim().nullish(),
+  })
+  .passthrough()
+  .refine(
+    (s) => Boolean(s.name || s.identifier || s.filePath || s.file_path),
+    { message: "Symbol must provide at least one of name, identifier, or filePath" }
+  );
+```
+
+### Security Hardening & Robustness
+
+1. **Prototype Pollution Hardening**:
+   - `normalizeArgs` explicitly filters out `__proto__`, `constructor`, and `prototype` keys during object iteration.
+   - Prevents untrusted model payloads from mutating JavaScript runtime prototypes.
+2. **Nullish Argument Pruning & Serialization Normalization**:
+   - LLMs frequently serialize optional omitted tool fields as explicit `null` or `undefined`.
+   - `normalizeArgs` strips nullish entries before passing to Zod schemas, preventing unintended validation rejections.
+3. **Snake_Case Alias Translation**:
+   - Seamlessly remaps `topic_key` -> `topicKey`, `observation_id` -> `observationId`, and `all_projects` -> `allProjects`.
+4. **Defensive Argument Extraction**:
+   - Argument access and normalization are wrapped in `try...catch` within the tool call request handler, ensuring malformed non-object JSON payloads cannot throw unhandled exceptions.
+5. **Human-Readable Error Formatting (`formatZodErrors`)**:
+   - Recursively maps Zod validation issues to path-prefixed messages (`category: Invalid enum value`, `title: Observation title is required`).
+6. **Graceful Transport Isolation**:
+   - All tool errors return `{ isError: true, content: [{ type: "text", text: ... }] }` without dropping or terminating the JSON-RPC stdio transport stream.
+7. **Fatal Error Safety Net**:
+   - In `MemoryService.search()`, unexpected database disk I/O or corruption errors (`SQLITE_CORRUPT`, `SQLITE_IOERR`, `SQLITE_FULL`, `SQLITE_CANTOPEN`) are logged with `console.error` and rethrown, while non-fatal search query failures log warnings and return empty results.
+
+### Server Lifecycle & Entrypoints
+
+- **`createMcpServer(serviceOrOptions?)`**: Instantiates `@modelcontextprotocol/sdk` `Server`, registers `ListToolsRequestSchema` and `CallToolRequestSchema` handlers, and binds the `IMemoryService` instance.
+- **`startMcpServer(options?)`**: Instantiates `StdioServerTransport`, creates the server, and establishes the stdio connection. Used by the CLI runner (`huginn mcp run`).
 
 

@@ -119,15 +119,20 @@ The memory service must allow exporting memories to `.huginn/memories.jsonl` and
 - **AC-7.5**: Deduplication and fallback: skips existing observation IDs without overwriting, falls back to `currentProject.id` if referenced project ID is absent, defaults invalid categories to `'decision'`, and preserves custom entity IDs or creates new ones.
 - **AC-7.6**: Newly imported observations trigger automatic FTS5 synchronization via database triggers.
 
-### REQ-8: Model Context Protocol (MCP) Server
-An MCP server must expose Muninn tools via `@modelcontextprotocol/sdk` over `StdioServerTransport`.
-- **AC-8.1**: Implements JSON-RPC 2.0 communication over stdio.
-- **AC-8.2**: Registers `muninn_save` with Zod schema validation.
-- **AC-8.3**: Registers `muninn_search` with Zod schema validation.
-- **AC-8.4**: Registers `muninn_context` with Zod schema validation.
-- **AC-8.5**: Registers `muninn_link_symbol` with Zod schema validation.
-- **AC-8.6**: Registers `muninn_stats` with Zod schema validation.
-- **AC-8.7**: Errors in tool execution return standard MCP tool error responses rather than crashing the transport.
+### REQ-8: Model Context Protocol (MCP) Server Architecture & Tooling
+An MCP server must expose Muninn tools via `@modelcontextprotocol/sdk` over `StdioServerTransport` adhering to JSON-RPC 2.0 specifications with Zod validation, payload bounds, argument normalization, and prototype pollution hardening.
+- **AC-8.1 (Transport & Protocol)**: Implements standard JSON-RPC 2.0 communication over `stdio` using `StdioServerTransport`. Exposes factory helper `createMcpServer(serviceOrOptions?)` returning a configured `Server` and `startMcpServer(options?)` which instantiates and connects to `StdioServerTransport`.
+- **AC-8.2 (`muninn_save` Tool)**: Registers `muninn_save` with `MuninnSaveSchema`. Requires valid enum `category` (`decision`, `convention`, `discovery`, `bugfix`, `architecture`), non-empty trimmed `title` (1–1,000 characters), and non-empty trimmed `content` (1–1,000,000 characters). Accepts optional `topicKey` (trimmed, max 256 characters) and optional `symbols` array (max 500 items, containing strings or `SymbolSchema` objects requiring at least one identifier property). Atomically saves observation and links entities, returning the complete observation object.
+- **AC-8.3 (`muninn_search` Tool)**: Registers `muninn_search` with `MuninnSearchSchema`. Requires non-empty trimmed `query` (1–2,000 characters). Accepts optional `category` filter, optional `limit` (positive integer, 1–500, default: 10), and optional `allProjects` (boolean). Executes BM25-ranked full-text search and returns matching observations with relevance `rank` and linked entities.
+- **AC-8.4 (`muninn_context` Tool)**: Registers `muninn_context` with `MuninnContextSchema`. Accepts optional `limit` (positive integer, 1–500, default: 20), optional `category` filter, optional trimmed `topicKey` (max 256 characters), and optional `allProjects` (boolean). Returns recent observations ordered chronologically (`updated_at DESC, created_at DESC`).
+- **AC-8.5 (`muninn_link_symbol` Tool)**: Registers `muninn_link_symbol` with `MuninnLinkSymbolSchema`. Requires non-empty trimmed `observationId` and valid `symbol` (non-empty string or valid `SymbolSchema` object). Idempotently creates the link between observation and entity; returns `{ observation, entity }` or an MCP error response if the observation does not exist.
+- **AC-8.6 (`muninn_stats` Tool)**: Registers `muninn_stats` with `MuninnStatsSchema`. Accepts optional `allProjects` (boolean). Returns aggregate counts for `projects`, `observations`, `entities`, and `links` scoped to the current project or across all workspaces.
+- **AC-8.7 (Declarative `TOOL_REGISTRY` & `IMemoryService` Port)**: Tools are registered via a declarative dictionary `TOOL_REGISTRY: Record<string, ToolDefinition>` where each tool defines its `name`, `description`, `schema`, and `handler`. The server interacts with memory persistence exclusively through the `IMemoryService` interface, decoupling the protocol transport from concrete database and filesystem implementations.
+- **AC-8.8 (Argument Normalization & Prototype Pollution Defense)**: All incoming tool arguments pass through `normalizeArgs`:
+  - Prunes explicit `null` and `undefined` values so optional Zod parameters pass validation regardless of how client LLMs serialize omitted options.
+  - Hardens against prototype pollution by skipping dangerous keys (`__proto__`, `constructor`, `prototype`).
+  - Automatically maps `snake_case` aliases (`topic_key` -> `topicKey`, `observation_id` -> `observationId`, `all_projects` -> `allProjects`) to canonical property names.
+- **AC-8.9 (Graceful Tool Error Handling & Zod Formatting)**: Errors during tool execution and schema validation are caught and formatted into human-readable error messages (`formatZodErrors`). Returns structured error objects `{ isError: true, content: [{ type: "text", text: ... }] }` without dropping the stdio JSON-RPC transport stream. Fatal SQLite errors (e.g. disk I/O, database corruption) are logged to stderr and rethrown.
 
 ### REQ-9: CLI Commands Integration
 The Huginn CLI must expose memory operations and MCP runner.

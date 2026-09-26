@@ -279,7 +279,47 @@ The application core exposes `MemoryService` (`src/muninn/service/memory-service
   - Validates record structure, falling back to current project if a foreign `projectId` is missing, and defaulting invalid categories to `'decision'`.
   - Re-links and indexes all entities; imported observations are automatically indexed into FTS5 by database triggers.
 
+### Model Context Protocol (MCP) Server (`src/muninn/mcp/`)
 
+Muninn exposes its memory engine directly to AI coding agents (Claude Code, Cursor, OpenCode, Windsurf) through a standard Model Context Protocol (MCP) server:
+
+- **Transport**: JSON-RPC 2.0 communication over standard input/output (`stdio`) powered by `StdioServerTransport` from `@modelcontextprotocol/sdk`.
+- **Architecture**: Decoupled via the `IMemoryService` port interface (`src/muninn/service/index.ts`). The server accepts any compliant memory service instance or options to initialize its own.
+- **Declarative Tool Registry**: Defined via `TOOL_REGISTRY`, mapping tool names to strict Zod schemas and typed handlers.
+
+#### Available Tools
+
+| Tool | Description | Parameters |
+|---|---|---|
+| `muninn_save` | Saves an observation with optional linked entities. | `category` (`decision`, `convention`, `discovery`, `bugfix`, `architecture`), `title` (1–1,000 chars), `content` (1–1,000,000 chars), optional `topicKey` (<= 256 chars), optional `symbols` (array of up to 500 strings or Symbol objects). |
+| `muninn_search` | Full-text keyword search ranked with BM25 relevance. | `query` (1–2,000 chars), optional `category`, optional `limit` (1–500, default: 10), optional `allProjects` (boolean). |
+| `muninn_context` | Retrieves recent chronological observations for context injection. | optional `limit` (1–500, default: 20), optional `category`, optional `topicKey` (<= 256 chars), optional `allProjects` (boolean). |
+| `muninn_link_symbol` | Links a code symbol or file to an existing observation. | `observationId` (string), `symbol` (string or Symbol object with at least one of `name`, `identifier`, or `filePath`). |
+| `muninn_stats` | Returns aggregate metrics (`projects`, `observations`, `entities`, `links`). | optional `allProjects` (boolean). |
+
+#### Validation & Security Hardening
+
+- **Zod Schema Validation**: Every tool argument payload is validated with strict type, enum, and length constraints.
+- **Payload Bounds Defense**: Defensive upper bounds prevent denial-of-service via oversized payloads (titles clamped to 1,000 chars, content to 1,000,000 chars, topic keys to 256 chars, symbols arrays to 500 items, search queries to 2,000 chars, and result limits to 500).
+- **Nullish Normalization & Alias Translation**: `normalizeArgs` strips explicit `null` and `undefined` values sent by LLM clients for optional parameters and automatically maps `snake_case` aliases (`topic_key`, `observation_id`, `all_projects`) to their canonical `camelCase` equivalents.
+- **Prototype Pollution Prevention**: `normalizeArgs` ignores sensitive keys (`__proto__`, `constructor`, `prototype`) during argument processing.
+- **Symbol Refinement**: `SymbolSchema` requires at least one identifiable attribute (`name`, `identifier`, `filePath`, or `file_path`), rejecting empty `{}` symbol objects.
+- **Fail-Safe Tool Responses**: Tool handler errors and Zod validation failures are trapped and returned as structured tool error results (`isError: true` with formatted messages via `formatZodErrors`) rather than terminating the stdio transport connection.
+
+#### Agent Integration
+
+Configure the Muninn MCP server in your agent client (e.g. `.cursor/mcp.json` or OpenCode `mcp` settings):
+
+```json
+{
+  "mcpServers": {
+    "muninn": {
+      "command": "bun",
+      "args": ["run", "/path/to/huginn/src/cli.ts", "mcp", "run"]
+    }
+  }
+}
+```
 
 ## Environment variables
 
