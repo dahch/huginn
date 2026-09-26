@@ -66,6 +66,7 @@ The database must define relational tables for `projects`, `observations`, `enti
 - **AC-1.2**: Triggers `obs_ai`, `obs_ad`, and `obs_au` automatically synchronize additions, deletions, and updates in `observations` with `observations_fts`.
 - **AC-1.3**: Foreign keys are strictly enforced with cascading deletions (`ON DELETE CASCADE`).
 - **AC-1.4**: Schema constraints enforce domain integrity: `CHECK` constraints restrict observation `category` (`decision`, `convention`, `discovery`, `bugfix`, `architecture`) and `entity_type` (`file`, `function`, `class`, `interface`, `module`); `UNIQUE` constraints enforce distinct project `root_path` and `(project_id, identifier)` pairs on `entities`.
+- **AC-1.5**: Required relational indexes are created: `idx_observations_project_id`, `idx_observations_updated_at`, `idx_observations_project_updated` on `(project_id, updated_at DESC, created_at DESC)`, `idx_projects_root_path`, `idx_entities_project_id`, `idx_entities_identifier`, `idx_entities_project_identifier`, and `idx_observation_entities_entity_id`.
 
 ### REQ-2: Database Connection, Pragmas & Auto-Migration
 The client must initialize the SQLite connection, resolve database paths based on git repository presence, configure essential pragmas, and auto-apply migrations on startup.
@@ -81,37 +82,42 @@ The client must initialize the SQLite connection, resolve database paths based o
 - **AC-2.6**: Schema migrations execute automatically if tables do not exist, loading from `schema.sql` on disk or falling back to embedded `SCHEMA_SQL`. Connection handles are cleanly closed if initialization fails.
 - **AC-2.7**: `ensureProject(db, options?)` idempotently resolves or inserts project records; git remotes are inspected from `.git/config` and sanitized via `sanitizeGitRemote` to strip embedded basic auth credentials (`https://user:pass@host/...`).
 
-### REQ-3: Observation Creation & Entity Linking
-The memory service must provide `saveObservation` to store structured observations and optionally link them to code symbols in one atomic transaction.
-- **AC-3.1**: Accepts `category` (must be `decision`, `convention`, `discovery`, `bugfix`, or `architecture`), `title`, `content`, optional `topicKey`, and optional array of `symbols`.
-- **AC-3.2**: Each symbol specifies `name` or `identifier`, `type` (`file`, `function`, `class`, `interface`, `module`), and `filePath`.
-- **AC-3.3**: Reuses existing entity records with the same identifier and project, or creates new ones.
-- **AC-3.4**: Returns the saved observation with generated ID, timestamps, and linked entities.
+### REQ-3: Observation Creation & Entity Linking (`saveObservation`)
+The memory service must provide `saveObservation` to store structured observations and link them to code symbols in one atomic transaction.
+- **AC-3.1**: Enforces category validation against `VALID_CATEGORIES` (`decision`, `convention`, `discovery`, `bugfix`, `architecture`), requiring non-empty string `title` and string `content`.
+- **AC-3.2**: Symbol normalization via `normalizeSymbol`: handles string symbols (`path/to/file.ts`, `module::symbol`, `plainSymbol`), object shapes (`{ name, filePath, type, identifier }`), and snake_case aliases (`file_path`, `entity_type`), defaulting entity types (`file` when path provided, otherwise `module`), and safely handling corrupted or empty inputs.
+- **AC-3.3**: Deduplicates symbols within the same observation, reuses existing entity records matching `(project_id, identifier)`, and creates join rows in `observation_entities`.
+- **AC-3.4**: Executes all operations within an atomic `db.transaction()`, returning the persisted observation with its generated UUID, timestamps, and attached `entities`.
 
-### REQ-4: Full-Text Search with BM25 Ranking
+### REQ-4: Full-Text Search with BM25 Ranking (`search`)
 The memory service must provide `search` querying `observations_fts` and ranking results by relevance.
 - **AC-4.1**: Searches across `title`, `content`, and `topic_key` using SQLite FTS5 `MATCH`.
-- **AC-4.2**: Results are ranked by BM25 relevance score (`bm25(observations_fts)`).
-- **AC-4.3**: Supports optional filtering by `category` and configurable result `limit` (default: 10).
-- **AC-4.4**: User queries are sanitized so special characters (e.g. `:`, `/`, `*`, `"`) do not cause FTS5 syntax errors.
-- **AC-4.5**: Each returned result includes the observation details, rank score, and associated entities.
+- **AC-4.2**: Results are ranked by BM25 relevance score (`bm25(observations_fts) ASC`), ordering most relevant results first.
+- **AC-4.3**: Query sanitization via `sanitizeFtsQuery` extracts terms and quoted phrases, wraps terms in double quotes, preserves valid prefix queries (`"prefix"*`), and strips pure punctuation syntax operators to prevent FTS5 syntax errors. Empty or whitespace queries return an empty array without throwing.
+- **AC-4.4**: Supports project scoping (defaults to `currentProject.id`, overridable by explicit `projectId` / `project_id`, or disabled with `allProjects: true`), and category filtering.
+- **AC-4.5**: Result limits are clamped between `1` and `500` (default: `10`).
+- **AC-4.6**: Each returned result includes the observation record, BM25 `rank`, and all attached `entities`.
 
-### REQ-5: Context Retrieval for Prompts
+### REQ-5: Context Retrieval for Prompts (`getContext`)
 The memory service must provide `getContext` to retrieve relevant observations for prompt context injection.
-- **AC-5.1**: Retrieves observations ordered by `updated_at DESC` up to `limit` (default: 20).
-- **AC-5.2**: Supports optional filtering by `category` or `topicKey`.
-- **AC-5.3**: Returns observations with their associated code symbols.
+- **AC-5.1**: Retrieves observations ordered chronologically by `updated_at DESC, created_at DESC`, utilizing `idx_observations_project_updated`.
+- **AC-5.2**: Supports filtering by `category`, `topicKey` / `topic_key`, and `projectId` / `project_id` (or `allProjects: true`).
+- **AC-5.3**: Limits are clamped between `1` and `500` (default: `20`).
+- **AC-5.4**: Fetches and attaches linked entities in chunks of at most 500 observation IDs at a time to prevent exceeding SQLite parameter bounds.
 
-### REQ-6: Symbol Linking & Statistics
+### REQ-6: Symbol Linking & Statistics (`linkSymbol`, `getStats`)
 The memory service must support explicit symbol linking via `linkSymbol` and aggregate metrics via `getStats`.
-- **AC-6.1**: `linkSymbol(observationId, symbol)` associates an entity with an observation idempotently.
-- **AC-6.2**: `getStats()` returns counts for projects, observations, entities, and observation_entities.
+- **AC-6.1**: `linkSymbol` accepts object input (`{ observationId, symbol }`) or positional arguments `(observationId, symbol)`, normalizes the symbol, resolves or creates the entity, and idempotently creates the link (`INSERT OR IGNORE`) in an atomic transaction.
+- **AC-6.2**: `getStats(projectId?)` returns metrics (`projects`, `observations`, `entities`, `links`), supporting global counts or project-specific scoping.
 
-### REQ-7: JSONL Disk Synchronization & Import
+### REQ-7: JSONL Disk Synchronization & Import (`syncToDisk`, `importFromDisk`)
 The memory service must allow exporting memories to `.huginn/memories.jsonl` and importing them from disk.
-- **AC-7.1**: `syncToDisk(targetPath?)` exports all observations and linked entities as JSON lines into `.huginn/memories.jsonl` (or custom path).
-- **AC-7.2**: `importFromDisk(sourcePath?)` reads `.huginn/memories.jsonl` and imports observations and entities idempotently without duplicate records.
-- **AC-7.3**: Newly imported observations are automatically indexed in FTS5.
+- **AC-7.1**: `syncToDisk(targetPath?, options?)` exports all observations with linked entities as JSON Lines (`.jsonl`), defaulting to `<project_root>/.huginn/memories.jsonl` (with fallback to git root or current working directory).
+- **AC-7.2**: Atomic file write with mode `0o600`: writes export data to `<targetPath>.tmp` with mode `0o600` (`rw-------`), ensures permissions via `chmod`, and replaces the target file via atomic `renameSync`. Unlinks `.tmp` on failure.
+- **AC-7.3**: `importFromDisk(sourcePath?)` reads JSON Lines from disk and idempotently imports observations and entities within a single transaction.
+- **AC-7.4**: Strict record validation: verifies string types for `id`, `title`, and `content`, skipping malformed or blank lines.
+- **AC-7.5**: Deduplication and fallback: skips existing observation IDs without overwriting, falls back to `currentProject.id` if referenced project ID is absent, defaults invalid categories to `'decision'`, and preserves custom entity IDs or creates new ones.
+- **AC-7.6**: Newly imported observations trigger automatic FTS5 synchronization via database triggers.
 
 ### REQ-8: Model Context Protocol (MCP) Server
 An MCP server must expose Muninn tools via `@modelcontextprotocol/sdk` over `StdioServerTransport`.

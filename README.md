@@ -221,7 +221,7 @@ If a run is interrupted, just re-run the same command and it auto-resumes from t
 
 ## Muninn Memory Engine (`.huginn/`)
 
-Huginn includes the **Muninn memory engine** (`src/muninn/db/`), an embedded, persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5:
+Huginn includes the **Muninn memory engine** (`src/muninn/`), an embedded, persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5:
 
 - **Path Resolution**:
   - Automatically resolves to `<git_root>/.huginn/muninn.db` when operating inside a git repository.
@@ -234,11 +234,51 @@ Huginn includes the **Muninn memory engine** (`src/muninn/db/`), an embedded, pe
   - `foreign_keys = ON`: Strict foreign key enforcement with cascading deletions (`ON DELETE CASCADE`).
   - `recursive_triggers = ON`: Ensures cascading row deletes activate FTS5 synchronization triggers.
   - `busy_timeout = 5000`: 5-second queue wait during database lock contention.
+  - Indexed via `idx_observations_project_updated` on `(project_id, updated_at DESC, created_at DESC)` for fast chronological retrieval.
 - **FTS5 Full-Text Search**:
   - Real-time indexing of `title`, `content`, and `topic_key` via `observations_fts` virtual table.
   - Kept in sync automatically by database triggers (`obs_ai`, `obs_ad`, `obs_au`).
 - **Security & Privacy**:
   - Git remote URLs in the `projects` table have embedded basic auth credentials stripped prior to storage.
+  - Exported memory files (`.huginn/memories.jsonl`) are written with restrictive owner-only permissions (`0o600`).
+
+### MemoryService API (`src/muninn/service/`)
+
+The application core exposes `MemoryService` (`src/muninn/service/memory-service.ts`) for high-level memory operations:
+
+- **`saveObservation(input)`**:
+  - Transactionally creates an observation and links any provided symbols in a single atomic transaction.
+  - Enforces strict category validation (`decision`, `convention`, `discovery`, `bugfix`, `architecture`).
+  - Accepts flexible symbol shapes (`string`, `{ name, filePath, type }`, or `{ identifier }`), normalizing them via `normalizeSymbol`.
+  - Reuses existing entities within the project and deduplicates identical symbols attached to the same observation.
+  - Returns the newly created observation with generated UUID and attached `entities`.
+- **`search(options)`**:
+  - Full-text search across `title`, `content`, and `topic_key` using SQLite FTS5 `MATCH`.
+  - Ranks matches by BM25 relevance (`bm25(observations_fts) ASC`, lower score = higher relevance).
+  - Sanitizes user input via `sanitizeFtsQuery` (escapes quotes, handles paths, slashes, colons, and prefix `*` wildcards safely) to prevent FTS5 syntax errors.
+  - Scopes searches to the current project by default (override with `allProjects: true` or explicit `projectId`).
+  - Clamps result limits between `1` and `500` (default: `10`).
+  - Returns matches with BM25 `rank` and all linked `entities` attached.
+- **`getContext(options)`**:
+  - Retrieves recent observations ordered chronologically by `updated_at DESC, created_at DESC`.
+  - Supports filtering by `category`, `topicKey`, and `projectId`.
+  - Clamps limits between `1` and `500` (default: `20`).
+  - Fetches and attaches linked entities in safe chunks (max 500 items per batch) to respect SQLite parameter limits.
+- **`linkSymbol(observationId, symbol)` / `linkSymbol(input)`**:
+  - Explicitly links a code symbol or file to an existing observation within an atomic transaction.
+  - Idempotent: re-linking an already associated entity executes cleanly without creating duplicate links.
+- **`getStats(projectId?)`**:
+  - Returns aggregate counts for `projects`, `observations`, `entities`, and `links` (`observation_entities`).
+  - Supports global aggregation or scoping to a specific `projectId`.
+- **`syncToDisk(targetPath?, options?)`**:
+  - Exports observations and linked entities to a portable JSON Lines (`.jsonl`) file, defaulting to `<project_root>/.huginn/memories.jsonl`.
+  - Safe atomic write: writes content to a temporary `.tmp` file with `0o600` permissions (`rw-------`), ensures permissions via `chmod`, and replaces the target via `renameSync`.
+- **`importFromDisk(sourcePath?)`**:
+  - Idempotently imports records from `.huginn/memories.jsonl` (or custom path) inside a single transaction.
+  - Automatically skips records whose observation `id` already exists.
+  - Validates record structure, falling back to current project if a foreign `projectId` is missing, and defaulting invalid categories to `'decision'`.
+  - Re-links and indexes all entities; imported observations are automatically indexed into FTS5 by database triggers.
+
 
 
 ## Environment variables

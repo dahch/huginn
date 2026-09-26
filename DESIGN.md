@@ -48,9 +48,12 @@ src/
 │   ├── engineEvents.ts     global typed event emitter
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
 ├── muninn/
-│   └── db/
-│       ├── client.ts       better-sqlite3 initialization, pragmas, path resolution, ensureProject, sanitizeGitRemote
-│       └── schema.sql      DDL for projects, observations, observations_fts, entities, observation_entities
+│   ├── db/
+│   │   ├── client.ts       better-sqlite3 initialization, pragmas, path resolution, ensureProject, sanitizeGitRemote
+│   │   └── schema.sql      DDL for projects, observations, observations_fts, entities, observation_entities
+│   └── service/
+│       ├── index.ts        re-exports MemoryService and types
+│       └── memory-service.ts MemoryService core: saveObservation, search, getContext, linkSymbol, getStats, syncToDisk, importFromDisk
 ├── server/
 │   ├── lifecycle.ts        spawn/kill `opencode serve`, health polling, server.log
 │   └── client.ts           SDK wrapper: createClient, prompt/runCommand, withTimeout
@@ -479,6 +482,9 @@ flowchart LR
    headless aborts gate decisions rather than hanging.
 7. **Memory database integrity & privacy**: `muninn.db` runs in WAL mode with foreign keys enabled (`ON DELETE CASCADE`) and `recursive_triggers = ON`; FTS5 indexes are automatically synchronized via database triggers (`obs_ai`, `obs_ad`, `obs_au`); and git remote URLs are sanitized of basic auth credentials before persistence. Non-memory database directories are created with `0o700` (`rwx------`) permissions.
 8. **`.huginn/` storage isolation**: Project-local SQLite database files (`muninn.db`, `muninn.db-wal`, `muninn.db-shm`) reside under `<git_root>/.huginn/` and are excluded in `.gitignore`.
+9. **FTS5 Query Sanitization**: User-supplied search queries are never passed raw to SQLite FTS5 `MATCH`; `sanitizeFtsQuery` tokenizes input, wraps terms in double quotes, safely handles prefix `*` wildcards, and strips punctuation-only syntax operators to prevent FTS5 syntax errors.
+10. **Atomic JSONL Disk Writes with `0o600` Permissions**: `syncToDisk` writes to `.tmp` files with owner-only `0o600` permissions (`rw-------`) before atomic rename, preventing permission leakage and corrupted partial exports.
+11. **Chunked In-Memory Join Queries**: Entity hydration queries for observations are capped at 500 parameters per chunk to ensure queries never breach SQLite host parameter boundaries (`SQLITE_LIMIT_VARIABLE_NUMBER`).
 
 ## 12. Key tradeoffs (summary; full rationale in ADR.md)
 
@@ -599,7 +605,7 @@ erDiagram
    - `category TEXT NOT NULL` constrained by `CHECK(category IN ('decision', 'convention', 'discovery', 'bugfix', 'architecture'))`.
    - `title TEXT NOT NULL`, `content TEXT NOT NULL`, `topic_key TEXT`.
    - Timestamps `created_at` and `updated_at`.
-   - Indexes: `idx_observations_project_id`, `idx_observations_updated_at`.
+   - Indexes: `idx_observations_project_id`, `idx_observations_updated_at`, and `idx_observations_project_updated ON observations(project_id, updated_at DESC, created_at DESC)`.
 
 3. **`observations_fts` (SQLite FTS5 Virtual Table)**:
    - External-content FTS5 table indexing `title`, `content`, and `topic_key` referencing `observations` via `content='observations', content_rowid='rowid'`.
@@ -632,4 +638,150 @@ erDiagram
   - Detects and strips user and password authentication tokens embedded in URLs (e.g. `https://oauth2:token@github.com/...` -> `https://github.com/...`).
   - Supports standard HTTP(S) URLs as well as SSH and SCP-like syntax.
   - Guarantees sensitive personal access tokens or credentials are never leaked into the database.
+
+## 14. Muninn Memory Engine — MemoryService Core & Persistence API
+
+The `MemoryService` (`src/muninn/service/memory-service.ts`) sits at the application core of the Muninn subsystem. It encapsulates business rules, SQLite transactions, symbol normalization, FTS5 query sanitization, and portable disk synchronization.
+
+### Architecture & Component Interaction
+
+```mermaid
+flowchart TD
+    subgraph Consumers["Driving Adapters"]
+        CLI["Huginn CLI (huginn memory ...)"]
+        MCP["MCP Server (stdio JSON-RPC)"]
+        Agent["AI Coding Agents"]
+    end
+
+    subgraph ServiceCore["MemoryService (src/muninn/service/)"]
+        MS["MemoryService"]
+        Norm["normalizeSymbol()"]
+        Sanitize["sanitizeFtsQuery()"]
+        Chunk["_fetchEntitiesForObservations()"]
+    end
+
+    subgraph Storage["Persistence Layer (src/muninn/db/)"]
+        DB[("better-sqlite3 (WAL Mode)")]
+        FTS[("observations_fts (FTS5)")]
+        Disk[(".huginn/memories.jsonl (0o600)")]
+    end
+
+    Consumers --> MS
+    MS --> Norm
+    MS --> Sanitize
+    MS --> Chunk
+    MS --> DB
+    DB -. "Triggers (obs_ai/ad/au)" .-> FTS
+    MS <--> Disk
+```
+
+### Detailed Method Specifications
+
+#### 1. `saveObservation(input: SaveObservationInput): ObservationWithEntities`
+
+Creates a new observation and links code symbols in a single atomic transaction (`db.transaction`):
+
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant S as MemoryService
+    participant DB as SQLite DB
+    participant T as FTS5 Triggers
+
+    C->>S: saveObservation(category, title, content, symbols)
+    Note over S: Validate category against VALID_CATEGORIES
+    Note over S: Verify title & content are non-empty strings
+    S->>DB: BEGIN TRANSACTION
+    S->>DB: INSERT INTO observations (id, project_id, category, title, content, topic_key)
+    DB-->>T: obs_ai trigger fires to update observations_fts
+    loop For each symbol
+        Note over S: normalizeSymbol(symbol)
+        S->>DB: SELECT id FROM entities WHERE project_id AND identifier
+        alt Entity exists
+            Note over S: Reuse existing entity ID
+        else Entity does not exist
+            S->>DB: INSERT INTO entities (id, project_id, entity_type, identifier, file_path)
+        end
+        S->>DB: INSERT OR IGNORE INTO observation_entities (observation_id, entity_id)
+    end
+    S->>DB: COMMIT TRANSACTION
+    S-->>C: ObservationWithEntities
+```
+
+- **Category Validation**: Must match one of `VALID_CATEGORIES` (`"decision"`, `"convention"`, `"discovery"`, `"bugfix"`, `"architecture"`). Throws an error for invalid categories.
+- **Symbol Normalization (`normalizeSymbol`)**: Accepts string shorthand (`"src/db.ts::connect"`, `"src/config.ts"`, `"myFunc"`) or structured objects (`{ name, filePath, type, identifier }`). Generates canonical identifiers, resolves file paths, and assigns entity types (`file`, `function`, `class`, `interface`, `module`).
+- **Entity Deduplication**: Identical normalized symbols within the same observation input are deduplicated before insertion.
+- **Transaction Safety**: Insertion of the observation row, creation of new entities, and linking in `observation_entities` are completely atomic.
+
+#### 2. `search(options: SearchOptions): SearchResult[]`
+
+Executes BM25 full-text keyword searches across observations:
+
+- **Query Sanitization (`sanitizeFtsQuery`)**:
+  - Regex tokenization extracts double-quoted phrases and individual words.
+  - Alphanumeric words and phrases are wrapped in double quotes (e.g. `"MemoryService::saveObservation"`, `"src/client.ts"`) to treat punctuation, slashes, and colons as literal search terms rather than FTS5 syntax operators.
+  - Trailing asterisks are preserved for prefix search (`"token"*`).
+  - Standalone syntax operators (e.g. `*`, `///`, `:::`, `---`) and empty whitespace queries are stripped. If no valid terms remain, an empty array `[]` is returned safely without executing the query or throwing syntax errors.
+- **Relevance Ranking**: Results are ordered by `bm25(observations_fts) ASC` (in SQLite FTS5 BM25, lower scores indicate higher relevance).
+- **Project Scoping**: Searches default to `currentProject.id`. Scoping can be overridden with an explicit `projectId` / `project_id`, or expanded globally with `allProjects: true`.
+- **Entity Attachment**: Hydrates linked entities for all matching observations via `_fetchEntitiesForObservations`.
+- **Limit Clamping**: Limits are clamped between `1` and `500` (default: `10`).
+
+#### 3. `getContext(options?: ContextOptions): ObservationWithEntities[]`
+
+Retrieves recent observations for context window injection:
+
+- **Chronological Ordering**: Ordered by `updated_at DESC, created_at DESC`.
+- **Performance Optimization**: Accelerated by the compound index `idx_observations_project_updated ON observations(project_id, updated_at DESC, created_at DESC)`.
+- **Filters**: Supports filtering by `category`, `topicKey` / `topic_key`, and `projectId` / `project_id` (or `allProjects: true`).
+- **Chunked Entity Fetching (`_fetchEntitiesForObservations`)**:
+  - Joins between observations and entities are loaded in batches of at most 500 observation IDs at a time (`WHERE oe.observation_id IN (?, ?, ...)`).
+  - This avoids exceeding SQLite host parameter limits (`SQLITE_LIMIT_VARIABLE_NUMBER`) even when requesting up to 500 observations.
+- **Limit Clamping**: Limits are clamped between `1` and `500` (default: `20`).
+
+#### 4. `linkSymbol(inputOrObsId, symbolArg)`
+
+Associates an entity with an existing observation:
+
+- **Flexible Signatures**: Supports object input `{ observationId, symbol, projectId? }` (with `observation_id` alias) or positional arguments `(observationId: string, symbol: SymbolInput | string)`.
+- **Existence Verification**: Verifies the observation exists; throws if not found.
+- **Idempotency**: Executes inside `db.transaction()` using `INSERT OR IGNORE INTO observation_entities`, ensuring duplicate calls do not throw or duplicate join records.
+
+#### 5. `getStats(projectId?: string): MemoryStats`
+
+Returns aggregate system metrics:
+
+- Returns `{ projects: number, observations: number, entities: number, links: number }`.
+- When `projectId` is passed, metrics are scoped to that project; when omitted, counts are aggregated across all workspaces.
+
+#### 6. `syncToDisk(targetPath?, options?): { path: string; count: number }`
+
+Exports observations and linked entities to a portable JSON Lines (`.jsonl`) file:
+
+- **Path Resolution**: Defaults to `<project_root>/.huginn/memories.jsonl`. Relative paths resolve against `currentProject.root_path` (with fallback to git root or `process.cwd()`).
+- **Atomic File Writing**:
+  - Content is formatted as newline-delimited JSON (`.jsonl`).
+  - Writes to a temporary file `<resolvedPath>.tmp` with mode `0o600` (`rw-------`).
+  - Enforces `0o600` file permissions via `fs.chmodSync`.
+  - Atomically replaces the target file via `fs.renameSync(tmpPath, resolvedPath)`.
+  - In the event of an error, cleans up the `.tmp` file to prevent lingering temporary files.
+- **Project Filtering**: Exports the current project by default (or explicit `options.projectId`), or all projects when `allProjects: true`.
+
+#### 7. `importFromDisk(sourcePath?): { imported: number; skipped: number }`
+
+Idempotently imports observations and entities from `.jsonl` files into the database:
+
+- **Path Resolution**: Defaults to `<project_root>/.huginn/memories.jsonl` (or custom path).
+- **Line-by-Line Streaming**: Parses each JSON line independently; malformed lines or non-object entries are skipped without aborting valid lines.
+- **Type Integrity**: Strictly verifies that `id`, `title`, and `content` are non-empty strings.
+- **Idempotency**: Checks `SELECT id FROM observations WHERE id = ?`. If an observation with the given UUID already exists, it is counted as `skipped` and not re-inserted.
+- **Project & Category Fallbacks**:
+  - If the record's `project_id` does not exist in `projects`, falls back to `currentProject.id`.
+  - If the record's `category` is not in `VALID_CATEGORIES`, defaults to `'decision'`.
+- **Entity Resolution**:
+  - Reuses existing entities matching `(project_id, identifier)` or creates new entities, preserving custom entity IDs from the file when present.
+  - Links observations and entities via `INSERT OR IGNORE`.
+- **Automatic FTS Synchronization**: As records are inserted, SQLite triggers (`obs_ai`) automatically index each observation in `observations_fts`.
+- **Single Transaction**: The entire import executes within a single `db.transaction()` block for speed and all-or-nothing consistency.
+
 

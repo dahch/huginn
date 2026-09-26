@@ -440,3 +440,36 @@ avoids. They are ordered by how central the decision is to the design.
 - **Consequences**:
   - *Positive*: Zero external dependencies or paid embedding APIs; lightning-fast BM25 lexical search combined with code symbol graph navigation; standard JSON-RPC 2.0 stdio MCP server pluggable into any agent IDE; deterministic context retrieval; portable JSONL git sync; robust data integrity via foreign keys, WAL mode, recursive triggers, and busy timeout.
   - *Negative*: Native SQLite binary bindings must compile cleanly across platforms (macOS, Linux, Windows), mitigated by `better-sqlite3` prebuilds.
+
+## ADR-15: MemoryService — Safe BM25 FTS5 Search, Transactional Entity Graph, and Atomic 0o600 JSONL Sync
+
+- **Date**: 2026-09-26
+- **Status**: Accepted
+- **Context**: The low-level database layer provides SQLite tables and FTS5 triggers, but application-level consumers (the CLI, future MCP server, and agent tools) require a unified service abstraction. Interacting directly with SQLite FTS5 introduces critical edge cases: raw user input with slashes, colons, or punctuation (common in file paths and code symbols like `src/auth.ts::verifyToken`) crashes SQLite FTS5 with syntax errors; loading entities for hundreds of search results can exceed SQLite's host parameter limit (`SQLITE_LIMIT_VARIABLE_NUMBER`, typically 999 or 32766); file exports could leave partial writes or expose sensitive project notes via default world-readable file permissions; and symbol association must be transactional and idempotent.
+- **Decision**:
+  1. Implement `MemoryService` in `src/muninn/service/memory-service.ts` managing the database lifecycle, current project context via `ensureProject`, and transactional memory operations.
+  2. Implement `sanitizeFtsQuery` to tokenize raw search strings:
+     - Extracts double-quoted phrases and standalone alphanumeric terms.
+     - Wraps individual terms in quotes (`"term"`) to treat punctuation, slashes, and colons as literal search strings rather than FTS5 boolean operators.
+     - Preserves valid prefix searches ending with `*` (`"prefix"*`).
+     - Discards standalone syntax operators (`*`, `:::`, `///`) and returns an empty query to safely return `[]` without throwing FTS5 syntax exceptions.
+  3. Enforce atomic transactional consistency in `saveObservation`:
+     - Validates category against `VALID_CATEGORIES` (`decision`, `convention`, `discovery`, `bugfix`, `architecture`).
+     - Normalizes symbols into `{ identifier, filePath, entityType }` via `normalizeSymbol`, deduplicating identical symbols within the observation input.
+     - Reuses existing entities matching `(project_id, identifier)` and links them via `observation_entities` within a single `db.transaction()` block.
+  4. Optimize chronological context retrieval with `idx_observations_project_updated`:
+     - Adds composite index `idx_observations_project_updated ON observations(project_id, updated_at DESC, created_at DESC)`.
+     - `getContext` queries use this index to avoid full table scans.
+  5. Chunk entity association queries (`_fetchEntitiesForObservations`):
+     - For both `search` and `getContext`, entity joins for matching observation IDs are fetched in chunks of at most 500 parameters (`IN (?, ?, ...)`), completely insulating the system against SQLite variable limit exhaustion.
+  6. Implement atomic, secure disk synchronization (`syncToDisk`):
+     - Formats observations and linked entities into JSON Lines (`.jsonl`).
+     - Writes to `<targetPath>.tmp` with explicit restrictive file permissions `0o600` (`rw-------`), ensures mode via `chmod`, and replaces the target file via atomic filesystem `renameSync`. Cleans up `.tmp` on write failures.
+  7. Implement idempotent, fault-tolerant ingestion (`importFromDisk`):
+     - Parses line-by-line within a single database transaction.
+     - Skips records with existing observation IDs (no duplicate inserts).
+     - Validates string types for `id`, `title`, and `content`, falling back to `currentProject.id` if referenced projects are unknown, and defaulting invalid categories to `'decision'`.
+- **Consequences**:
+  - *Positive*: Complete immunity to SQLite FTS5 syntax injection/crashes; atomic writes ensure zero corrupt/partial `.jsonl` files; owner-only `0o600` permissions prevent local credential or architectural note leakage; chunked entity queries guarantee scalability over large result sets; symbol normalization simplifies agent integrations.
+  - *Negative*: Two-tier data representation (SQLite relational database + `.huginn/memories.jsonl` export) requires deliberate synchronization via `syncToDisk` and `importFromDisk`.
+
