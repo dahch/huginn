@@ -111,6 +111,24 @@ describe("Muninn Database Layer & SQLite FTS5 Schema", () => {
       expect(tableNames).toContain("observation_entities");
     });
 
+    it("creates all required relational indexes including idx_observations_project_updated (REV-008)", () => {
+      const indexes = db
+        .prepare<[], { name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
+        .all();
+      const indexNames = indexes.map((i) => i.name);
+
+      expect(indexNames).toContain("idx_observations_project_id");
+      expect(indexNames).toContain("idx_observations_updated_at");
+      expect(indexNames).toContain("idx_observations_project_updated");
+      expect(indexNames).toContain("idx_projects_root_path");
+      expect(indexNames).toContain("idx_entities_project_id");
+      expect(indexNames).toContain("idx_entities_identifier");
+      expect(indexNames).toContain("idx_entities_project_identifier");
+      expect(indexNames).toContain("idx_observation_entities_entity_id");
+    });
+
     it("creates all required FTS5 triggers", () => {
       const triggers = db
         .prepare<[], { name: string }>(
