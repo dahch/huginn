@@ -4,6 +4,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
@@ -101,7 +102,7 @@ export const AGENT_REGISTRY: Record<AgentTarget, AgentSpec> = {
   },
   agy: {
     id: "agy",
-    label: "Antigravity CLI",
+    label: "Antigravity CLI (agy)",
     format: "mcpServers",
     mcpPaths: [
       "{home}/.gemini/config/mcp_config.json",
@@ -260,9 +261,20 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * Write `body` to `path` atomically with an exclusive, symlink-safe temp file
  * (AC-15.6): `wx` create with a random suffix, so a pre-existing symlink at the
  * temp name is never followed (EEXIST retries once), then rename into place.
+ *
+ * SEC-1001: an existing target keeps its current permission bits — a config the
+ * user hardened to `0o600` is never widened. New files are created with
+ * `defaultMode` (callers pass `0o600` for MCP configs, `0o644` for rules files).
+ * Parent directories are created with `0o700`.
  */
-function writeAtomic(path: string, body: string, mode: number): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+function writeAtomic(path: string, body: string, defaultMode: number): void {
+  let mode = defaultMode;
+  try {
+    mode = statSync(path).mode & 0o777;
+  } catch {
+    // target does not exist yet → default for a new file
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
@@ -347,7 +359,7 @@ function mergeJsonFile(
   }
   container.muninn = desired;
   root[containerKey] = container;
-  writeAtomic(path, `${JSON.stringify(root, null, 2)}\n`, 0o644);
+  writeAtomic(path, `${JSON.stringify(root, null, 2)}\n`, 0o600);
   return { changed: true, skipped: false };
 }
 
@@ -476,7 +488,7 @@ function registerTomlPath(
       `[huginn] setup ${target}: ${(err as Error).message} in ${path}; file left untouched`,
     );
   }
-  if (merged.changed) writeAtomic(path, merged.content, 0o644);
+  if (merged.changed) writeAtomic(path, merged.content, 0o600);
   return { target, path, format: "toml", changed: merged.changed, skipped: merged.skipped };
 }
 

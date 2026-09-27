@@ -18,6 +18,13 @@ export interface PhaseContext {
   sessionId: string;
   models: Models;
   projectPath: string;
+  /**
+   * Directory the server-side agent session is scoped to (REQ-17). When
+   * sandboxing is enabled this is the worktree path, so the agent's tools edit
+   * the sandbox rather than the primary working tree. Falls back to
+   * {@link projectPath} when omitted.
+   */
+  directory?: string;
   iteration: Iteration;
   specPath: string;
   adrPath: string;
@@ -26,6 +33,11 @@ export interface PhaseContext {
   baseCommit?: string;
   phaseTimeoutMs: number;
   dbPath?: string;
+}
+
+/** The sandbox-scoped directory every prompt/command should run against. */
+function agentDirectory(ctx: PhaseContext): string {
+  return ctx.directory ?? ctx.projectPath;
 }
 
 function readOptional(path: string): string {
@@ -64,7 +76,7 @@ export async function specAudit(ctx: PhaseContext): Promise<PromptResult> {
     ``,
     `Produce the full Spec Audit Report as defined in your system prompt, ending with the "Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION" line.`,
   ].join("\n");
-  return prompt(ctx.client, ctx.sessionId, { text, agent: "spec-auditor", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs });
+  return prompt(ctx.client, ctx.sessionId, { text, agent: "spec-auditor", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
 }
 
 export async function execute(ctx: PhaseContext): Promise<PromptResult> {
@@ -75,7 +87,7 @@ export async function execute(ctx: PhaseContext): Promise<PromptResult> {
     ``,
     ctx.iteration.prompt,
   ].join("\n");
-  return prompt(ctx.client, ctx.sessionId, { text, agent: "build", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs });
+  return prompt(ctx.client, ctx.sessionId, { text, agent: "build", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
 }
 
 const EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build"]);
@@ -186,6 +198,7 @@ export async function validateStep(ctx: PhaseContext): Promise<PromptResult> {
     arguments: args,
     model: formatModel(ctx.models.executor),
     timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
   });
 }
 
@@ -195,6 +208,7 @@ export async function testModule(ctx: PhaseContext): Promise<PromptResult> {
     arguments: ctx.modules.join(" "),
     model: formatModel(ctx.models.executor),
     timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
   });
 }
 
@@ -204,6 +218,7 @@ export async function secureCheck(ctx: PhaseContext): Promise<PromptResult> {
     arguments: "",
     model: formatModel(ctx.models.executor),
     timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
   });
 }
 
@@ -213,6 +228,7 @@ export async function review(ctx: PhaseContext): Promise<PromptResult> {
     arguments: "",
     model: formatModel(ctx.models.executor),
     timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
   });
 }
 
@@ -222,6 +238,7 @@ export async function docSync(ctx: PhaseContext): Promise<PromptResult> {
     arguments: "",
     model: formatModel(ctx.models.executor),
     timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
   });
 }
 
@@ -241,6 +258,7 @@ export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
     arguments: "",
     model: formatModel(ctx.models.executor),
     timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
   });
 
   // Post-execution: Automatically index modified files into Muninn AST symbol graph
@@ -300,7 +318,7 @@ export async function fixFindings(
     ``,
     `Apply the fixes, then summarize exactly what you changed and why.`,
   ].join("\n");
-  return prompt(ctx.client, ctx.sessionId, { text, agent: "build", model: ctx.models.thinker, timeoutMs: ctx.phaseTimeoutMs });
+  return prompt(ctx.client, ctx.sessionId, { text, agent: "build", model: ctx.models.thinker, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
 }
 
 export async function fixSpec(ctx: PhaseContext, report: string): Promise<PromptResult> {

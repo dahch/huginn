@@ -157,13 +157,14 @@ describe("WorktreeManager — promotion (AC-17.4)", () => {
     expect(branchExists(root, sandbox.branch)).toBe(false);
   });
 
-  it("reports a conflict without corrupting the primary branch", () => {
+  it("reports a conflict, restores the primary branch and preserves the branch (AC-17.4)", () => {
     const root = freshRepo();
     const mgr = new WorktreeManager(root);
     const sandbox = mgr.createSandbox(root, 6);
 
     fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
     commitAll(sandbox.path, "sandbox edit");
+    const sandboxCommit = headCommit(sandbox.path);
 
     fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
     commitAll(root, "primary edit");
@@ -173,13 +174,16 @@ describe("WorktreeManager — promotion (AC-17.4)", () => {
 
     expect(res.method).toBe("cherry-pick");
     expect(res.promoted).toBe(false);
-    // Primary tree is untouched and clean.
+    // Primary tree is untouched and clean (cherry-pick aborted).
     expect(headCommit(root)).toBe(primaryHead);
     expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("primary\n");
     expect(statusClean(root)).toBe(true);
-    // Sandbox resources are still cleaned up.
+    // The worktree is removed, but the branch is preserved so the conflicting
+    // commits can be recovered manually.
     expect(fs.existsSync(sandbox.path)).toBe(false);
-    expect(branchExists(root, sandbox.branch)).toBe(false);
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+    expect(headCommit(sandbox.projectRoot)).toBe(primaryHead);
+    expect(git(root, ["rev-parse", sandbox.branch]).stdout).toBe(sandboxCommit);
   });
 
   it("is a no-op with method 'none' when the sandbox has no commits", () => {
@@ -241,5 +245,52 @@ describe("WorktreeManager — discard & cleanup (AC-17.5)", () => {
     expect(fs.existsSync(b.path)).toBe(false);
     expect(branchExists(root, a.branch)).toBe(false);
     expect(branchExists(root, b.branch)).toBe(false);
+  });
+
+  it("cleanupAll reclaims a conflict-preserved branch so the iteration can be sandboxed again (AC-17.4)", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 11);
+
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "sandbox edit");
+
+    fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
+    commitAll(root, "primary edit");
+
+    const res = mgr.promoteSandbox(sandbox);
+    expect(res.promoted).toBe(false);
+    // Worktree removed, branch preserved for recovery.
+    expect(fs.existsSync(sandbox.path)).toBe(false);
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+
+    // Re-creating the same iteration fails closed while the branch lingers...
+    expect(() => mgr.createSandbox(root, 11)).toThrow(/already exists/);
+
+    // ...until cleanupAll sweeps the orphaned branch.
+    const reclaimed = mgr.cleanupAll();
+    expect(reclaimed).toBeGreaterThanOrEqual(1);
+    expect(branchExists(root, sandbox.branch)).toBe(false);
+
+    // Now the iteration can be sandboxed again.
+    const again = mgr.createSandbox(root, 11);
+    expect(again.branch).toBe(sandbox.branch);
+    expect(fs.existsSync(again.path)).toBe(true);
+  });
+
+  it("does not match a sibling directory whose name shares the worktrees prefix", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    // A worktree at `.../.huginn/worktrees-old/x` must not be treated as a
+    // sandbox under `.../.huginn/worktrees`.
+    const sibling = path.join(root, ".huginn", "worktrees-old", "task-iter-99");
+    fs.mkdirSync(path.dirname(sibling), { recursive: true });
+    expect(git(root, ["worktree", "add", "-b", "huginn/task-iter-99", sibling, "HEAD"]).code).toBe(0);
+
+    expect(mgr.listSandboxes()).toEqual([]);
+
+    mgr.cleanupAll();
+    // The sibling worktree is untouched; it was never treated as a sandbox.
+    expect(fs.existsSync(sibling)).toBe(true);
   });
 });

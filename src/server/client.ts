@@ -95,8 +95,15 @@ export interface PromptResult {
   raw: { info: unknown; parts: Array<{ type?: string; text?: string }> };
 }
 
-export async function createSession(client: OpencodeClient, title: string): Promise<{ id: string }> {
-  const res = await client.session.create({ body: { title } });
+export async function createSession(
+  client: OpencodeClient,
+  title: string,
+  directory?: string,
+): Promise<{ id: string }> {
+  const res = await client.session.create({
+    body: { title },
+    ...(directory ? { query: { directory } } : {}),
+  });
   return (res as unknown as { id: string });
 }
 
@@ -172,7 +179,18 @@ export async function rejectQuestion(
 export async function prompt(
   client: OpencodeClient,
   sessionId: string,
-  opts: { text: string; agent?: string; model?: ModelRef; timeoutMs?: number },
+  opts: {
+    text: string;
+    agent?: string;
+    model?: ModelRef;
+    timeoutMs?: number;
+    /**
+     * Directory the server-side session is scoped to. Forwarded as the SDK
+     * `directory` query parameter so the agent's tools operate inside the
+     * sandbox worktree rather than the primary project tree (REQ-17).
+     */
+    directory?: string;
+  },
 ): Promise<PromptResult> {
   const body: Record<string, unknown> = {
     parts: [textPart(opts.text)],
@@ -187,6 +205,7 @@ export async function prompt(
         path: { id: sessionId },
         body: body as never,
         signal: signal as AbortSignal | undefined,
+        ...(opts.directory ? { query: { directory: opts.directory } } : {}),
       } as never)) as unknown as { info: { id: string; error?: unknown }; parts: Array<{ type?: string; text?: string }> };
 
       if (res.info?.error) {
@@ -201,7 +220,15 @@ export async function prompt(
 export async function runCommand(
   client: OpencodeClient,
   sessionId: string,
-  opts: { command: string; arguments: string; agent?: string; model?: string; timeoutMs?: number },
+  opts: {
+    command: string;
+    arguments: string;
+    agent?: string;
+    model?: string;
+    timeoutMs?: number;
+    /** See {@link prompt}: sandbox-scoped directory query parameter (REQ-17). */
+    directory?: string;
+  },
 ): Promise<PromptResult> {
   const body: Record<string, unknown> = {
     command: opts.command,
@@ -217,6 +244,7 @@ export async function runCommand(
         path: { id: sessionId },
         body: body as never,
         signal: signal as AbortSignal | undefined,
+        ...(opts.directory ? { query: { directory: opts.directory } } : {}),
       } as never)) as unknown as { info: { id: string; error?: unknown }; parts: Array<{ type?: string; text?: string }> };
 
       if (res.info?.error) {

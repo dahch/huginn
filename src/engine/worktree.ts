@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import {
   existsSync,
   mkdirSync,
@@ -142,7 +142,9 @@ export class WorktreeManager {
    * the worktree and delete the ephemeral branch.
    *
    * Uses `git merge --ff-only` when possible, otherwise `git cherry-pick`. A
-   * failed cherry-pick is aborted so the primary tree is left uncorrupted.
+   * failed cherry-pick is aborted so the primary tree is left uncorrupted; the
+   * worktree is removed but the branch is preserved for manual recovery
+   * (AC-17.4), and `{ promoted: false }` is returned with a warning naming it.
    */
   promoteSandbox(sandbox: Sandbox): PromoteResult {
     const root = sandbox.projectRoot;
@@ -172,11 +174,13 @@ export class WorktreeManager {
       return { promoted: true, method: "cherry-pick", commits };
     }
 
-    // Conflict: restore the primary tree to its pre-promotion state.
+    // Conflict: restore the primary tree to its pre-promotion state, remove the
+    // worktree, but KEEP the branch so the commits are recoverable by hand.
     git(root, ["cherry-pick", "--abort"]);
-    this.removeWorktreeAndBranch(root, sandbox);
+    this.removeWorktree(root, sandbox);
     console.warn(
-      `[huginn] worktree: promotion of ${sandbox.branch} conflicted on ${activeBranch}; primary tree restored`,
+      `[huginn] worktree: promotion of ${sandbox.branch} conflicted on ${activeBranch}; ` +
+        `primary tree restored, branch ${sandbox.branch} preserved for manual recovery`,
     );
     return { promoted: false, method: "cherry-pick", commits };
   }
@@ -207,7 +211,10 @@ export class WorktreeManager {
         return;
       }
       const worktreePath = current.path;
-      if (!worktreePath.startsWith(base)) {
+      // Require a path-separator boundary so a sibling directory such as
+      // `.../worktrees-old` can never be mistaken for a sandbox under
+      // `.../worktrees`.
+      if (!worktreePath.startsWith(base + sep)) {
         current = null;
         return;
       }
@@ -247,11 +254,43 @@ export class WorktreeManager {
     return sandboxes;
   }
 
-  /** Safety net: discard every known sandbox. */
-  cleanupAll(): void {
-    for (const sandbox of this.listSandboxes()) {
+  /**
+   * Safety net: discard every known sandbox, then reclaim any orphaned
+   * `huginn/task-iter-*` branches with no worktree (e.g. a branch preserved by
+   * a conflicted promotion). Returns how many resources were reclaimed so the
+   * caller can log an accurate count.
+   */
+  cleanupAll(): number {
+    const sandboxes = this.listSandboxes();
+    for (const sandbox of sandboxes) {
       this.discardSandbox(sandbox);
     }
+    const orphanedBranches = this.orphanedSandboxBranches();
+    for (const branch of orphanedBranches) {
+      // Best-effort: a branch still checked out in a worktree makes git refuse,
+      // which is exactly the correct outcome (it is not orphaned).
+      git(this.projectRoot, ["branch", "-D", branch]);
+    }
+    return sandboxes.length + orphanedBranches.length;
+  }
+
+  /**
+   * Every `huginn/task-iter-*` branch with no associated worktree. Branches
+   * still checked out by a listed sandbox are excluded (they are reclaimed by
+   * {@link discardSandbox} instead).
+   */
+  private orphanedSandboxBranches(): string[] {
+    const active = new Set(this.listSandboxes().map((s) => s.branch));
+    const res = git(this.projectRoot, [
+      "for-each-ref",
+      "--format=%(refname:short)",
+      "refs/heads/huginn/task-iter-*",
+    ]);
+    if (res.code !== 0) return [];
+    return res.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((branch) => branch.length > 0 && !active.has(branch));
   }
 
   /** True when `refs/heads/<branch>` resolves (git show-ref exit 0). */
@@ -282,9 +321,17 @@ export class WorktreeManager {
 
   /** Remove the worktree and delete the branch; both are best-effort. */
   private removeWorktreeAndBranch(projectRoot: string, sandbox: Sandbox): void {
+    this.removeWorktree(projectRoot, sandbox);
+    git(projectRoot, ["branch", "-D", sandbox.branch]);
+  }
+
+  /**
+   * Remove the worktree but keep its branch (conflict recovery, AC-17.4); both
+   * git calls are best-effort and prune stale administrative entries.
+   */
+  private removeWorktree(projectRoot: string, sandbox: Sandbox): void {
     // Tolerant: a missing/already-removed worktree makes git exit non-zero.
     git(projectRoot, ["worktree", "remove", "--force", sandbox.path]);
-    git(projectRoot, ["branch", "-D", sandbox.branch]);
     // Prune stale administrative entries left by a partially removed worktree.
     git(projectRoot, ["worktree", "prune"]);
   }

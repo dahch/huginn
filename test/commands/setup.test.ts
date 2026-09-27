@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -219,6 +221,27 @@ describe("registerMcpForTarget", () => {
     writeFileEnsured(path, "{ this is not json");
     expect(() => registerMcpForTarget("cursor", baseOpts(env))).toThrow(/malformed JSON/);
     expect(readFileSync(path, "utf8")).toBe("{ this is not json");
+  });
+
+  it("preserves the permission bits of a pre-existing config file (SEC-1001)", () => {
+    const env = makeEnv();
+    const path = join(env.project, ".cursor", "mcp.json");
+    writeFileEnsured(path, JSON.stringify({ mcpServers: {} }));
+    // Use a non-default mode so this test fails if stat-preservation is dropped
+    // (0o600 is also the new-file default, which would mask a regression).
+    chmodSync(path, 0o400);
+
+    registerMcpForTarget("cursor", baseOpts(env));
+
+    // The hardened 0o400 file must be preserved by the setup write, not widened.
+    expect(statSync(path).mode & 0o777).toBe(0o400);
+  });
+
+  it("creates a new config file with restrictive 0o600 permissions (SEC-1001)", () => {
+    const env = makeEnv();
+    const regs = registerMcpForTarget("gemini", baseOpts(env));
+    expect(regs.length).toBeGreaterThan(0);
+    expect(statSync(regs[0].path).mode & 0o777).toBe(0o600);
   });
 });
 

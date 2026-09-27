@@ -1,4 +1,5 @@
 import type { OpencodeClient } from "@opencode-ai/sdk";
+import { join, relative } from "node:path";
 import type { RunConfig } from "../config";
 import type { Iteration } from "../plan/types";
 import { resolveModels, formatModel, type Models } from "./modelRouter";
@@ -35,6 +36,7 @@ import {
 } from "../state/store";
 import type { HarnessState, HistoryEntry } from "../state/schema";
 import { createClient, createSession, sessionExists, abortSession } from "../server/client";
+import { WorktreeManager, type Sandbox } from "./worktree";
 
 type PhaseFn = (ctx: PhaseContext) => Promise<{ text: string; messageId: string }>;
 
@@ -67,6 +69,11 @@ export interface CycleEngineOptions {
   client?: OpencodeClient;
   plan: { content: string; iterations: Iteration[] };
   state?: HarnessState;
+  /**
+   * Injected worktree manager (tests / custom wiring). When omitted and
+   * `cfg.sandbox` is enabled one is created lazily against `cfg.projectPath`.
+   */
+  worktrees?: WorktreeManager;
 }
 
 export class CycleEngine {
@@ -78,6 +85,8 @@ export class CycleEngine {
   private decisions = new DecisionBroker();
   private paused = false;
   private abortRequested = false;
+  private worktrees?: WorktreeManager;
+  private sandboxEnabledCache?: boolean;
   private outcome: { reason: "completed" | "aborted" | "error"; error?: string } = { reason: "completed" };
 
   constructor(opts: CycleEngineOptions) {
@@ -85,6 +94,7 @@ export class CycleEngine {
     this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
     this.plan = opts.plan;
     this.models = resolveModels(opts.cfg.thinker, opts.cfg.executor);
+    this.worktrees = opts.worktrees;
     if (opts.state) {
       this.state = opts.state;
     } else {
@@ -106,6 +116,63 @@ export class CycleEngine {
 
   getOutcome(): { reason: "completed" | "aborted" | "error"; error?: string } {
     return this.outcome;
+  }
+
+  /**
+   * Best-effort removal of every sandbox worktree. Registered on process
+   * termination so an unexpected exit never leaves `.huginn/worktrees` behind.
+   */
+  cleanupSandboxes(): void {
+    try {
+      this.getWorktrees().cleanupAll();
+    } catch (err) {
+      events.emit("log", {
+        level: "warn",
+        message: `[sandbox] cleanup failed: ${(err as Error).message}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  /** Lazily create the worktree manager (only when sandboxing is in play). */
+  private getWorktrees(): WorktreeManager {
+    if (!this.worktrees) {
+      this.worktrees = new WorktreeManager(this.cfg.projectPath);
+    }
+    return this.worktrees;
+  }
+
+  /**
+   * Whether this run actually uses worktree sandboxes. Sandboxing requires both
+   * the config flag and an existing HEAD commit: a greenfield repo with no HEAD
+   * cannot create a worktree, so the run falls back to in-place execution for
+   * this run rather than throwing from `createSandbox` (REQ-17).
+   */
+  private sandboxingEnabled(): boolean {
+    if (!this.cfg.sandbox) return false;
+    if (this.sandboxEnabledCache === undefined) {
+      if (!headCommit(this.cfg.projectPath)) {
+        events.emit("log", {
+          level: "warn",
+          message:
+            "[sandbox] disabled for this run: project has no HEAD commit; running in-place",
+          timestamp: new Date().toISOString(),
+        });
+        this.sandboxEnabledCache = false;
+      } else {
+        this.sandboxEnabledCache = true;
+      }
+    }
+    return this.sandboxEnabledCache;
+  }
+
+  /**
+   * Map a primary-project doc path into the sandbox so phases read/write the
+   * sandbox copy. Returns `docPath` unchanged when there is no sandbox.
+   */
+  private sandboxDocPath(sandbox: Sandbox | undefined, docPath: string): string {
+    if (!sandbox) return docPath;
+    return join(sandbox.path, relative(this.cfg.projectPath, docPath));
   }
 
   async ask(req: DecisionRequest): Promise<DecisionChoice> {
@@ -149,6 +216,27 @@ export class CycleEngine {
   async run(): Promise<{ reason: "completed" | "aborted" | "error"; error?: string }> {
     if (!isGitRepo(this.cfg.projectPath)) {
       throw new Error(`"${this.cfg.projectPath}" is not a git repository.`);
+    }
+
+    // Best-effort: reclaim worktrees (and orphaned branches) left behind by a
+    // previous interrupted run before creating this run's sandboxes.
+    if (this.sandboxingEnabled()) {
+      try {
+        const reclaimed = this.getWorktrees().cleanupAll();
+        if (reclaimed > 0) {
+          events.emit("log", {
+            level: "info",
+            message: `[sandbox] reclaimed ${reclaimed} stale sandbox resource(s) before run`,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        events.emit("log", {
+          level: "warn",
+          message: `[sandbox] pre-run cleanup failed (continuing): ${(err as Error).message}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
     try {
@@ -239,69 +327,142 @@ export class CycleEngine {
   }
 
   private async runIteration(iteration: Iteration): Promise<void> {
-    const sessionId = await this.ensureSession(iteration);
-    const baseCommit = headCommit(this.cfg.projectPath) ?? undefined;
-    this.state.iterationBaseCommit = baseCommit;
-    this.persist();
+    // When sandboxing is enabled, isolate the iteration in a git worktree and
+    // run every phase against `workPath`; the primary working tree is only
+    // touched by `promoteSandbox` on success. The sandbox is created first so
+    // its path can scope the agent session. `settled` guarantees the sandbox is
+    // cleaned up exactly once (promoted OR discarded), even on abort/throw.
+    const sandbox = this.sandboxingEnabled()
+      ? this.getWorktrees().createSandbox(this.cfg.projectPath, iteration.index)
+      : undefined;
+    const workPath = sandbox?.path ?? this.cfg.projectPath;
 
-    const explicitModules = iteration.modules ?? [];
-    const ctx: PhaseContext = {
-      client: this.client,
-      sessionId,
-      models: this.models,
-      projectPath: this.cfg.projectPath,
-      iteration,
-      specPath: this.cfg.specPath,
-      adrPath: this.cfg.adrPath,
-      planPath: this.cfg.planPath,
-      modules: explicitModules,
-      baseCommit,
-      phaseTimeoutMs: this.cfg.phaseTimeoutMs,
-    };
+    // Scope the server-side agent session to `workPath` so the build agent's
+    // tools edit the sandbox rather than the primary tree (REQ-17). Under
+    // sandboxing a fresh session is required: any persisted `iterationSessionId`
+    // was bound to a different directory and must not be reused.
+    const sessionId = await this.ensureSession(iteration, workPath, sandbox !== undefined);
 
-    // resume point: only meaningful when resuming the exact iteration we are on.
-    // Capture it once; currentPhase advances as steps run.
-    const resumePhase =
-      !this.cfg.onlyPhase && this.state.currentIteration === iteration.index
-        ? this.state.currentPhase
-        : null;
-    let pastResume = resumePhase === null;
+    let settled = false;
+    try {
+      const baseCommit = headCommit(workPath) ?? undefined;
+      this.state.iterationBaseCommit = baseCommit;
+      this.persist();
 
-    for (const step of PIPELINE) {
-      if (this.abortRequested) return;
-      if (this.cfg.onlyPhase && step.phase !== this.cfg.onlyPhase) continue;
-      if (!pastResume) {
-        if (step.phase === resumePhase) pastResume = true;
-        else continue;
+      const explicitModules = iteration.modules ?? [];
+      const ctx: PhaseContext = {
+        client: this.client,
+        sessionId,
+        models: this.models,
+        projectPath: workPath,
+        directory: workPath,
+        iteration,
+        specPath: this.sandboxDocPath(sandbox, this.cfg.specPath),
+        adrPath: this.sandboxDocPath(sandbox, this.cfg.adrPath),
+        planPath: this.sandboxDocPath(sandbox, this.cfg.planPath),
+        modules: explicitModules,
+        baseCommit,
+        phaseTimeoutMs: this.cfg.phaseTimeoutMs,
+      };
+
+      // resume point: only meaningful when resuming the exact iteration we are on.
+      // Capture it once; currentPhase advances as steps run. An ephemeral sandbox
+      // cannot resume mid-iteration: a prior run's worktree was discarded at
+      // startup (cleanupAll), so any earlier phase's changes are gone and must re-run.
+      const resumePhase =
+        !this.cfg.onlyPhase && !sandbox && this.state.currentIteration === iteration.index
+          ? this.state.currentPhase
+          : null;
+      let pastResume = resumePhase === null;
+
+      for (const step of PIPELINE) {
+        if (this.abortRequested) return;
+        if (this.cfg.onlyPhase && step.phase !== this.cfg.onlyPhase) continue;
+        if (!pastResume) {
+          if (step.phase === resumePhase) pastResume = true;
+          else continue;
+        }
+
+        this.state.currentPhase = step.phase;
+
+        // refresh modules once the iteration has produced changes
+        if (step.phase === "VALIDATE_STEP" || step.phase === "TEST_MODULE") {
+          if (explicitModules.length === 0) {
+            ctx.modules = inferModules(workPath, ctx.baseCommit);
+          }
+        }
+
+        if (step.phase === "SPEC_AUDIT" && !hasImplementationCode(workPath)) {
+          // greenfield: nothing to audit until the iteration produces code
+          this.recordSkippedSpecAudit(iteration);
+        } else {
+          await this.runPhase(step, ctx, sessionId, iteration);
+        }
+
+        if (this.abortRequested) return;
+        this.persist();
       }
 
-      this.state.currentPhase = step.phase;
-
-      // refresh modules once the iteration has produced changes
-      if (step.phase === "VALIDATE_STEP" || step.phase === "TEST_MODULE") {
-        if (explicitModules.length === 0) {
-          ctx.modules = inferModules(this.cfg.projectPath, ctx.baseCommit);
+      // Success: integrate the sandbox into the primary branch.
+      if (sandbox && !this.abortRequested && !this.cfg.onlyPhase) {
+        const result = this.getWorktrees().promoteSandbox(sandbox);
+        // `promoteSandbox` always removes the worktree (success, no-op, or
+        // conflict), so the sandbox is settled the moment it returns; the
+        // finally must not double-clean (which would drop a preserved branch).
+        settled = true;
+        if (result.method === "none") {
+          events.emit("log", {
+            level: "info",
+            message: `[sandbox] iteration ${iteration.index}: no changes to promote`,
+            timestamp: new Date().toISOString(),
+          });
+        } else if (result.promoted) {
+          events.emit("log", {
+            level: "info",
+            message: `[sandbox] iteration ${iteration.index}: promoted via ${result.method} (${result.commits.length} commit(s))`,
+            timestamp: new Date().toISOString(),
+          });
+        } else {
+          // Conflict: the primary tree was restored and the branch preserved by
+          // `promoteSandbox`. Fail closed so the run finishes as an error rather
+          // than silently reporting success (REQ-17, AC-17.4).
+          events.emit("log", {
+            level: "warn",
+            message: `[sandbox] iteration ${iteration.index}: promotion (${result.method}) conflicted; branch ${sandbox.branch} preserved for recovery`,
+            timestamp: new Date().toISOString(),
+          });
+          throw new Error(
+            `Sandbox promotion for iteration ${iteration.index} conflicted (method: ${result.method}). ` +
+              `The primary tree is intact and branch ${sandbox.branch} was preserved for manual recovery; ` +
+              `resolve or delete that branch, then re-run.`,
+          );
         }
       }
-
-      if (step.phase === "SPEC_AUDIT" && !hasImplementationCode(this.cfg.projectPath)) {
-        // greenfield: nothing to audit until the iteration produces code
-        this.recordSkippedSpecAudit(iteration);
-      } else {
-        await this.runPhase(step, ctx, sessionId, iteration);
+    } finally {
+      // Aborted, --only-phase, or a thrown phase error: never touch the primary
+      // tree — discard the sandbox (worktree + branch). Exactly once.
+      if (sandbox && !settled) {
+        this.getWorktrees().discardSandbox(sandbox);
       }
-
-      if (this.abortRequested) return;
-      this.persist();
     }
   }
 
-  private async ensureSession(iteration: Iteration): Promise<string> {
+  private async ensureSession(
+    iteration: Iteration,
+    directory: string,
+    sandboxed: boolean,
+  ): Promise<string> {
+    // A persisted session was bound to the directory it was created with; under
+    // sandboxing that directory changes every run, so never reuse it.
     const existing = this.state.iterationSessionId;
-    if (existing && (await sessionExists(this.client, existing))) {
+    if (!sandboxed && existing && (await sessionExists(this.client, existing))) {
       return existing;
     }
-    const created = await createSession(this.client, `iter ${iteration.index}: ${iteration.title}`);
+    const created = await createSession(
+      this.client,
+      `iter ${iteration.index}: ${iteration.title}`,
+      directory,
+    );
     this.state.iterationSessionId = created.id;
     this.persist();
     return created.id;
