@@ -3,7 +3,7 @@ import { mkdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalize, num } from "./cli";
 
-const base = join(import.meta.dir, "..", "..", ".tmp-canonical-test");
+const base = join(import.meta.dir, "..", ".tmp-canonical-test");
 const realDir = join(base, "real");
 const linkDir = join(base, "link");
 

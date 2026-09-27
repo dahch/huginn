@@ -10,7 +10,7 @@ import {
   UPDATE_CHECK_TTL_MS,
 } from "./update";
 
-const configDir = join(import.meta.dir, "..", "..", ".tmp-update-test");
+const configDir = join(import.meta.dir, "..", ".tmp-update-test");
 
 function freshCache(latest: string, ageMs = 0): void {
   writeUpdateCache(latest);
