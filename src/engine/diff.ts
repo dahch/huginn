@@ -1,16 +1,54 @@
 import { join } from "node:path";
+import child_process from "node:child_process";
 
 export function git(projectPath: string, args: string[]): { stdout: string; stderr: string; code: number } {
-  const res = Bun.spawnSync(["git", ...args], {
-    cwd: projectPath,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return {
-    stdout: res.stdout.toString().trim(),
-    stderr: res.stderr.toString().trim(),
-    code: res.exitCode,
-  };
+  const safeArgs = [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    ...args,
+  ];
+
+  if (typeof Bun !== "undefined" && typeof Bun.spawnSync === "function") {
+    try {
+      const res = Bun.spawnSync(["git", ...safeArgs], {
+        cwd: projectPath,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return {
+        stdout: (res.stdout ? res.stdout.toString() : "").trim(),
+        stderr: (res.stderr ? res.stderr.toString() : "").trim(),
+        code: res.exitCode,
+      };
+    } catch (err) {
+      return {
+        stdout: "",
+        stderr: String(err),
+        code: 1,
+      };
+    }
+  }
+
+  try {
+    const res = child_process.spawnSync("git", safeArgs, {
+      cwd: projectPath,
+      encoding: "utf-8",
+    });
+    const errorMsg = res.error ? String(res.error) : "";
+    return {
+      stdout: (res.stdout || "").trim(),
+      stderr: (res.stderr || "").trim() || errorMsg,
+      code: res.status ?? (res.error ? 1 : 0),
+    };
+  } catch (err) {
+    return {
+      stdout: "",
+      stderr: String(err),
+      code: 1,
+    };
+  }
 }
 
 export function isGitRepo(projectPath: string): boolean {
