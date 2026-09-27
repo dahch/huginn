@@ -1472,5 +1472,216 @@ export interface SymbolInspection {
 - **SQL Injection Prevention (`_escapeLikePattern`)**: Escapes `%`, `_`, and `\` before binding to LIKE clauses.
 - **Graph & Observation Aggregation**: Fetches outgoing dependencies, incoming dependents, and all linked memory observations, returning a complete 360-degree topological view of the symbol.
 
+## 19. Phase 3 — Live-First Entrypoint, Universal Agent Integrator & Git Worktree Sandboxing
 
+Phase 3 removes three friction points: the CLI required a subcommand plus hand-passed
+`--thinker`/`--executor` flags and pre-existing documents; Muninn's MCP server and directives had
+to be wired into each agent by hand; and iterations mutated the developer's live working tree
+directly. The implementation lives in `src/config.ts`, `src/cli.ts`, `src/agents/integrator.ts`,
+`src/commands/setup.ts`, `src/commands/doctor.ts`, and `src/engine/worktree.ts`.
+
+### 19.1 Live-first entrypoint & persistent model configuration
+
+`main()` (`src/cli.ts`) routes on `args._command`. `help`/`--help`/`-h` print usage; the
+subcommands in `KNOWN_COMMANDS` (`run`, `plan`, `live`, `install`, `memory`, `mcp`, `check`,
+`setup`, `doctor`) route to their handlers. **Anything else — no command at all, or a bare
+free-text token such as `huginn "crear módulo de pagos"` — enters `runLive(args, command)`, and the
+stray token is passed through as the initial idea (REQ-14.4).** `run` and `plan` remain explicit
+subcommands for batch/CI use.
+
+```mermaid
+flowchart TD
+    A["huginn <argv>"] --> P["parseArgs"]
+    P --> H{"help / --help / -h?"}
+    H -- yes --> USAGE["usage()"]
+    H -- no --> K{"_command in KNOWN_COMMANDS?"}
+    K -- "run/plan/live/install/memory/mcp/check/setup/doctor" --> EX["explicit handler"]
+    K -- "otherwise (none, or free-text idea)" --> LIVE["runLive(args, idea)"]
+```
+
+Both `run` and `live` default `--project` to `canonicalize(process.cwd())` (realpath, so embedded
+paths match what the opencode server resolves) and resolve models from configuration instead of
+erroring on missing flags. A non-git project is still a fatal error. `--sandbox` / `--no-sandbox`
+are boolean flags (`BOOLEAN_FLAGS`) stored in `RunConfig.sandbox` (default `true`).
+
+#### Model resolution precedence
+
+`resolveModelsFromConfig(sources)` is a pure, injectable function (`sources.env` defaults to
+`process.env` only when omitted). First non-empty value wins, independently per role:
+
+| Order | Source | Thinker key | Executor key |
+|---|---|---|---|
+| 1 | CLI flag | `--thinker <m>` | `--executor <m>` |
+| 2 | project config | `<project>/.huginn/config.json` → `thinker` | `executor` |
+| 3 | user config | `~/.huginn/config.json` → `thinker` | `executor` |
+| 4 | environment | `HUGINN_THINKER_MODEL` | `HUGINN_EXECUTOR_MODEL` |
+| 5 | documented default | `anthropic/claude-opus-4-5` | `opencode/gpt-5.1-codex` |
+
+#### Config persistence (`src/config.ts`)
+
+The config schema is `UserConfig = { thinker?: string; executor?: string; mode?: "auto" |
+"supervised"; [key: string]: unknown }` — the three documented keys are typed, and every unknown
+key is preserved verbatim so third-party configs survive a round-trip.
+
+- **`loadUserConfig(projectPath, homeDir?)`**: reads the user file, then the project file
+  overriding it key-by-key. A missing file yields `{}`; malformed JSON or a non-object warns and is
+  ignored — **fail-open on reads, never throws**. `sanitizeConfig` builds the result on a
+  null-prototype object and refuses the dangerous keys `__proto__`, `constructor`, and `prototype`
+  (prototype-pollution defense).
+- **`saveUserConfig(projectPath, config)`**: merges with the existing file (unknown keys
+  preserved) and writes atomically, hardened against symlink swaps: `mkdirSync(.huginn, { mode:
+  0o700 })`, `lstatSync` refuses a symlinked `.huginn` dir, then a temp file created with the
+  exclusive `wx` flag, a random suffix and mode `0o600`, followed by `renameSync` into place. A
+  pre-existing symlink at the temp name is never followed (`EEXIST` retries once with a new
+  suffix). No CLI command currently calls `saveUserConfig` — it is exercised by
+  `test/engine/config.test.ts`, so at runtime the config layer is read-only for now.
+
+### 19.2 Universal Agent Integrator (`huginn setup`)
+
+`huginn setup [--agent <id|all>] [--list] [--force] [--project <path>] [--home <path>]
+[--opencode-config-dir <path>]` idempotently registers the `muninn` MCP server (command
+`huginn mcp run --project <projectPath>`) and injects a marked rules block into every supported
+agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`
+(`src/agents/integrator.ts`), so a new agent is a one-row addition (REQ-15).
+
+#### `AGENT_REGISTRY` (12 targets + `all`)
+
+| id | label | MCP config path(s) | format | rules file |
+|---|---|---|---|---|
+| `cursor` | Cursor | `<project>/.cursor/mcp.json`, `<home>/.cursor/mcp.json` | `mcpServers` | `.cursorrules` |
+| `claude` | Claude Code / Desktop | `<project>/.mcp.json`, `<home>/.claude.json`, `<home>/.claude/claude_desktop_config.json` | `mcpServers` | `CLAUDE.md` |
+| `opencode` | OpenCode | `<home>/.config/opencode/opencode.json` (honors `HUGINN_OPENCODE_CONFIG_DIR`) | `opencode` (`mcp` key) | `AGENTS.md` |
+| `windsurf` | Windsurf | `<home>/.codeium/windsurf/mcp_config.json` | `mcpServers` | `.windsurfrules` |
+| `gemini` | Gemini CLI | `<home>/.gemini/settings.json` | `mcpServers` | `GEMINI.md` |
+| `qwen` | Qwen Code | `<home>/.qwen/settings.json` | `mcpServers` | `QWEN.md` |
+| `codex` | OpenAI Codex CLI | `<home>/.codex/config.toml` | `toml` (`[mcp_servers.muninn]`) | `AGENTS.md` |
+| `agy` | Antigravity CLI | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` | `AGENTS.md` |
+| `kimi` | Kimi Code CLI | `<home>/.kimi-code/mcp.json`, `<project>/.kimi/mcp.json` | `mcpServers` | `AGENTS.md` |
+| `pi` | Pi coding agent | `<home>/.pi/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` | `AGENTS.md` |
+| `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.commandcode/mcp.json` | `mcpServers` | `AGENTS.md` |
+| `omp` | Oh My Pi | `<home>/.omp/mcp.json`, `<project>/.omp/mcp.json` | `mcpServers` | `AGENTS.md` |
+
+#### Three registration formats
+
+| format | container | written entry |
+|---|---|---|
+| `mcpServers` | `mcpServers.muninn` | `{ "command": "huginn", "args": ["mcp","run","--project","<path>"] }` |
+| `opencode` | `mcp.muninn` | `{ "type": "local", "command": ["huginn","mcp","run","--project","<path>"], "enabled": true }` |
+| `toml` | `[mcp_servers.muninn]` | `command = "huginn"` / `args = ["mcp","run","--project","<path>"]` |
+
+- **Portable fallback (AC-15.3)**: every run also writes a standard `mcpServers` file at
+  `<home>/.huginn/mcp.json`, independent of the registry, for tools that consume an ad-hoc
+  `--mcp-config-file`.
+- **Idempotency & `--force` (AC-15.4)**: registration merges into existing config, preserving all
+  unrelated keys and sibling servers. An identical existing `muninn` entry is a no-op; a differing
+  one is left untouched and reported as `skipped` unless `--force` overwrites it. TOML is parsed
+  structurally (the `[mcp_servers.muninn]` table only), never string-appended.
+- **File safety (AC-15.6)**: missing parents are created (`0o755`); malformed existing JSON/TOML
+  throws a descriptive per-target error and leaves the file untouched; writes are atomic and
+  symlink-hardened (exclusive `wx` temp + random suffix + rename).
+- **Rules injection (AC-15.5)**: a block delimited by `<!-- huginn:muninn-rules:start -->` /
+  `<!-- huginn:muninn-rules:end -->` is inserted or replaced in the target's rules file, leaving
+  surrounding user content intact. The block obligates the LLM to call `muninn_context` and
+  `muninn_inspect_symbol` before designing changes and `muninn_verify_contract` before emitting
+  final code.
+- **Path overrides (AC-15.7)**: `homeDir`/`opencodeConfigDir` are injectable; each target's MCP
+  paths are overridable via `HUGINN_AGENT_<ID>_MCP_PATH` (colon-separated list), and its rules
+  file via `HUGINN_AGENT_<ID>_RULES_PATH` (falling back to a global `HUGINN_AGENT_RULES_PATH`).
+  Tests inject temp dirs and never touch the real home.
+
+`setup()` returns a `SetupReport` (`registrations[]`, `rules[]`, `portable`); `handleSetupCommand`
+prints per-target paths with `✔`/`•`/`=` markers plus a summary, and sets `process.exitCode = 1`
+for an unknown `--agent`. `--list` prints the registry without writing anything.
+
+### 19.3 `huginn doctor`
+
+`runDoctorChecks(opts)` (`src/commands/doctor.ts`) probes the environment with `spawnSync` (Bun
+and Node/vitest identical) and returns a structured `DoctorReport` independent of console output:
+
+```ts
+interface DoctorCheck {
+  id: string; label: string;
+  status: "ok" | "warn" | "fail";
+  detail: string; critical: boolean;
+}
+interface DoctorReport { checks: DoctorCheck[]; ok: boolean; }
+```
+
+| check | id | critical | fails as |
+|---|---|---|---|
+| current dir is a git repository | `git-repo` | ✅ | `fail` → exit 1 |
+| a runtime (Bun **or** Node) is on `PATH` | `runtime` | ✅ | `fail` → exit 1 |
+| Muninn DB opens and `getStats()` reads | `muninn` | ✅ | `fail` → exit 1 |
+| `git` binary on `PATH` | `git-binary` | — | `warn` |
+| Node runtime on `PATH` | `node` | — | `warn` |
+| `opencode` CLI on `PATH` | `opencode` | — | `warn` |
+| registry targets already register `muninn` | `integrations` | — | `warn` |
+
+`ok` is `true` only when every **critical** check passed (`checks.every(c => !c.critical ||
+c.status === "ok")`). The integration check iterates `listRegistry()` + `resolveMcpPaths()`
+(read-only) and reports `N/total` registered. The Muninn check defaults its DB path to
+`<projectPath>/.huginn/muninn.db` (never dependent on the process CWD) and always `close()`s the
+service. `handleDoctorCommand` prints one colorized line per check (`✔`/`⚠`/`✖`) and sets
+`process.exitCode = report.ok ? 0 : 1`.
+
+### 19.4 Git worktree sandbox lifecycle
+
+Each iteration can run in an isolated git worktree so the developer's editor stays on the primary
+branch while the agent works (REQ-17). A `Sandbox` is
+`{ iteration, path, branch, projectRoot, baseCommit }`; `sandboxBranch(N)` is `huginn/task-iter-<N>`
+and `sandboxPath(root, N)` is `<root>/.huginn/worktrees/task-iter-<N>` (AC-17.1/17.2).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Created: createSandbox() git worktree add -b huginn/task-iter-N
+    Created --> Running: phases run against sandbox.path
+    Running --> Promoted: COMMIT_ALL ok → promoteSandbox()
+    Running --> Discarded: abort / phase error → discardSandbox()
+    Promoted --> [*]: merge --ff-only | cherry-pick; worktree+branch removed
+    Discarded --> [*]: worktree+branch removed; primary tree untouched
+    Running --> Conflict: promotion fails both strategies
+    Conflict --> [*]: cherry-pick --abort (primary restored), worktree removed, branch KEPT
+```
+
+#### `WorktreeManager` API (`src/engine/worktree.ts`)
+
+| method | behavior |
+|---|---|
+| `createSandbox(projectRoot, iteration)` | resolves HEAD, **fails closed** (throws, no mutation) if the branch or path already exists, then `git worktree add -b <branch> <path> HEAD`; symlinks shared deps |
+| `promoteSandbox(sandbox)` | integrates via `git merge --ff-only <branch>`, else `git cherry-pick <baseCommit>..<branch>`; returns `{ promoted, method: "ff"\|"cherry-pick"\|"none", commits }` |
+| `discardSandbox(sandbox)` | removes the worktree (`--force`, tolerant) and deletes the ephemeral branch; idempotent; never touches the primary tree |
+| `listSandboxes()` | parses `git worktree list --porcelain`, keeping only entries under `<root>/.huginn/worktrees/` |
+| `cleanupAll()` | discards every listed sandbox (safety net) |
+
+- **Dependency symlinks (AC-17.3)**: if `node_modules` and/or `.env` exist at the project root and
+  not already in the sandbox, a symlink is created pointing at the root copy (never overwriting a
+  real file/dir). Symlink failures are non-fatal warnings.
+- **Promotion & conflict policy (AC-17.4)**: on success the worktree and branch are removed. On a
+  conflict (both strategies fail) the primary tree is restored with `git cherry-pick --abort`, the
+  worktree is removed, but the `huginn/task-iter-<N>` branch is **kept** so the sandbox work stays
+  recoverable by hand; `promoted: false` is returned with a warning naming the branch. A zero-commit
+  sandbox is a `method: "none"` no-op that still cleans up.
+
+#### CycleEngine wiring (AC-17.6)
+
+`RunConfig.sandbox` (default `true`) gates the behavior; `CycleEngineOptions.worktrees?` allows an
+injected manager (tests), otherwise one is created lazily against `cfg.projectPath`.
+
+- At the start of `run()`, when sandboxing is enabled, a best-effort `cleanupAll()` reclaims
+  worktrees left behind by a crashed prior run.
+- In `runIteration`, `createSandbox(projectRoot, iteration.index)` is called, then
+  `workPath = sandbox?.path ?? projectPath`. The `PhaseContext` is built with `projectPath = workPath`,
+  `baseCommit = headCommit(workPath)`, and the `spec/adr/plan` doc paths mapped into the sandbox
+  (`sandboxDocPath`). `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE` and all `FIX_*` phases read
+  `ctx.projectPath`, so they all operate on the sandbox; module inference (`inferModules`) and the
+  compiler/Muninn paths use `workPath` too.
+- On iteration success (no abort, not `--only-phase`), `promoteSandbox` integrates the commit into
+  the primary branch and logs the method/commit count. On abort or a thrown phase error a
+  `finally` block `discardSandbox`s, exactly once (`settled` flag), never touching the primary tree.
+- **Mid-iteration resume is disabled under sandboxing**: the resume phase is only honored when
+  `!sandbox`, because a prior run's worktree was discarded at startup — an ephemeral sandbox cannot
+  resume mid-iteration, so earlier phases re-run.
+- `--no-sandbox` preserves the previous in-place behavior exactly. `cleanupSandboxes()` delegates to
+  `cleanupAll()` and is registered on `SIGINT`/`SIGTERM` in `cli.ts` for both `run` and the live
+  handoff path, so an unexpected exit never leaves `.huginn/worktrees/` behind.
 

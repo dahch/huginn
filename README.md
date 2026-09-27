@@ -61,7 +61,16 @@ warns you and points at `huginn install`.
 
 ## Usage
 
+Running `huginn` with no subcommand opens the **live console** — the live-first default:
+
 ```sh
+# Open the interactive live console in the current git repo
+huginn
+
+# ...or start it with an idea: refine, draft, approve, then build
+huginn "create a payments module"
+
+# The examples below all remain available as explicit subcommands.
 # Run the 8-phase spec-build cycle against an existing plan
 huginn run \
   --project /path/to/repo \
@@ -81,12 +90,21 @@ huginn plan \
   --thinker anthropic/claude-opus-4-5 \
   "Initial idea..."
 
+# Register the Muninn MCP server + agent directives with your agents
+huginn setup
+
+# Diagnose the local environment, providers and Muninn database
+huginn doctor
+
 # Search persistent memory across codebase
 huginn memory search "database schema"
 
 # Start the MCP stdio server for agent integration
 huginn mcp run
 ```
+
+The project defaults to the current working directory and the models are resolved from configuration
+(see [Model configuration](#model-configuration)) rather than requiring `--thinker`/`--executor`.
 
 Run `huginn help` (or `huginn -h`) for all flags — note a bare `--help` is parsed
 as a run-mode flag and falls through to argument validation (it prints usage, but
@@ -96,27 +114,40 @@ exits 1); `huginn help` exits 0.
 
 | Command | Usage | Description |
 |---|---|---|
+| *(none)* | `huginn ["<idea>"]` | **Live-first default**: open the live console (optionally seeded with an idea) |
 | `run` | `huginn run [flags]` | Execute the build cycle against `plan.md`/`spec.md`/`adr.md` |
 | `live` | `huginn live [flags] ["<idea>"]` | Interactive chat refinement with thinker model, drafting, approval, and execution |
 | `plan` | `huginn plan [flags] "<idea>"` | Generate `spec.md`, `adr.md`, and `plan.md` in one shot using thinker model |
+| `setup` | `huginn setup [--agent <id\|all>] [--list] [flags]` | Register the Muninn MCP server + agent directives across supported agents |
+| `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
 | `install` | `huginn install [flags]` | Install opencode subagents and slash commands into `~/.config/opencode` |
 | `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`) |
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |
 
+`huginn setup` targets: `cursor`, `claude`, `opencode`, `windsurf`, `gemini`, `qwen`, `codex`, `agy`,
+`kimi`, `pi`, `commandcode`, `omp`, or `all` (default). `--list` prints the registry without writing
+anything; `--force` overwrites a conflicting existing `muninn` entry (otherwise it is left untouched
+and reported as skipped). Paths are overridable via `HUGINN_AGENT_<ID>_MCP_PATH` (colon-separated)
+and `HUGINN_AGENT_RULES_PATH` / `HUGINN_AGENT_<ID>_RULES_PATH`.
+
+`huginn doctor` exits `0` only when its **critical** checks pass (git repository, a runtime, and the
+Muninn database); the `git` binary, Node, `opencode` CLI and missing agent integrations are warnings.
+
 ### Run Flags
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--project <path>` | required | git repo being built (must contain `plan.md`, `spec.md`, `adr.md`) |
-| `--thinker <m>` | required | model used to **fix** findings (auditor + reviewer + any blocker) |
-| `--executor <m>` | required | model used for everything else (execution, gates, docs, commits) |
+| `--project <path>` | `cwd` | git repo being built; `run` requires `plan.md`, `spec.md`, `adr.md` |
+| `--thinker <m>` | resolved from config (see [Model configuration](#model-configuration)) | model used to **fix** findings (auditor + reviewer + any blocker) |
+| `--executor <m>` | resolved from config | model used for everything else (execution, gates, docs, commits) |
 | `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents |
 | `--mode auto\|supervised` | `auto` | `auto`: autonomous with a fix-retry budget, escalating to you only when it is exhausted; `supervised`: pause for your call at every blocked gate |
 | `--permissions auto\|ask\|deny` | `auto` | auto-approve tool permission requests |
 | `--max-retries <n>` | `3` | thinker fix attempts per blocked gate before escalating to you |
 | `--from-iteration <n>` | — | start at iteration n |
 | `--only-phase <name>` | — | run a single phase per iteration (debugging) |
+| `--sandbox` / `--no-sandbox` | `--sandbox` | run each iteration in an isolated git worktree under `.huginn/worktrees/` (see [Sandboxing](#sandboxing-git-worktrees)); `--no-sandbox` runs iterations in place |
 | `--resume` | — | resume from saved state; fails if no saved state exists (plain re-runs auto-resume anyway) |
 | `--force-restart` | — | discard saved state and start over |
 | `--ignore-plan-changes` | — | resume even if plan/spec/adr changed |
@@ -124,6 +155,51 @@ exits 1); `huginn help` exits 0.
 | `--port <n>` | free port | port for the internal `opencode serve` |
 | `--server-timeout <ms>` | `60000` | server startup timeout |
 | `--phase-timeout <ms>` | `1200000` (20 min) | hard deadline per phase step; on expiry the step is interrupted, retried up to `--max-retries`, then escalated. `0` disables |
+
+## Model configuration
+
+`run` and `live` no longer require `--thinker`/`--executor`. Models are resolved in strict
+precedence order, first non-empty value wins, independently per role:
+
+1. CLI flag — `--thinker <m>` / `--executor <m>`
+2. project config — `<project>/.huginn/config.json`
+3. user config — `~/.huginn/config.json`
+4. environment — `HUGINN_THINKER_MODEL` / `HUGINN_EXECUTOR_MODEL`
+5. defaults — thinker `anthropic/claude-opus-4-5`, executor `opencode/gpt-5.1-codex`
+
+The project config file is a JSON object with three documented keys:
+
+```json
+{
+  "thinker": "anthropic/claude-opus-4-5",
+  "executor": "opencode/gpt-5.1-codex",
+  "mode": "auto"
+}
+```
+
+- `thinker` / `executor` are model strings (`provider/model`); `mode` is `auto` or `supervised`.
+- Unknown keys are preserved verbatim, so third-party tooling can keep its own settings alongside.
+- The project file overrides the user file key-by-key; a missing file is treated as empty and a
+  malformed one is ignored with a warning (never fatal), falling back to the next layer.
+- Writes are atomic and symlink-hardened (`.huginn/` is created `0o700`, the config `0o600`).
+
+## Sandboxing (git worktrees)
+
+By default (`--sandbox`), each iteration runs in an isolated git worktree so your editor stays on
+the primary branch while the agent works:
+
+- The worktree lives at `<project>/.huginn/worktrees/task-iter-<N>` on an ephemeral branch
+  `huginn/task-iter-<N>`; `node_modules` and `.env` are symlinked in from the project root.
+- `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE` and every `FIX_*` phase run against the sandbox.
+- On iteration success the sandbox commits are integrated into your active branch
+  (`git merge --ff-only`, falling back to `git cherry-pick`) and the worktree + branch are removed.
+- On abort or a phase error the sandbox is discarded and your working tree is never touched. If
+  promotion conflicts, the primary tree is restored and the `huginn/task-iter-<N>` branch is **kept**
+  so the work is recoverable by hand.
+- `--no-sandbox` runs iterations in place, exactly as before.
+
+Stale worktrees from a crashed run are reclaimed at the start of the next run, and `SIGINT`/`SIGTERM`
+trigger a best-effort cleanup.
 
 ## Plan mode (`huginn plan`)
 
@@ -190,8 +266,8 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
 - **Immediate Abort**: `[Esc]` or typing `/quit` cancels execution immediately.
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
-plus the run-mode flags `--mode`, `--permissions`, `--max-retries`, `--port`,
-`--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless mode the chat
+plus the run-mode flags `--mode`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,
+`--port`, `--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless mode the chat
 refinement is skipped (the CLI idea is used as-is) and approvals are answered on stdin;
 non-interactive stdin aborts with a hint to use the TUI.
 
@@ -416,6 +492,10 @@ All optional:
 |---|---|---|---|
 | `HUGINN_TEMPLATES_DIR` | path | auto-detected (walk up from module location) | Where `templates/` is read from — works from `src/`, `dist/`, `scripts/`. |
 | `HUGINN_OPENCODE_CONFIG_DIR` | path | `~/.config/opencode` | Install destination for agents/commands; also where the update-check cache lives. |
+| `HUGINN_THINKER_MODEL` | model string | `anthropic/claude-opus-4-5` | Fallback thinker model when neither flag nor config sets one. |
+| `HUGINN_EXECUTOR_MODEL` | model string | `opencode/gpt-5.1-codex` | Fallback executor model when neither flag nor config sets one. |
+| `HUGINN_AGENT_<ID>_MCP_PATH` | colon-separated paths | registry default | Override the MCP config path(s) for a `huginn setup` target. |
+| `HUGINN_AGENT_<ID>_RULES_PATH` / `HUGINN_AGENT_RULES_PATH` | path | registry default | Override the rules file path for a `huginn setup` target (or all targets). |
 | `HUGINN_NO_UPDATE_CHECK` | string | unset | Any non-empty value disables the background npm version check. |
 | `HUGINN_DEBUG` | string | unset | Print full error stack traces on fatal errors. |
 | `CI` | string | unset | `huginn install` skips its confirmation prompt (`--yes` implied). |

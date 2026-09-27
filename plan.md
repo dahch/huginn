@@ -237,16 +237,51 @@ Implement REQ-17 AC-17.1–AC-17.5 (SPEC.md §5). Use the existing `git(projectP
 modules: src/engine/cycle.ts, src/engine/phases.ts, SPEC.md, ADR.md, DESIGN.md, README.md, test/
 
 Implement REQ-17 AC-17.6 and finish documentation.
-1. Integrate `WorktreeManager` into `src/engine/cycle.ts`:
-   - Construct a `WorktreeManager` (injectable for tests) when `cfg.sandbox` is true.
-   - In `runIteration`, before building the `PhaseContext`, `createSandbox(projectPath, iteration.index)` and set the context `projectPath`, `baseCommit`, and doc paths (`specPath`/`adrPath`/`planPath`) to the sandbox equivalents (docs are read from the sandbox). `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE` and every `FIX_*` phase must operate on the sandbox path (they all read `ctx.projectPath`).
-   - On iteration success, `promoteSandbox(sandbox)` during/after `COMMIT_ALL` and record the outcome to the event log; on abort or phase error, `discardSandbox(sandbox)` and never touch the primary tree.
+1. Adjust `src/engine/worktree.ts` for conflict-recoverability (SPEC AC-17.4): in `promoteSandbox`, when both `merge --ff-only` and `cherry-pick` fail, run `git cherry-pick --abort` to restore the primary tree, remove the worktree, but **keep the branch** `huginn/task-iter-<N>` (do NOT `git branch -D`) and return `{ promoted: false, method: "cherry-pick", commits }` with a warning naming the preserved branch. On the zero-commit (`none`) and successful (`ff`/`cherry-pick`) paths, still remove the worktree and delete the branch. Update `test/engine/worktree.test.ts` so the conflict case asserts the branch is preserved and the primary tree is clean.
+2. Integrate `WorktreeManager` into `src/engine/cycle.ts`:
+   - Add an optional `worktrees?: WorktreeManager` to `CycleEngineOptions`; default to `new WorktreeManager(cfg.projectPath)` lazily only when `cfg.sandbox` is true. Add a public `cleanupSandboxes()` delegating to `cleanupAll()`.
+   - At the start of `run()` (after the git-repo check), when sandbox is enabled, best-effort `worktrees.cleanupAll()` and log it, clearing stale sandboxes from a crashed prior run.
+   - In `runIteration`, before building the `PhaseContext`, `createSandbox(this.cfg.projectPath, iteration.index)`; compute `workPath = sandbox?.path ?? this.cfg.projectPath`, `baseCommit = headCommit(workPath)`, and set the context `projectPath = workPath`, `baseCommit`, and doc paths to their sandbox equivalents (`join(sandbox.path, relative(primaryProject, docPath))`). `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE` and every `FIX_*` phase must operate on the sandbox path (they all read `ctx.projectPath`). Module inference (`inferModules`) must use `workPath`.
+   - On iteration success (after the pipeline loop completes with no abort and not `--only-phase`), `promoteSandbox(sandbox)` and emit a log line recording the method + whether the branch was preserved; on abort or a thrown phase error, `discardSandbox(sandbox)` and never touch the primary tree. Use a `try/finally` with a handled flag so the early `return`s on abort and exceptions all clean up exactly once.
    - When `cfg.sandbox` is false, keep the current behavior byte-for-byte.
-   - Register a process-level cleanup so an unexpected exit attempts `cleanupAll()` best-effort.
-2. Ensure `src/engine/phases.ts` `commitAll`/`validateStep` operate correctly when `ctx.projectPath` is a sandbox path (they already key off `ctx.projectPath`; confirm no absolute assumption on the primary repo and adjust `dbPath` default if needed).
-3. Update docs to match the implemented reality:
-   - `SPEC.md`: already contains the Phase 3 section (REQ-14–17) — reconcile any final naming differences.
-   - `ADR.md`: ADR-19 is already present — keep as the source of truth.
-   - `DESIGN.md`: add a section describing the live-first entrypoint, config resolution, the integrator file matrix, the doctor checks, and the worktree sandbox lifecycle (create → execute → promote/discard) with a small diagram/table.
-   - `README.md`: document `huginn` defaulting to live, `huginn setup`, `huginn doctor`, the `.huginn/config.json` schema + env vars + defaults, and `--sandbox`/`--no-sandbox`.
-4. Final quality gate: `npm test` (`bun test && vitest run`) 100% green, `bun run typecheck` zero errors, `bun run build` succeeds.
+   - Register a process-level `SIGINT`/`SIGTERM`/`exit` cleanup so an unexpected exit attempts `cleanupSandboxes()` best-effort (in `src/cli.ts` for both `run` and live-handoff paths, or via the existing signal handlers).
+3. Ensure `src/engine/phases.ts` `commitAll`/`validateStep` operate correctly when `ctx.projectPath` is a sandbox path (they already key off `ctx.projectPath`; confirm `dbPath` default resolves to the sandbox's `.huginn/` and is harmless — the primary Muninn DB is fine, but do not crash if the sandbox `.huginn` is absent).
+4. Add a `src/engine/cycle.test.ts` (bun:test) case asserting that with a stub/injected `WorktreeManager` and `cfg.sandbox = true`, `runIteration` calls `createSandbox`, points the phase context at the sandbox path, and calls `promoteSandbox` on success / `discardSandbox` on abort. Keep the existing `sandbox: false` fixtures passing unchanged.
+5. Final quality gate: `npm test` (`bun test && vitest run`) 100% green, `bun run typecheck` zero errors, `bun run build` succeeds.
+
+## Iteration 14 — Persistent Config CLI (`huginn config`)
+modules: src/commands/config.ts, src/cli.ts, src/config.ts, test/commands/
+
+Implement the CLI write/read path for REQ-14 AC-14.3 (the `saveUserConfig` layer currently has no runtime caller).
+1. Extend `src/config.ts`:
+   - Refactor the atomic write into a reusable internal `writeConfigAtomic(path, config)`.
+   - Keep `saveUserConfig(projectPath, config)` writing `<project>/ .huginn/config.json`.
+   - Add `saveGlobalUserConfig(homeDir: string, config: UserConfig): void` writing `<home>/.huginn/config.json` (same atomic/symlink-safe hardening).
+   - Add a pure `describeModelSources(sources: ModelSources): { thinker: { value: string; source: "flag" | "project" | "user" | "env" | "default" }; executor: { ... } }` returning where each resolved value came from (reuse the precedence logic; do not duplicate it).
+2. Add `src/commands/config.ts`:
+   - `export function printConfigUsage(): void`.
+   - `export async function handleConfigCommand(subcommand: string | undefined, args: Record<string,string|boolean|undefined>): Promise<void>`:
+     - `show` (default): print the effective resolved thinker/executor via `resolveModelsFromConfig` + `describeModelSources`, and the project/user config file paths; `--project` (default cwd), `--home` (override).
+     - `set`: require at least one of `--thinker`/`--executor`; persist via `saveUserConfig` (default) or `saveGlobalUserConfig` when `--global`; print what was written and where. Invalid/empty values → error + usage + `process.exitCode = 1`.
+     - unknown/no subcommand → usage; unknown → red error + `process.exitCode = 1`.
+3. Wire `src/cli.ts`: add `config` to `KNOWN_COMMANDS`, route to `handleConfigCommand` with the subcommand positional (same pattern as `memory`/`mcp`), and document `config` in `usage()`.
+4. Add `test/commands/config.test.ts` (vitest): with temp `projectPath` + `homeDir`, `set --thinker X` writes `.huginn/config.json` and `show` reflects it with `source: "project"`; `set --global --executor Y` writes `<home>/.huginn/config.json`; `show` precedence across project/user/env/flag; unknown subcommand exits non-zero; no-flags `set` errors. Never touch the real home (inject `--home`/`homeDir`).
+5. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 15 — Sandbox Enforcement & Gate Hardening
+modules: src/server/client.ts, src/engine/cycle.ts, src/engine/phases.ts, src/engine/worktree.ts, src/agents/integrator.ts, src/cli.ts, src/config.ts, test/
+
+Fix the findings from the Phase 3 final validation gate (critical sandbox enforcement + hardening).
+1. **Enforce the sandbox on the agent (CRITICAL, AC-17.6).** The opencode SDK accepts a `directory` query param on `session.create`, `session.prompt`, and `session.command` (see `node_modules/@opencode-ai/sdk/dist/gen/types.gen.d.ts`: `SessionCreateData`, `SessionPromptData`, `SessionCommandData` all have `query?: { directory?: string }`).
+   - In `src/server/client.ts`: add an optional `directory?: string` to `createSession(client, title, directory?)`, `prompt(...)`, and `runCommand(...)`, forwarding it as `query: { directory }` on the SDK calls (omit the query when undefined).
+   - In `src/engine/cycle.ts`: pass the sandbox path as the directory when creating the iteration session (`ensureSession`) and thread it through the `PhaseContext` (add a `directory?: string` field, or reuse `ctx.projectPath` — prefer an explicit field set to `workPath`).
+   - In `src/engine/phases.ts`: every `prompt(...)` (execute, fixFindings/fixSpec/fixSecurity) and every `runCommand(...)` (validateStep, testModule, secureCheck, review, docSync, commitAll) must pass `directory: ctx.projectPath` so the agent operates inside the worktree.
+   - When sandboxing is enabled, do not reuse a stale `iterationSessionId` (it was bound to another directory): create a fresh directory-scoped session each run.
+   - Add a `src/engine/cycle.test.ts` case asserting `session.create` and `session.command`/`prompt` received `query.directory === sandbox.path` when `sandbox: true` (extend the client stub to capture options).
+2. **Promotion conflict must fail closed (AC-17.6).** In `runIteration`, after `promoteSandbox`, if `!result.promoted && result.method !== "none"` throw a descriptive Error (the run then finishes as an error; the branch is preserved by the manager). `method === "none"` logs an informational "no changes to promote". Fix the log that currently calls a zero-commit no-op a "conflict".
+3. **No-HEAD fallback (AC-17.6).** At the start of `run()` (or constructor), if `cfg.sandbox` is true but `headCommit(projectRoot)` is null, log a warning and proceed with in-place execution (`sandbox` effectively off) instead of throwing from `createSandbox`.
+4. **Stale branch sweep (AC-17.7).** `WorktreeManager.cleanupAll()` (or the pre-run cleanup) must also delete leftover `refs/heads/huginn/task-iter-*` branches that have no worktree (e.g. `git for-each-ref --format=%(refname:short) refs/heads/huginn/task-iter-` then `git branch -D`). Update `test/engine/worktree.test.ts` to assert a preserved conflict branch is reclaimed by `cleanupAll` and that a subsequent `createSandbox` then succeeds.
+5. **Model-resolution consistency (finding #2).** In `src/cli.ts`, resolve models from separated layers (`loadConfigLayers`) and pass `projectConfig`/`userConfig` distinctly to `resolveModelsFromConfig`, matching `huginn config show`, so a merged blob can never misattribute or drop a user value.
+6. **Integrator file-mode preservation (SEC-1001).** In `src/agents/integrator.ts` `writeAtomic`, preserve an existing target's permission bits (default new files to `0o600`; create parent dirs `0o700` for the home-scoped secret-bearing configs). Rules files may stay world-readable. Add a test asserting an existing `0o600` config is not widened by `setup`.
+7. **Small correctness fixes**: `worktree.ts` prefix check must use a path separator (`startsWith(base + sep)` or `path.relative`); log the actual reclaimed count (not unconditional); set the `agy` label to `"Antigravity CLI (agy)"` to match SPEC AC-15.2.
+8. Verify: `bun test`, `bunx vitest run`, `bun run typecheck`, `bun run build` all green.
