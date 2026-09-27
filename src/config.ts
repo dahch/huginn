@@ -33,6 +33,7 @@ export interface RunConfig {
   serverTimeoutMs: number;
   phaseTimeoutMs: number;
   ignorePlanChanges: boolean;
+  chooseModel?: boolean;
   sandbox: boolean;
 }
 
@@ -161,8 +162,9 @@ export function getProjectConfigPath(projectPath: string): string {
 }
 
 /** Absolute path of the user config file: `<home>/.huginn/config.json`. */
-export function getUserConfigPath(homeDir: string = homedir()): string {
-  return join(homeDir, ".huginn", "config.json");
+export function getUserConfigPath(homeDir?: string): string {
+  const base = homeDir || process.env.HUGINN_HOME || homedir();
+  return join(base, ".huginn", "config.json");
 }
 
 /**
@@ -346,6 +348,28 @@ export function saveUserConfig(projectPath: string, config: UserConfig): void {
  * to `<home>/.huginn/config.json`, with the same symlink-safe hardening and
  * unknown-key preservation as {@link saveUserConfig}.
  */
-export function saveGlobalUserConfig(homeDir: string, config: UserConfig): void {
+export function saveGlobalUserConfig(config: UserConfig, homeDir?: string): void;
+export function saveGlobalUserConfig(homeDir: string | undefined, config: UserConfig): void;
+export function saveGlobalUserConfig(
+  arg1?: UserConfig | string,
+  arg2?: string | UserConfig,
+): void {
+  let homeDir: string | undefined;
+  let config: UserConfig = {};
+
+  if (typeof arg1 === "string" || arg1 === undefined) {
+    // Legacy / alternate signature: saveGlobalUserConfig(homeDir?: string, config?: UserConfig)
+    homeDir = arg1;
+    if (typeof arg2 === "object" && arg2 !== null) {
+      config = arg2 as UserConfig;
+    }
+  } else if (typeof arg1 === "object" && arg1 !== null) {
+    // Primary signature: saveGlobalUserConfig(config: UserConfig, homeDir?: string)
+    config = arg1;
+    if (typeof arg2 === "string") {
+      homeDir = arg2;
+    }
+  }
+
   writeConfigAtomic(getUserConfigPath(homeDir), config);
 }

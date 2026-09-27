@@ -126,7 +126,7 @@ export async function handleConfigCommand(
 
     const global = Boolean(args["--global"]);
     if (global) {
-      saveGlobalUserConfig(homeDir, updates);
+      saveGlobalUserConfig(updates, homeDir);
     } else {
       saveUserConfig(projectPath, updates);
     }
