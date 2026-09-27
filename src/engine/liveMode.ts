@@ -146,6 +146,23 @@ export class LiveEngine {
     return this.idea ?? "";
   }
 
+  getModels(): Models {
+    return this.models;
+  }
+
+  getConfig(): RunConfig {
+    return this.cfg;
+  }
+
+  updateModels(models: { thinker?: string; executor?: string }): Models {
+    const newThinker = models.thinker ?? formatModel(this.models.thinker);
+    const newExecutor = models.executor ?? formatModel(this.models.executor);
+    this.models = resolveModels(newThinker, newExecutor);
+    this.cfg.thinker = newThinker;
+    this.cfg.executor = newExecutor;
+    return this.models;
+  }
+
   /** After handoff, decisions route to the running CycleEngine. */
   ask(req: DecisionRequest): Promise<DecisionChoice> {
     if (this.cycle) return this.cycle.ask(req);
