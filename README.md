@@ -96,6 +96,10 @@ huginn setup
 # Diagnose the local environment, providers and Muninn database
 huginn doctor
 
+# Inspect the effective models, or persist thinker/executor for future runs
+huginn config show
+huginn config set --executor opencode/gpt-5.1-codex
+
 # Search persistent memory across codebase
 huginn memory search "database schema"
 
@@ -120,6 +124,7 @@ exits 1); `huginn help` exits 0.
 | `plan` | `huginn plan [flags] "<idea>"` | Generate `spec.md`, `adr.md`, and `plan.md` in one shot using thinker model |
 | `setup` | `huginn setup [--agent <id\|all>] [--list] [flags]` | Register the Muninn MCP server + agent directives across supported agents |
 | `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
+| `config` | `huginn config show\|set [flags]` | Inspect the effective models, or persist `thinker`/`executor` to project or user config |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
 | `install` | `huginn install [flags]` | Install opencode subagents and slash commands into `~/.config/opencode` |
 | `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`) |
@@ -183,6 +188,19 @@ The project config file is a JSON object with three documented keys:
   malformed one is ignored with a warning (never fatal), falling back to the next layer.
 - Writes are atomic and symlink-hardened (`.huginn/` is created `0o700`, the config `0o600`).
 
+The `huginn config` command is the CLI surface for this layer:
+
+```sh
+# Effective thinker/executor + which layer each came from
+huginn config show [--project <path>] [--home <path>]
+
+# Persist to <project>/.huginn/config.json, or ~/.huginn/config.json with --global
+huginn config set [--thinker <m>] [--executor <m>] [--global] [--project <path>] [--home <path>]
+```
+
+`set` requires at least one of `--thinker`/`--executor`; `--project`/`--home` override the paths
+(used by tests).
+
 ## Sandboxing (git worktrees)
 
 By default (`--sandbox`), each iteration runs in an isolated git worktree so your editor stays on
@@ -190,16 +208,22 @@ the primary branch while the agent works:
 
 - The worktree lives at `<project>/.huginn/worktrees/task-iter-<N>` on an ephemeral branch
   `huginn/task-iter-<N>`; `node_modules` and `.env` are symlinked in from the project root.
-- `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE` and every `FIX_*` phase run against the sandbox.
+- Every agent phase runs against the sandbox: the iteration session is created with, and every
+  `prompt`/slash-command carries, the opencode SDK `directory` query parameter set to the worktree
+  path, so the agent's own tools edit the sandbox rather than your primary tree. Harness-side work
+  (module inference, compiler contracts, git diff, Muninn indexing) reads the same path.
 - On iteration success the sandbox commits are integrated into your active branch
   (`git merge --ff-only`, falling back to `git cherry-pick`) and the worktree + branch are removed.
-- On abort or a phase error the sandbox is discarded and your working tree is never touched. If
-  promotion conflicts, the primary tree is restored and the `huginn/task-iter-<N>` branch is **kept**
-  so the work is recoverable by hand.
+- On abort or a phase error the sandbox is discarded and your working tree is never touched.
+- If promotion conflicts, the primary tree is restored, the `huginn/task-iter-<N>` branch is **kept**
+  so the work is recoverable by hand, and the run **fails closed** (the iteration is not marked
+  complete) instead of reporting success.
+- If the repository has no `HEAD` commit yet, sandboxing is skipped for that run with a warning and
+  the iterations run in place — a worktree cannot be created from an empty repository.
 - `--no-sandbox` runs iterations in place, exactly as before.
 
-Stale worktrees from a crashed run are reclaimed at the start of the next run, and `SIGINT`/`SIGTERM`
-trigger a best-effort cleanup.
+Stale worktrees **and** any orphaned `huginn/task-iter-*` branches from a crashed run are reclaimed
+at the start of the next run, and `SIGINT`/`SIGTERM` trigger a best-effort cleanup.
 
 ## Plan mode (`huginn plan`)
 
