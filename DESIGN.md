@@ -1717,7 +1717,14 @@ letting `createSandbox` throw.
   slash command (including the `FIX_*` thinker prompts). The `PhaseContext` also carries
   `projectPath = workPath`, `baseCommit = headCommit(workPath)`, and the `spec/adr/plan` doc paths
   mapped into the sandbox (`sandboxDocPath`), so harness-side module inference (`inferModules`) and
-  the compiler/Muninn paths use `workPath` too.
+  the compiler paths use `workPath` too. **Muninn is the deliberate exception**: the `PhaseContext`
+  also carries `dbPath` (resolved from the primary `RunConfig.projectPath` via
+  `resolveDatabasePath`) and `primaryProjectRoot` (= `cfg.projectPath`), so `commitAll` **scans**
+  modified files from `workPath` but **persists** the symbol graph to the primary project's
+  `.huginn/muninn.db` and attributes entities to the primary project record — durable memory must
+  outlive the ephemeral sandbox (SPEC AC-17.6, ADR-20). Indexing still runs during `COMMIT_ALL`
+  (before promotion), so a failed/aborted promotion can leave phantom entities for code that never
+  landed; this is an accepted trade-off documented in ADR-20.
 - On iteration success (no abort, not `--only-phase`), `promoteSandbox` integrates the commit into
   the primary branch and logs the method/commit count. On abort or a thrown phase error a
   `finally` block `discardSandbox`s, exactly once (`settled` flag), never touching the primary tree.

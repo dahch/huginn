@@ -211,7 +211,9 @@ the primary branch while the agent works:
 - Every agent phase runs against the sandbox: the iteration session is created with, and every
   `prompt`/slash-command carries, the opencode SDK `directory` query parameter set to the worktree
   path, so the agent's own tools edit the sandbox rather than your primary tree. Harness-side work
-  (module inference, compiler contracts, git diff, Muninn indexing) reads the same path.
+  (module inference, compiler contracts, git diff) reads the same path; **Muninn indexing is the
+  exception** — it scans the worktree but persists symbols to the primary project's
+  `.huginn/muninn.db`, so long-term memory survives the sandbox (ADR-20).
 - On iteration success the sandbox commits are integrated into your active branch
   (`git merge --ff-only`, falling back to `git cherry-pick`) and the worktree + branch are removed.
 - On abort or a phase error the sandbox is discarded and your working tree is never touched.
