@@ -85,10 +85,11 @@ src/
 │   ├── parser.ts           plan.md → Iteration[]
 │   └── types.ts            Iteration type
 └── tui/
-    ├── app.tsx             runTui entry
-    ├── render.tsx          ink render + engine.run() error bridge; renderLiveTui
-    ├── Dashboard.tsx       the run-cycle dashboard component
-    └── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box)
+    ├── app.tsx             runTui and runLiveTui entry points
+    ├── render.tsx          alternate screen setup, console patching, ink render bridges
+    ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
+    ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
+    └── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen)
 scripts/postinstall.ts       bun install hook → installer prompt
 templates/{agents,commands}/ opencode agent/command definitions bundled as markdown
 ```
@@ -1738,4 +1739,70 @@ letting `createSandbox` throw.
 - `--no-sandbox` preserves the previous in-place behavior exactly. `cleanupSandboxes()` delegates to
   `cleanupAll()` and is registered on `SIGINT`/`SIGTERM` in `cli.ts` for both `run` and the live
   handoff path, so an unexpected exit never leaves `.huginn/worktrees/` behind.
+
+---
+
+## 20. Phase 5 — Fullscreen Terminal UI & Viewport Engine
+
+Iteration 19 transforms Huginn's Ink-based terminal user interface from an inline stdout-streamed view into a fullscreen application running in the terminal's Alternate Screen Buffer, with responsive viewport scaling, hot console log interception, and stream batching.
+
+### 20.1 Alternate Screen Buffer & Lifecycle Guarantees (`src/tui/render.tsx`)
+
+Previously, Ink rendered directly to standard stdout inline with prior shell history. Startup banners and server logs polluted the scrollback buffer, and scrolling spilled into the host terminal emulator.
+
+`setupTuiEnvironment()` in `src/tui/render.tsx` establishes strict fullscreen containment:
+1. **Entering Alternate Buffer**: Writes `ENTER_ALT_SCREEN = "\x1b[?1049h\x1b[H"` to `process.stdout`, immediately switching the terminal emulator to a clean alternate screen buffer and homing the cursor.
+2. **Terminal Restoration (`EXIT_ALT_SCREEN`)**: Restores the primary screen buffer and cursor visibility via `EXIT_ALT_SCREEN = "\x1b[?1049l\x1b[?25h"`.
+3. **Multi-Tier Cleanup Safety**:
+   - `try...finally` in `renderTui` and `renderLiveTui`.
+   - Process signal handlers for `SIGINT` and `SIGTERM`.
+   - `uncaughtException` trap.
+   - Synchronous `process.on("exit")` listener so cursor visibility and primary screen are guaranteed to be restored even during unexpected or abrupt process termination.
+
+```mermaid
+sequenceDiagram
+    participant CLI as cli.ts / app.tsx
+    participant ENV as setupTuiEnvironment()
+    participant TERM as Terminal Emulator
+    participant INK as Ink Renderer
+    participant LOGS as patchConsole()
+
+    CLI->>ENV: setupTuiEnvironment()
+    ENV->>LOGS: patchConsole() (intercept stdout)
+    ENV->>TERM: write ENTER_ALT_SCREEN (\x1b[?1049h\x1b[H)
+    ENV->>CLI: return cleanup() callback
+    CLI->>INK: render(<Dashboard> / <LiveApp>)
+    Note over INK,TERM: Responsive Fullscreen TUI active (100% viewport)
+    INK-->>CLI: exit triggered (quit / completion / abort)
+    CLI->>ENV: cleanup()
+    ENV->>TERM: write EXIT_ALT_SCREEN (\x1b[?1049l\x1b[?25h)
+    ENV->>LOGS: unpatchConsole() (restore stdout)
+```
+
+### 20.2 Responsive Viewport Engine (`src/tui/useTerminalSize.ts`)
+
+Card heights were previously fixed (`VISIBLE_CHAT_LINES = 12`, `VISIBLE_STREAM_LINES = 8`), leading to visual clipping on smaller screens and wasted space on larger displays.
+
+The `useTerminalSize()` hook dynamically measures and adapts to terminal dimensions:
+- Reads `process.stdout.rows` and `process.stdout.columns` with safe fallbacks (`DEFAULT_ROWS = 24`, `DEFAULT_COLUMNS = 80`) when non-TTY or dimensions are undefined.
+- Listens to `process.stdout.on("resize")` and triggers React state updates on dimension changes.
+- Layout cards (`ScrollableChatCard`, `ScrollableStreamCard`, `PipelineCard`, `LogsCard`) dynamically calculate their height from available viewport `rows`:
+  - `HeaderCard` and `InputBar` / `FooterBar` occupy fixed overhead.
+  - Middle cards scale to occupy 100% of remaining vertical height without vertical overflow.
+
+### 20.3 Zero Stdout Pollution & Hot Console Interception (`patchConsole`)
+
+To prevent visual tearing and corrupted frames in the alternate screen buffer, stdout emissions are completely eliminated during TUI operation:
+- **`patchConsole()` / `unpatchConsole()`**: Intercepts `console.log`, `console.warn`, and `console.error` methods.
+- Intercepted messages are formatted using `node:util.format` and dispatched to `events.emit("log", { level, message, timestamp })`.
+- **Pre-Mount Log Buffering (`Emitter.logBuffer`)**: `Emitter` maintains a ring buffer of the last 50 log events (`MAX_LOG_BUFFER = 50`) accessible via `events.getRecentLogs()`. Early initialization logs (server startup, provider checks, template warnings) are preserved and displayed in `LogsCard` without leaking raw text to stdout before Ink mounts.
+- CLI banner and update checks are conditionally suppressed or routed through `events.emit("log", ...)` when `cfg.tui` is active.
+
+### 20.4 Stream Batching & Scroll Containment
+
+High-frequency token streaming from language models can cause rapid React re-renders, Ink CPU spikes, and terminal flickering:
+- **60ms Stream Throttling**: In both `Dashboard.tsx` and `LiveDashboard.tsx`, incoming `phaseStream` event chunks append to an internal ref buffer (`streamBuf.current`) and flush to React state at a throttled interval (minimum 60ms between flushes).
+- **1,000-Line Ring Buffer**: Stream lines are clamped to the latest 1,000 lines, preventing unbounded memory growth during long-running builds.
+- **Scroll Containment**: Keyboard navigation (`PageUp`/`PageDown` by 4 lines, `↑`/`↓` line-by-line) operates directly on internal state (`streamScroll`, `chatScroll`). Terminal scrollback remains untainted by mouse or touchpad movements.
+
 

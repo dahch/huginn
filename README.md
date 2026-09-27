@@ -285,11 +285,12 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
    Live mode (`[r]`) to continue refining and adding new tasks. Aborting before approval drops the
    intent-to-add staging so nothing review-only lingers in the index.
 
-**Live TUI Features**:
-- **Dual Cards**: parallel scrollable cards for **Refinement Conversation** and **Thinking Stream**.
-- **Interactive Controls**: `[Tab]` toggles active card focus; `[PageUp]`/`[PageDown]` scrolls the focused history by 4 lines; `[↑]`/`[↓]` scrolls line-by-line.
-- **Native Markdown Rendering**: bold, italic, inline code backticks, headers, quotes, bullet points, and code fences are styled natively in the terminal.
-- **Immediate Abort**: `[Esc]` or typing `/quit` cancels execution immediately.
+**Live & Dashboard TUI Features**:
+- **Fullscreen Alternate Screen Buffer**: Operates in an isolated alternate screen buffer (`\x1b[?1049h\x1b[H`) with multi-layered exit handlers (`SIGINT`, `SIGTERM`, unhandled exceptions, and `process.on("exit")`), guaranteeing clean restoration of your shell history and visible cursor.
+- **Responsive Viewport Scaling**: Dynamically measures rows and columns via `useTerminalSize()` and auto-adapts layout cards to fill 100% of the screen upon terminal resizing without line truncation.
+- **Console Log Drawer (Zero Stdout Pollution)**: Background server logs, provider warnings, and runtime notices are intercepted via `patchConsole()` and routed into an in-app log drawer (`LogsCard`) rather than dumping to stdout and tearing the alternate screen.
+- **Stream Batching & Scroll Containment**: Real-time agent streaming (`phaseStream`) is throttled to 60ms flushes and capped with a 1,000-line ring buffer to prevent Ink rerender lag. Mouse and keyboard scrolling are trapped within the active card (`[PageUp]`/`[PageDown]` for 4 lines, `[↑]`/`[↓]` line-by-line) without leaking into the terminal scrollback history.
+- **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` or `/quit` aborts cleanly.
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
 plus the run-mode flags `--mode`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,

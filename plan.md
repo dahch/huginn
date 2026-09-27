@@ -285,3 +285,111 @@ Fix the findings from the Phase 3 final validation gate (critical sandbox enforc
 6. **Integrator file-mode preservation (SEC-1001).** In `src/agents/integrator.ts` `writeAtomic`, preserve an existing target's permission bits (default new files to `0o600`; create parent dirs `0o700` for the home-scoped secret-bearing configs). Rules files may stay world-readable. Add a test asserting an existing `0o600` config is not widened by `setup`.
 7. **Small correctness fixes**: `worktree.ts` prefix check must use a path separator (`startsWith(base + sep)` or `path.relative`); log the actual reclaimed count (not unconditional); set the `agy` label to `"Antigravity CLI (agy)"` to match SPEC AC-15.2.
 8. Verify: `bun test`, `bunx vitest run`, `bun run typecheck`, `bun run build` all green.
+
+---
+
+# Plan: Modern Multi-Agent Runtime, Fullscreen TUI, Provider Agnosticism, MCP & Skills (Phase 5)
+
+## Iteration 19 — Fullscreen Terminal UI & Responsive Viewport Engine
+modules: src/tui/, src/cli.ts
+
+Implement desktop-grade fullscreen terminal UI with alternate screen buffer and dynamic viewport scaling:
+1. Update `src/tui/render.tsx`:
+   - Enter alternate screen buffer prior to Ink mounting: `process.stdout.write("\x1b[?1049h\x1b[H")`.
+   - Ensure clean exit: `process.stdout.write("\x1b[?1049l\x1b[?25h")` on normal exit, `SIGINT`, `SIGTERM`, unhandled exceptions, and via a synchronous `process.on("exit")` listener so cursor visibility is guaranteed even on abrupt termination.
+2. Implement responsive viewport hook `useTerminalSize()` in `src/tui/useTerminalSize.ts`:
+   - Listen to `process.stdout.on("resize")` tracking `{ rows, columns }`.
+   - Provide safe fallbacks when non-TTY or stdout dimensions are unavailable (default 80x24).
+3. Refactor `src/tui/LiveDashboard.tsx` and `src/tui/Dashboard.tsx`:
+   - Replace hardcoded `VISIBLE_CHAT_LINES = 12` and `VISIBLE_STREAM_LINES = 8` with dynamically calculated heights based on `rows`.
+   - Scale layout to 100% height and width.
+   - Enforce internal card scroll containment so mouse wheel / trackpad scrolling never spills into the host terminal emulator history.
+4. Silence stdout log leakage in `src/cli.ts` & `src/tui/render.tsx`:
+   - Redirect startup logs, server banner, and provider warnings into an internal splash screen or log buffer rather than printing directly to stdout before Ink mounts.
+   - Implement hot console interception (`patchConsole`) redirecting any runtime `console.log`, `console.warn`, and `console.error` to the internal event drawer (`events.emit("log", ...)`) while the TUI is mounted, restoring standard console methods on exit.
+5. Add unit and component tests verifying resize events, escape sequence emission, and screen cleanup.
+
+## Iteration 20 — Decoupled Multi-Agent Runtime Architecture (IAgentRuntime)
+modules: src/engine/agent/, src/config.ts, src/cli.ts
+
+Decouple Huginn from OpenCode by introducing an agnostic agent runtime layer:
+1. Create `src/engine/agent/types.ts`:
+   - `IAgentRuntime`: `id`, `name`, `isAvailable()`, `getAvailableModels()`, `getMcpStatus()`, `createSession()`.
+   - `IAgentSession`: `id`, `prompt()`, `runCommand()`, `abort()`.
+2. Implement concrete adapters in `src/engine/agent/adapters/`:
+   - `OpencodeRuntimeAdapter`: Wraps `opencode serve` and `@opencode-ai/sdk`.
+   - `ClaudeRuntimeAdapter`: Connects to Claude Code CLI / stdio.
+   - `CodexRuntimeAdapter`: Connects to OpenAI Codex CLI.
+   - `OmpRuntimeAdapter`: Connects to Oh My Pi (`omp`) CLI.
+   - `CommandCodeRuntimeAdapter`: Connects to Command Code CLI.
+   - `QwenRuntimeAdapter`: Connects to Qwen Code CLI.
+   - `GenericSubprocessRuntimeAdapter`: Extensible stdio JSON-RPC adapter for Pi, Kimi, and custom agents.
+3. Create `src/engine/agent/registry.ts`:
+   - `getAgentRuntime(id)` factory and auto-detector scanning `PATH` for installed binaries (`claude`, `opencode`, `codex`, `omp`, `command-code`, `qwen`).
+4. Update `src/config.ts` and `src/cli.ts`:
+   - Add `agent?: string` to `UserConfig` and `RunConfig`.
+   - Add `--agent <id>` CLI flag.
+   - Route `CycleEngine` and `LiveEngine` to execute via `IAgentRuntime`.
+5. Add tests in `test/engine/agent/` verifying adapter dispatch, CLI probe, and session execution.
+
+## Iteration 21 — Interactive Model & Provider Selector & Persistence
+modules: src/config.ts, src/tui/, src/engine/
+ 
+Implement dynamic provider discovery, interactive onboarding picker, and in-session model switching:
+1. Dynamic model discovery via `runtime.getAvailableModels()`.
+2. Create interactive TUI model picker component `src/tui/ModelPickerModal.tsx`:
+   - Keyboard navigable list (arrow keys, search filter, enter) to choose Thinker and Executor models.
+   - Displays provider group badges (e.g. Anthropic, OpenAI, Google, Ollama, Groq).
+3. Onboarding flow:
+   - When running `huginn` without pre-configured models and default models are absent from active runtime, pop up the picker modal.
+   - Prompt *"Save as default? [Project / Global / Session only]"* and persist to `.huginn/config.json` or `~/.huginn/config.json`.
+4. In-session model switching:
+   - Implement `/models` and `/model <thinker> [executor]` slash commands in `LiveDashboard.tsx` allowing hot-swapping models during active sessions.
+5. Unit tests for model discovery, picker state, and config persistence.
+
+## Iteration 22 — Live MCP Monitor, Inspector & Multi-MCP Configuration
+modules: src/tui/, src/muninn/mcp/, src/engine/
+
+Implement real-time MCP status visibility, interactive inspector, and multi-MCP project declarations:
+1. Status Bar Pill:
+   - Add live MCP health indicator to TUI header: `MCP: 🟢 <count> active (<tools> tools)`.
+   - Periodic non-blocking health check against active runtime's MCP subsystem (`runtime.getMcpStatus()`) bounded by a strict 1500 ms timeout via `Promise.race` / `AbortSignal.timeout(1500)` so remote/hung MCP servers never freeze the UI.
+2. Interactive `/mcp` inspector modal in `src/tui/McpInspectorModal.tsx`:
+   - Lists all connected MCP servers (Muninn + third-party servers).
+   - Displays transport type, latency, and list of exposed tools with descriptions.
+3. Multi-MCP project configuration:
+   - Read `.huginn/mcp.json` and auto-register external servers with the active runtime.
+4. Add tests for MCP polling, inspector modal rendering, and `.huginn/mcp.json` parsing.
+
+## Iteration 23 — Extensible Skills System & Rich Slash Commands
+modules: src/engine/skills/, src/tui/, src/engine/liveMode.ts
+
+Implement modular skills engine and full suite of interactive slash commands:
+1. Skills loader `src/engine/skills/loader.ts`:
+   - Discover skills in `.huginn/skills/*.md` and templates.
+   - Parse skill metadata (title, description, trigger) and body prompt.
+2. Rich slash commands dispatcher in `src/engine/liveMode.ts` and `src/tui/LiveDashboard.tsx`:
+   - `/help`: Opens interactive cheat sheet with all commands and keybindings.
+   - `/agent [id]`: Switch or view active agent runtime.
+   - `/models [m]`: Switch or view active models.
+   - `/mcp [id]`: Inspect MCP servers and tools.
+   - `/skills`: List and execute custom skills.
+   - `/status`: Show system diagnostics (branch, worktree sandbox, token usage, memory stats).
+   - `/clear`: Clear chat viewport history.
+   - `/draft`: Trigger document drafting.
+   - `/quit`: Confirm and exit cleanly.
+3. Add tests verifying skill discovery, markdown parsing, and command dispatching.
+
+## Iteration 24 — CLI Ergonomics: `huginn init` Wizard & Help Redesign
+modules: src/commands/init.ts, src/cli.ts
+
+Refactor CLI ergonomics to provide a welcoming developer onboarding experience:
+1. Implement `huginn init` in `src/commands/init.ts`:
+   - Guided terminal wizard: detects git repo, scans installed agent CLIs, prompts for default agent and models, runs `huginn setup`, and writes initial `.huginn/config.json`.
+2. Redesign `huginn --help`:
+   - Categorize output into Primary / Essential commands (`live`, `run`, `init`, `setup`, `doctor`) vs Advanced options.
+   - Add concise examples and flag grouping.
+3. Greenfield / unconfigured launch ergonomics:
+   - When running `huginn` with no arguments in a repository that has never run Huginn, launch the init wizard or interactive onboarding instead of failing or dumping raw warnings.
+4. Add test suite in `test/commands/init.test.ts` verifying wizard steps and config emission.
+

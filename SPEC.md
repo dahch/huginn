@@ -268,3 +268,96 @@ The execution cycle must run each iteration in an isolated git worktree by defau
 - **NFR-3 (Zero Cloud Lock-in)**: Completely self-contained; zero network calls or external API keys required.
 - **NFR-4 (Compatibility)**: Works seamlessly in Node.js (v20+) and Bun (v1.0+) environments on macOS, Linux, and Windows.
 - **NFR-5 (Type Safety)**: 100% strict TypeScript types with no `any` and full Zod schema validation for runtime inputs.
+
+---
+
+# Spec: Modern Multi-Agent Runtime, Fullscreen Terminal UI, Provider Agnosticism, MCP & Skills Ecosystem (Phase 5)
+
+## 7. Executive Summary & Goals
+
+Phase 5 elevates Huginn to modern industry standards (competing with and exceeding Gentle AI, OpenCode, and Claude Code). It eliminates vendor lock-in by decoupling Huginn from OpenCode through a universal Agent Runtime Adapter (`IAgentRuntime`), introduces an immersive fullscreen Terminal UI with Alternate Screen Buffer and responsive viewport adaptation (eliminating scroll leakage and uncontained output), adds interactive model/provider selection with persistent user defaults, provides live visibility into Model Context Protocol (MCP) health and tools, and introduces a dynamic project Skills and Slash Commands system.
+
+### Goals
+- **Universal Agent Runtime (`IAgentRuntime`)**: Support OpenCode, Claude Code, OpenAI Codex, Oh My Pi (`omp`), Command Code (`commandcode`), Qwen Code (`qwen`), and generic CLI/stdio agents agnostically.
+- **Fullscreen Terminal UI ("Vida Propia")**: True terminal alternate screen buffer (`\x1b[?1049h`), 100% height and width viewport scaling without terminal scroll leakage, and silent background server log buffering.
+- **Interactive Model & Provider Selection**: In-session `/models` command, automated provider scanning from active runtime, interactive terminal picker on unconfigured runs, and persistent "Save as default?" preference.
+- **Live MCP Health & Tool Inspection**: Header status pill showing active MCP count and health, `/mcp` interactive inspector modal, and project-level `.huginn/mcp.json` support.
+- **Project Skills & Rich Slash Commands**: Dynamic skill loading (`.huginn/skills/*.md`), in-session commands (`/help`, `/agent`, `/models`, `/mcp`, `/skills`, `/status`, `/clear`, `/draft`, `/quit`).
+- **Guided CLI Ergonomics**: `huginn init` setup wizard, streamlined two-tier `--help` documentation.
+
+### Non-Goals
+- Re-implementing LLM inference or provider client SDKs from scratch (Huginn orchestrates agent runtimes and their native CLIs/APIs).
+- Replacing Muninn's SQLite memory core (Muninn remains Huginn's authoritative persistent memory and symbol graph).
+
+---
+
+## 8. Functional Requirements (Phase 5)
+
+### REQ-21: Fullscreen Terminal UI & Viewport Engine
+The TUI must operate in an isolated Alternate Screen Buffer, scale dynamically to terminal rows and columns, and prevent console scroll leakage.
+- **AC-21.1 (Alternate Screen Buffer & Exit Safety)**: Upon launching interactive TUI (`renderTui` or `renderLiveTui`), Huginn sends `\x1b[?1049h\x1b[H` to stdout to switch to the terminal alternate screen buffer, clearing previous shell history. To prevent cursor loss or orphaned terminal states if Node/Bun suffers an abrupt exit, `\x1b[?1049l\x1b[?25h` is registered in a synchronous `process.on("exit")` handler, `SIGINT`/`SIGTERM` handlers, and an absolute `try...finally` block, ensuring the primary screen and cursor visibility are always restored.
+- **AC-21.2 (Responsive Dimensions Hook)**: The TUI subscribes to `process.stdout.on("resize")` via a custom `useTerminalSize()` hook. Layout components compute dynamic heights (`rows`) and widths (`columns`), expanding chat, stream, logs, or sidebars to utilize 100% of the terminal canvas without fixed line truncation or vertical overflow.
+- **AC-21.3 (Zero Stdout Pollution & Hot Console Interception)**: Background startup logs (server initialization, provider checks, update notifications) and any runtime `console.log`, `console.warn`, or `console.error` emitted while the TUI is mounted are dynamically intercepted (via `patchConsole` / log redirection) and piped into an internal ring buffer (`ServerLogDrawer` / event stream). No raw text may be emitted directly to stdout while in the alternate screen buffer, preventing visual tearing.
+- **AC-21.4 (Scroll Containment)**: Mouse wheel, page up/down, and arrow scrolling are trapped within the active focused card or modal. Scrolling within the TUI can never spill into the host terminal emulator scrollback buffer.
+- **AC-21.5 (Stream Batching & Render Throttling)**: High-frequency agent output stream events (`phaseStream`) are throttled (flushed every 60ms) and capped with a 1,000-line ring buffer. This prevents Ink rerender thrashing, terminal flicker, and UI CPU spikes during rapid model token streaming while retaining full scrollback history up to the cap.
+
+
+### REQ-22: Decoupled Multi-Agent Runtime Architecture (`IAgentRuntime`)
+The execution cycle and live refinement loop must interact with AI coding agents strictly through an agnostic `IAgentRuntime` interface.
+- **AC-22.1 (Runtime Abstraction)**: Defines `IAgentRuntime`:
+  - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, etc.).
+  - `name: string` (display label).
+  - `isAvailable(): Promise<boolean>` (detects CLI binary on `PATH` or daemon availability).
+  - `getAvailableModels(): Promise<ModelInfo[]>` (returns supported or authenticated models).
+  - `getMcpStatus(): Promise<McpStatusReport>` (reports connected MCP servers and tools).
+  - `createSession(options: SessionOptions): Promise<IAgentSession>` (creates stateful execution session with `prompt`, `runCommand`, `abort`).
+- **AC-22.2 (Built-in Adapters)**:
+  - `OpencodeRuntimeAdapter`: Wraps `opencode serve` and `@opencode-ai/sdk`.
+  - `ClaudeRuntimeAdapter`: Integrates with Claude Code CLI via subshell or stdio JSON-RPC.
+  - `CodexRuntimeAdapter`: Integrates with OpenAI Codex CLI.
+  - `OmpRuntimeAdapter`: Integrates with Oh My Pi (`omp`) CLI.
+  - `CommandCodeRuntimeAdapter`: Integrates with Command Code CLI.
+  - `QwenRuntimeAdapter`: Integrates with Qwen Code CLI.
+  - `GenericSubprocessRuntimeAdapter`: Configurable stdio adapter for Kimi, Pi, and custom agent binaries.
+- **AC-22.3 (Runtime Registry & Resolution)**: `getAgentRuntime(id)` instantiates the requested runtime adapter. Precedence: `--agent <id>` CLI flag → project `.huginn/config.json` (`agent`) → user `~/.huginn/config.json` → auto-detection of installed binaries (`claude`, `opencode`, `codex`, `omp`) → default `opencode`.
+- **AC-22.4 (Hot Runtime Switching)**: In Live mode, typing `/agent <id>` or using the agent picker switches the active execution runtime for subsequent prompts without restarting Huginn.
+
+### REQ-23: Interactive Model & Provider Selector & Persistence
+Huginn must discover available models from the active runtime and provide interactive selection and persistence.
+- **AC-23.1 (Provider & Model Auto-Discovery)**: At startup or upon opening the model picker, Huginn queries `runtime.getAvailableModels()`.
+- **AC-23.2 (Interactive Onboarding Picker)**: When running `huginn` without pre-configured models, if defaults are missing or unauthenticated, an interactive selector renders (arrow keys + Enter) allowing the user to select Thinker and Executor models from active providers.
+- **AC-23.3 (Persistence Confirmation)**: After selecting an agent or model interactively, Huginn prompts: *"Save as default? [Project / Global / Session only]"*. Confirming saves the choice to `.huginn/config.json` or `~/.huginn/config.json`.
+- **AC-23.4 (In-Session `/models` Command)**: Typing `/models` or `/model` in the Live TUI opens an interactive modal to view active models and switch them on the fly.
+
+### REQ-24: Unified Multi-MCP Monitoring & Inspector
+Huginn must monitor and display the status of all connected Model Context Protocol (MCP) servers and their tools.
+- **AC-24.1 (Header Status Badge & Non-Blocking Polling)**: The TUI header displays a live MCP indicator: `MCP: 🟢 <count> active (<tools> tools)` (e.g. `MCP: 🟢 Muninn + 2 active · 14 tools`). Polling `runtime.getMcpStatus()` is strictly bounded by a 1500ms timeout via `Promise.race` / `AbortSignal.timeout(1500)` so that an unresponsive or hanging external MCP server never blocks the Ink render loop or freezes the interface. If any critical MCP fails or times out, it degrades gracefully to `MCP: 🟡 1 timeout/degraded`.
+- **AC-24.2 (Interactive `/mcp` Inspector)**: Typing `/mcp` in Live mode or pressing a shortcut opens an inspector modal listing:
+  - Connected MCP servers (Muninn, GitHub, Postgres, Filesystem, etc.).
+  - Connection transport (stdio, SSE, HTTP).
+  - Exposed tools and descriptions.
+  - Connection health and latency status.
+- **AC-24.3 (Project-Level MCP Declaration)**: Huginn reads `.huginn/mcp.json` (or target agent MCP config) and automatically verifies their availability at startup.
+
+### REQ-25: Extensible Skills System & Live Slash Commands
+Huginn must support modular project skills and interactive slash commands in the live environment.
+- **AC-25.1 (Skill Discovery)**: Scans `.huginn/skills/*.md` and `.opencode/skills/*.md`. Each skill defines metadata (name, description, triggers) and reusable prompt instructions.
+- **AC-25.2 (Live Slash Commands)**: The Live input bar intercepts slash commands before model dispatch:
+  - `/help`: Displays modal with command reference, shortcuts, and active configuration.
+  - `/agent [id]`: Opens agent picker or switches to specified agent.
+  - `/models [model]`: Opens model picker or updates thinker/executor.
+  - `/mcp [id]`: Opens MCP server inspector.
+  - `/skills`: Lists available skills and previews their instructions.
+  - `/status`: Displays comprehensive status (git branch, worktree sandbox, runtime, memory stats).
+  - `/clear`: Clears conversation scrollback in TUI.
+  - `/draft`: Executes scope extraction and drafts `spec.md`, `adr.md`, `plan.md`.
+  - `/quit`: Gracefully exits with confirmation.
+
+### REQ-26: CLI Ergonomics, `huginn init` & Help Hierarchy
+The CLI must offer clear, structured commands and a frictionless initialization wizard.
+- **AC-26.1 (`huginn init`)**: Guided interactive wizard that:
+  - Detects git repository and package manager.
+  - Scans installed agent CLIs (`opencode`, `claude`, `codex`, `omp`).
+  - Prompts developer to choose default agent and preferred models.
+  - Registers Muninn MCP (`huginn setup`) and creates initial `.huginn/config.json`.
+- **AC-26.2 (Streamlined Help)**: `huginn --help` presents a concise, visually grouped summary (Core commands: `live`, `run`, `init`, `setup`, `doctor`). Advanced technical options are cleanly categorized or surfaced via `huginn --help --all`.

@@ -615,3 +615,80 @@ avoids. They are ordered by how central the decision is to the design.
   - *Positive*: durable symbol/memory state survives the sandbox lifecycle and grows across iterations; consistent with AC-2.1 (project-scoped DB) and AC-2.3 (explicit `dbPath` honored); a single path-resolution convention (`resolveDatabasePath`) is shared by both `CycleEngine` and `commitAll`.
   - *Negative*: indexing still runs during `COMMIT_ALL` (before promotion), so a failed or aborted promotion can leave "phantom" entities for code that never landed in the primary tree — accepted for now (the zombie pruning in `indexFilesIntoMuninn` only removes entities for files it re-scans), with a follow-up to prune by sandbox iteration or move indexing post-promotion. A non-sandbox run now resolves the DB via git-root detection rather than `projectPath`, which is more AC-2.1-correct but changes behavior when `--project` is a subdirectory of a larger repository.
 
+---
+
+## ADR-21: Decoupled Multi-Agent Runtime Architecture (IAgentRuntime)
+
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: Huginn previously hardcoded its execution loop directly against the OpenCode SDK (`opencode serve` + `@opencode-ai/sdk`). While Huginn's universal setup registry recognized other agents (Claude Code, OpenAI Codex, OMP, Command Code, Qwen) for MCP config and rules injection, Huginn could not actually execute tasks using any runtime other than OpenCode. Developers with active subscriptions to Claude Code, Codex, or local tools (OMP, Qwen) were locked out of running Huginn with their preferred AI agents.
+- **Decision**: Introduce a Ports & Adapters abstraction layer:
+  1. Define `IAgentRuntime` and `IAgentSession` interfaces in `src/engine/agent/types.ts` abstracting process lifecycle, model discovery, MCP queries, and execution (`prompt`, `runCommand`, `abort`).
+  2. Implement concrete runtime adapters:
+     - `OpencodeRuntimeAdapter`: Wraps OpenCode daemon and SDK.
+     - `ClaudeRuntimeAdapter`: Connects to Claude Code CLI / stdio.
+     - `CodexRuntimeAdapter`: Connects to OpenAI Codex CLI.
+     - `OmpRuntimeAdapter`: Connects to Oh My Pi (`omp`) CLI.
+     - `CommandCodeRuntimeAdapter`: Connects to Command Code CLI.
+     - `QwenRuntimeAdapter`: Connects to Qwen Code CLI.
+     - `GenericSubprocessRuntimeAdapter`: Configurable stdio JSON-RPC adapter for Kimi, Pi, and custom agents.
+  3. Route `CycleEngine` and `LiveEngine` to talk to the configured `IAgentRuntime` rather than concrete `OpencodeClient`.
+  4. Allow runtime selection via CLI (`--agent <id>`), project config (`.huginn/config.json`), user config (`~/.huginn/config.json`), or auto-detection of available binaries on `PATH`.
+  5. Enable in-session runtime switching via `/agent <id>` in the live console.
+- **Consequences**:
+  - *Positive*: True agent agnosticism; zero vendor lock-in; developers can run Huginn with Claude Code, OpenCode, Codex, or OMP interchangeably; clean test mocking via fake runtime adapters.
+  - *Negative*: Subprocess communication with external agent CLIs requires robust streaming parsers and process signal handling.
+
+---
+
+## ADR-22: Fullscreen Terminal UI with Alternate Screen Buffer & Responsive Viewport
+
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: Huginn's Ink-based TUI currently renders inline into standard stdout. Because startup banners and server logs are dumped prior to Ink mounting, the terminal scrollback buffer becomes polluted with 25+ lines of logs. Any mouse wheel or touchpad scrolling within the TUI overflows into the host terminal emulator history, destroying immersion and making the UI feel "without a life of its own" compared to tools like OpenCode, lazygit, or vim. Furthermore, card heights were hardcoded to fixed line limits (`VISIBLE_CHAT_LINES = 12; VISIBLE_STREAM_LINES = 8;`), failing to adapt to terminal window resizing.
+- **Decision**:
+  1. Enter Alternate Screen Buffer (`\x1b[?1049h\x1b[H`) upon TUI initialization and restore primary buffer (`\x1b[?1049l\x1b[?25h`) on exit or signal termination. To eliminate the risk of leaving the terminal cursor hidden upon abrupt process termination, register `\x1b[?1049l\x1b[?25h` directly in a synchronous `process.on('exit')` hook as well as in `try...finally`.
+  2. Implement `useTerminalSize()` reacting to `process.stdout.on("resize")` to dynamically calculate viewport bounds (`rows` and `columns`).
+  3. Scale card dimensions dynamically so chat, stream, and logs occupy 100% of available screen height without vertical clipping or overflow.
+  4. Intercept `console.log`, `console.warn`, and `console.error` via `patchConsole()` while the TUI is active, piping messages into an internal ring-buffer drawer / event stream instead of writing to stdout, preventing screen tearing in the alternate screen.
+  5. Trap mouse and keyboard scrolling within the focused container so terminal scrollback never leaks.
+  6. Batch and throttle high-frequency stream events (`phaseStream`) using a 60ms flush interval and a 1,000-line ring buffer to protect Ink rendering performance from model token flooding.
+- **Consequences**:
+  - *Positive*: Immersive desktop-grade terminal UX on par with OpenCode, vim, and gentle-ai; responsive resizing; clean exit leaving the developer's console immaculate and cursor restored.
+  - *Negative*: Ink in alternate screen mode requires strict lifecycle cleanup guards to ensure terminal escape sequences are always restored even upon unhandled rejections.
+
+---
+
+## ADR-23: Interactive Model Selection, Provider Auto-Discovery & In-Session Switching
+
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: Huginn previously hardcoded fallbacks to `anthropic/claude-opus-4-5` (thinker) and `opencode/gpt-5.1-codex` (executor). If a user launched `huginn` without these specific models authenticated in OpenCode, Huginn printed warning messages and proceeded to fail at runtime. Users had no interactive way to browse available models or select their active models.
+- **Decision**:
+  1. Active runtime queries its provider/model catalog (`runtime.getAvailableModels()`).
+  2. If thinker or executor models are unconfigured or invalid, Huginn presents an interactive terminal selector (arrow keys + search filter + enter).
+  3. Provide an explicit *"Save as default? (Project / Global / Session only)"* prompt upon selection.
+  4. Expose `/models` or `/model <thinker> [executor]` slash command inside Live TUI to switch models on the fly without session interruption.
+- **Consequences**:
+  - *Positive*: Frictionless onboarding; zero cryptic provider warnings on clean installs; seamless switching between lightweight models (for simple edits) and frontier thinker models (for architecture/fixes).
+  - *Negative*: Model catalogs must be cached or queried asynchronously with fallback handling when agent runtimes are offline.
+
+---
+
+## ADR-24: Unified Multi-MCP Status Monitoring & Extensible Skills System
+
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: Modern agent environments heavily utilize the Model Context Protocol (MCP) and custom project skills. Huginn previously provided zero visual feedback on MCP server health or tool availability. Additionally, live mode only supported `/draft`, `/go`, `/quit`, and `/abort`, with no support for project-specific skills or helper commands.
+- **Decision**:
+  1. Add a real-time MCP status indicator to the TUI header: `MCP: 🟢 <count> active (<tools> tools)`.
+  2. Enforce a strict non-blocking timeout (1500 ms) via `Promise.race` on `runtime.getMcpStatus()` to guarantee that slow or hanging external MCP servers never block Ink rendering or freeze the TUI.
+  3. Provide an interactive `/mcp` command displaying connected servers (Muninn + external MCPs), registered tool definitions, and transport latency.
+  4. Load project-level MCP configurations from `.huginn/mcp.json` automatically.
+  5. Implement dynamic skills discovery scanning `.huginn/skills/*.md`.
+  6. Expand live slash commands: `/help`, `/agent`, `/models`, `/mcp`, `/skills`, `/status`, `/clear`, `/draft`, `/quit`.
+- **Consequences**:
+  - *Positive*: Complete observability into agent tools and MCP state; modular workflow extensibility through markdown skills; standard, discoverable CLI/TUI command interface; guaranteed responsive UI regardless of remote MCP latency.
+  - *Negative*: Periodic MCP health probing requires non-blocking timeout handling so a sluggish third-party MCP server never freezes the UI.
+
+
