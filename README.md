@@ -16,11 +16,18 @@ and then executing the resulting plan in the same session (`huginn live`).
 ## Requirements
 
 - [Bun](https://bun.sh) >= 1.0 (runtime)
-- [opencode](https://opencode.ai) CLI on `$PATH` with authenticated providers
-- The opencode agents/commands that huginn drives — these are **installed by huginn
+- An AI coding agent CLI on `$PATH`:
+  - [opencode](https://opencode.ai) CLI (default runtime)
+  - [Claude Code](https://claude.ai/code) (`claude`)
+  - [OpenAI Codex](https://github.com/openai/codex) (`codex`)
+  - [Oh My Pi](https://github.com/can1357/oh-my-pi) (`omp`)
+  - [Command Code](https://github.com/command-code) (`commandcode`)
+  - [Qwen Code](https://github.com/QwenLM) (`qwen`)
+  - Or any generic agent CLI conforming to stdio execution.
+- The opencode agents/commands that huginn drives (when using OpenCode) — these are **installed by huginn
   itself** (see below), not something you set up by hand.
 
-> Note: the `reviewing` agent must be able to delegate via the Task tool to `qa`, `spec-auditor`
+> Note: when running under OpenCode, the `reviewing` agent must be able to delegate via the Task tool to `qa`, `spec-auditor`
 > and `security` for `/validate-step` to work. The bundled templates already allow those
 > three (see `templates/agents/reviewing.md`).
 
@@ -144,7 +151,8 @@ Muninn database); the `git` binary, Node, `opencode` CLI and missing agent integ
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--project <path>` | `cwd` | git repo being built; `run` requires `plan.md`, `spec.md`, `adr.md` |
-| `--thinker <m>` | resolved from config (see [Model configuration](#model-configuration)) | model used to **fix** findings (auditor + reviewer + any blocker) |
+| `--agent <id>` | resolved from config | AI agent runtime (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `gemini`, `agy`) |
+| `--thinker <m>` | resolved from config (see [Model and Agent configuration](#model-and-agent-configuration)) | model used to **fix** findings (auditor + reviewer + any blocker) |
 | `--executor <m>` | resolved from config | model used for everything else (execution, gates, docs, commits) |
 | `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents |
 | `--mode auto\|supervised` | `auto` | `auto`: autonomous with a fix-retry budget, escalating to you only when it is exhausted; `supervised`: pause for your call at every blocked gate |
@@ -161,10 +169,21 @@ Muninn database); the `git` binary, Node, `opencode` CLI and missing agent integ
 | `--server-timeout <ms>` | `60000` | server startup timeout |
 | `--phase-timeout <ms>` | `1200000` (20 min) | hard deadline per phase step; on expiry the step is interrupted, retried up to `--max-retries`, then escalated. `0` disables |
 
-## Model configuration
+## Model and Agent configuration
 
-`run` and `live` no longer require `--thinker`/`--executor`. Models are resolved in strict
-precedence order, first non-empty value wins, independently per role:
+`run` and `live` do not require `--thinker`/`--executor` or `--agent`. Settings are resolved in strict
+precedence order, first non-empty value wins:
+
+### Agent Resolution Precedence
+
+1. CLI flag — `--agent <id>`
+2. project config — `<project>/.huginn/config.json` (`agent` key)
+3. user config — `~/.huginn/config.json` (`agent` key)
+4. environment — `HUGINN_AGENT`
+5. PATH auto-detection — first detected installed binary (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`)
+6. fallback — `opencode`
+
+### Model Resolution Precedence
 
 1. CLI flag — `--thinker <m>` / `--executor <m>`
 2. project config — `<project>/.huginn/config.json`
@@ -172,16 +191,18 @@ precedence order, first non-empty value wins, independently per role:
 4. environment — `HUGINN_THINKER_MODEL` / `HUGINN_EXECUTOR_MODEL`
 5. defaults — thinker `anthropic/claude-opus-4-5`, executor `opencode/gpt-5.1-codex`
 
-The project config file is a JSON object with three documented keys:
+The project config file is a JSON object with documented keys:
 
 ```json
 {
+  "agent": "claude",
   "thinker": "anthropic/claude-opus-4-5",
   "executor": "opencode/gpt-5.1-codex",
   "mode": "auto"
 }
 ```
 
+- `agent` must be one of the registered agent targets (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `gemini`, `agy`).
 - `thinker` / `executor` are model strings (`provider/model`); `mode` is `auto` or `supervised`.
 - Unknown keys are preserved verbatim, so third-party tooling can keep its own settings alongside.
 - The project file overrides the user file key-by-key; a missing file is treated as empty and a

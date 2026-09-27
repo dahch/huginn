@@ -46,6 +46,19 @@ src/
 ├── headless.ts             stdout frontend; stdin decision answering; runLiveHeadless
 ├── update.ts               background npm version check (cache + semver compare + reminder)
 ├── engine/
+│   ├── agent/
+│   │   ├── types.ts            IAgentRuntime, IAgentSession, ModelInfo, McpStatusReport contracts
+│   │   ├── registry.ts         Agent factory, PATH auto-detection, resolution precedence, isExecutableBinary
+│   │   ├── index.ts            barrel export for runtime subsystem
+│   │   └── adapters/
+│   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK)
+│   │       ├── claude.ts       ClaudeRuntimeAdapter (Claude Code CLI / stdio)
+│   │       ├── codex.ts        CodexRuntimeAdapter (OpenAI Codex CLI)
+│   │       ├── omp.ts          OmpRuntimeAdapter (Oh My Pi CLI)
+│   │       ├── commandcode.ts  CommandCodeRuntimeAdapter (Command Code CLI)
+│   │       ├── qwen.ts         QwenRuntimeAdapter (Qwen Code CLI)
+│   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio)
+│   │       └── index.ts        re-exports all adapters
 │   ├── cycle.ts            CycleEngine: pipeline-as-data, retry/fix/escalate loop, state machine
 │   ├── phases.ts           the 8 phase functions + 3 fix functions; builds prompts/commands
 │   ├── gate.ts             verdict parsers, JSON judge, fail-closed logic
@@ -1804,5 +1817,97 @@ High-frequency token streaming from language models can cause rapid React re-ren
 - **60ms Stream Throttling**: In both `Dashboard.tsx` and `LiveDashboard.tsx`, incoming `phaseStream` event chunks append to an internal ref buffer (`streamBuf.current`) and flush to React state at a throttled interval (minimum 60ms between flushes).
 - **1,000-Line Ring Buffer**: Stream lines are clamped to the latest 1,000 lines, preventing unbounded memory growth during long-running builds.
 - **Scroll Containment**: Keyboard navigation (`PageUp`/`PageDown` by 4 lines, `↑`/`↓` line-by-line) operates directly on internal state (`streamScroll`, `chatScroll`). Terminal scrollback remains untainted by mouse or touchpad movements.
+
+## 21. Decoupled Multi-Agent Runtime Architecture (`IAgentRuntime`)
+
+To eliminate hard lock-in to OpenCode and enable seamless orchestration across diverse developer tool ecosystems (Claude Code, OpenAI Codex, Oh My Pi, Command Code, Qwen Code, and custom stdio agents), Huginn implements an explicit Hexagonal (Ports & Adapters) runtime boundary under `src/engine/agent/`.
+
+```mermaid
+flowchart TD
+    CLI["cli.ts / run / live"] --> Registry["Agent Registry (registry.ts)"]
+    Registry -->|"resolveAgent()"| TargetSelection["Target Selection (--agent / config / PATH)"]
+    TargetSelection --> AdapterFactory["getAgentRuntime(target)"]
+
+    subgraph "Ports & Core Engine"
+        RuntimePort["IAgentRuntime (Port)"]
+        SessionPort["IAgentSession (Port)"]
+        Cycle["CycleEngine / Phase Runners"]
+        Live["LiveEngine"]
+    end
+
+    AdapterFactory --> RuntimePort
+    Cycle -->|"createSession()"| RuntimePort
+    Live -->|"createSession()"| RuntimePort
+    Cycle -->|"prompt() / runCommand()"| SessionPort
+    Live -->|"prompt()"| SessionPort
+
+    subgraph "Driven Adapters (src/engine/agent/adapters/)"
+        OpencodeAdapter["OpencodeRuntimeAdapter (HTTP / SDK)"]
+        ClaudeAdapter["ClaudeRuntimeAdapter (CLI / stdio)"]
+        CodexAdapter["CodexRuntimeAdapter (CLI / stdio)"]
+        OmpAdapter["OmpRuntimeAdapter (CLI / stdio)"]
+        CommandCodeAdapter["CommandCodeRuntimeAdapter (CLI / stdio)"]
+        QwenAdapter["QwenRuntimeAdapter (CLI / stdio)"]
+        GenericAdapter["GenericSubprocessRuntimeAdapter (stdio)"]
+    end
+
+    RuntimePort -.-> OpencodeAdapter
+    RuntimePort -.-> ClaudeAdapter
+    RuntimePort -.-> CodexAdapter
+    RuntimePort -.-> OmpAdapter
+    RuntimePort -.-> CommandCodeAdapter
+    RuntimePort -.-> QwenAdapter
+    RuntimePort -.-> GenericAdapter
+```
+
+### 21.1 Core Contracts (`src/engine/agent/types.ts`)
+
+The runtime abstraction defines two foundational ports:
+
+1. **`IAgentRuntime`**:
+   - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `gemini`, `agy`).
+   - `name: string` — human-readable agent name.
+   - `isAvailable(): Promise<boolean>` — non-blocking probe verifying if the agent's executable binary exists on `PATH` or daemon is reachable.
+   - `getAvailableModels(): Promise<ModelInfo[]>` — queries available models for selection and validation.
+   - `getMcpStatus(): Promise<McpStatusReport>` — inspects configured Model Context Protocol servers, transport types, and tool counts.
+   - `createSession(options: SessionOptions): Promise<IAgentSession>` — creates an execution session bounded to the target directory.
+   - `startDaemon?(): Promise<void>` / `stopDaemon?(): Promise<void>` — lifecycle hooks for runtimes requiring background daemons (e.g. OpenCode server).
+
+2. **`IAgentSession`**:
+   - `id: string` — unique session identifier.
+   - `prompt(text: string, options?: PromptOptions): Promise<PromptResult>` — sends prompts, streaming through stdin where applicable.
+   - `runCommand?(command: string, args: string, options?: CommandOptions): Promise<PromptResult>` — translates slash commands or execution directives.
+   - `abort(): Promise<void>` — aborts active executions and terminates child process groups.
+
+### 21.2 Concrete Adapters (`src/engine/agent/adapters/`)
+
+- **`OpencodeRuntimeAdapter`**: Wraps `opencode serve` and `@opencode-ai/sdk`. Manages background server lifecycle (`startDaemon`, `stopDaemon`), translates `client.provider.list()` and `client.mcp.status()`, and runs sessions via OpenCode's HTTP SDK.
+- **`ClaudeRuntimeAdapter`**: Connects to the Claude Code CLI (`claude`). Supports interactive prompt streaming with `--print` flags and stdin piping.
+- **`CodexRuntimeAdapter`**: Integrates with OpenAI Codex CLI (`codex`).
+- **`OmpRuntimeAdapter`**: Connects to Oh My Pi (`omp`).
+- **`CommandCodeRuntimeAdapter`**: Integrates with Command Code (`commandcode` or fallback `command-code`).
+- **`QwenRuntimeAdapter`**: Integrates with Qwen Code (`qwen` or fallback `qwen-code`).
+- **`GenericSubprocessRuntimeAdapter`**: Reusable base adapter and session implementation managing subprocess stdio, process groups, timeouts, and JSON/TOML MCP status inspection.
+
+### 21.3 Agent Resolution Precedence
+
+When initializing `CycleEngine` or `LiveEngine`, Huginn resolves the active runtime with strict deterministic precedence via `resolveAgent()`:
+
+1. **CLI Flag**: `--agent <target>`
+2. **Project Config**: `<project>/.huginn/config.json` (`agent` key)
+3. **User Config**: `~/.huginn/config.json` (`agent` key)
+4. **Environment**: `HUGINN_AGENT`
+5. **Auto-Detection**: Scans `PATH` using `detectAvailableAgents()` for installed binaries (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`).
+6. **Fallback**: Default to `opencode`.
+
+### 21.4 Security Hardening & Subprocess Isolation
+
+The runtime subsystem incorporates strict security measures:
+- **Allowlist Validation (SEC-001)**: `sanitizeConfig` and `getAgentRuntime` strictly reject any target not registered in `AGENT_TARGETS`, preventing malicious repositories from setting arbitrary command executions via `.huginn/config.json`.
+- **Safe Stdin Streaming (SEC-002)**: Prompt text is streamed safely through `child.stdin.write(text); child.stdin.end()` rather than passed as positional arguments in `argv`, preventing `ARG_MAX` overflows, argument injection, and exposure in system process tables (`ps`). Where command line flags are required (`promptViaStdin: false`), arguments are size-capped and guarded with `--` option delimiters.
+- **Memory Denial-of-Service Defense (SEC-003)**: Output accumulation from subprocess `stdout` and `stderr` is bounded to 10MB (`MAX_OUTPUT_BYTES = 10 * 1024 * 1024`), discarding excessive data and mitigating memory exhaustion.
+- **Safe Executable Verification (SEC-004)**: `isExecutableBinary` verifies file existence (`statSync.isFile()`) and execute permissions (`accessSync(..., X_OK)`), ensuring directory matches in `PATH` do not trigger false-positive binary detections.
+- **Process Group Termination & Timeout Safety**: Subprocess abortions and timeout expirations send signals to the entire process group (`process.kill(-pid, signal)`) with graceful SIGTERM followed by SIGKILL escalation, preventing orphaned child processes.
+
 
 
