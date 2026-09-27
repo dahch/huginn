@@ -102,7 +102,8 @@ src/
     ├── render.tsx          alternate screen setup, console patching, ink render bridges
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
     ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
-    └── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen)
+    ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen)
+    └── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence
 scripts/postinstall.ts       bun install hook → installer prompt
 templates/{agents,commands}/ opencode agent/command definitions bundled as markdown
 ```
@@ -1908,6 +1909,183 @@ The runtime subsystem incorporates strict security measures:
 - **Memory Denial-of-Service Defense (SEC-003)**: Output accumulation from subprocess `stdout` and `stderr` is bounded to 10MB (`MAX_OUTPUT_BYTES = 10 * 1024 * 1024`), discarding excessive data and mitigating memory exhaustion.
 - **Safe Executable Verification (SEC-004)**: `isExecutableBinary` verifies file existence (`statSync.isFile()`) and execute permissions (`accessSync(..., X_OK)`), ensuring directory matches in `PATH` do not trigger false-positive binary detections.
 - **Process Group Termination & Timeout Safety**: Subprocess abortions and timeout expirations send signals to the entire process group (`process.kill(-pid, signal)`) with graceful SIGTERM followed by SIGKILL escalation, preventing orphaned child processes.
+
+## 22. Interactive Model & Provider Selector & Persistence
+
+Iteration 21 introduces interactive model and provider selection, dynamic model discovery across active agent runtimes, in-session switching, and multi-scope atomic persistence.
+
+### 22.1 Motivation & Architectural Objectives
+
+Huginn historically relied on hardcoded defaults (`anthropic/claude-opus-4-5` for thinker and `opencode/gpt-5.1-codex` for executor). If a user launched Huginn with a different agent (such as Claude Code, Codex, or a local provider via Oh My Pi) or lacked API keys for Anthropic or OpenCode, the run would abort with provider errors. Furthermore, users had no mechanism to inspect available models or switch models without stopping their live refinement session.
+
+The model selection architecture achieves four objectives:
+1. **Runtime-Driven Model Discovery**: Automatically inspects the models authenticated or supported by the active `IAgentRuntime`.
+2. **Interactive 3-Step Selection Modal (`ModelPickerModal`)**: A focused fullscreen TUI modal with live search filtering, provider badges, scroll containment, and format validation.
+3. **Multi-Scope Atomic Persistence**: Allows the developer to save chosen models as Project Default (`<project>/.huginn/config.json`), Global Default (`~/.huginn/config.json`), or Session Only.
+4. **Frictionless Onboarding**: Auto-detects when default models are absent from the active runtime and automatically guides the developer through model selection on startup.
+
+### 22.2 Selection Workflow & State Machine
+
+`ModelPickerModal` (`src/tui/ModelPickerModal.tsx`) implements a 3-step state machine within the fullscreen TUI:
+
+```mermaid
+stateDiagram-v2
+    [*] --> ThinkerStep: Launch (CLI --choose-model, /models, or auto-onboard)
+
+    state ThinkerStep {
+        [*] --> FetchCatalog
+        FetchCatalog --> DisplayThinkerModels: runtime.getAvailableModels()
+        DisplayThinkerModels --> FilterThinker: Key strokes (sanitize input)
+        FilterThinker --> SelectThinker: Enter (validate provider/model)
+    }
+
+    ThinkerStep --> ExecutorStep: Thinker selected & validated
+
+    state ExecutorStep {
+        [*] --> DisplayExecutorModels
+        DisplayExecutorModels --> FilterExecutor: Key strokes
+        FilterExecutor --> SelectExecutor: Enter (validate provider/model)
+    }
+
+    ExecutorStep --> PersistenceStep: Executor selected & validated
+
+    state PersistenceStep {
+        [*] --> ChooseScope: Options (Project / Global / Session)
+        ChooseScope --> ScopeProject: "1" or Enter on Project
+        ChooseScope --> ScopeGlobal: "2" or Enter on Global
+        ChooseScope --> ScopeSession: "3" or Enter on Session
+    }
+
+    PersistenceStep --> ApplySelection: Confirm selection
+    ApplySelection --> SaveConfig: Project / Global scope
+    ApplySelection --> InSessionUpdate: Session scope
+    SaveConfig --> [*]: writeConfigAtomic() & resume LiveDashboard
+    InSessionUpdate --> [*]: live.updateModels() & resume LiveDashboard
+
+    ThinkerStep --> Cancelled: Esc key
+    ExecutorStep --> Cancelled: Esc key
+    PersistenceStep --> Cancelled: Esc key
+    Cancelled --> [*]: onCancel()
+```
+
+#### Modal Interaction Contract
+
+1. **Step 1: Choose Thinker (`step: "thinker"`)**:
+   - Prompts user to select the reasoning, architecture, and gate-fix model.
+   - Live query string filters models by `id`, `name`, `provider`, or `description`.
+   - Visual provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.) visually categorize models.
+   - Enter selects the highlighted model, or applies the typed custom model string (auto-prepending `${runtime.id}/` if no slash is provided).
+   - Validates that the chosen model adheres to the canonical `provider/model` syntax (`slashIdx > 0 && slashIdx < model.length - 1`); invalid formats display an inline error banner (`⚠ Custom models must be in provider/model format`).
+2. **Step 2: Choose Executor (`step: "executor"`)**:
+   - Prompts user to select the execution model for coding, test execution, gates, and commits.
+   - Inherits the catalog and filtering mechanism from Step 1.
+3. **Step 3: Save Preferences (`step: "saveScope"`)**:
+   - Presents a 3-tier persistence menu:
+     - `[1] Project Default`: `.huginn/config.json` (recommended for repo-specific requirements).
+     - `[2] Global Default`: `~/.huginn/config.json` (cross-project fallback).
+     - `[3] Session Only`: Applies to the current live session without touching the disk.
+   - Supports arrow navigation (`↑`/`↓`), vim keys (`k`/`j`), direct numeric selection (`1`, `2`, `3`), and confirmation (`Enter`).
+
+#### React 19 / Ink Reconciler Concurrency Guard
+
+To prevent stale closure bugs under React 19's reconciler with Ink during rapid typing or key navigation, `ModelPickerModal` employs a synchronous ref bridge (`stateRef = useRef(...)`):
+```ts
+const stateRef = useRef({ ...stateAndProps });
+stateRef.current = { ...stateAndProps };
+
+useInput((input, key) => {
+  const cur = stateRef.current;
+  // all state reads evaluate from cur, guaranteeing fresh references
+});
+```
+Input characters are filtered through `sanitizeKeyInput()` to strip ANSI escape codes and unprintable control characters, preventing terminal sequence corruption.
+
+### 22.3 Provider Catalog Discovery & Fallback Resilience
+
+The modal decouples model enumeration through `runtime.getAvailableModels()`:
+- **Runtime Discovery**: Calls `runtime.getAvailableModels()`. When operating with OpenCode, this queries `client.provider.list()` and translates authenticated models into `ModelInfo` records (`id`, `name`, `provider`, `description`).
+- **Resilient Fallback**: If discovery throws or returns an empty list (e.g. offline agent or restricted CLI), the modal gracefully falls back to `DEFAULT_FALLBACK_MODELS` (covering Claude 3.7 Sonnet, Claude 3.5 Sonnet, Claude Opus 4.5, GPT-5.1 Codex, o3-mini, and Gemini 2.5 Pro).
+- **Custom Model Flexibility**: Users are never restricted to pre-discovered models; typing an arbitrary `provider/model` string and pressing `Enter` confirms the custom model directly.
+
+### 22.4 Slash Commands & In-Session Switching
+
+Live mode provides two complementary slash commands for model management without interrupting the ongoing refinement conversation:
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant UI as LiveDashboard InputBar
+    participant Modal as ModelPickerModal
+    participant Live as LiveEngine
+    participant Events as engineEvents
+
+    alt Interactive Picker (/models or /model)
+        Dev->>UI: /models
+        UI->>Modal: mount modal (showModelPicker = true)
+        Dev->>Modal: select thinker, executor, scope
+        Modal->>UI: handleModelSelect(result)
+        UI->>Live: live.updateModels({ thinker, executor })
+        UI->>Events: emit("liveChat", { role: "system", text: "Active models updated: ... (scope)" })
+        UI->>Modal: unmount modal (showModelPicker = false)
+    else Inline Model Switch (/model <thinker> [executor])
+        Dev->>UI: /model anthropic/claude-3-7-sonnet opencode/gpt-5.1-codex
+        UI->>UI: validateModel(thinker) & validateModel(executor)
+        UI->>Live: live.updateModels({ thinker, executor })
+        UI->>Events: emit("liveChat", { role: "system", text: "Active models updated: ... (session only)" })
+    end
+```
+
+- **/models or /model**: Mounts `ModelPickerModal` over the live dashboard. The chat history and stream state remain in memory; upon completion or cancellation, the dashboard view resumes seamlessly.
+- **/model <thinker> [executor]**: Performs an inline, zero-click model switch for the active session. If `executor` is omitted, the current executor is retained. The input string is validated against `provider/model` format, and a system message is emitted to `liveChat` confirming the new models.
+
+### 22.5 Multi-Scope Atomic Persistence Architecture
+
+When the user confirms model selection with `project` or `global` scope, Huginn persists the settings using atomic filesystem operations:
+
+```mermaid
+flowchart TD
+    Select["handleModelSelect(result)"] --> ScopeCheck{"saveScope"}
+
+    ScopeCheck -- "project" --> SaveProject["saveUserConfig(projectPath, { thinker, executor })"]
+    ScopeCheck -- "global" --> SaveGlobal["saveGlobalUserConfig({ thinker, executor })"]
+    ScopeCheck -- "session" --> UpdateMem["live.updateModels({ thinker, executor })"]
+
+    SaveProject --> AtomicWrite["writeConfigAtomic(targetPath, config)"]
+    SaveGlobal --> AtomicWrite
+
+    subgraph "Atomic & Symlink-Safe Persistence"
+        AtomicWrite --> DirGuard["ensureDirSync(dir, 0o700)"]
+        DirGuard --> ReadOld["read existing config & preserve unknown keys"]
+        ReadOld --> WriteTemp["writeFileSync(tmpPath, mergedJson, 0o600)"]
+        WriteTemp --> Rename["renameSync(tmpPath, targetPath)"]
+    end
+
+    Rename --> UpdateMem
+    UpdateMem --> Emit["emit('liveChat', systemConfirmation)"]
+```
+
+1. **Path Resolution**:
+   - Project: `<projectRoot>/.huginn/config.json`.
+   - Global: `<home>/.huginn/config.json`, honoring `HUGINN_HOME` environment override or `os.homedir()`.
+2. **Atomic Write Guarantee (`writeConfigAtomic`)**:
+   - Ensures directory existence with mode `0o700`.
+   - Preserves unknown JSON keys already present in the configuration file, allowing third-party tools to store metadata safely.
+   - Writes new content to an ephemeral sibling temporary file (`<targetPath>.tmp.<pid>.<random>`) with mode `0o600`.
+   - Atomically swaps the temporary file into place via `fs.renameSync()`, preventing partial reads or file corruption on process termination.
+3. **Symlink Safety**:
+   - Detects symlinks and resolves canonical real paths, preventing symlink traversal attacks outside allowed configuration directories.
+
+### 22.6 Startup Ergonomics & Pre-Flight Auto-Onboarding
+
+Huginn incorporates automated pre-flight checks in `src/cli.ts` (`runLive`):
+
+1. **`--choose-model` CLI Flag**:
+   - When passed (e.g. `huginn --choose-model` or `huginn live --choose-model`), Huginn initializes `LiveDashboard` with `showModelPicker = true`, presenting the model picker immediately before any initial prompts or ideas are processed.
+2. **Pre-Flight Auto-Onboarding Check (REV-003)**:
+   - When Huginn starts, `describeModelSources` inspects where `thinker` and `executor` originated.
+   - If either model was assigned from fallback defaults (`source === "default"`), Huginn queries `runtime.getAvailableModels()`.
+   - If the active runtime returns an available model catalog and **neither** default model (`anthropic/claude-opus-4-5` or `opencode/gpt-5.1-codex`) is present in the catalog, Huginn automatically enables `cfg.chooseModel = true`.
+   - This eliminates confusing runtime failures on fresh installs with non-Anthropic / non-OpenCode runtimes (such as Codex or Claude Code), greeting the developer with an intuitive configuration wizard.
 
 
 

@@ -168,6 +168,7 @@ Muninn database); the `git` binary, Node, `opencode` CLI and missing agent integ
 | `--port <n>` | free port | port for the internal `opencode serve` |
 | `--server-timeout <ms>` | `60000` | server startup timeout |
 | `--phase-timeout <ms>` | `1200000` (20 min) | hard deadline per phase step; on expiry the step is interrupted, retried up to `--max-retries`, then escalated. `0` disables |
+| `--choose-model` | `false` | open the interactive model & provider selector on startup |
 
 ## Model and Agent configuration
 
@@ -312,8 +313,22 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
 - **Console Log Drawer (Zero Stdout Pollution)**: Background server logs, provider warnings, and runtime notices are intercepted via `patchConsole()` and routed into an in-app log drawer (`LogsCard`) rather than dumping to stdout and tearing the alternate screen.
 - **Stream Batching & Scroll Containment**: Real-time agent streaming (`phaseStream`) is throttled to 60ms flushes and capped with a 1,000-line ring buffer to prevent Ink rerender lag. Mouse and keyboard scrolling are trapped within the active card (`[PageUp]`/`[PageDown]` for 4 lines, `[↑]`/`[↓]` line-by-line) without leaking into the terminal scrollback history.
 - **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` or `/quit` aborts cleanly.
+- **Interactive Model & Provider Selector (`ModelPickerModal`)**:
+  - Launch with `--choose-model` flag: `huginn --choose-model` or `huginn live --choose-model`.
+  - In-session slash commands:
+    - `/models` or bare `/model`: opens the interactive 3-step modal selector directly over the dashboard without interrupting chat context.
+    - `/model <thinker> [executor]`: instantly changes the active models inline for the session (e.g. `/model anthropic/claude-3-7-sonnet opencode/gpt-5.1-codex`).
+  - **3-Step Selector Modal**:
+    1. **Step 1: Choose Thinker**: queries `runtime.getAvailableModels()`, showing provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.), model names, and IDs with live search filtering and custom fallback.
+    2. **Step 2: Choose Executor**: selects the coding/execution model with the same interactive filter.
+    3. **Step 3: Save Preferences**: choose multi-scope persistence:
+       - `[1] Project Default`: writes atomically to `<project>/.huginn/config.json`.
+       - `[2] Global Default`: writes atomically to `~/.huginn/config.json`.
+       - `[3] Session Only`: updates in-memory active models for the current session without writing to disk.
+  - **Auto-Onboarding Preflight Check**: If thinker or executor models are defaulted and the active runtime's model catalog does not include those defaults, Huginn automatically opens the model selector on startup.
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
+`--choose-model` to open the model selector modal on launch,
 plus the run-mode flags `--mode`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,
 `--port`, `--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless mode the chat
 refinement is skipped (the CLI idea is used as-is) and approvals are answered on stdin;

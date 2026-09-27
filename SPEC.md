@@ -324,10 +324,24 @@ The execution cycle and live refinement loop must interact with AI coding agents
 
 ### REQ-23: Interactive Model & Provider Selector & Persistence
 Huginn must discover available models from the active runtime and provide interactive selection and persistence.
-- **AC-23.1 (Provider & Model Auto-Discovery)**: At startup or upon opening the model picker, Huginn queries `runtime.getAvailableModels()`.
-- **AC-23.2 (Interactive Onboarding Picker)**: When running `huginn` without pre-configured models, if defaults are missing or unauthenticated, an interactive selector renders (arrow keys + Enter) allowing the user to select Thinker and Executor models from active providers.
-- **AC-23.3 (Persistence Confirmation)**: After selecting an agent or model interactively, Huginn prompts: *"Save as default? [Project / Global / Session only]"*. Confirming saves the choice to `.huginn/config.json` or `~/.huginn/config.json`.
-- **AC-23.4 (In-Session `/models` Command)**: Typing `/models` or `/model` in the Live TUI opens an interactive modal to view active models and switch them on the fly.
+- **AC-23.1 (Provider & Model Auto-Discovery)**: At startup or upon opening the model picker, Huginn queries `runtime.getAvailableModels()`. If the runtime is offline or returns an empty list, Huginn falls back to `DEFAULT_FALLBACK_MODELS`. Models display provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.), model names, IDs, and descriptions.
+- **AC-23.2 (Interactive 3-Step Modal (`ModelPickerModal`))**: Renders an interactive 3-step modal directly over the TUI:
+  - *Step 1 (Thinker)*: Select reasoning/architecture model with live search filter and custom fallback.
+  - *Step 2 (Executor)*: Select implementation/gate model.
+  - *Step 3 (Save Preferences)*: Select persistence destination (`[1] Project Default`, `[2] Global Default`, `[3] Session Only`).
+  - Enforces `provider/model` format for both thinker and executor models, displaying inline error banners on invalid input.
+  - Traps keyboard events (`↑`/`↓` / `k`/`j` to navigate, `1`/`2`/`3` direct scope pick, `Enter` to confirm, `Esc` to cancel), maintains scroll containment (6 visible items), and bridges inputs via `useRef` to eliminate React 19 / Ink memoization race conditions.
+- **AC-23.3 (Multi-Scope Atomic Persistence)**:
+  - *Project Default*: Saves to `<project>/.huginn/config.json` via `saveUserConfig`.
+  - *Global Default*: Saves to `~/.huginn/config.json` (or `HUGINN_HOME`) via `saveGlobalUserConfig`.
+  - *Session Only*: Updates `LiveEngine.updateModels({ thinker, executor })` in-memory without mutating configuration files on disk.
+  - Disk persistence is atomic (write to `.tmp` then rename) and symlink-safe (`0o700` dir, `0o600` file), preserving any unknown JSON keys verbatim.
+- **AC-23.4 (In-Session Slash Commands)**:
+  - `/models` or `/model`: Opens `ModelPickerModal` in the Live TUI without disrupting existing chat scrollback or stream buffers.
+  - `/model <thinker> [executor]`: Switches active models inline for the session. Validates `provider/model` syntax, updates `LiveEngine`, synchronizes header badges, and emits a system notification into `liveChat`.
+- **AC-23.5 (CLI Flag & Pre-Flight Auto-Onboarding)**:
+  - Accepts `--choose-model` CLI flag to trigger the model picker modal immediately upon startup in Live mode.
+  - Pre-flight auto-onboarding check: If `thinker` or `executor` resolved from default configuration sources, Huginn probes `runtime.getAvailableModels()`. If the catalog is populated and neither default model is present, Huginn automatically enables `chooseModel` to prevent runtime provider errors.
 
 ### REQ-24: Unified Multi-MCP Monitoring & Inspector
 Huginn must monitor and display the status of all connected Model Context Protocol (MCP) servers and their tools.
