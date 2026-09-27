@@ -23,6 +23,8 @@ type Listener<T> = (payload: T) => void;
 
 export class Emitter<K extends keyof EngineEvents> {
   private listeners = new Map<string, Set<Listener<unknown>>>();
+  private logBuffer: EngineEvents["log"][] = [];
+  private static readonly MAX_LOG_BUFFER = 50;
 
   on<Ev extends keyof EngineEvents>(event: Ev, fn: Listener<EngineEvents[Ev]>): () => void {
     const set = this.listeners.get(event as string) ?? new Set();
@@ -32,6 +34,12 @@ export class Emitter<K extends keyof EngineEvents> {
   }
 
   emit<Ev extends keyof EngineEvents>(event: Ev, payload: EngineEvents[Ev]): void {
+    if (event === "log") {
+      this.logBuffer.push(payload as EngineEvents["log"]);
+      if (this.logBuffer.length > Emitter.MAX_LOG_BUFFER) {
+        this.logBuffer.shift();
+      }
+    }
     const set = this.listeners.get(event as string);
     if (!set) return;
     for (const fn of set) {
@@ -43,8 +51,13 @@ export class Emitter<K extends keyof EngineEvents> {
     }
   }
 
+  getRecentLogs(): EngineEvents["log"][] {
+    return [...this.logBuffer];
+  }
+
   clear(): void {
     this.listeners.clear();
+    this.logBuffer = [];
   }
 }
 
