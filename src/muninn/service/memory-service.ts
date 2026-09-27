@@ -12,6 +12,8 @@ import {
   type ObservationCategory,
   type EntityType,
   type ObservationEntity,
+  type DependencyRelationType,
+  type EntityDependency,
 } from "../db/client.js";
 
 export {
@@ -21,6 +23,8 @@ export {
   type ObservationCategory,
   type EntityType,
   type ObservationEntity,
+  type DependencyRelationType,
+  type EntityDependency,
 };
 
 export const VALID_CATEGORIES: ReadonlyArray<ObservationCategory> = [
@@ -112,6 +116,20 @@ export interface MemoryServiceOptions {
   projectRoot?: string;
 }
 
+export interface SymbolInspectionDependency {
+  entity: Entity;
+  relationType: DependencyRelationType;
+}
+
+export interface SymbolInspection {
+  entity: Entity;
+  dependencies: {
+    outgoing: SymbolInspectionDependency[];
+    incoming: SymbolInspectionDependency[];
+  };
+  observations: Observation[];
+}
+
 export interface IMemoryService {
   readonly currentProject: Project;
   readonly db: Database.Database;
@@ -122,6 +140,10 @@ export interface IMemoryService {
     inputOrObsId: LinkSymbolInput | string,
     symbol?: SymbolInput | string
   ): { observation: Observation; entity: Entity };
+  inspectSymbol(
+    symbol: string,
+    projectId?: string
+  ): SymbolInspection | null;
   getStats(projectId?: string): MemoryStats;
   syncToDisk(
     targetPath?: string,
@@ -759,6 +781,136 @@ export class MemoryService implements IMemoryService {
         entity,
       };
     })();
+  }
+
+  /**
+   * Escapes LIKE pattern special characters (%, _, \)
+   */
+  private _escapeLikePattern(str: string): string {
+    return str.replace(/[\\%_]/g, "\\$&");
+  }
+
+  /**
+   * Inspects a symbol in Muninn memory, returning its entity metadata,
+   * incoming and outgoing dependencies, and linked observations.
+   */
+  public inspectSymbol(
+    symbol: string,
+    projectId?: string
+  ): SymbolInspection | null {
+    if (!symbol || typeof symbol !== "string" || !symbol.trim()) {
+      return null;
+    }
+
+    const targetProjectId = projectId ?? this._currentProject.id;
+    const query = symbol.trim();
+
+    // 1. Try exact match
+    let entity = this._db
+      .prepare<[string, string], Entity>(
+        `SELECT id, project_id, entity_type, identifier, file_path
+         FROM entities
+         WHERE project_id = ? AND identifier = ?`
+      )
+      .get(targetProjectId, query);
+
+    const escapedQuery = this._escapeLikePattern(query);
+
+    // 2. Try suffix match (e.g. searching 'run' matches 'src/app.ts::run', or 'login' matches 'src/auth.ts::AuthManager.login')
+    // Supports matching class methods with canonical format <relPath>::<ClassName>.<methodName> (REV-005, REV-008, SEC-004)
+    if (!entity) {
+      entity = this._db
+        .prepare<[string, string, string], Entity>(
+          `SELECT id, project_id, entity_type, identifier, file_path
+           FROM entities
+           WHERE project_id = ? AND (identifier LIKE '%::' || ? ESCAPE '\\' OR identifier LIKE '%.' || ? ESCAPE '\\')
+           ORDER BY identifier ASC
+           LIMIT 1`
+        )
+        .get(targetProjectId, escapedQuery, escapedQuery);
+    }
+
+    // 3. Try prefix match or file_path match
+    if (!entity) {
+      entity = this._db
+        .prepare<[string, string, string], Entity>(
+          `SELECT id, project_id, entity_type, identifier, file_path
+           FROM entities
+           WHERE project_id = ? AND (identifier LIKE ? || '%' ESCAPE '\\' OR file_path = ?)
+           ORDER BY identifier ASC
+           LIMIT 1`
+        )
+        .get(targetProjectId, escapedQuery, query);
+    }
+
+    if (!entity) {
+      return null;
+    }
+
+    // Fetch outgoing dependencies
+    type DepRow = Entity & { relation_type: DependencyRelationType };
+    const outgoingRows = this._db
+      .prepare<[string], DepRow>(
+        `SELECT e.id, e.project_id, e.entity_type, e.identifier, e.file_path, ed.relation_type
+         FROM entity_dependencies ed
+         JOIN entities e ON e.id = ed.target_entity_id
+         WHERE ed.source_entity_id = ?
+         ORDER BY e.identifier ASC`
+      )
+      .all(entity.id);
+
+    const outgoing: SymbolInspectionDependency[] = outgoingRows.map((r) => ({
+      entity: {
+        id: r.id,
+        project_id: r.project_id,
+        entity_type: r.entity_type,
+        identifier: r.identifier,
+        file_path: r.file_path,
+      },
+      relationType: r.relation_type,
+    }));
+
+    // Fetch incoming dependencies
+    const incomingRows = this._db
+      .prepare<[string], DepRow>(
+        `SELECT e.id, e.project_id, e.entity_type, e.identifier, e.file_path, ed.relation_type
+         FROM entity_dependencies ed
+         JOIN entities e ON e.id = ed.source_entity_id
+         WHERE ed.target_entity_id = ?
+         ORDER BY e.identifier ASC`
+      )
+      .all(entity.id);
+
+    const incoming: SymbolInspectionDependency[] = incomingRows.map((r) => ({
+      entity: {
+        id: r.id,
+        project_id: r.project_id,
+        entity_type: r.entity_type,
+        identifier: r.identifier,
+        file_path: r.file_path,
+      },
+      relationType: r.relation_type,
+    }));
+
+    // Fetch linked observations
+    const observations = this._db
+      .prepare<[string], Observation>(
+        `SELECT o.id, o.project_id, o.category, o.title, o.content, o.topic_key, o.created_at, o.updated_at
+         FROM observations o
+         JOIN observation_entities oe ON oe.observation_id = o.id
+         WHERE oe.entity_id = ?
+         ORDER BY o.updated_at DESC, o.created_at DESC`
+      )
+      .all(entity.id);
+
+    return {
+      entity,
+      dependencies: {
+        outgoing,
+        incoming,
+      },
+      observations,
+    };
   }
 
   /**

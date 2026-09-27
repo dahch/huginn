@@ -80,3 +80,18 @@ CREATE TABLE IF NOT EXISTS observation_entities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_observation_entities_entity_id ON observation_entities(entity_id);
+
+-- Entity Dependencies table
+-- Relaciones topológicas entre símbolos (A llama/importa a B, o A implementa a B)
+CREATE TABLE IF NOT EXISTS entity_dependencies (
+  source_entity_id TEXT NOT NULL,
+  target_entity_id TEXT NOT NULL,
+  relation_type TEXT CHECK(relation_type IN ('imports', 'calls', 'implements', 'extends', 'references')) NOT NULL,
+  PRIMARY KEY(source_entity_id, target_entity_id, relation_type),
+  FOREIGN KEY(source_entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+  FOREIGN KEY(target_entity_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_deps_source ON entity_dependencies(source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_deps_target ON entity_dependencies(target_entity_id);
+
