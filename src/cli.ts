@@ -49,7 +49,7 @@ Usage:
   huginn memory index [files...] [--project <path>] [--db <path>]
   huginn check [files...] [--project <path>]
   huginn setup [--agent <target>] [--project <path>] [--force]
-  huginn doctor [--project <path>]
+  huginn doctor [--project <path>] [--home <path>] [--opencode-config-dir <path>]
   huginn mcp run [--db <path>] [--project <path>]
 
 Default (live-first):

@@ -3,7 +3,8 @@
  *
  * `setup` (Iteration 10) registers the Muninn MCP server and injects the
  * directive rules into every supported agent via the declarative registry in
- * `src/agents/integrator.ts`. `doctor` (Iteration 11) is still a stub.
+ * `src/agents/integrator.ts`. `doctor` (Iteration 11) lives in `./doctor.ts`
+ * and is re-exported here so the CLI's `./commands/setup` import stays stable.
  */
 import { homedir } from "node:os";
 import path from "node:path";
@@ -17,6 +18,17 @@ import {
   type MCPRegistration,
   type SetupReport,
 } from "../agents/integrator.js";
+
+export {
+  runDoctorChecks,
+  handleDoctorCommand,
+  printDoctorUsage,
+  printDoctorReport,
+  configRegistersMuninn,
+  type DoctorCheck,
+  type DoctorReport,
+  type DoctorOptions,
+} from "./doctor.js";
 
 export function printSetupUsage(): void {
   console.log(`huginn setup — Register Muninn MCP + agent rules across supported agents
@@ -153,10 +165,4 @@ export async function handleSetupCommand(
   }
 
   printReport(report, projectPath, homeDir);
-}
-
-export async function handleDoctorCommand(
-  _args: Record<string, string | boolean | undefined>,
-): Promise<void> {
-  console.log("[huginn] doctor not implemented yet");
 }
