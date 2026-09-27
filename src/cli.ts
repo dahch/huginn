@@ -2,7 +2,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
-import { loadUserConfig, resolveModelsFromConfig, type RunConfig } from "./config";
+import { loadConfigLayers, resolveModelsFromConfig, type RunConfig } from "./config";
 import { MAIN_PHASES, type PhaseName } from "./engine/types";
 import { loadPlan } from "./plan/parser";
 import {
@@ -30,6 +30,7 @@ import {
   type TemplateKind,
 } from "./setup/install";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
+import { handleConfigCommand } from "./commands/config";
 import { handleCheckCommand } from "./commands/check";
 import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
 
@@ -51,6 +52,8 @@ Usage:
   huginn setup [--agent <target>] [--project <path>] [--force]
   huginn doctor [--project <path>] [--home <path>] [--opencode-config-dir <path>]
   huginn mcp run [--db <path>] [--project <path>]
+  huginn config show [--project <path>] [--home <path>]
+  huginn config set [--thinker <m>] [--executor <m>] [--global] [--project <path>] [--home <path>]
 
 Default (live-first):
   Running huginn with no known subcommand — including a bare free-text idea such
@@ -71,6 +74,7 @@ Commands:
           ~/.config/opencode (agents/ and commands/)
   memory  query and manage persistent codebase memory (init, search, sync, index)
   mcp     start the Muninn MCP server for agent memory integration (run)
+  config  inspect and persist thinker/executor configuration (show, set)
 
 Model resolution (run/live):
   Models are resolved in strict precedence order, first non-empty value wins:
@@ -145,6 +149,7 @@ const BOOLEAN_FLAGS = new Set([
   "--import",
   "--sandbox",
   "--no-sandbox",
+  "--global",
   "--help",
   "-h",
 ]);
@@ -163,6 +168,7 @@ const KNOWN_COMMANDS = new Set([
   "check",
   "setup",
   "doctor",
+  "config",
 ]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -282,6 +288,18 @@ export async function main(argv: string[]): Promise<void> {
     );
     return;
   }
+  if (command === "config") {
+    const positionals = (args._positionals as string[] | undefined) ?? [];
+    const subcommand =
+      typeof positionals[0] === "string"
+        ? positionals[0]
+        : (typeof args._positional === "string" ? args._positional : undefined);
+    await handleConfigCommand(
+      subcommand,
+      args as Record<string, string | boolean | undefined>
+    );
+    return;
+  }
   if (command === "check") {
     const positionals = (args._positionals as string[] | undefined) ?? [];
     const files =
@@ -314,10 +332,12 @@ export async function main(argv: string[]): Promise<void> {
   const projectPath = canonicalize(
     typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
+  const layers = loadConfigLayers(projectPath);
   const { thinker, executor } = resolveModelsFromConfig({
     flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
     flagExecutor: typeof args["--executor"] === "string" ? args["--executor"] : undefined,
-    projectConfig: loadUserConfig(projectPath),
+    projectConfig: layers.project,
+    userConfig: layers.user,
   });
 
   if (!existsSync(join(projectPath, ".git"))) {
@@ -427,10 +447,20 @@ export async function main(argv: string[]): Promise<void> {
   };
   process.on("SIGINT", async () => {
     engine.requestAbort();
+    try {
+      engine.cleanupSandboxes();
+    } catch {
+      // best-effort
+    }
     setTimeout(() => void cleanup(1), 3000).unref();
   });
   process.on("SIGTERM", async () => {
     engine.requestAbort();
+    try {
+      engine.cleanupSandboxes();
+    } catch {
+      // best-effort
+    }
     setTimeout(() => void cleanup(1), 3000).unref();
   });
 
@@ -537,10 +567,12 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   const projectPath = canonicalize(
     typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
+  const layers = loadConfigLayers(projectPath);
   const { thinker, executor } = resolveModelsFromConfig({
     flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
     flagExecutor: typeof args["--executor"] === "string" ? args["--executor"] : undefined,
-    projectConfig: loadUserConfig(projectPath),
+    projectConfig: layers.project,
+    userConfig: layers.user,
   });
   warnIfMissingTemplates();
   if (!existsSync(join(projectPath, ".git"))) {
@@ -620,10 +652,20 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   };
   process.on("SIGINT", async () => {
     live.requestAbort();
+    try {
+      live.cycleEngine?.cleanupSandboxes();
+    } catch {
+      // best-effort
+    }
     setTimeout(() => void cleanup(1), 3000).unref();
   });
   process.on("SIGTERM", async () => {
     live.requestAbort();
+    try {
+      live.cycleEngine?.cleanupSandboxes();
+    } catch {
+      // best-effort
+    }
     setTimeout(() => void cleanup(1), 3000).unref();
   });
 

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { PhaseName } from "./engine/types";
 
 export interface RunConfig {
@@ -71,32 +71,82 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
   return undefined;
 }
 
+/** Which precedence layer supplied a resolved model value (REQ-14.2). */
+export type ModelSourceName = "flag" | "project" | "user" | "env" | "default";
+
+/** A resolved model value paired with the layer it came from. */
+export interface ResolvedModel {
+  value: string;
+  source: ModelSourceName;
+}
+
+/** Per-role source attribution returned by {@link describeModelSources}. */
+export interface ModelSourceDescriptions {
+  thinker: ResolvedModel;
+  executor: ResolvedModel;
+}
+
+/**
+ * Single source of truth for the REQ-14.2 precedence. Every candidate is
+ * normalised through {@link firstNonEmpty} so blank strings fall through, then
+ * the first non-empty layer wins and the caller learns *which* layer it was.
+ * Both the value resolver and the source descriptor are built on this so the
+ * precedence is never duplicated.
+ */
+function resolveModelWithSource(
+  flag: string | undefined,
+  projectValue: string | undefined,
+  userValue: string | undefined,
+  envValue: string | undefined,
+  fallback: string,
+): ResolvedModel {
+  const fromFlag = firstNonEmpty(flag);
+  if (fromFlag !== undefined) return { value: fromFlag, source: "flag" };
+  const fromProject = firstNonEmpty(projectValue);
+  if (fromProject !== undefined) return { value: fromProject, source: "project" };
+  const fromUser = firstNonEmpty(userValue);
+  if (fromUser !== undefined) return { value: fromUser, source: "user" };
+  const fromEnv = firstNonEmpty(envValue);
+  if (fromEnv !== undefined) return { value: fromEnv, source: "env" };
+  return { value: fallback, source: "default" };
+}
+
 /**
  * Resolve the thinker/executor model strings with the REQ-14.2 precedence:
- * CLI flag → project config → user config → environment → documented default.
- * When `sources.env` is omitted `process.env` is read; otherwise it is never
- * touched, keeping the function pure for tests.
+ * CLI flag → project config → user config → environment → documented default,
+ * reporting the winning layer for each role. Pure: when `sources.env` is
+ * omitted `process.env` is read; otherwise the environment is never touched.
+ */
+export function describeModelSources(sources: ModelSources): ModelSourceDescriptions {
+  const env = sources.env ?? process.env;
+  return {
+    thinker: resolveModelWithSource(
+      sources.flagThinker,
+      sources.projectConfig?.thinker,
+      sources.userConfig?.thinker,
+      env[ENV_THINKER_MODEL],
+      DEFAULT_THINKER_MODEL,
+    ),
+    executor: resolveModelWithSource(
+      sources.flagExecutor,
+      sources.projectConfig?.executor,
+      sources.userConfig?.executor,
+      env[ENV_EXECUTOR_MODEL],
+      DEFAULT_EXECUTOR_MODEL,
+    ),
+  };
+}
+
+/**
+ * Resolve the effective thinker/executor model strings with the REQ-14.2
+ * precedence (see {@link describeModelSources} for the layer attribution).
  */
 export function resolveModelsFromConfig(sources: ModelSources): {
   thinker: string;
   executor: string;
 } {
-  const env = sources.env ?? process.env;
-  const thinker =
-    firstNonEmpty(
-      sources.flagThinker,
-      sources.projectConfig?.thinker,
-      sources.userConfig?.thinker,
-      env[ENV_THINKER_MODEL],
-    ) ?? DEFAULT_THINKER_MODEL;
-  const executor =
-    firstNonEmpty(
-      sources.flagExecutor,
-      sources.projectConfig?.executor,
-      sources.userConfig?.executor,
-      env[ENV_EXECUTOR_MODEL],
-    ) ?? DEFAULT_EXECUTOR_MODEL;
-  return { thinker, executor };
+  const described = describeModelSources(sources);
+  return { thinker: described.thinker.value, executor: described.executor.value };
 }
 
 /** Absolute path of the project config file: `<project>/.huginn/config.json`. */
@@ -173,13 +223,27 @@ function readConfigFile(path: string): UserConfig {
 }
 
 /**
+ * Read the user and project config layers *separately* (no merging) so callers
+ * such as `huginn config show` can attribute a resolved value to the exact file
+ * it came from. Both files fail open to `{}`.
+ */
+export function loadConfigLayers(
+  projectPath: string,
+  homeDir?: string,
+): { user: UserConfig; project: UserConfig } {
+  return {
+    user: readConfigFile(getUserConfigPath(homeDir)),
+    project: readConfigFile(getProjectConfigPath(projectPath)),
+  };
+}
+
+/**
  * Load the effective config for a project: user config first, then the project
  * config overriding it key-by-key (REQ-14.1). Malformed files are ignored with
  * a warning so a broken project file falls back to the user config.
  */
 export function loadUserConfig(projectPath: string, homeDir?: string): UserConfig {
-  const user = readConfigFile(getUserConfigPath(homeDir));
-  const project = readConfigFile(getProjectConfigPath(projectPath));
+  const { user, project } = loadConfigLayers(projectPath, homeDir);
   return { ...user, ...project };
 }
 
@@ -233,14 +297,14 @@ function writeFileAtomic(path: string, body: string, mode: number): void {
 }
 
 /**
- * Atomically persist the project config (REQ-14.3): create `.huginn/` with mode
- * `0o700`, refuse a symlinked `.huginn` directory (SEC-901), merge with existing
- * keys (unknown keys preserved), write an exclusive temp with mode `0o600`, then
- * `renameSync` into place.
+ * Atomically persist a config file at an explicit path (REQ-14.3): create the
+ * containing directory (`.huginn/`) with mode `0o700`, refuse a symlinked
+ * directory (SEC-901), merge with existing keys (unknown keys preserved), write
+ * an exclusive temp with mode `0o600`, then `renameSync` into place. Shared by
+ * the project- and user-scoped savers below.
  */
-export function saveUserConfig(projectPath: string, config: UserConfig): void {
-  const dir = join(projectPath, ".huginn");
-  const path = getProjectConfigPath(projectPath);
+function writeConfigAtomic(path: string, config: UserConfig): void {
+  const dir = dirname(path);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const dirStat = lstatSync(dir);
   if (dirStat.isSymbolicLink()) {
@@ -253,4 +317,21 @@ export function saveUserConfig(projectPath: string, config: UserConfig): void {
   }
   const merged: UserConfig = { ...readConfigFile(path), ...config };
   writeFileAtomic(path, `${JSON.stringify(merged, null, 2)}\n`, 0o600);
+}
+
+/**
+ * Atomically persist the project config (REQ-14.3) to
+ * `<project>/.huginn/config.json`, preserving unknown keys.
+ */
+export function saveUserConfig(projectPath: string, config: UserConfig): void {
+  writeConfigAtomic(getProjectConfigPath(projectPath), config);
+}
+
+/**
+ * Atomically persist the user-scoped config (REQ-14.3, `config set --global`)
+ * to `<home>/.huginn/config.json`, with the same symlink-safe hardening and
+ * unknown-key preservation as {@link saveUserConfig}.
+ */
+export function saveGlobalUserConfig(homeDir: string, config: UserConfig): void {
+  writeConfigAtomic(getUserConfigPath(homeDir), config);
 }
