@@ -457,6 +457,43 @@ export function computeDiff(a: number, b: number): number { return a - b; }
         .get();
       expect(goodEntity).toBeDefined();
     });
+
+    it("attributes entities to the service project while scanning a separate worktree root (sandbox durability)", () => {
+      // Under sandboxing the modified files live in an ephemeral worktree while
+      // the durable database/project record belong to the primary root. Scanning
+      // must read the worktree, but the entities must be attributed to the
+      // primary project so they survive worktree cleanup.
+      const primaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-primary-"));
+      const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-worktree-"));
+      const primaryDb = getDatabase(":memory:");
+      const primaryService = new MemoryService({ db: primaryDb, projectRoot: primaryDir });
+      try {
+        fs.writeFileSync(
+          path.join(worktreeDir, "sandboxed.ts"),
+          "export function sandboxedFn(): number { return 1; }\n"
+        );
+
+        const summary = indexFilesIntoMuninn(primaryService, ["sandboxed.ts"], {
+          projectRoot: worktreeDir,
+        });
+        expect(summary.indexedFiles).toBe(1);
+        expect(summary.indexedSymbols).toBeGreaterThanOrEqual(1);
+
+        const entity = primaryDb
+          .prepare("SELECT identifier, project_id FROM entities WHERE identifier = ?")
+          .get("sandboxed.ts::sandboxedFn") as
+          | { identifier: string; project_id: string }
+          | undefined;
+        expect(entity).toBeDefined();
+        expect(entity?.project_id).toBe(primaryService.currentProject.id);
+        expect(primaryService.currentProject.root_path).toBe(path.resolve(primaryDir));
+      } finally {
+        primaryService.close(true);
+        if (primaryDb.open) primaryDb.close();
+        fs.rmSync(primaryDir, { recursive: true, force: true });
+        fs.rmSync(worktreeDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("MemoryService.inspectSymbol", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { OpencodeClient } from "@opencode-ai/sdk";
@@ -8,6 +8,7 @@ import { events } from "./engineEvents";
 import { git } from "./diff";
 import { WorktreeManager, sandboxPath, type Sandbox, type PromoteResult } from "./worktree";
 import { freshState } from "../state/store";
+import { MemoryService } from "../muninn/service/memory-service";
 import type { RunConfig } from "../config";
 import type { Iteration } from "../plan/types";
 
@@ -465,5 +466,80 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     // The session is scoped to the primary project root, not a sandbox.
     expect(calls.create).toHaveLength(1);
     expect((calls.create[0].query as { directory?: string }).directory).toBe(dir);
+  });
+
+  it("persists indexed symbols to the PRIMARY database across sandbox promotion (memory durability)", async () => {
+    commitEmpty(dir);
+    const spy = spyWorktrees(dir);
+    const sandboxDir = sandboxPath(dir, 1);
+
+    // The build agent's EXECUTE turn writes a source file inside the sandbox
+    // and commits it there, exactly as a real build would before promotion.
+    const client = {
+      session: {
+        create: async () => ({ id: "ses_test" }),
+        get: async () => ({}),
+        abort: async () => {},
+        command: async () => ({
+          info: { id: "msg", error: undefined },
+          parts: [{ type: "text", text: "### Overall gate: 🟢" }],
+        }),
+        prompt: async (params: {
+          body?: { agent?: string };
+          query?: { directory?: string };
+        }) => {
+          if (params?.body?.agent === "build" && params?.query?.directory === sandboxDir) {
+            writeFileSync(
+              join(sandboxDir, "feature.ts"),
+              "export class DurableFeatureService {\n  public run(): void {}\n}\n",
+            );
+            git(sandboxDir, ["config", "user.email", "t@t"]);
+            git(sandboxDir, ["config", "user.name", "t"]);
+            git(sandboxDir, ["add", "-A"]);
+            git(sandboxDir, ["commit", "-m", "feature", "--no-gpg-sign"]);
+          }
+          return {
+            info: { id: "msg", error: undefined },
+            parts: [
+              {
+                type: "text",
+                text: '{"status":"pass","summary":"ok","actionItems":[]}',
+              },
+            ],
+          };
+        },
+      },
+    } as unknown as OpencodeClient;
+
+    const engine = new CycleEngine({
+      cfg: makeCfg({ sandbox: true }),
+      client,
+      plan: makePlan(),
+      worktrees: spy.manager,
+    });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    // The sandbox was promoted (worktree removed) — its local state is gone...
+    expect(spy.promoted).toHaveLength(1);
+    expect(existsSync(sandboxDir)).toBe(false);
+    // ...so the indexed symbols must have been written to the PRIMARY database,
+    // not the ephemeral worktree's.
+    const primaryDbPath = join(dir, ".huginn", "muninn.db");
+    expect(existsSync(primaryDbPath)).toBe(true);
+
+    const mem = new MemoryService({ projectRoot: dir, dbPath: primaryDbPath });
+    try {
+      const rows = mem.db
+        .prepare("SELECT identifier, project_id FROM entities WHERE identifier LIKE ?")
+        .all("%DurableFeatureService%") as Array<{ identifier: string; project_id: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[0].identifier).toContain("feature.ts");
+      // Attributed to the PRIMARY project record (not a throwaway worktree root).
+      expect(rows[0].project_id).toBe(mem.currentProject.id);
+      expect(mem.currentProject.root_path).toBe(dir);
+    } finally {
+      mem.close?.();
+    }
   });
 });

@@ -514,5 +514,58 @@ export function helper(): string {
       const result = await commitAll(ctx);
       expect(result.messageId).toBe("cmd_msg_id");
     });
+
+    it("persists symbols to the PRIMARY db/project while scanning the sandbox worktree (Phase 3 memory durability)", async () => {
+      // The primary project (durable) and a sandbox worktree (ephemeral) live
+      // in separate roots. commitAll must read changed files from the worktree
+      // but write symbols to the primary project's database and project record,
+      // so nothing is lost when the worktree is destroyed after promotion.
+      const primaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-primary-"));
+      const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-worktree-"));
+      try {
+        // primaryDir is the durable git root so `resolveDatabasePath` resolves
+        // the default DB under it (never the host `~/.huginn`).
+        git(primaryDir, ["init", "-q"]);
+        git(worktreeDir, ["init", "-q"]);
+        git(worktreeDir, ["config", "user.name", "Test Runner"]);
+        git(worktreeDir, ["config", "user.email", "test@example.com"]);
+        fs.writeFileSync(
+          path.join(worktreeDir, "sandboxed.ts"),
+          "export class SandboxedService { run(): void {} }\n"
+        );
+
+        const { ctx, commandCalls } = createMockContext(worktreeDir, {
+          primaryProjectRoot: primaryDir,
+          dbPath: undefined,
+        });
+
+        const result = await commitAll(ctx);
+
+        expect(commandCalls).toHaveLength(1);
+        expect(commandCalls[0].body.command).toBe("commit-all");
+        expect(result.messageId).toBe("cmd_msg_id");
+
+        // The mutation landed in the PRIMARY project, not the worktree.
+        const primaryDbPath = path.join(primaryDir, ".huginn", "muninn.db");
+        expect(fs.existsSync(primaryDbPath)).toBe(true);
+        expect(fs.existsSync(path.join(worktreeDir, ".huginn", "muninn.db"))).toBe(false);
+
+        const memService = new MemoryService({ projectRoot: primaryDir, dbPath: primaryDbPath });
+        try {
+          const entities = memService.db
+            .prepare("SELECT identifier, project_id FROM entities WHERE identifier LIKE ?")
+            .all("%SandboxedService%") as Array<{ identifier: string; project_id: string }>;
+          expect(entities.length).toBeGreaterThan(0);
+          // Linked to the PRIMARY project record, not the worktree root.
+          expect(entities[0].project_id).toBe(memService.currentProject.id);
+          expect(memService.currentProject.root_path).toBe(path.resolve(primaryDir));
+        } finally {
+          memService.close?.();
+        }
+      } finally {
+        fs.rmSync(primaryDir, { recursive: true, force: true });
+        fs.rmSync(worktreeDir, { recursive: true, force: true });
+      }
+    });
   });
 });

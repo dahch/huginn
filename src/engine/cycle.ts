@@ -37,6 +37,7 @@ import {
 import type { HarnessState, HistoryEntry } from "../state/schema";
 import { createClient, createSession, sessionExists, abortSession } from "../server/client";
 import { WorktreeManager, type Sandbox } from "./worktree";
+import { resolveDatabasePath } from "../muninn/db/client.js";
 
 type PhaseFn = (ctx: PhaseContext) => Promise<{ text: string; messageId: string }>;
 
@@ -337,6 +338,14 @@ export class CycleEngine {
       : undefined;
     const workPath = sandbox?.path ?? this.cfg.projectPath;
 
+    // Muninn memory is durable state that must outlive an ephemeral sandbox:
+    // always resolve the database from the PRIMARY project root so the
+    // harness-side symbol graph (indexed by `commitAll`) is never written into
+    // the worktree and silently lost when the sandbox is promoted/discarded.
+    // `projectPath`/`directory` stay on the sandbox so code edits and compiler
+    // reads target the isolated worktree.
+    const primaryDbPath = resolveDatabasePath(undefined, this.cfg.projectPath);
+
     // Scope the server-side agent session to `workPath` so the build agent's
     // tools edit the sandbox rather than the primary tree (REQ-17). Under
     // sandboxing a fresh session is required: any persisted `iterationSessionId`
@@ -356,6 +365,10 @@ export class CycleEngine {
         models: this.models,
         projectPath: workPath,
         directory: workPath,
+        // Durable Muninn state always targets the primary project, never the
+        // ephemeral worktree (Phase 3 memory persistence).
+        primaryProjectRoot: this.cfg.projectPath,
+        dbPath: primaryDbPath,
         iteration,
         specPath: this.sandboxDocPath(sandbox, this.cfg.specPath),
         adrPath: this.sandboxDocPath(sandbox, this.cfg.adrPath),

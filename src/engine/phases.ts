@@ -12,6 +12,7 @@ import {
 } from "../contracts/compiler.js";
 import { indexFilesIntoMuninn } from "../muninn/indexer/ast-indexer.js";
 import { MemoryService } from "../muninn/service/memory-service.js";
+import { resolveDatabasePath } from "../muninn/db/client.js";
 
 export interface PhaseContext {
   client: OpencodeClient;
@@ -32,7 +33,21 @@ export interface PhaseContext {
   modules: string[];
   baseCommit?: string;
   phaseTimeoutMs: number;
+  /**
+   * Explicit SQLite database path for Muninn persistence. When sandboxing,
+   * callers pass the PRIMARY project database so indexed symbols survive
+   * worktree cleanup. When omitted, `resolveDatabasePath` resolves the git root
+   * of {@link primaryProjectRoot} (falling back to `~/.huginn/muninn.db`).
+   */
   dbPath?: string;
+  /**
+   * Canonical project root Muninn should attribute entities/observations to.
+   * Under sandboxing this is the primary project root while `projectPath` is
+   * the ephemeral worktree, so symbols are linked to the durable project
+   * record rather than a throwaway worktree root. Falls back to
+   * {@link projectPath} when omitted.
+   */
+  primaryProjectRoot?: string;
 }
 
 /** The sandbox-scoped directory every prompt/command should run against. */
@@ -280,10 +295,16 @@ export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
     );
 
     if (sourceFiles.length > 0) {
-      const resolvedDbPath =
-        ctx.dbPath ?? path.join(ctx.projectPath, ".huginn", "muninn.db");
+      // Memory is durable state that must outlive an ephemeral sandbox: the
+      // database path and the project record entities are linked to must use
+      // the PRIMARY project root, while the scan root stays the worktree where
+      // the modified files live until the sandbox is promoted. Resolving through
+      // `resolveDatabasePath` keeps this consistent with `CycleEngine`'s own
+      // resolution (git root / explicit path) instead of a second convention.
+      const muninnRoot = ctx.primaryProjectRoot ?? ctx.projectPath;
+      const resolvedDbPath = resolveDatabasePath(ctx.dbPath, muninnRoot);
       const memoryService = new MemoryService({
-        projectRoot: ctx.projectPath,
+        projectRoot: muninnRoot,
         dbPath: resolvedDbPath,
       });
       try {
