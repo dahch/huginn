@@ -388,7 +388,7 @@ export async function main(argv: string[]): Promise<void> {
     console.error("No saved harness state to resume. Run without --resume to start fresh.");
     process.exit(1);
   }
-  warnIfMissingTemplates();
+  warnIfMissingTemplates(cfg.tui);
 
   let state;
   if (args["--force-restart"]) {
@@ -414,16 +414,25 @@ export async function main(argv: string[]): Promise<void> {
     totalIterations: plan.iterations.length,
     phase: state ? state.currentPhase : "START",
   };
-  printBanner(bannerInfo);
 
-  void maybePrintUpdateReminder();
-
-  console.log(
-    `[huginn] project=${projectPath}\n` +
-      `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}\n` +
-      `[huginn] iterations=${plan.iterations.length}` +
-      (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
-  );
+  if (!cfg.tui) {
+    printBanner(bannerInfo);
+    void maybePrintUpdateReminder();
+    console.log(
+      `[huginn] project=${projectPath}\n` +
+        `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}\n` +
+        `[huginn] iterations=${plan.iterations.length}` +
+        (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
+    );
+  } else {
+    events.emit("log", {
+      level: "info",
+      message:
+        `project=${projectPath} thinker=${thinker} executor=${executor} mode=${cfg.mode} ` +
+        `iterations=${plan.iterations.length}` +
+        (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
+    });
+  }
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
@@ -434,7 +443,15 @@ export async function main(argv: string[]): Promise<void> {
     console.error(chalk.red(`[huginn] failed to start opencode server: ${(err as Error).message}`));
     process.exit(1);
   }
-  console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
+
+  if (!cfg.tui) {
+    console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
+  } else {
+    events.emit("log", {
+      level: "info",
+      message: `opencode server ready at ${server.url}`,
+    });
+  }
 
   const engine = new CycleEngine({ cfg, plan, state });
   await validateModels(engine.client, cfg);
@@ -574,7 +591,6 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     projectConfig: layers.project,
     userConfig: layers.user,
   });
-  warnIfMissingTemplates();
   if (!existsSync(join(projectPath, ".git"))) {
     console.error(`"${projectPath}" is not a git repository.`);
     process.exit(1);
@@ -621,14 +637,24 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     sandbox: !args["--no-sandbox"],
   };
 
-  printBanner({ thinker, executor, projectPath, iteration: 1, phase: "LIVE" });
+  warnIfMissingTemplates(cfg.tui);
 
-  void maybePrintUpdateReminder();
-  console.log(
-    `[huginn] live mode · project=${projectPath}\n` +
-      `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}` +
-      (idea ? `\n[huginn] initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
-  );
+  if (!cfg.tui) {
+    printBanner({ thinker, executor, projectPath, iteration: 1, phase: "LIVE" });
+    void maybePrintUpdateReminder();
+    console.log(
+      `[huginn] live mode · project=${projectPath}\n` +
+        `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}` +
+        (idea ? `\n[huginn] initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
+    );
+  } else {
+    events.emit("log", {
+      level: "info",
+      message:
+        `live mode · project=${projectPath} thinker=${thinker} executor=${executor} mode=${cfg.mode}` +
+        (idea ? ` initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
+    });
+  }
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
@@ -639,7 +665,15 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     console.error(chalk.red(`[huginn] failed to start opencode server: ${(err as Error).message}`));
     process.exit(1);
   }
-  console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
+
+  if (!cfg.tui) {
+    console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
+  } else {
+    events.emit("log", {
+      level: "info",
+      message: `opencode server ready at ${server.url}`,
+    });
+  }
 
   const live = new LiveEngine({ cfg, idea: idea || undefined });
   await validateModels(live.client, cfg);
@@ -671,8 +705,8 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
 
   try {
     if (cfg.tui) {
-      const { renderLiveTui } = await import("./tui/render");
-      await renderLiveTui(live, cfg);
+      const { runLiveTui } = await import("./tui/app");
+      await runLiveTui(live, cfg);
     } else {
       const { runLiveHeadless } = await import("./headless");
       await runLiveHeadless(live);
@@ -756,23 +790,34 @@ async function runInstall(args: ParsedArgs): Promise<void> {
   }
 }
 
-function warnIfMissingTemplates(): void {
+function warnIfMissingTemplates(tui?: boolean): void {
   let missing;
   try {
     missing = getMissing();
   } catch (err) {
-    console.warn(
+    const msg =
       `[huginn] ⚠ could not check opencode agents/commands: ${(err as Error).message}. ` +
-        `Set HUGINN_TEMPLATES_DIR to the huginn templates/ directory.`,
-    );
+      `Set HUGINN_TEMPLATES_DIR to the huginn templates/ directory.`;
+    if (tui) {
+      events.emit("log", { level: "warn", message: msg });
+    } else {
+      console.warn(msg);
+    }
     return;
   }
   if (missing.length === 0) return;
-  console.warn(
-    `[huginn] ⚠ ${missing.length} required opencode agent(s)/command(s) are not installed yet:\n` +
-      `  ${missing.map((t) => `${t.kind}s/${t.name}`).join(", ")}\n` +
-      `  Run \`huginn install\` to install them into ${getOpencodeConfigDir()}.`,
-  );
+  if (tui) {
+    events.emit("log", {
+      level: "warn",
+      message: `${missing.length} required opencode agent(s)/command(s) are not installed yet: ${missing.map((t) => `${t.kind}s/${t.name}`).join(", ")}. Run 'huginn install'.`,
+    });
+  } else {
+    console.warn(
+      `[huginn] ⚠ ${missing.length} required opencode agent(s)/command(s) are not installed yet:\n` +
+        `  ${missing.map((t) => `${t.kind}s/${t.name}`).join(", ")}\n` +
+        `  Run \`huginn install\` to install them into ${getOpencodeConfigDir()}.`,
+    );
+  }
 }
 
 function validatePhase(name: string): PhaseName {
@@ -797,14 +842,23 @@ async function validateModels(
     ] as const) {
       const pid = model.split("/")[0];
       if (!known.has(pid)) {
-        console.warn(
+        const warnMsg =
           `[huginn] ⚠ provider "${pid}" (${role}) is not in the configured provider list. ` +
-            `If it is an env-only provider, this is fine — otherwise check the model string.`,
-        );
+          `If it is an env-only provider, this is fine — otherwise check the model string.`;
+        if (cfg.tui) {
+          events.emit("log", { level: "warn", message: warnMsg });
+        } else {
+          console.warn(warnMsg);
+        }
       }
     }
   } catch {
-    console.warn(`[huginn] ⚠ could not validate models against providers (continuing anyway).`);
+    const warnMsg = `[huginn] ⚠ could not validate models against providers (continuing anyway).`;
+    if (cfg.tui) {
+      events.emit("log", { level: "warn", message: warnMsg });
+    } else {
+      console.warn(warnMsg);
+    }
   }
 }
 

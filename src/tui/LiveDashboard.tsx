@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import { LiveAbortError, type LiveEngine } from "../engine/liveMode";
@@ -7,11 +7,9 @@ import { events, type LiveStage } from "../engine/engineEvents";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
 import { MarkdownLine } from "./markdown";
+import { useTerminalSize } from "./useTerminalSize";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const VISIBLE_CHAT_LINES = 12;
-const VISIBLE_STREAM_LINES = 8;
-const MAX_LOGS = 4;
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -34,6 +32,7 @@ const STAGE_LABEL: Record<LiveStage, { label: string; color: string }> = {
 export function LiveApp({ live, cfg }: { live: LiveEngine; cfg: RunConfig }) {
   const { exit } = useApp();
   const [cycle, setCycle] = useState<CycleEngine | null>(null);
+  const seededIdea = useRef(false);
 
   useEffect(() => {
     void (async () => {
@@ -93,19 +92,22 @@ export function LiveApp({ live, cfg }: { live: LiveEngine; cfg: RunConfig }) {
   }, [cycle, exit, live]);
 
   if (cycle) return <Dashboard engine={cycle} cfg={cfg} autoExit={false} />;
-  return <RefineView live={live} cfg={cfg} onApprove={onApprove} />;
+  return <RefineView live={live} cfg={cfg} onApprove={onApprove} seededIdeaRef={seededIdea} />;
 }
 
 function RefineView({
   live,
   cfg,
   onApprove,
+  seededIdeaRef,
 }: {
   live: LiveEngine;
   cfg: RunConfig;
   onApprove: () => Promise<void>;
+  seededIdeaRef: React.MutableRefObject<boolean>;
 }) {
   const { exit } = useApp();
+  const terminalSize = useTerminalSize();
   const [stage, setStage] = useState<LiveStage>("refine");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [decision, setDecision] = useState<DecisionRequest | undefined>();
@@ -114,13 +116,59 @@ function RefineView({
   const [focusCard, setFocusCard] = useState<"chat" | "stream">("chat");
   const [chatScroll, setChatScroll] = useState(0);
   const [streamScroll, setStreamScroll] = useState(0);
-  const [logs, setLogs] = useState<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>([]);
+  const [logs, setLogs] = useState<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>(() => {
+    return events.getRecentLogs().map((e) => ({
+      level: e.level,
+      message: e.message,
+      timestamp: e.timestamp
+        ? new Date(e.timestamp).toTimeString().split(" ")[0] ?? ""
+        : new Date().toTimeString().split(" ")[0] ?? "",
+    }));
+  });
   const [streamLines, setStreamLines] = useState<string[]>([]);
   const [streamChars, setStreamChars] = useState(0);
   const [spinnerIndex, setSpinnerIndex] = useState(0);
   const [now, setNow] = useState(Date.now());
   const streamBuf = useRef("");
-  const logBuf = useRef<typeof logs>([]);
+  const pendingChars = useRef(0);
+  const streamTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFlushTime = useRef(0);
+  const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logBuf = useRef<typeof logs>(logs);
+
+  const clearStream = () => {
+    if (streamTimer.current) {
+      clearTimeout(streamTimer.current);
+      streamTimer.current = null;
+    }
+    streamBuf.current = "";
+    pendingChars.current = 0;
+    setStreamLines([]);
+    setStreamChars(0);
+    setStreamScroll(0);
+  };
+
+  const flushStream = () => {
+    if (streamTimer.current) {
+      clearTimeout(streamTimer.current);
+      streamTimer.current = null;
+    }
+    lastFlushTime.current = Date.now();
+    const allLines = streamBuf.current.split("\n");
+    const lines =
+      allLines.length > 1000
+        ? allLines.slice(-1000)
+        : allLines;
+    if (allLines.length > 1000) {
+      streamBuf.current = lines.join("\n");
+    }
+    setStreamLines(lines);
+    if (pendingChars.current > 0) {
+      const added = pendingChars.current;
+      pendingChars.current = 0;
+      setStreamChars((c) => c + added);
+    }
+  };
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -131,26 +179,29 @@ function RefineView({
   }, []);
 
   // Format messages into distinct lines for scrolling
-  const formattedChatLines: FormattedLine[] = [];
-  messages.forEach((m, mIdx) => {
-    if (m.role === "system") {
-      formattedChatLines.push({ id: `sys-${mIdx}`, type: "system", text: `─ ${m.text}` });
-      return;
-    }
-    if (m.role === "user") {
-      formattedChatLines.push({ id: `u-h-${mIdx}`, type: "user_header", text: "you »" });
+  const formattedChatLines = useMemo<FormattedLine[]>(() => {
+    const lines: FormattedLine[] = [];
+    messages.forEach((m, mIdx) => {
+      if (m.role === "system") {
+        lines.push({ id: `sys-${mIdx}`, type: "system", text: `─ ${m.text}` });
+        return;
+      }
+      if (m.role === "user") {
+        lines.push({ id: `u-h-${mIdx}`, type: "user_header", text: "you »" });
+        m.text.split("\n").forEach((l, lIdx) => {
+          lines.push({ id: `u-b-${mIdx}-${lIdx}`, type: "user_body", text: l });
+        });
+        lines.push({ id: `u-sp-${mIdx}`, type: "blank", text: "" });
+        return;
+      }
+      lines.push({ id: `a-h-${mIdx}`, type: "assistant_header", text: "thinker »" });
       m.text.split("\n").forEach((l, lIdx) => {
-        formattedChatLines.push({ id: `u-b-${mIdx}-${lIdx}`, type: "user_body", text: l });
+        lines.push({ id: `a-b-${mIdx}-${lIdx}`, type: "assistant_body", text: l });
       });
-      formattedChatLines.push({ id: `u-sp-${mIdx}`, type: "blank", text: "" });
-      return;
-    }
-    formattedChatLines.push({ id: `a-h-${mIdx}`, type: "assistant_header", text: "thinker »" });
-    m.text.split("\n").forEach((l, lIdx) => {
-      formattedChatLines.push({ id: `a-b-${mIdx}-${lIdx}`, type: "assistant_body", text: l });
+      lines.push({ id: `a-sp-${mIdx}`, type: "blank", text: "" });
     });
-    formattedChatLines.push({ id: `a-sp-${mIdx}`, type: "blank", text: "" });
-  });
+    return lines;
+  }, [messages]);
 
   useEffect(() => {
     const offs: Array<() => void> = [
@@ -159,34 +210,61 @@ function RefineView({
         setMessages((m) => [...m, { role: e.role, text: e.text }]);
         setChatScroll(0); // auto-scroll to bottom on new message
       }),
+      events.on("phaseStart", () => {
+        clearStream();
+      }),
       events.on("phaseStream", (e) => {
         streamBuf.current += e.text;
-        const lines = streamBuf.current.split("\n");
-        setStreamLines(lines);
-        setStreamChars((c) => c + e.text.length);
+        pendingChars.current += e.text.length;
+        const now = Date.now();
+        if (now - lastFlushTime.current >= 60) {
+          flushStream();
+        } else if (!streamTimer.current) {
+          streamTimer.current = setTimeout(flushStream, 60);
+        }
+      }),
+      events.on("phaseEnd", () => {
+        flushStream();
       }),
       events.on("log", (e) => {
-        const time = e.timestamp ? new Date(e.timestamp).toTimeString().split(" ")[0] : new Date().toTimeString().split(" ")[0];
-        logBuf.current = [...logBuf.current.slice(-(MAX_LOGS - 1)), { level: e.level, message: e.message, timestamp: time }];
+        const time = e.timestamp
+          ? new Date(e.timestamp).toTimeString().split(" ")[0] ?? ""
+          : new Date().toTimeString().split(" ")[0] ?? "";
+        logBuf.current = [
+          ...logBuf.current.slice(-19),
+          { level: e.level, message: e.message, timestamp: time },
+        ];
         setLogs(logBuf.current);
       }),
       events.on("decision", (req) => setDecision(req)),
       events.on("decisionResolved", () => setDecision(undefined)),
       events.on("done", () => {
-        setTimeout(() => exit(), 500);
+        flushStream();
+        if (exitTimer.current) clearTimeout(exitTimer.current);
+        exitTimer.current = setTimeout(() => exit(), 500);
       }),
     ];
-    return () => offs.forEach((off) => off());
+    return () => {
+      offs.forEach((off) => off());
+      if (streamTimer.current) {
+        clearTimeout(streamTimer.current);
+        streamTimer.current = null;
+      }
+      if (exitTimer.current) {
+        clearTimeout(exitTimer.current);
+        exitTimer.current = null;
+      }
+    };
   }, [exit]);
 
   const inputEnabled = !busy && stage !== "draft" && !decision;
 
   // Seed the CLI-provided initial idea into the conversation (matches headless).
-  const seededIdea = useRef(false);
   useEffect(() => {
     const idea = live.ideaText.trim();
-    if (!idea || seededIdea.current) return;
-    seededIdea.current = true;
+    if (!idea || seededIdeaRef.current) return;
+    seededIdeaRef.current = true;
+    clearStream();
     void (async () => {
       setBusy(true);
       try {
@@ -197,7 +275,7 @@ function RefineView({
         setBusy(false);
       }
     })();
-  }, [live]);
+  }, [live, seededIdeaRef]);
 
   const resolveDecisionKey = (input: string): DecisionChoice | undefined => {
     const c = input.toLowerCase();
@@ -233,6 +311,7 @@ function RefineView({
     setDraftInput("");
     if (!text) return;
     if (text === "/draft" || text === "/go") {
+      clearStream();
       setBusy(true);
       try {
         const outcome = await live.draft();
@@ -249,6 +328,7 @@ function RefineView({
       failSession(new LiveAbortError());
       return;
     }
+    clearStream();
     setBusy(true);
     try {
       await live.chat(text);
@@ -259,8 +339,34 @@ function RefineView({
     }
   };
 
-  const maxChatScroll = Math.max(0, formattedChatLines.length - VISIBLE_CHAT_LINES);
-  const maxStreamScroll = Math.max(0, streamLines.length - VISIBLE_STREAM_LINES);
+  // Dynamic layout calculations based on terminal size
+  const headerHeight = 4;
+  const inputHeight = 2;
+  const footerHeight = 1;
+  const decisionHeight = decision ? 6 : 0;
+
+  let maxLogsAllowed = 0;
+  if (terminalSize.rows >= 36) maxLogsAllowed = 4;
+  else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
+  else if (terminalSize.rows >= 25) maxLogsAllowed = 2;
+  else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
+
+  const visibleLogs = logs.slice(-maxLogsAllowed);
+  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+
+  const availableHeight = Math.max(
+    8,
+    terminalSize.rows - headerHeight - inputHeight - footerHeight - logsHeight - decisionHeight,
+  );
+
+  const chatHeight = Math.max(4, Math.floor(availableHeight * 0.58));
+  const streamHeight = Math.max(4, availableHeight - chatHeight);
+
+  const visibleChatLinesCount = Math.max(1, chatHeight - 3);
+  const visibleStreamLinesCount = Math.max(1, streamHeight - 3);
+
+  const maxChatScroll = Math.max(0, formattedChatLines.length - visibleChatLinesCount);
+  const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
 
   useInput((input, key) => {
     if (decision) {
@@ -302,6 +408,15 @@ function RefineView({
       return;
     }
 
+    // Trap arrow keys when typing to prevent terminal window scroll leakage
+    if (key.upArrow || key.downArrow) {
+      return;
+    }
+
+    if (key.leftArrow || key.rightArrow || key.delete || key.ctrl || key.meta) {
+      return;
+    }
+
     if (inputEnabled) {
       if (key.return) {
         void submit();
@@ -311,7 +426,12 @@ function RefineView({
         setDraftInput((d) => d.slice(0, -1));
         return;
       }
-      if (input) setDraftInput((d) => d + input);
+      const sanitized = input
+        .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
+        .replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+      if (sanitized) {
+        setDraftInput((d) => d + sanitized);
+      }
     } else if (input === "q" && draftInput === "") {
       live.requestAbort();
       failSession(new LiveAbortError());
@@ -321,15 +441,21 @@ function RefineView({
   const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
 
   // Slice visible lines for Chat
-  const chatStart = Math.max(0, formattedChatLines.length - VISIBLE_CHAT_LINES - chatScroll);
-  const visibleChatLines = formattedChatLines.slice(chatStart, chatStart + VISIBLE_CHAT_LINES);
+  const chatStart = Math.max(0, formattedChatLines.length - visibleChatLinesCount - chatScroll);
+  const visibleChatLines = formattedChatLines.slice(chatStart, chatStart + visibleChatLinesCount);
 
   // Slice visible lines for Stream
-  const streamStart = Math.max(0, streamLines.length - VISIBLE_STREAM_LINES - streamScroll);
-  const visibleStreamLines = streamLines.slice(streamStart, streamStart + VISIBLE_STREAM_LINES);
+  const streamStart = Math.max(0, streamLines.length - visibleStreamLinesCount - streamScroll);
+  const visibleStreamLines = streamLines.slice(streamStart, streamStart + visibleStreamLinesCount);
 
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      width={terminalSize.columns}
+      height={terminalSize.rows}
+      paddingX={1}
+      paddingY={0}
+    >
       <LiveHeader stage={stage} cfg={cfg} now={now} spinner={spinner} />
 
       <ScrollableChatCard
@@ -340,6 +466,7 @@ function RefineView({
         isFocused={focusCard === "chat"}
         busy={busy}
         spinner={spinner}
+        height={chatHeight}
       />
 
       <ScrollableStreamCard
@@ -350,15 +477,16 @@ function RefineView({
         isFocused={focusCard === "stream"}
         spinner={spinner}
         busy={busy}
+        height={streamHeight}
       />
 
-      {logs.length > 0 && <LogsCard logs={logs} />}
+      {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
 
       {decision ? <DecisionModal req={decision} /> : null}
 
       <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  /draft when ready · /quit to abort" />
       <Box justifyContent="space-between">
-        <Text dimColor>[Tab] Toggle focus · [PageUp/Down] or [↑/↓] Scroll · [Enter] Send · /draft to draft · /quit to abort</Text>
+        <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · /draft to draft · /quit to abort</Text>
         <Text dimColor>stage: {STAGE_LABEL[stage].label}</Text>
       </Box>
     </Box>
@@ -394,6 +522,7 @@ function ScrollableChatCard({
   isFocused,
   busy,
   spinner,
+  height,
 }: {
   lines: FormattedLine[];
   totalLines: number;
@@ -402,6 +531,7 @@ function ScrollableChatCard({
   isFocused: boolean;
   busy: boolean;
   spinner: string;
+  height: number;
 }) {
   return (
     <Box
@@ -409,7 +539,8 @@ function ScrollableChatCard({
       borderColor={isFocused ? "cyanBright" : "gray"}
       flexDirection="column"
       paddingX={1}
-      minHeight={VISIBLE_CHAT_LINES + 3}
+      height={height}
+      minHeight={4}
     >
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={isFocused ? "cyanBright" : "cyan"}>
@@ -426,7 +557,7 @@ function ScrollableChatCard({
         </Box>
       </Box>
       {lines.length === 0 ? (
-        <Box marginY={1} justifyContent="center">
+        <Box marginY={0} justifyContent="center">
           <Text dimColor>Describe what you want to build or change. I'll help you refine the scope.</Text>
         </Box>
       ) : (
@@ -481,6 +612,7 @@ function ScrollableStreamCard({
   isFocused,
   spinner,
   busy,
+  height,
 }: {
   lines: string[];
   totalLines: number;
@@ -489,6 +621,7 @@ function ScrollableStreamCard({
   isFocused: boolean;
   spinner: string;
   busy: boolean;
+  height: number;
 }) {
   return (
     <Box
@@ -496,7 +629,8 @@ function ScrollableStreamCard({
       borderColor={isFocused ? "cyanBright" : "gray"}
       flexDirection="column"
       paddingX={1}
-      minHeight={VISIBLE_STREAM_LINES + 3}
+      height={height}
+      minHeight={4}
     >
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={isFocused ? "cyanBright" : "cyan"}>
@@ -508,7 +642,7 @@ function ScrollableStreamCard({
         </Box>
       </Box>
       {lines.length === 0 ? (
-        <Box justifyContent="center" marginY={1}>
+        <Box justifyContent="center" marginY={0}>
           <Text dimColor>Real-time thinking and agent output will stream here while the model runs.</Text>
         </Box>
       ) : (

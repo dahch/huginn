@@ -6,6 +6,7 @@ import { events } from "../engine/engineEvents";
 import type { PhaseResult, DecisionRequest, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, verdictColor, verdictIcon } from "../format";
 import { MarkdownLine } from "./markdown";
+import { useTerminalSize } from "./useTerminalSize";
 
 const BASE_PHASES = [
   "SPEC_AUDIT",
@@ -19,9 +20,6 @@ const BASE_PHASES = [
 ] as const;
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const DEFAULT_STREAM_LINES = 10;
-const VERBOSE_STREAM_LINES = 22;
-const MAX_LOGS = 6;
 
 interface PhaseStatus {
   verdict?: Verdict;
@@ -40,7 +38,6 @@ interface UiState {
   runStartedAt: number;
   paused: boolean;
   phases: Record<string, PhaseStatus>;
-  streamTail: string[];
   streamTotalChars: number;
   logs: Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>;
   decision?: DecisionRequest;
@@ -56,13 +53,31 @@ function renderProgressBar(current: number, total: number, width = 16): string {
   return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${Math.round(pct * 100)}%`;
 }
 
-export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngine; cfg: RunConfig; autoExit?: boolean }) {
+export function Dashboard({
+  engine,
+  cfg,
+  autoExit = true,
+}: {
+  engine: CycleEngine;
+  cfg: RunConfig;
+  autoExit?: boolean;
+}) {
   const { exit } = useApp();
+  const terminalSize = useTerminalSize();
   const [spinnerIndex, setSpinnerIndex] = useState(0);
   const [now, setNow] = useState(Date.now());
+  const [streamScroll, setStreamScroll] = useState(0);
+  const [streamLines, setStreamLines] = useState<string[]>([]);
 
   const [ui, setUi] = useState<UiState>(() => {
     const st = engine.getState();
+    const initialLogs = events.getRecentLogs().map((e) => ({
+      level: e.level,
+      message: e.message,
+      timestamp: e.timestamp
+        ? new Date(e.timestamp).toTimeString().split(" ")[0] ?? ""
+        : new Date().toTimeString().split(" ")[0] ?? "",
+    }));
     return {
       currentIteration: st.currentIteration,
       totalIterations: 1,
@@ -73,18 +88,16 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
       runStartedAt: Date.now(),
       paused: false,
       phases: {},
-      streamTail: [],
       streamTotalChars: 0,
-      logs: [],
+      logs: initialLogs,
       verbose: false,
     };
   });
 
   const streamBuf = useRef<string>("");
-  const logBuf = useRef<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>([]);
-  // Ref (not state) so the subscription effect below doesn't re-register on
-  // verbose toggles — a cleanup/re-register window would drop live events.
-  const streamLinesLimitRef = useRef(DEFAULT_STREAM_LINES);
+  const logBuf = useRef<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>(
+    ui.logs,
+  );
 
   // Animation spinner tick
   useEffect(() => {
@@ -96,6 +109,36 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
   }, []);
 
   useEffect(() => {
+    let streamTimer: ReturnType<typeof setTimeout> | null = null;
+    let exitTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingStreamChars = 0;
+    let lastFlushTime = 0;
+
+    const flushStream = () => {
+      if (streamTimer) {
+        clearTimeout(streamTimer);
+        streamTimer = null;
+      }
+      lastFlushTime = Date.now();
+      const allLines = streamBuf.current.split("\n");
+      const lines =
+        allLines.length > 1000
+          ? allLines.slice(-1000)
+          : allLines;
+      if (allLines.length > 1000) {
+        streamBuf.current = lines.join("\n");
+      }
+      setStreamLines(lines);
+      if (pendingStreamChars > 0) {
+        const added = pendingStreamChars;
+        pendingStreamChars = 0;
+        setUi((s) => ({
+          ...s,
+          streamTotalChars: s.streamTotalChars + added,
+        }));
+      }
+    };
+
     const offs: Array<() => void> = [
       events.on("iterationStart", (e) => {
         setUi((s) => ({
@@ -104,11 +147,18 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
           totalIterations: e.totalIterations,
           iterationTitle: e.title,
           iterationModules: e.modules ?? [],
-          phases: {}, // reset phase table for new iteration
+          phases: {},
         }));
       }),
       events.on("phaseStart", (e) => {
+        if (streamTimer) {
+          clearTimeout(streamTimer);
+          streamTimer = null;
+        }
+        pendingStreamChars = 0;
         streamBuf.current = "";
+        setStreamLines([]);
+        setStreamScroll(0);
         setUi((s) => ({
           ...s,
           currentIteration: e.iteration,
@@ -127,14 +177,16 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
       }),
       events.on("phaseStream", (e) => {
         streamBuf.current += e.text;
-        const lines = streamBuf.current.split("\n");
-        setUi((s) => ({
-          ...s,
-          streamTail: lines.slice(-streamLinesLimitRef.current),
-          streamTotalChars: s.streamTotalChars + e.text.length,
-        }));
+        pendingStreamChars += e.text.length;
+        const now = Date.now();
+        if (now - lastFlushTime >= 60) {
+          flushStream();
+        } else if (!streamTimer) {
+          streamTimer = setTimeout(flushStream, 60);
+        }
       }),
       events.on("phaseEnd", (r) => {
+        flushStream();
         setUi((s) => ({
           ...s,
           lastReport: r.result,
@@ -156,16 +208,58 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
       events.on("decision", (req) => setUi((s) => ({ ...s, decision: req }))),
       events.on("decisionResolved", () => setUi((s) => ({ ...s, decision: undefined }))),
       events.on("log", (e) => {
-        const time = e.timestamp ? new Date(e.timestamp).toTimeString().split(" ")[0] ?? "" : new Date().toTimeString().split(" ")[0] ?? "";
-        logBuf.current = [...logBuf.current.slice(-(MAX_LOGS - 1)), { level: e.level, message: e.message, timestamp: time }];
+        const time = e.timestamp
+          ? new Date(e.timestamp).toTimeString().split(" ")[0] ?? ""
+          : new Date().toTimeString().split(" ")[0] ?? "";
+        logBuf.current = [
+          ...logBuf.current.slice(-19),
+          { level: e.level, message: e.message, timestamp: time },
+        ];
         setUi((s) => ({ ...s, logs: logBuf.current }));
       }),
       events.on("done", () => {
-        if (autoExit) setTimeout(() => exit(), 500);
+        flushStream();
+        if (autoExit) {
+          if (exitTimer) clearTimeout(exitTimer);
+          exitTimer = setTimeout(() => exit(), 500);
+        }
       }),
     ];
-    return () => offs.forEach((off) => off());
-  }, [exit]);
+    return () => {
+      offs.forEach((off) => off());
+      if (streamTimer) {
+        clearTimeout(streamTimer);
+        streamTimer = null;
+      }
+      if (exitTimer) {
+        clearTimeout(exitTimer);
+        exitTimer = null;
+      }
+    };
+  }, [exit, autoExit]);
+
+  // Calculate dynamic heights
+  const headerHeight = ui.iterationModules.length > 0 ? 6 : 5;
+  const footerHeight = 1;
+  const reportHeight = ui.lastReport && !ui.decision ? 1 : 0;
+  const decisionHeight = ui.decision ? 6 : 0;
+
+  // Dynamically allocate log count to ensure middle cards remain comfortably visible
+  let maxLogsAllowed = 0;
+  if (terminalSize.rows >= 36) maxLogsAllowed = 5;
+  else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
+  else if (terminalSize.rows >= 24) maxLogsAllowed = 2;
+  else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
+
+  const visibleLogs = ui.logs.slice(-maxLogsAllowed);
+  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+
+  const middleHeight = Math.max(
+    6,
+    terminalSize.rows - headerHeight - footerHeight - logsHeight - decisionHeight - reportHeight - 1,
+  );
+  const streamLinesCount = Math.max(1, middleHeight - 3);
+  const maxStreamScroll = Math.max(0, streamLines.length - streamLinesCount);
 
   useInput((input, key) => {
     if (ui.decision) {
@@ -184,22 +278,31 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
       }
       return;
     }
+
+    // Scroll controls — trapped in card to prevent terminal window scroll leakage
+    if (key.pageUp) {
+      setStreamScroll((s) => Math.min(s + 4, maxStreamScroll));
+      return;
+    }
+    if (key.pageDown) {
+      setStreamScroll((s) => Math.max(s - 4, 0));
+      return;
+    }
+    if (key.upArrow) {
+      setStreamScroll((s) => Math.min(s + 2, maxStreamScroll));
+      return;
+    }
+    if (key.downArrow) {
+      setStreamScroll((s) => Math.max(s - 2, 0));
+      return;
+    }
+
     if (input === "p" || input === " ") {
       if (ui.paused) engine.resume();
       else engine.pause();
       setUi((s) => ({ ...s, paused: !s.paused }));
     } else if (input === "v") {
-      setUi((s) => {
-        const nextVerbose = !s.verbose;
-        const nextLimit = nextVerbose ? VERBOSE_STREAM_LINES : DEFAULT_STREAM_LINES;
-        streamLinesLimitRef.current = nextLimit;
-        const lines = streamBuf.current.split("\n");
-        return {
-          ...s,
-          verbose: nextVerbose,
-          streamTail: lines.slice(-nextLimit),
-        };
-      });
+      setUi((s) => ({ ...s, verbose: !s.verbose }));
     } else if (key.escape || input === "q") {
       engine.requestAbort();
     }
@@ -209,8 +312,17 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
   const phaseElapsed = now - ui.phaseStartedAt;
   const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
 
+  const streamStart = Math.max(0, streamLines.length - streamLinesCount - streamScroll);
+  const visibleStreamLines = streamLines.slice(streamStart, streamStart + streamLinesCount);
+
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={0}>
+    <Box
+      flexDirection="column"
+      width={terminalSize.columns}
+      height={terminalSize.rows}
+      paddingX={1}
+      paddingY={0}
+    >
       <HeaderCard
         iteration={ui.currentIteration}
         totalIterations={ui.totalIterations}
@@ -224,26 +336,31 @@ export function Dashboard({ engine, cfg, autoExit = true }: { engine: CycleEngin
         cfg={cfg}
       />
 
-      <Box flexDirection="row" marginTop={1}>
+      <Box flexDirection="row" height={middleHeight} marginTop={0}>
         <Box width={ui.verbose ? "35%" : "42%"} flexDirection="column" marginRight={1}>
           <PipelineCard
             phases={ui.phases}
             currentPhase={ui.currentPhase}
             phaseElapsed={phaseElapsed}
             spinner={spinner}
+            height={middleHeight}
           />
         </Box>
         <Box width={ui.verbose ? "65%" : "58%"} flexDirection="column">
           <StreamCard
-            tail={ui.streamTail}
+            lines={visibleStreamLines}
+            totalLines={streamLines.length}
+            scrollOffset={streamScroll}
+            maxScroll={maxStreamScroll}
             chars={ui.streamTotalChars}
             spinner={spinner}
             verbose={ui.verbose}
+            height={middleHeight}
           />
         </Box>
       </Box>
 
-      <LogsCard logs={ui.logs} />
+      {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
 
       {ui.decision ? <DecisionModal req={ui.decision} /> : null}
 
@@ -338,11 +455,13 @@ function PipelineCard({
   currentPhase,
   phaseElapsed,
   spinner,
+  height,
 }: {
   phases: Record<string, PhaseStatus>;
   currentPhase: string;
   phaseElapsed: number;
   spinner: string;
+  height?: number;
 }) {
   const displayPhases: string[] = [];
   for (const base of BASE_PHASES) {
@@ -365,10 +484,26 @@ function PipelineCard({
     displayPhases.push(currentPhase);
   }
 
+  // Constrain visible phase items to available card height
+  const maxItems = height ? Math.max(2, height - 3) : displayPhases.length;
+  let itemsToRender = displayPhases;
+  if (displayPhases.length > maxItems) {
+    const curIdx = displayPhases.indexOf(currentPhase);
+    const start = Math.max(0, Math.min(curIdx - Math.floor(maxItems / 2), displayPhases.length - maxItems));
+    itemsToRender = displayPhases.slice(start, start + maxItems);
+  }
+
   return (
-    <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} minHeight={12}>
+    <Box
+      borderStyle="round"
+      borderColor="gray"
+      flexDirection="column"
+      paddingX={1}
+      height={height}
+      minHeight={6}
+    >
       <Text bold color="cyan">PIPELINE PHASES</Text>
-      {displayPhases.map((name) => {
+      {itemsToRender.map((name) => {
         const st = phases[name];
         const isCurrent = name === currentPhase;
         const isFix = name.startsWith("FIX");
@@ -416,30 +551,54 @@ function PipelineCard({
 }
 
 export function StreamCard({
-  tail,
+  lines = [],
+  totalLines,
+  scrollOffset = 0,
+  maxScroll = 0,
   chars,
   spinner,
   verbose,
+  height,
 }: {
-  tail: string[];
+  lines?: string[];
+  totalLines?: number;
+  scrollOffset?: number;
+  maxScroll?: number;
   chars: number;
   spinner: string;
   verbose: boolean;
+  height?: number;
 }) {
+  const displayLines = lines;
   return (
-    <Box borderStyle="round" borderColor={verbose ? "cyan" : "gray"} flexDirection="column" paddingX={1} minHeight={12}>
+    <Box
+      borderStyle="round"
+      borderColor={verbose ? "cyan" : "gray"}
+      flexDirection="column"
+      paddingX={1}
+      height={height}
+      minHeight={6}
+    >
       <Box justifyContent="space-between">
         <Text bold color="cyan">
           {spinner} LIVE AGENT OUTPUT {verbose ? <Text color="green">[VERBOSE]</Text> : null}
         </Text>
-        <Text dimColor>{chars > 0 ? `${(chars / 1024).toFixed(1)} KB` : ""}</Text>
+        <Box>
+          {maxScroll > 0 && (
+            <Text dimColor>
+              {scrollOffset > 0 ? `▲ +${scrollOffset} ` : "▼ bottom "}
+              {totalLines ? `(${totalLines} lines) ` : ""}
+            </Text>
+          )}
+          <Text dimColor>{chars > 0 ? `${(chars / 1024).toFixed(1)} KB` : ""}</Text>
+        </Box>
       </Box>
-      {tail.length === 0 ? (
-        <Box marginTop={2} justifyContent="center">
+      {displayLines.length === 0 ? (
+        <Box marginTop={1} justifyContent="center">
           <Text dimColor>(waiting for agent stream / tool executions...)</Text>
         </Box>
       ) : (
-        tail.map((line, i) => {
+        displayLines.map((line, i) => {
           const trimmed = line.trim();
           const isTool = trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
           const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
@@ -461,7 +620,11 @@ export function StreamCard({
   );
 }
 
-export function LogsCard({ logs }: { logs: Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }> }) {
+export function LogsCard({
+  logs,
+}: {
+  logs: Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>;
+}) {
   if (logs.length === 0) return null;
   return (
     <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={0}>
@@ -577,7 +740,7 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
       </>
     );
   return (
-    <Box marginTop={1} borderStyle="double" borderColor="yellow" paddingX={1} flexDirection="column">
+    <Box marginTop={0} borderStyle="double" borderColor="yellow" paddingX={1} flexDirection="column">
       <Text bold color="yellow">
         {title}
       </Text>
@@ -591,11 +754,19 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
   );
 }
 
-function FooterBar({ paused, verbose, hasDecision }: { paused: boolean; verbose: boolean; hasDecision: boolean }) {
+function FooterBar({
+  paused,
+  verbose,
+  hasDecision,
+}: {
+  paused: boolean;
+  verbose: boolean;
+  hasDecision: boolean;
+}) {
   return (
     <Box marginTop={0} justifyContent="space-between">
       <Text dimColor>
-        [Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color="green">(ON)</Text> : <Text dimColor>(OFF)</Text>}
+        [Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color="green">(ON)</Text> : <Text dimColor>(OFF)</Text>}   [PageUp/Down, ↑/↓] Scroll
       </Text>
       {hasDecision && <Text bold color="yellow">Interactive decision input active</Text>}
     </Box>
