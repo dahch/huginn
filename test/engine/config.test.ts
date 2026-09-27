@@ -20,6 +20,7 @@ import {
   loadUserConfig,
   resolveModelsFromConfig,
   saveUserConfig,
+  saveGlobalUserConfig,
 } from "../../src/config.js";
 
 // Each test gets an isolated project + home directory so config files never
@@ -244,6 +245,46 @@ describe("saveUserConfig", () => {
     // no stray temp files left behind
     const leftovers = readdirSync(join(project, ".huginn")).filter((f) => f.endsWith(".tmp"));
     expect(leftovers.filter((f) => f !== "config.json.tmp")).toEqual([]);
+  });
+});
+
+describe("saveGlobalUserConfig", () => {
+  it("persists global user config using primary signature (config, homeDir) (SEC-003)", () => {
+    const { project, home } = makeEnv();
+    saveGlobalUserConfig({ thinker: "global/thinker", executor: "global/executor" }, home);
+
+    expect(loadUserConfig(project, home)).toEqual({
+      thinker: "global/thinker",
+      executor: "global/executor",
+    });
+
+    const onDisk = JSON.parse(readFileSync(getUserConfigPath(home), "utf8")) as Record<string, unknown>;
+    expect(onDisk.thinker).toBe("global/thinker");
+    expect(onDisk.executor).toBe("global/executor");
+  });
+
+  it("supports legacy overload (homeDir, config) cleanly (SEC-003)", () => {
+    const { project, home } = makeEnv();
+    saveGlobalUserConfig(home, { thinker: "legacy/thinker" });
+
+    expect(loadUserConfig(project, home)).toEqual({
+      thinker: "legacy/thinker",
+    });
+  });
+
+  it("supports single-argument call saveGlobalUserConfig(config) without undefined as any (SEC-003)", () => {
+    const { project, home } = makeEnv();
+    const orig = process.env.HUGINN_HOME;
+    process.env.HUGINN_HOME = home;
+    try {
+      saveGlobalUserConfig({ thinker: "direct/thinker" });
+      expect(loadUserConfig(project, home)).toEqual({
+        thinker: "direct/thinker",
+      });
+    } finally {
+      if (orig === undefined) delete process.env.HUGINN_HOME;
+      else process.env.HUGINN_HOME = orig;
+    }
   });
 });
 
