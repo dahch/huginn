@@ -271,4 +271,18 @@ describe("sanitizeConfig prototype safety", () => {
     expect(Object.prototype.hasOwnProperty.call(cfg, "constructor")).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(cfg, "prototype")).toBe(false);
   });
+
+  it("validates agent against AGENT_TARGETS allowlist and rejects arbitrary binaries (SEC-001)", () => {
+    const { project, home } = makeEnv();
+    writeProjectConfig(project, { agent: "malicious_binary", thinker: "safe/thinker" });
+    silenceWarnings();
+
+    const cfg = loadUserConfig(project, home);
+    expect(cfg.thinker).toBe("safe/thinker");
+    expect(cfg.agent).toBeUndefined();
+
+    writeProjectConfig(project, { agent: "claude" });
+    const validCfg = loadUserConfig(project, home);
+    expect(validCfg.agent).toBe("claude");
+  });
 });
