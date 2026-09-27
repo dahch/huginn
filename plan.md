@@ -146,3 +146,107 @@ Integrate contracts and indexing into Huginn's execution loop and ensure dual-ru
    - Run `npm test` (`bun test && vitest run`) ensuring all tests pass 100% green.
    - Run `bun run typecheck` (`tsc --noEmit`) ensuring zero TypeScript errors.
    - Run `bun run build` ensuring successful bundle generation.
+
+# Plan: Live-First Entrypoint, Universal Agent Integrator & Git Worktree Sandboxing (Phase 3)
+
+## Iteration 9 — Persistent Model Configuration & Live-First Default Entrypoint
+modules: src/config.ts, src/cli.ts, src/engine/liveMode.ts, test/engine/
+
+Implement REQ-14 (SPEC.md §5) exactly. The repo is a Bun/TypeScript CLI (`src/cli.ts` is the bin, `src/config.ts` holds `RunConfig`). Tests: `src/**/*.test.ts` run under `bun test`; `test/**/*.test.ts` run under `vitest run` (config `vitest.config.ts`). `test/` uses Node-style imports; `src/` uses `bun:test`. Keep strict TypeScript (no `any`), ESM, `.js` extension on relative imports.
+
+1. Extend `src/config.ts`:
+   - Add `export interface UserConfig { thinker?: string; executor?: string; mode?: "auto" | "supervised"; [key: string]: unknown }`.
+   - Add `export interface ModelSources { flagThinker?: string; flagExecutor?: string; projectConfig?: UserConfig; userConfig?: UserConfig; env?: Record<string, string | undefined> }`.
+   - Add `export const DEFAULT_THINKER_MODEL = "anthropic/claude-opus-4-5"` and `export const DEFAULT_EXECUTOR_MODEL = "opencode/gpt-5.1-codex"`.
+   - Add `export function resolveModelsFromConfig(sources: ModelSources): { thinker: string; executor: string }` implementing precedence: CLI flag → project config → user config → env (`HUGINN_THINKER_MODEL`/`HUGINN_EXECUTOR_MODEL`) → documented default. Pure function; no env reads unless `sources.env` omitted (then read `process.env`).
+   - Add `export function getProjectConfigPath(projectPath: string): string` (`.huginn/config.json`), `export function getUserConfigPath(homeDir = os.homedir()): string` (`~/.huginn/config.json`), `export function loadUserConfig(projectPath: string, homeDir?: string): UserConfig` (project file first, then user file; missing → `{}`; malformed JSON → warn to `console.warn` and ignore, never throw), and `export function saveUserConfig(projectPath: string, config: UserConfig): void` (atomic: mkdir `.huginn` mode 0o700, write `${path}.tmp` mode 0o600, `renameSync`; merge with existing keys preserving unknown keys).
+   - Add `sandbox: boolean` to `RunConfig`.
+2. Modify `src/cli.ts`:
+   - Add `--sandbox` and `--no-sandbox` to `BOOLEAN_FLAGS`.
+   - Change default routing in `main`: define `KNOWN_COMMANDS = new Set(["run","plan","live","install","memory","mcp","check","setup","doctor"])`. If `args._command` is a known command, keep current routing. Otherwise (undefined, or a free-text idea token) route to `runLive(args)`. `help`/`--help`/`-h` still print usage. Add `setup` and `doctor` routing stubs that call `handleSetupCommand`/`handleDoctorCommand` from `src/commands/setup.ts` (create the file in Iteration 10 — for this iteration, add the imports and routing; if the module does not exist yet, create a minimal `handleSetupCommand`/`handleDoctorCommand` that print `not implemented yet` so typecheck/tests pass, and Iteration 10 fills them in).
+   - In `runLive` and `run`: make `--project` default to `canonicalize(process.cwd())`; resolve thinker/executor via `resolveModelsFromConfig` (flags + `loadUserConfig(projectPath)` + env) instead of hard-erroring when flags are missing. Keep the "not a git repository" error.
+   - Set `cfg.sandbox = !args["--no-sandbox"]` (default true) on both `run` and `live` configs.
+   - Update `usage()` text: document the live-first default, `setup`, `doctor`, `--sandbox`/`--no-sandbox`, and the config/env model resolution order/defaults.
+3. Add `test/engine/config.test.ts` (vitest) covering: precedence order for every layer; defaults; malformed project config falls back to user config; `saveUserConfig` round-trips and preserves unknown keys; `loadUserConfig` prefers project over user. Use `mkdtempSync` temp dirs and injected `homeDir`; clean up in `afterAll`.
+4. Verify: `bun test` and `bunx vitest run` both green; `bun run typecheck` zero errors.
+
+## Iteration 10 — Universal Agent Integrator (`huginn setup`) & Config Hardening
+modules: src/agents/, src/commands/setup.ts, src/cli.ts, src/config.ts, test/commands/, test/engine/
+
+Implement REQ-15 (SPEC.md §5) and fix the two security findings from the Iteration 9 audit (SEC-901, SEC-902). Reuse the command-handler style of `src/commands/check.ts` (`handleCheckCommand(files, args)`).
+
+1. **Harden `src/config.ts` (SEC-901 + SEC-902)**:
+   - `saveUserConfig`: replace the predictable `${path}.tmp` write with an exclusive, symlink-safe temp: `lstatSync` the `.huginn` dir and throw if it is a symlink; create the temp with `openSync(tmp, "wx", 0o600)` (or `writeFileSync(..., { flag: "wx", mode: 0o600 })`) using a random suffix, `writeSync`/`closeSync`, then `renameSync`. Never follow a pre-existing symlink at the temp path (EEXIST is acceptable — retry once with a new random suffix).
+   - `sanitizeConfig`: build the result with `Object.create(null)` and explicitly reject/`console.warn` the dangerous keys `__proto__`, `constructor`, `prototype` instead of assigning them.
+   - Add tests for both in `test/engine/config.test.ts`: a symlinked `.huginn` dir is refused; a pre-existing symlink at the temp path is not followed; `__proto__` in config JSON does not pollute the returned object's prototype.
+2. Create `src/agents/integrator.ts` with a **declarative registry**:
+   - `export type AgentTarget = "cursor" | "claude" | "opencode" | "windsurf" | "gemini" | "qwen" | "codex" | "agy" | "kimi" | "pi" | "commandcode" | "omp";`
+   - `export type McpFormat = "mcpServers" | "opencode" | "toml";`
+   - `export interface AgentSpec { id: AgentTarget; label: string; format: McpFormat; /** path templates with {project}/{home} placeholders */ mcpPaths: string[]; rulesFile: string; }`
+   - `export const AGENT_REGISTRY: Record<AgentTarget, AgentSpec>` with EXACTLY the rows in SPEC.md AC-15.2 (cursor/claude/opencode/windsurf/gemini/qwen/codex/agy/kimi/pi/commandcode/omp). `AGENT_TARGETS` = the registry keys.
+   - `export const MUNINN_RULES_START` / `MUNINN_RULES_END` markers.
+   - `export function resolveMcpPaths(target, opts: { projectPath: string; homeDir: string; opencodeConfigDir?: string; env?: Record<string,string|undefined> }): string[]` — expands `{project}`/`{home}` and applies `HUGINN_AGENT_<ID>_MCP_PATH` (colon-separated) override when set; `opencode` honors the injected opencode config dir.
+   - `export function registerMcpForTarget(target, opts): MCPRegistration[]` — for each resolved path, merge the `muninn` entry in the target's `format`:
+     - `mcpServers`: `{ mcpServers: { muninn: { command: "huginn", args: ["mcp","run","--project", projectPath] } } }`
+     - `opencode`: `{ mcp: { muninn: { type: "local", command: ["huginn","mcp","run","--project", projectPath], enabled: true } } }`
+     - `toml`: `[mcp_servers.muninn]` with `command = "huginn"` and `args = ["mcp","run","--project","<path>"]` (parse existing TOML structurally — do not string-append; preserve unrelated tables).
+     Atomic, idempotent, unrelated keys preserved; without `--force` an existing differing `muninn` entry is skipped (reported); malformed existing JSON/TOML throws a descriptive per-target error without writing.
+   - `export function writePortableMcpConfig(opts): { path: string; changed: boolean }` — always write a standard `mcpServers` file at `{home}/.huginn/mcp.json` (AC-15.3).
+   - `export function injectRulesForTarget(target, opts): { path: string; changed: boolean }` — read the target's rules file (under `projectPath` for project-scoped rules; the registry names one file per target), insert/replace only the marked block with directive text requiring `muninn_context` + `muninn_inspect_symbol` before designing changes and `muninn_verify_contract` before emitting final code.
+   - `export function listRegistry(): AgentSpec[]` for `--list`.
+   - `export function setup(opts: { agent: AgentTarget | "all"; projectPath: string; homeDir?: string; force?: boolean; opencodeConfigDir?: string; env?: Record<string,string|undefined> }): SetupReport` returning `{ registrations: MCPRegistration[]; rules: Array<{ target; path; changed }>; portable: { path; changed } }`.
+3. Create `src/commands/setup.ts`:
+   - `export async function handleSetupCommand(args)`: parse `--agent` (default `all`), `--force`, `--list`, `--project` (default cwd), `--home` (test override). Unknown agent → red error + usage + `process.exitCode = 1`. `--list` prints the registry table (id, label, mcp paths, rules file, format). Otherwise print per-target MCP paths and rules file with ✔/•/skipped markers plus the portable fallback and a summary.
+   - `export function printSetupUsage(): void`; keep a minimal `handleDoctorCommand` stub (Iteration 11 implements it).
+4. Wire `src/cli.ts` routing (already added in Iteration 9; keep `setup`/`doctor` in `KNOWN_COMMANDS` and usage).
+5. Add `test/commands/setup.test.ts` (vitest) with temp `projectPath` + `homeDir` + `opencodeConfigDir`: every registry target's files are created with the correct format/entry; TOML (codex) is parsed and preserved around the injected table; idempotency (second run `changed: false`, bytes identical); unrelated-key preservation; `--force`; multi-path targets (cursor/claude/agy add both paths); portable `mcp.json`; `HUGINN_AGENT_<ID>_MCP_PATH` override; rules block insertion + idempotent replacement; unknown agent exits non-zero.
+6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+
+## Iteration 11 — Diagnostic Command (`huginn doctor`)
+modules: src/commands/, src/cli.ts, test/commands/
+
+Implement REQ-16 (SPEC.md §5).
+1. Add to `src/commands/setup.ts` (or a new `src/commands/doctor.ts` with re-export from setup to keep CLI imports stable):
+   - `export interface DoctorCheck { id: string; label: string; status: "ok" | "warn" | "fail"; detail: string; critical: boolean; }`
+   - `export interface DoctorReport { checks: DoctorCheck[]; ok: boolean; }`
+   - `export function runDoctorChecks(opts: { projectPath: string; homeDir?: string; opencodeConfigDir?: string; env?: Record<string,string|undefined> }): DoctorReport` using `node:child_process` `spawnSync` for `git --version`, `opencode --version`, `bun --version`, `node --version` (tolerate absence → warn/fail appropriately per AC-16.2: git repo + runtime + Muninn DB are critical). Check `git rev-parse --is-inside-work-tree` in `projectPath`. Check which agent MCP config files register Muninn by reading and inspecting JSON (`registerMcpForTarget`-style path resolution — read-only). Check Muninn health by constructing `new MemoryService({ projectRoot: projectPath })`, calling `getStats()`, then `close?.()` inside try/finally.
+   - `export async function handleDoctorCommand(args): Promise<void>`: run checks, print colorized `✔`/`✖`/`⚠` lines with details, set `process.exitCode = report.ok ? 0 : 1`. Support `--project`, `--home`.
+2. Wire `src/cli.ts` routing to `handleDoctorCommand`; update `usage()`.
+3. Add tests to `test/commands/setup.test.ts` (or `test/commands/doctor.test.ts`): with a temporary initialized git repo and injected `homeDir`, assert `runDoctorChecks` returns an `ok` report whose git/runtime/Muninn checks are `ok`, and that a non-repo directory marks the git-repo check `fail`. Keep the Muninn DB inside the temp project so nothing touches the real `.huginn/` (or pass an explicit dbPath).
+4. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 12 — Git Worktree Sandbox Manager
+modules: src/engine/worktree.ts, test/engine/
+
+Implement REQ-17 AC-17.1–AC-17.5 (SPEC.md §5). Use the existing `git(projectPath, args)` helper from `src/engine/diff.ts` (it is dual-runtime Bun/Node safe) for all git calls.
+1. Create `src/engine/worktree.ts`:
+   - `export interface Sandbox { iteration: number; path: string; branch: string; projectRoot: string; baseCommit: string; }`
+   - `export function sandboxBranch(iteration: number): string` → `huginn/task-iter-<N>`; `export function sandboxPath(projectRoot: string, iteration: number): string` → `<root>/.huginn/worktrees/task-iter-<N>`.
+   - `export class WorktreeManager`:
+     - `createSandbox(projectRoot: string, iteration: number): Sandbox`: resolves HEAD via `headCommit`, throws if branch already exists (`git show-ref --verify --quiet refs/heads/<branch>` code 0) or the path already exists; `mkdirSync(dirname(path), { recursive: true })`; runs `git worktree add -b <branch> <path> HEAD`; on failure throws with stderr; then `linkSharedDeps(projectRoot, path)`.
+     - `linkSharedDeps(projectRoot, sandboxPath)`: for each of `node_modules`, `.env` present at root and absent at sandbox target, `symlinkSync(rootPath, sandboxTarget, "dir" | "file")` (mode depends on source type); catch and emit a warning, never throw.
+     - `promoteSandbox(sandbox): PromoteResult`: record active branch via `git rev-parse --abbrev-ref HEAD` in `projectRoot`; compute commits `git log --format=%H <baseCommit>..<branch>`; attempt `git merge --ff-only <branch>` in `projectRoot`; if non-zero fall back to `git cherry-pick <baseCommit>..<branch>`. `method = "ff" | "cherry-pick" | "none"` (none when there are zero commits). Finally remove worktree (`git worktree remove --force <path>`, tolerant) and delete branch (`git branch -D <branch>`, tolerant). Return `{ promoted, method, commits }`.
+     - `discardSandbox(sandbox): void`: `git worktree remove --force <path>` tolerant of missing path; `git branch -D <branch>` tolerant; never fails if already gone.
+     - `listSandboxes(): Sandbox[]`: parse `git worktree list --porcelain` and keep only entries under `<projectRoot>/.huginn/worktrees/`.
+     - `cleanupAll(): void`: discard every listed sandbox (used as a safety net).
+2. Add `test/engine/worktree.test.ts` (vitest): create a temp git repo (`git init`, commit a file), then exercise: create → assert worktree dir + branch exist and `node_modules`/`.env` symlink when present; make a commit inside the sandbox → `promoteSandbox` fast-forwards the primary branch and removes the worktree/branch; a second run with an internal conflicting commit uses cherry-pick or reports the conflict without corrupting the primary branch; `discardSandbox` leaves the primary working tree untouched; creating twice with the same iteration fails closed; `listSandboxes`/`cleanupAll` behave. Use `spawnSync`/the `git` helper for assertions and clean up temp dirs.
+3. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 13 — CycleEngine Sandbox Integration, Documentation & Final Quality Gate
+modules: src/engine/cycle.ts, src/engine/phases.ts, SPEC.md, ADR.md, DESIGN.md, README.md, test/
+
+Implement REQ-17 AC-17.6 and finish documentation.
+1. Integrate `WorktreeManager` into `src/engine/cycle.ts`:
+   - Construct a `WorktreeManager` (injectable for tests) when `cfg.sandbox` is true.
+   - In `runIteration`, before building the `PhaseContext`, `createSandbox(projectPath, iteration.index)` and set the context `projectPath`, `baseCommit`, and doc paths (`specPath`/`adrPath`/`planPath`) to the sandbox equivalents (docs are read from the sandbox). `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE` and every `FIX_*` phase must operate on the sandbox path (they all read `ctx.projectPath`).
+   - On iteration success, `promoteSandbox(sandbox)` during/after `COMMIT_ALL` and record the outcome to the event log; on abort or phase error, `discardSandbox(sandbox)` and never touch the primary tree.
+   - When `cfg.sandbox` is false, keep the current behavior byte-for-byte.
+   - Register a process-level cleanup so an unexpected exit attempts `cleanupAll()` best-effort.
+2. Ensure `src/engine/phases.ts` `commitAll`/`validateStep` operate correctly when `ctx.projectPath` is a sandbox path (they already key off `ctx.projectPath`; confirm no absolute assumption on the primary repo and adjust `dbPath` default if needed).
+3. Update docs to match the implemented reality:
+   - `SPEC.md`: already contains the Phase 3 section (REQ-14–17) — reconcile any final naming differences.
+   - `ADR.md`: ADR-19 is already present — keep as the source of truth.
+   - `DESIGN.md`: add a section describing the live-first entrypoint, config resolution, the integrator file matrix, the doctor checks, and the worktree sandbox lifecycle (create → execute → promote/discard) with a small diagram/table.
+   - `README.md`: document `huginn` defaulting to live, `huginn setup`, `huginn doctor`, the `.huginn/config.json` schema + env vars + defaults, and `--sandbox`/`--no-sandbox`.
+4. Final quality gate: `npm test` (`bun test && vitest run`) 100% green, `bun run typecheck` zero errors, `bun run build` succeeds.

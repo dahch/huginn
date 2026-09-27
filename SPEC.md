@@ -208,7 +208,59 @@ The verification contracts and AST symbol indexer must integrate seamlessly into
 
 ---
 
-## 5. Non-Functional Requirements
+## 5. Phase 3 — Live-First Entrypoint, Universal Agent Integrator & Git Worktree Sandboxing
+
+### REQ-14: Persistent Model Configuration & Live-First Default Entrypoint
+`huginn` invoked without a recognized subcommand must open the interactive `live` console by default, and model roles must resolve through a persistent configuration layer rather than mandatory flags.
+- **AC-14.1 (Config discovery)**: `loadUserConfig(projectPath)` in `src/config.ts` reads `.huginn/config.json` in the project root, falling back to `~/.huginn/config.json`. The schema is `{ thinker?: string; executor?: string; mode?: "auto" | "supervised" }`, validated at runtime. A missing file yields `{}`; malformed JSON is ignored with a warning (fail-open on reads, never throws to the CLI).
+- **AC-14.2 (Model resolution precedence)**: resolved in strict order — CLI flag (`--thinker` / `--executor`) → project `.huginn/config.json` → user `~/.huginn/config.json` → environment (`HUGINN_THINKER_MODEL` / `HUGINN_EXECUTOR_MODEL`) → documented defaults (`thinker` = `anthropic/claude-opus-4-5`, `executor` = `opencode/gpt-5.1-codex`). Resolution is a pure, exported function that accepts injectable sources so it is unit-testable without env mutation.
+- **AC-14.3 (Config persistence)**: `saveUserConfig(projectPath, config)` atomically writes `.huginn/config.json` (write temp file, `chmod 0o600`, `rename`), creating `.huginn/` with mode `0o700`. Unknown keys are preserved.
+- **AC-14.4 (Default routing)**: `main(argv)` routes to `runLive` when no known subcommand is present — including the case where the only positional token is a free-text idea (`huginn "crear módulo de pagos"`). Known subcommands (`run`, `plan`, `live`, `install`, `memory`, `mcp`, `check`, `setup`, `doctor`) keep their existing routing. `--help`/`-h` still print usage.
+- **AC-14.5 (Defaults for live)**: when `--project` is omitted, `live` defaults to `canonicalize(process.cwd())`; when `--thinker`/`--executor` are omitted they are resolved from REQ-14.2 instead of producing a hard error. If the resolved project is not a git repository, the CLI errors clearly.
+- **AC-14.6 (Sandbox flags)**: `--sandbox` / `--no-sandbox` are boolean flags consumed by `run` and `live` and stored in `RunConfig.sandbox` (default `true`).
+
+### REQ-15: Universal Agent Integrator (`huginn setup`)
+`huginn setup` must idempotently register the Muninn MCP server and inject agent directives into every supported agent, driven by a **declarative target registry** so new agents are a one-row addition.
+- **AC-15.1 (Targets)**: the target ids are `cursor`, `claude`, `opencode`, `windsurf`, `gemini`, `qwen`, `codex`, `agy`, `kimi`, `pi`, `commandcode`, `omp`, plus the aggregate `all`. An unknown `--agent` value prints usage and exits `1`. `huginn setup --list` prints the registry (id, label, config path(s), rules file, format) without writing anything.
+- **AC-15.2 (MCP registration registry)**: the server entry `muninn` (command `huginn mcp run --project <projectPath>`) is registered per target in the target's declared path(s), using the declared format:
+  | id | label | MCP config path(s) | format |
+  |---|---|---|---|
+  | `cursor` | Cursor | `<project>/.cursor/mcp.json`, `<home>/.cursor/mcp.json` | `mcpServers` |
+  | `claude` | Claude Code / Desktop | `<project>/.mcp.json`, `<home>/.claude.json`, `<home>/.claude/claude_desktop_config.json` | `mcpServers` |
+  | `opencode` | OpenCode | `<home>/.config/opencode/opencode.json` (honors `HUGINN_OPENCODE_CONFIG_DIR`) | `opencode` (`mcp` key) |
+  | `windsurf` | Windsurf | `<home>/.codeium/windsurf/mcp_config.json` | `mcpServers` |
+  | `gemini` | Gemini CLI | `<home>/.gemini/settings.json` | `mcpServers` |
+  | `qwen` | Qwen Code | `<home>/.qwen/settings.json` | `mcpServers` |
+  | `codex` | OpenAI Codex CLI | `<home>/.codex/config.toml` | `toml` (`[mcp_servers.muninn]`) |
+  | `agy` | Antigravity CLI (agy) | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` |
+  | `kimi` | Kimi Code CLI | `<home>/.kimi-code/mcp.json`, `<project>/.kimi/mcp.json` | `mcpServers` |
+  | `pi` | Pi coding agent | `<home>/.pi/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` |
+  | `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.commandcode/mcp.json` | `mcpServers` |
+  | `omp` | Oh My Pi | `<home>/.omp/mcp.json`, `<project>/.omp/mcp.json` | `mcpServers` |
+- **AC-15.3 (Portable fallback)**: `setup` always writes a standard `mcpServers` file at `<home>/.huginn/mcp.json` so any tool accepting a `--mcp-config-file`/ad-hoc JSON (e.g. Kimi, Pi) can be pointed at it, independent of the target registry.
+- **AC-15.4 (Idempotency & preservation)**: registration merges into existing config, preserves all unrelated keys and sibling servers, and re-running produces byte-identical output (no duplicate entries). `--force` overwrites the managed `muninn` entry if a conflicting one exists; without `--force` a differing existing `muninn` entry is left untouched and reported as skipped.
+- **AC-15.5 (Rules injection)**: injects a marked block delimited by `<!-- huginn:muninn-rules:start -->` / `<!-- huginn:muninn-rules:end -->` into the target's declared rules file — `CLAUDE.md` (claude), `.cursorrules` (cursor), `.windsurfrules` (windsurf), `GEMINI.md` (gemini), `QWEN.md` (qwen), and `AGENTS.md` (opencode, codex, agy, kimi, pi, commandcode, omp). The block must instruct the LLM to call `muninn_context` and `muninn_inspect_symbol` before designing changes, and `muninn_verify_contract` before emitting any final code. Re-running replaces only the marked block, leaving surrounding user content intact.
+- **AC-15.6 (File safety)**: missing parent directories are created (`0o755`); malformed existing JSON is reported as an error for that target without corrupting the file; writes are atomic and hardened against symlink swaps (temp created with the `wx` exclusive flag, never following a pre-existing symlink); TOML configs are parsed/merged structurally, not by naive string appends.
+- **AC-15.7 (Home & path resolution)**: home-dependent paths use an injectable `homeDir` (default `os.homedir()`); each target's paths are overridable via `HUGINN_AGENT_<ID>_MCP_PATH` (colon-separated) and `HUGINN_AGENT_RULES_PATH`, so a non-canonical or moved config is fixable without a code change; tests never touch the real user home.
+
+### REQ-16: Diagnostic Command (`huginn doctor`)
+`huginn doctor` must verify the environment Huginn depends on.
+- **AC-16.1 (Checks)**: reports on — git binary + current directory is a git repository; Bun runtime; Node runtime; `opencode` CLI on `PATH`; agent integration state (which of `.cursor/mcp.json`, `.claude.json`, `opencode.json`, `mcp_config.json` already register Muninn); and Muninn database health (open via `MemoryService` and read stats).
+- **AC-16.2 (Reporting)**: prints one colorized line per check with a `✔` / `✖` / `⚠` marker and a short detail. Exit code is `0` when all critical checks pass (git repo, runtime, Muninn DB) and `1` otherwise; missing optional integrations are warnings, not failures.
+- **AC-16.3 (Testability)**: `runDoctorChecks(options)` returns a structured `DoctorReport` (`{ checks: Array<{ id, label, status: "ok" | "warn" | "fail", detail }> }`) independent of console output, so it can be asserted in tests with injected `homeDir` / `projectPath`.
+
+### REQ-17: Git Worktree Sandbox Isolation
+The execution cycle must run each iteration in an isolated git worktree by default.
+- **AC-17.1 (WorktreeManager API)**: `src/engine/worktree.ts` exports `WorktreeManager` with `createSandbox(projectRoot, iteration): Sandbox`, `promoteSandbox(sandbox): PromoteResult`, `discardSandbox(sandbox): void`, `listSandboxes(): Sandbox[]`, and `cleanupAll(): void`. A `Sandbox` is `{ iteration: number; path: string; branch: string; projectRoot: string; baseCommit: string }`.
+- **AC-17.2 (Creation)**: `createSandbox` derives `branch = huginn/task-iter-<N>` and `path = <projectRoot>/.huginn/worktrees/task-iter-<N>`, then runs `git worktree add -b <branch> <path> HEAD`. It fails closed (throws) without mutating state when the branch or path already exists; `createSandbox` cleans up any stale entry first only when explicitly asked via `cleanupAll`.
+- **AC-17.3 (Dependency symlinks)**: if `node_modules` and/or `.env` exist at `projectRoot`, a symlink is created inside the sandbox pointing at the root copy, unless a real file/dir already exists there (never overwrite). Symlink failures are non-fatal warnings.
+- **AC-17.4 (Promotion)**: `promoteSandbox` fetches the sandbox tip, records the pre-promotion active branch, then integrates the sandbox commits into the user's active branch via `git merge --ff-only <branch>` when fast-forward is possible, otherwise `git cherry-pick <base>..<branch>`. It returns `{ promoted: boolean; method: "ff" | "cherry-pick" | "none"; commits: string[] }`. Afterwards (or on a no-op sandbox) it removes the worktree with `git worktree remove --force` and deletes the branch with `git branch -D`.
+- **AC-17.5 (Discard)**: `discardSandbox` removes the worktree (`git worktree remove --force`, tolerating an already-removed path) and deletes the ephemeral branch, never touching the user's primary working tree. It is idempotent.
+- **AC-17.6 (CycleEngine integration)**: `RunConfig.sandbox` (default `true`) gates the behavior. When enabled, `CycleEngine.runIteration` creates a sandbox and the phase context for `EXECUTE`, `VALIDATE_STEP`, `TEST_MODULE`, and all `FIX_*` phases uses the sandbox path (module inference, base commit, compiler contracts, and Muninn indexing all operate on the sandbox). `COMMIT_ALL` runs inside the sandbox and, on success, `promoteSandbox` integrates the commit into the primary branch. On abort or phase error the sandbox is discarded. When `--no-sandbox` is set, the previous in-place behavior is preserved exactly.
+
+---
+
+## 6. Non-Functional Requirements
 
 - **NFR-1 (Performance)**: FTS5 BM25 queries against 10,000 observations must resolve in under 10ms.
 - **NFR-2 (Reliability & Integrity)**: Database runs with SQLite Write-Ahead Logging (WAL), foreign key cascade enforcement, recursive triggers for FTS5 synchronization, a 5000ms busy timeout, and directory creation mode `0o700`.
