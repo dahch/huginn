@@ -1,10 +1,17 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
+import path from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { Iteration } from "../plan/types";
 import type { Models } from "./modelRouter";
 import { formatModel } from "./modelRouter";
 import { prompt, runCommand, type PromptResult } from "../server/client";
-import { git } from "./diff";
+import { git, pendingChanges, changedFilesSince } from "./diff";
+import {
+  verifyTypeScriptContracts,
+  formatDiagnosticsReport,
+} from "../contracts/compiler.js";
+import { indexFilesIntoMuninn } from "../muninn/indexer/ast-indexer.js";
+import { MemoryService } from "../muninn/service/memory-service.js";
 
 export interface PhaseContext {
   client: OpencodeClient;
@@ -18,6 +25,7 @@ export interface PhaseContext {
   modules: string[];
   baseCommit?: string;
   phaseTimeoutMs: number;
+  dbPath?: string;
 }
 
 function readOptional(path: string): string {
@@ -70,7 +78,108 @@ export async function execute(ctx: PhaseContext): Promise<PromptResult> {
   return prompt(ctx.client, ctx.sessionId, { text, agent: "build", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs });
 }
 
+const EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build"]);
+
+export function isIgnoredDirectory(dirName: string): boolean {
+  return EXCLUDED_SCAN_DIRS.has(dirName) || dirName.startsWith(".");
+}
+
+function scanDirectoryForSourceFiles(dir: string, fileSet: Set<string>): void {
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (isIgnoredDirectory(entry.name)) {
+          continue;
+        }
+        scanDirectoryForSourceFiles(path.join(dir, entry.name), fileSet);
+      } else if (entry.isFile()) {
+        if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(entry.name)) {
+          fileSet.add(path.join(dir, entry.name));
+        }
+      }
+    }
+  } catch {
+    // ignore read error
+  }
+}
+
+export function getIterationFiles(projectPath: string, modules: string[]): string[] {
+  const fileSet = new Set<string>();
+  for (const m of modules) {
+    const fullPath = path.resolve(projectPath, m);
+
+    // Path traversal containment for modules (REV-002)
+    const rel = path.relative(projectPath, fullPath);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      continue;
+    }
+
+    if (!existsSync(fullPath)) continue;
+    try {
+      const stat = statSync(fullPath);
+      if (stat.isFile()) {
+        if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(fullPath)) {
+          fileSet.add(fullPath);
+        }
+      } else if (stat.isDirectory()) {
+        // Exclude vendor & build directories in directory scan (REV-003)
+        if (fullPath !== projectPath && isIgnoredDirectory(path.basename(fullPath))) {
+          continue;
+        }
+        scanDirectoryForSourceFiles(fullPath, fileSet);
+      }
+    } catch {
+      // ignore stat/read error
+    }
+  }
+
+  // Also include any pending changes that are TypeScript / JavaScript (REV-001)
+  try {
+    const pending = pendingChanges(projectPath);
+    for (const p of pending) {
+      if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(p)) {
+        const fullPath = path.resolve(projectPath, p);
+        const rel = path.relative(projectPath, fullPath);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) {
+          continue;
+        }
+        // Only include if file actually exists on disk (avoid false-positives on deleted/renamed files)
+        if (existsSync(fullPath)) {
+          fileSet.add(fullPath);
+        }
+      }
+    }
+  } catch {
+    // ignore git error
+  }
+
+  return Array.from(fileSet);
+}
+
 export async function validateStep(ctx: PhaseContext): Promise<PromptResult> {
+  // 1. Contract verification: Check for TypeScript compiler contract violations
+  try {
+    const iterationFiles = getIterationFiles(ctx.projectPath, ctx.modules);
+    if (iterationFiles.length > 0) {
+      const contractResult = verifyTypeScriptContracts(ctx.projectPath, iterationFiles);
+      if (!contractResult.valid && contractResult.errorsCount > 0) {
+        const report = formatDiagnosticsReport(contractResult);
+        return {
+          messageId: "contract-compiler-failure",
+          text: report,
+          raw: {
+            info: { id: "contract-compiler-failure" },
+            parts: [{ type: "text", text: report }],
+          },
+        };
+      }
+    }
+  } catch {
+    // Contract verification failure should not crash harness; fallback to standard validate-step command
+  }
+
+  // 2. Standard validation slash command
   const args = [...ctx.modules, ctx.specPath].join(" ");
   return runCommand(ctx.client, ctx.sessionId, {
     command: "validate-step",
@@ -117,12 +226,61 @@ export async function docSync(ctx: PhaseContext): Promise<PromptResult> {
 }
 
 export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommand(ctx.client, ctx.sessionId, {
+  // Capture modified files before running commit-all, because commit-all will clean the working tree (REV-008)
+  let preModified: string[] = [];
+  try {
+    preModified = ctx.baseCommit
+      ? changedFilesSince(ctx.projectPath, ctx.baseCommit)
+      : pendingChanges(ctx.projectPath);
+  } catch {
+    // ignore git error
+  }
+
+  const result = await runCommand(ctx.client, ctx.sessionId, {
     command: "commit-all",
     arguments: "",
     model: formatModel(ctx.models.executor),
     timeoutMs: ctx.phaseTimeoutMs,
   });
+
+  // Post-execution: Automatically index modified files into Muninn AST symbol graph
+  try {
+    let postModified: string[] = [];
+    try {
+      if (ctx.baseCommit) {
+        postModified = changedFilesSince(ctx.projectPath, ctx.baseCommit);
+      }
+    } catch {
+      // ignore git error
+    }
+
+    const modifiedSet = new Set([...preModified, ...postModified]);
+    const sourceFiles = Array.from(modifiedSet).filter(
+      (f) =>
+        /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f) &&
+        existsSync(path.resolve(ctx.projectPath, f))
+    );
+
+    if (sourceFiles.length > 0) {
+      const resolvedDbPath =
+        ctx.dbPath ?? path.join(ctx.projectPath, ".huginn", "muninn.db");
+      const memoryService = new MemoryService({
+        projectRoot: ctx.projectPath,
+        dbPath: resolvedDbPath,
+      });
+      try {
+        indexFilesIntoMuninn(memoryService, sourceFiles, {
+          projectRoot: ctx.projectPath,
+        });
+      } finally {
+        memoryService.close?.();
+      }
+    }
+  } catch {
+    // Best-effort Muninn indexing: non-blocking
+  }
+
+  return result;
 }
 
 export async function fixFindings(
