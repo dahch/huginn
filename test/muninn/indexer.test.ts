@@ -643,6 +643,49 @@ export function getValue(): string { return "val"; }
       );
     });
 
+    it("huginn check displays non-error diagnostics on warnings when contracts are valid (REV-006)", async () => {
+      const compilerModule = await import("../../src/contracts/compiler.js");
+      const spy = vi
+        .spyOn(compilerModule, "verifyTypeScriptContracts")
+        .mockReturnValue({
+          valid: true,
+          errorsCount: 0,
+          diagnostics: [
+            {
+              filePath: "warn.ts",
+              line: 5,
+              character: 10,
+              code: "TS1005",
+              category: "warning",
+              message: "Unused variable",
+              snippet: "const unused = 1;",
+            },
+          ],
+        });
+
+      await handleCheckCommand(["warn.ts"], { "--project": tempDir });
+      expect(process.exitCode).toBe(0);
+      const logOutput = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(logOutput).toContain("TypeScript contracts verified");
+      expect(logOutput).toContain("Diagnostics:");
+      expect(logOutput).toContain("TS1005");
+      expect(logOutput).toContain("WARNING: Unused variable");
+      expect(logOutput).toContain("const unused = 1;");
+
+      spy.mockRestore();
+    });
+
+    it("huginn check displays check usage when called with --help or -h", async () => {
+      for (const helpFlag of ["--help", "-h"]) {
+        logSpy.mockClear();
+        await handleCheckCommand([], { [helpFlag]: true });
+        const logOutput = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+        expect(logOutput).toContain(
+          "huginn check — Static TypeScript execution contract verification"
+        );
+      }
+    });
+
     it("huginn memory index parses and indexes files via CLI handler", async () => {
       const file = path.join(tempDir, "component.ts");
       fs.writeFileSync(

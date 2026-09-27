@@ -30,6 +30,7 @@ import {
   type TemplateKind,
 } from "./setup/install";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
+import { handleCheckCommand } from "./commands/check";
 
 export function usage(): string {
   return `huginn — the raven that thinks, builds, and remembers.
@@ -43,6 +44,8 @@ Usage:
   huginn memory init [--db <path>] [--project <path>]
   huginn memory search <query> [--category <cat>] [--limit <n>] [--project <path>]
   huginn memory sync [--import] [--file <path>] [--project <path>]
+  huginn memory index [files...] [--project <path>] [--db <path>]
+  huginn check [files...] [--project <path>]
   huginn mcp run [--db <path>] [--project <path>]
 
 Commands:
@@ -51,9 +54,10 @@ Commands:
   live    interactive refinement + autonomous execution: chat-refine the idea
           (or extend an existing project), draft/update spec.md/adr.md/plan.md,
           approve, then run the build cycles in the same dashboard
+  check   verify TypeScript execution contracts and pre-emit diagnostics
   install install the opencode subagents and slash commands huginn needs into
           ~/.config/opencode (agents/ and commands/)
-  memory  query and manage persistent codebase memory (init, search, sync)
+  memory  query and manage persistent codebase memory (init, search, sync, index)
   mcp     start the Muninn MCP server for agent memory integration (run)
 
 Required (run):
@@ -126,7 +130,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg.startsWith("--")) {
+    if (arg.startsWith("-") && arg !== "-") {
       const eq = arg.indexOf("=");
       let key = arg;
       let value: string | boolean = true;
@@ -135,7 +139,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
         value = arg.slice(eq + 1);
       } else if (!BOOLEAN_FLAGS.has(key)) {
         const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith("--")) {
+        if (
+          next !== undefined &&
+          (!next.startsWith("-") || /^-\d+(\.\d+)?$/.test(next))
+        ) {
           value = next;
           i++;
         }
@@ -191,7 +198,13 @@ async function getFreePort(): Promise<number> {
 export async function main(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const command = args._command ?? "run";
-  if (command === "help" || command === "--help" || command === "-h") {
+  if (
+    command === "help" ||
+    command === "--help" ||
+    command === "-h" ||
+    ((command === "run" || args._command === undefined) &&
+      (args["--help"] || args["-h"]))
+  ) {
     printBanner({});
     console.log(usage());
     return;
@@ -230,6 +243,20 @@ export async function main(argv: string[]): Promise<void> {
         : (typeof args._positional === "string" ? args._positional : undefined);
     await handleMcpCommand(
       subcommand,
+      args as Record<string, string | boolean | undefined>
+    );
+    return;
+  }
+  if (command === "check") {
+    const positionals = (args._positionals as string[] | undefined) ?? [];
+    const files =
+      positionals.length > 0
+        ? positionals
+        : typeof args._positional === "string" && args._positional !== "check"
+          ? [args._positional]
+          : [];
+    await handleCheckCommand(
+      files,
       args as Record<string, string | boolean | undefined>
     );
     return;
@@ -392,6 +419,11 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 async function runPlan(args: ParsedArgs): Promise<void> {
+  if (args["--help"] || args["-h"]) {
+    printBanner({});
+    console.log(usage());
+    return;
+  }
   const projectPath = canonicalize(
     typeof args["--project"] === "string" ? args["--project"] : ""
   );

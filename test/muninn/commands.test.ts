@@ -63,6 +63,24 @@ describe("Muninn CLI Commands & Integration", () => {
       expect(parsed._positionals).toEqual(["sync", "backup.jsonl"]);
       expect(parsed["--import"]).toBe(true);
     });
+
+    it("recognizes single-dash flags like -h as boolean flags and does not add them to positionals (REV-001)", () => {
+      const parsed1 = parseArgs(["-h"]);
+      expect(parsed1["-h"]).toBe(true);
+      expect(parsed1._command).toBeUndefined();
+      expect(parsed1._positionals).toEqual([]);
+
+      const parsed2 = parseArgs(["memory", "init", "-h"]);
+      expect(parsed2._command).toBe("memory");
+      expect(parsed2._positional).toBe("init");
+      expect(parsed2._positionals).toEqual(["init"]);
+      expect(parsed2["-h"]).toBe(true);
+
+      const parsed3 = parseArgs(["check", "src/foo.ts", "-h"]);
+      expect(parsed3._command).toBe("check");
+      expect(parsed3._positionals).toEqual(["src/foo.ts"]);
+      expect(parsed3["-h"]).toBe(true);
+    });
   });
 
   describe("usage documentation", () => {
@@ -755,6 +773,17 @@ describe("Muninn CLI Commands & Integration", () => {
       const logOutput = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logOutput).toContain("huginn memory init");
     });
+
+    it("displays memory usage and does not execute subcommand when --help or -h is passed in args (REV-002)", async () => {
+      for (const helpFlag of ["--help", "-h"]) {
+        logSpy.mockClear();
+        const nonExistentDb = path.join(tempDir, `no-init-${helpFlag}.db`);
+        await handleMemoryCommand("init", { [helpFlag]: true, "--db": nonExistentDb, "--project": tempDir });
+        expect(fs.existsSync(nonExistentDb)).toBe(false);
+        const logOutput = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+        expect(logOutput).toContain("huginn memory init");
+      }
+    });
   });
 
   describe("handleMcpCommand", () => {
@@ -772,6 +801,19 @@ describe("Muninn CLI Commands & Integration", () => {
       await handleMcpCommand(undefined, {});
       const logOutput = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logOutput).toContain("huginn mcp run");
+    });
+
+    it("displays mcp usage and does not run server when --help or -h is passed in args (REV-002)", async () => {
+      const startSpy = vi.spyOn(mcpServerModule, "startMcpServer");
+      for (const helpFlag of ["--help", "-h"]) {
+        logSpy.mockClear();
+        startSpy.mockClear();
+        await handleMcpCommand("run", { [helpFlag]: true });
+        expect(startSpy).not.toHaveBeenCalled();
+        const logOutput = logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+        expect(logOutput).toContain("huginn mcp run");
+      }
+      startSpy.mockRestore();
     });
 
     it("printMcpUsage outputs mcp usage directly", () => {

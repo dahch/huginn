@@ -1,7 +1,56 @@
+import fs from "node:fs";
 import path from "node:path";
 import chalk from "chalk";
 import { MemoryService } from "../muninn/service/memory-service.js";
 import { startMcpServer } from "../muninn/mcp/server.js";
+import { indexFilesIntoMuninn } from "../muninn/indexer/ast-indexer.js";
+
+const IGNORED_INDEX_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".harness",
+  ".huginn",
+  "dist",
+  "build",
+  ".cache",
+]);
+
+const SOURCE_FILE_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+]);
+
+export function findSourceFiles(dir: string): string[] {
+  const results: string[] = [];
+  function walk(current: string) {
+    if (!fs.existsSync(current)) return;
+    try {
+      const entries = fs.readdirSync(current, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (!IGNORED_INDEX_DIRS.has(entry.name)) {
+            walk(path.join(current, entry.name));
+          }
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (SOURCE_FILE_EXTENSIONS.has(ext)) {
+            results.push(path.join(current, entry.name));
+          }
+        }
+      }
+    } catch {
+      // ignore read error
+    }
+  }
+  walk(dir);
+  return results;
+}
 
 export function printMemoryUsage(): void {
   console.log(`huginn memory — Persistent codebase memory across spec-build cycles
@@ -10,11 +59,13 @@ Usage:
   huginn memory init [--db <path>] [--project <path>]
   huginn memory search <query> [--category <cat>] [--limit <n>] [--project <path>]
   huginn memory sync [--import] [--file <path>] [--project <path>]
+  huginn memory index [files...] [--project <path>] [--db <path>]
 
 Subcommands:
   init     Initialize SQLite database and verify schema
   search   Search observations with BM25 relevance ranking
   sync     Export observations to disk (.jsonl) or import with --import
+  index    Index AST symbols and dependencies into Muninn memory
 `);
 }
 
@@ -44,6 +95,8 @@ export async function handleMemoryCommand(
 
   if (
     !subcommand ||
+    args["--help"] ||
+    args["-h"] ||
     subcommand === "help" ||
     subcommand === "--help" ||
     subcommand === "-h"
@@ -162,6 +215,34 @@ export async function handleMemoryCommand(
     return;
   }
 
+  if (subcommand === "index") {
+    const rawFiles =
+      positionals && positionals.length > 0
+        ? positionals
+        : typeof args._positional === "string" && args._positional !== "index"
+          ? [args._positional]
+          : [];
+
+    const service = new MemoryService({ dbPath, projectRoot });
+    try {
+      const root = service.currentProject.root_path || process.cwd();
+      const targetFiles =
+        rawFiles.length > 0 ? rawFiles : findSourceFiles(root);
+
+      const result = indexFilesIntoMuninn(service, targetFiles, {
+        projectRoot: root,
+      });
+      console.log(
+        chalk.green(
+          `✔ Indexed ${result.indexedFiles} file(s) (${result.indexedSymbols} symbol(s), ${result.indexedDependencies} dependency link(s)) into Muninn memory.`
+        )
+      );
+    } finally {
+      service.close?.();
+    }
+    return;
+  }
+
   console.error(chalk.red(`Unknown subcommand: ${subcommand}`));
   printMemoryUsage();
   process.exitCode = 1;
@@ -181,6 +262,8 @@ export async function handleMcpCommand(
 
   if (
     !subcommand ||
+    args["--help"] ||
+    args["-h"] ||
     subcommand === "help" ||
     subcommand === "--help" ||
     subcommand === "-h"

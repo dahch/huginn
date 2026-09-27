@@ -24,6 +24,8 @@ import {
   MuninnContextSchema,
   MuninnLinkSymbolSchema,
   MuninnStatsSchema,
+  MuninnInspectSymbolSchema,
+  MuninnVerifyContractSchema,
   CategorySchema,
   SymbolSchema,
   type IMemoryService,
@@ -78,11 +80,11 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
   });
 
   describe("Metadata & Tool Listing (AC-8.1 - AC-8.6)", () => {
-    it("lists all 5 Muninn tools with complete jsonSchema definitions", async () => {
+    it("lists all Muninn tools with complete jsonSchema definitions", async () => {
       const response = await client.listTools();
       expect(response).toBeDefined();
       expect(response.tools).toBeInstanceOf(Array);
-      expect(response.tools).toHaveLength(5);
+      expect(response.tools).toHaveLength(7);
 
       const toolNames = response.tools.map((t) => t.name);
       expect(toolNames).toContain("muninn_save");
@@ -90,6 +92,8 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
       expect(toolNames).toContain("muninn_context");
       expect(toolNames).toContain("muninn_link_symbol");
       expect(toolNames).toContain("muninn_stats");
+      expect(toolNames).toContain("muninn_inspect_symbol");
+      expect(toolNames).toContain("muninn_verify_contract");
 
       // Verify static exports match
       expect(TOOL_NAMES).toEqual([
@@ -98,8 +102,10 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
         "muninn_context",
         "muninn_link_symbol",
         "muninn_stats",
+        "muninn_inspect_symbol",
+        "muninn_verify_contract",
       ]);
-      expect(MUNINN_TOOLS).toHaveLength(5);
+      expect(MUNINN_TOOLS).toHaveLength(7);
     });
 
     it("verifies tool schemas have valid property structures and descriptions", async () => {
@@ -144,6 +150,25 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
       const statsTool = response.tools.find((t) => t.name === "muninn_stats")!;
       expect(statsTool).toBeDefined();
       expect(statsTool.inputSchema.properties).toHaveProperty("allProjects");
+
+      const inspectTool = response.tools.find(
+        (t) => t.name === "muninn_inspect_symbol"
+      )!;
+      expect(inspectTool).toBeDefined();
+      expect(inspectTool.description).toBeTruthy();
+      expect(inspectTool.inputSchema.properties).toHaveProperty("symbol");
+      expect(inspectTool.inputSchema.properties).toHaveProperty("projectId");
+      expect(inspectTool.inputSchema.properties).toHaveProperty("project_id");
+      expect(inspectTool.inputSchema.required).toContain("symbol");
+
+      const verifyTool = response.tools.find(
+        (t) => t.name === "muninn_verify_contract"
+      )!;
+      expect(verifyTool).toBeDefined();
+      expect(verifyTool.description).toBeTruthy();
+      expect(verifyTool.inputSchema.properties).toHaveProperty("files");
+      expect(verifyTool.inputSchema.properties).toHaveProperty("projectRoot");
+      expect(verifyTool.inputSchema.properties).toHaveProperty("project_root");
     });
   });
 
@@ -540,6 +565,253 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
       expect(callResult2.isError).toBeFalsy();
       const stats2 = JSON.parse(callResult2.content[0].text);
       expect(stats2).toHaveProperty("projects");
+    });
+  });
+
+  describe("muninn_inspect_symbol Execution (AC-8.8, REV-003)", () => {
+    beforeEach(() => {
+      service.saveObservation({
+        category: "architecture",
+        title: "Symbol Inspection Architecture",
+        content: "Detailed description of the symbol inspection subsystem.",
+        topicKey: "symbols",
+        symbols: ["src/engine/runner.ts::executePipeline"],
+      });
+    });
+
+    it("inspects existing code symbol and returns definition and linked observations", async () => {
+      const callResult = (await client.callTool({
+        name: "muninn_inspect_symbol",
+        arguments: {
+          symbol: "src/engine/runner.ts::executePipeline",
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      expect(callResult.content).toHaveLength(1);
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.found).toBe(true);
+      expect(data.entity).toBeDefined();
+      expect(data.entity.identifier).toBe("src/engine/runner.ts::executePipeline");
+      expect(data.observations).toHaveLength(1);
+      expect(data.observations[0].title).toBe("Symbol Inspection Architecture");
+    });
+
+    it("supports snake_case project_id fallback and trims whitespace", async () => {
+      const callResult = (await client.callTool({
+        name: "muninn_inspect_symbol",
+        arguments: {
+          symbol: "src/engine/runner.ts::executePipeline",
+          project_id: `  ${service.currentProject.id}  `,
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.found).toBe(true);
+    });
+
+    it("returns found: false when symbol does not exist in entity index", async () => {
+      const callResult = (await client.callTool({
+        name: "muninn_inspect_symbol",
+        arguments: {
+          symbol: "nonexistent_symbol_identifier",
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.found).toBe(false);
+      expect(data.symbol).toBe("nonexistent_symbol_identifier");
+      expect(data.message).toContain("not found in Muninn entity index");
+    });
+
+    it("returns isError: true when symbol is missing or empty or exceeds bounds", async () => {
+      const missingRes = (await client.callTool({
+        name: "muninn_inspect_symbol",
+        arguments: {},
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+      expect(missingRes.isError).toBe(true);
+      expect(missingRes.content[0].text).toContain("Validation error");
+      expect(missingRes.content[0].text).toContain("symbol");
+
+      const emptyRes = (await client.callTool({
+        name: "muninn_inspect_symbol",
+        arguments: { symbol: "   " },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+      expect(emptyRes.isError).toBe(true);
+      expect(emptyRes.content[0].text).toContain("Validation error");
+
+      const tooLongRes = (await client.callTool({
+        name: "muninn_inspect_symbol",
+        arguments: { symbol: "x".repeat(2001) },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+      expect(tooLongRes.isError).toBe(true);
+      expect(tooLongRes.content[0].text).toContain("Validation error");
+    });
+  });
+
+  describe("muninn_verify_contract Execution (AC-8.9, SEC-001, REV-003, REV-005)", () => {
+    it("verifies clean TypeScript contracts with files array and projectRoot", async () => {
+      fs.writeFileSync(
+        path.join(tempDir, "clean.ts"),
+        "export const meaningOfLife: number = 42;\n"
+      );
+
+      const callResult = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          files: ["clean.ts"],
+          projectRoot: tempDir,
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.valid).toBe(true);
+      expect(data.errorsCount).toBe(0);
+      expect(data.diagnostics).toEqual([]);
+    });
+
+    it("accepts single string files argument and normalizes to array (REV-005, SEC-002)", async () => {
+      fs.writeFileSync(
+        path.join(tempDir, "single.ts"),
+        "export const validSingle: string = 'ok';\n"
+      );
+
+      const callResult = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          files: "single.ts",
+          projectRoot: tempDir,
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.valid).toBe(true);
+      expect(data.errorsCount).toBe(0);
+    });
+
+    it("supports file alias via normalizeArgs", async () => {
+      fs.writeFileSync(
+        path.join(tempDir, "alias.ts"),
+        "export const aliasConst: boolean = true;\n"
+      );
+
+      const callResult = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          file: "alias.ts",
+          projectRoot: tempDir,
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.valid).toBe(true);
+    });
+
+    it("supports snake_case project_root alias and trims whitespace", async () => {
+      fs.writeFileSync(
+        path.join(tempDir, "snake.ts"),
+        "export const snakeVal: number = 10;\n"
+      );
+
+      const callResult = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          files: ["snake.ts"],
+          project_root: `  ${tempDir}  `,
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.valid).toBe(true);
+    });
+
+    it("detects TypeScript type errors and returns diagnostics and visual snippets", async () => {
+      fs.writeFileSync(
+        path.join(tempDir, "type_mismatch.ts"),
+        "export const num: number = 'not a number';\n"
+      );
+
+      const callResult = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          files: ["type_mismatch.ts"],
+          projectRoot: tempDir,
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.valid).toBe(false);
+      expect(data.errorsCount).toBeGreaterThanOrEqual(1);
+      expect(data.diagnostics.length).toBeGreaterThanOrEqual(1);
+      expect(data.diagnostics[0].message).toContain(
+        "Type 'string' is not assignable to type 'number'"
+      );
+      expect(data.diagnostics[0].snippet).toBeDefined();
+    });
+
+    it("rejects directory traversal escape in projectRoot (SEC-001)", async () => {
+      const escapeResult = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          projectRoot: "../../../escaped_dir",
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(escapeResult.isError).toBe(true);
+      expect(escapeResult.content[0].text).toContain("outside permitted project root");
+
+      const absEscape = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          projectRoot: path.resolve(tempDir, ".."),
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(absEscape.isError).toBe(true);
+      expect(absEscape.content[0].text).toContain("outside permitted project root");
+    });
+
+    it("handles empty projectRoot and whitespace cleanly without escape errors", async () => {
+      fs.writeFileSync(
+        path.join(tempDir, "default_root.ts"),
+        "export const defaultRootConst = true;\n"
+      );
+
+      const callResult = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: {
+          files: ["default_root.ts"],
+          projectRoot: "   ",
+        },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+      expect(callResult.isError).toBeFalsy();
+      const data = JSON.parse(callResult.content[0].text);
+      expect(data.valid).toBe(true);
+    });
+
+    it("returns isError: true when files exceeds 500 items or file string exceeds 1000 characters", async () => {
+      const tooMany = Array.from({ length: 501 }, (_, i) => `file${i}.ts`);
+      const res1 = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: { files: tooMany },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+      expect(res1.isError).toBe(true);
+      expect(res1.content[0].text).toContain("Validation error");
+
+      const res2 = (await client.callTool({
+        name: "muninn_verify_contract",
+        arguments: { files: "a".repeat(1001) },
+      })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
+      expect(res2.isError).toBe(true);
+      expect(res2.content[0].text).toContain("Validation error");
     });
   });
 
@@ -1154,7 +1426,7 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
         expect(res.transport).toBeInstanceOf(StdioServerTransport);
         expect(res.service).toBeInstanceOf(MemoryService);
 
-        res.service.close(true);
+        res.service.close?.(true);
         await res.server.close();
       } finally {
         connectSpy.mockRestore();
@@ -1189,7 +1461,7 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
         expect(res.transport).toBeInstanceOf(StdioServerTransport);
         expect(res.service).toBeInstanceOf(MemoryService);
 
-        res.service.close(true);
+        res.service.close?.(true);
         await res.server.close();
       } finally {
         connectSpy.mockRestore();
@@ -1255,15 +1527,16 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
         currentProject: {
           id: "mock-proj",
           name: "Mock Project",
+          git_remote: null,
           root_path: "/mock/path",
           created_at: "2026-01-01",
-          updated_at: "2026-01-01",
         },
         db: {} as any,
         saveObservation: vi.fn(),
         search: vi.fn().mockReturnValue([]),
         getContext: vi.fn().mockReturnValue([]),
         linkSymbol: vi.fn(),
+        inspectSymbol: vi.fn().mockReturnValue(null),
         getStats: vi.fn().mockReturnValue({ projects: 1, observations: 0, entities: 0, links: 0 }),
         syncToDisk: vi.fn(),
         importFromDisk: vi.fn(),
@@ -1286,6 +1559,8 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
         "muninn_context",
         "muninn_link_symbol",
         "muninn_stats",
+        "muninn_inspect_symbol",
+        "muninn_verify_contract",
       ]);
 
       for (const [key, toolDef] of Object.entries(TOOL_REGISTRY)) {
@@ -1326,6 +1601,23 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
       })) as any;
       expect(statsRes).toHaveProperty("observations");
       expect(statsRes.observations).toBeGreaterThanOrEqual(1);
+
+      const inspectRes = (await TOOL_REGISTRY.muninn_inspect_symbol.handler(
+        service,
+        {
+          symbol: "src/registry.ts",
+        }
+      )) as any;
+      expect(inspectRes).toBeDefined();
+
+      const verifyRes = (await TOOL_REGISTRY.muninn_verify_contract.handler(
+        service,
+        {
+          files: [],
+          projectRoot: tempDir,
+        }
+      )) as any;
+      expect(verifyRes).toHaveProperty("valid");
     });
   });
 
@@ -1370,6 +1662,8 @@ describe("Muninn MCP Server (Model Context Protocol)", () => {
       expect(mcpIndex.MuninnContextSchema).toBe(MuninnContextSchema);
       expect(mcpIndex.MuninnLinkSymbolSchema).toBe(MuninnLinkSymbolSchema);
       expect(mcpIndex.MuninnStatsSchema).toBe(MuninnStatsSchema);
+      expect(mcpIndex.MuninnInspectSymbolSchema).toBe(MuninnInspectSymbolSchema);
+      expect(mcpIndex.MuninnVerifyContractSchema).toBe(MuninnVerifyContractSchema);
       expect(mcpIndex.CategorySchema).toBe(CategorySchema);
       expect(mcpIndex.SymbolSchema).toBe(SymbolSchema);
       expect(mcpIndex.TOOL_REGISTRY).toBe(TOOL_REGISTRY);

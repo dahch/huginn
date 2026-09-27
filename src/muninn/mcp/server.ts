@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -17,6 +18,7 @@ import {
   type ObservationCategory,
   type SymbolInput,
 } from "../service/index.js";
+import { verifyTypeScriptContracts } from "../../contracts/compiler.js";
 
 export { type IMemoryService };
 
@@ -170,6 +172,56 @@ export const MuninnStatsSchema = z.object({
 export type MuninnStatsInput = z.infer<typeof MuninnStatsSchema>;
 
 /**
+ * Zod schema for muninn_inspect_symbol tool arguments.
+ */
+export const MuninnInspectSymbolSchema = z.object({
+  symbol: z
+    .string()
+    .trim()
+    .min(1, "Symbol is required and cannot be empty")
+    .max(2000, "Symbol cannot exceed 2000 characters")
+    .describe("Symbol identifier or name (e.g. 'src/app.ts::run' or 'run')"),
+  projectId: z.string().trim().nullish().describe("Optional project ID filter"),
+  project_id: z
+    .string()
+    .trim()
+    .nullish()
+    .describe("Optional project ID filter (snake_case)"),
+});
+
+export type MuninnInspectSymbolInput = z.infer<
+  typeof MuninnInspectSymbolSchema
+>;
+
+/**
+ * Zod schema for muninn_verify_contract tool arguments.
+ */
+export const MuninnVerifyContractSchema = z.object({
+  files: z
+    .union([
+      z.string().trim().min(1).max(1000),
+      z.array(z.string().trim().min(1).max(1000)).max(500),
+    ])
+    .transform((val) => (Array.isArray(val) ? val : [val]))
+    .nullish()
+    .describe("Optional array of file paths or single file path to verify contracts for"),
+  projectRoot: z
+    .string()
+    .trim()
+    .nullish()
+    .describe("Optional project root directory"),
+  project_root: z
+    .string()
+    .trim()
+    .nullish()
+    .describe("Optional project root directory (snake_case)"),
+});
+
+export type MuninnVerifyContractInput = z.infer<
+  typeof MuninnVerifyContractSchema
+>;
+
+/**
  * Helper to format Zod validation errors into a human-readable string.
  */
 export function formatZodErrors(error: z.ZodError): string {
@@ -240,6 +292,53 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
         ? service.getStats()
         : service.getStats(service.currentProject.id),
   },
+  muninn_inspect_symbol: {
+    name: "muninn_inspect_symbol",
+    description:
+      "Inspect a code entity/symbol in Muninn memory, returning its definition, file location, dependencies (imports, extends, calls), and linked observations.",
+    schema: MuninnInspectSymbolSchema,
+    handler: (service, input) => {
+      const projectId =
+        input.projectId?.trim() || input.project_id?.trim() || undefined;
+      const res = service.inspectSymbol(input.symbol, projectId);
+      if (!res) {
+        return {
+          found: false,
+          symbol: input.symbol,
+          message: `Symbol "${input.symbol}" not found in Muninn entity index`,
+        };
+      }
+      return {
+        found: true,
+        ...res,
+      };
+    },
+  },
+  muninn_verify_contract: {
+    name: "muninn_verify_contract",
+    description:
+      "Verify TypeScript compilation execution contracts for project files, returning diagnostics, exact line/character positions, and visual snippets.",
+    schema: MuninnVerifyContractSchema,
+    handler: (service, input) => {
+      const baseDir = path.resolve(
+        service.currentProject?.root_path ?? process.cwd()
+      );
+      const rawRoot =
+        input.projectRoot?.trim() || input.project_root?.trim() || undefined;
+      let targetRoot = baseDir;
+      if (rawRoot) {
+        const resolved = path.resolve(baseDir, rawRoot);
+        const rel = path.relative(baseDir, resolved);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) {
+          throw new Error(
+            `Access denied: projectRoot "${rawRoot}" is outside permitted project root "${baseDir}"`
+          );
+        }
+        targetRoot = resolved;
+      }
+      return verifyTypeScriptContracts(targetRoot, input.files ?? undefined);
+    },
+  },
 };
 
 /**
@@ -249,7 +348,9 @@ export const MUNINN_TOOLS: Tool[] = Object.values(TOOL_REGISTRY).map(
   (tool) => ({
     name: tool.name,
     description: tool.description,
-    inputSchema: z.toJSONSchema(tool.schema) as Tool["inputSchema"],
+    inputSchema: z.toJSONSchema(tool.schema, {
+      unrepresentable: "any",
+    }) as Tool["inputSchema"],
   })
 );
 
@@ -259,6 +360,8 @@ export const TOOL_NAMES = [
   "muninn_context",
   "muninn_link_symbol",
   "muninn_stats",
+  "muninn_inspect_symbol",
+  "muninn_verify_contract",
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -302,6 +405,21 @@ export function normalizeArgs(
     normalized.allProjects === undefined
   ) {
     normalized.allProjects = normalized.all_projects;
+  }
+  if (
+    normalized.project_id !== undefined &&
+    normalized.projectId === undefined
+  ) {
+    normalized.projectId = normalized.project_id;
+  }
+  if (
+    normalized.project_root !== undefined &&
+    normalized.projectRoot === undefined
+  ) {
+    normalized.projectRoot = normalized.project_root;
+  }
+  if (normalized.file !== undefined && normalized.files === undefined) {
+    normalized.files = normalized.file;
   }
   return normalized;
 }
