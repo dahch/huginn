@@ -12,6 +12,7 @@ rationalized in [`ADR.md`](./ADR.md).
   - `@opencode-ai/sdk` — typed HTTP client for the opencode server.
   - `@modelcontextprotocol/sdk` — Model Context Protocol SDK for agent tooling.
   - `better-sqlite3` — embedded SQLite database driver with WAL mode and FTS5 for the Muninn memory engine (`src/muninn/db/client.ts`).
+  - `typescript` — TypeScript Compiler API for static AST analysis, contract verification, and symbol indexing (`src/contracts/compiler.ts`, `src/muninn/indexer/ast-indexer.ts`).
   - `ink` + `react` — the TUI dashboard.
   - `zod` — `HarnessState` schema validation.
   - `chalk` — ANSI colors in the banner (`src/banner.ts`), headless frontend
@@ -27,10 +28,14 @@ rationalized in [`ADR.md`](./ADR.md).
 
 ```
 src/
-├── cli.ts                  entry point; arg parsing (run/live/plan/install/memory/mcp), config, banner, lifecycle wiring
+├── cli.ts                  entry point; arg parsing (run/live/plan/install/memory/mcp/check), config, banner, lifecycle wiring
 ├── commands/
-│   └── memory.ts           CLI commands: handleMemoryCommand (init, search, sync), handleMcpCommand (run), usage formatters
+│   ├── check.ts            CLI commands: handleCheckCommand (verify TypeScript contracts), printCheckUsage
+│   └── memory.ts           CLI commands: handleMemoryCommand (init, search, sync, index), handleMcpCommand (run), usage formatters
 ├── config.ts               RunConfig type (all run-mode knobs)
+├── contracts/
+│   ├── compiler.ts         TypeScript Compiler API contract verification, pre-emit diagnostics, visual error snippets
+│   └── index.ts            re-exports verifyTypeScriptContracts, formatDiagnosticsReport, TypeValidator, types
 ├── banner.ts               ASCII banner + path shortening
 ├── format.ts               shared formatting: durations, verdict badges/icons/colors
 ├── headless.ts             stdout frontend; stdin decision answering; runLiveHeadless
@@ -52,13 +57,16 @@ src/
 ├── muninn/
 │   ├── db/
 │   │   ├── client.ts       better-sqlite3 initialization, pragmas, path resolution, ensureProject, sanitizeGitRemote
-│   │   └── schema.sql      DDL for projects, observations, observations_fts, entities, observation_entities
+│   │   └── schema.sql      DDL for projects, observations, observations_fts, entities, observation_entities, entity_dependencies
+│   ├── indexer/
+│   │   ├── ast-indexer.ts  AST symbol/dependency extraction, batch indexing into Muninn, zombie entity pruning
+│   │   └── index.ts        re-exports extractAstData, extractSymbolsFromSource, indexFilesIntoMuninn, types
 │   ├── mcp/
 │   │   ├── index.ts        re-exports createMcpServer, startMcpServer, TOOL_REGISTRY, schemas, and types
 │   │   └── server.ts       MCP server implementation: JSON-RPC over stdio, Zod schemas, normalizeArgs, error handling
 │   └── service/
 │       ├── index.ts        re-exports MemoryService, IMemoryService, and types
-│       └── memory-service.ts MemoryService core + IMemoryService interface: saveObservation, search, getContext, linkSymbol, getStats, syncToDisk, importFromDisk
+│       └── memory-service.ts MemoryService core + IMemoryService interface: saveObservation, search, getContext, linkSymbol, inspectSymbol, getStats, syncToDisk, importFromDisk
 ├── server/
 │   ├── lifecycle.ts        spawn/kill `opencode serve`, health polling, server.log
 │   └── client.ts           SDK wrapper: createClient, prompt/runCommand, withTimeout
@@ -90,9 +98,11 @@ flowchart TD
     CMD -- "install" --> INST["runInstall()"]
     CMD -- "memory" --> MEM["handleMemoryCommand()"]
     CMD -- "mcp" --> MCP["handleMcpCommand()"]
+    CMD -- "check" --> CHK["handleCheckCommand()"]
 
     MEM --> MS["MemoryService"]
     MCP --> SRV["startMcpServer() (stdio)"]
+    CHK --> TC["verifyTypeScriptContracts()"]
 
     RUN --> SEV["subscribeToEvents()"]
     SEV -- permission / stream events --> CE["CycleEngine"]
@@ -106,8 +116,9 @@ flowchart TD
 
 `CycleEngine` is transport-agnostic: it never touches the terminal. Both
 frontends (Ink TUI, stdin headless) are thin adapters over the global `events`
-emitter plus `engine.resolveDecision()`. Memory persistence and MCP operations
-route cleanly through `handleMemoryCommand` and `handleMcpCommand` without
+emitter plus `engine.resolveDecision()`. Memory persistence, AST indexing,
+contract verification, and MCP operations route cleanly through
+`handleMemoryCommand`, `handleCheckCommand`, and `handleMcpCommand` without
 spawning harness server instances.
 
 ## 3. The cycle: pipeline-as-data
@@ -561,7 +572,7 @@ db.pragma("recursive_triggers = ON");
 
 | PRAGMA | Purpose & Operational Impact |
 |---|---|
-| `foreign_keys = ON` | Enforces referential integrity with `ON DELETE CASCADE`. Deleting a project cascades to its observations, entities, and observation_entities join rows. |
+| `foreign_keys = ON` | Enforces referential integrity with `ON DELETE CASCADE`. Deleting a project cascades to its observations, entities, observation_entities join rows, and entity_dependencies links. |
 | `journal_mode = WAL` | Enables Write-Ahead Logging. Permits concurrent readers alongside a writer, avoids table locks during read spikes, and protects against crash corruption. |
 | `busy_timeout = 5000` | Sets a 5-second wait queue when SQLite encounters database contention rather than throwing an immediate `SQLITE_BUSY` error. |
 | `recursive_triggers = ON` | Enables cascading deletes to activate triggers on child tables. **Crucial for FTS5 consistency**: when a project is deleted, cascade deletion removes rows in `observations`; `recursive_triggers = ON` ensures the `obs_ad` trigger fires and deletes the corresponding records from `observations_fts`. |
@@ -578,6 +589,8 @@ erDiagram
     PROJECTS ||--o{ ENTITIES : "contains (CASCADE)"
     OBSERVATIONS ||--o{ OBSERVATION_ENTITIES : "links (CASCADE)"
     ENTITIES ||--o{ OBSERVATION_ENTITIES : "links (CASCADE)"
+    ENTITIES ||--o{ ENTITY_DEPENDENCIES : "source (CASCADE)"
+    ENTITIES ||--o{ ENTITY_DEPENDENCIES : "target (CASCADE)"
     OBSERVATIONS ||--|| OBSERVATIONS_FTS : "triggers sync"
 
     PROJECTS {
@@ -607,6 +620,11 @@ erDiagram
     OBSERVATION_ENTITIES {
         text observation_id PK_FK
         text entity_id PK_FK
+    }
+    ENTITY_DEPENDENCIES {
+        text source_entity_id PK_FK
+        text target_entity_id PK_FK
+        text relation_type PK
     }
     OBSERVATIONS_FTS {
         text title
@@ -651,6 +669,17 @@ erDiagram
    - Composite primary key: `PRIMARY KEY(observation_id, entity_id)`.
    - Cascading foreign keys: `FOREIGN KEY(observation_id) REFERENCES observations(id) ON DELETE CASCADE`, `FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE`.
    - Index: `idx_observation_entities_entity_id ON observation_entities(entity_id)`.
+
+6. **`entity_dependencies`**:
+   - Represents topological dependency and structural relationships between code entities (e.g. imports, function/method calls, interface implementations, class extensions, file-to-symbol references).
+   - Composite primary key: `PRIMARY KEY(source_entity_id, target_entity_id, relation_type)`.
+   - Cascading foreign keys:
+     - `FOREIGN KEY(source_entity_id) REFERENCES entities(id) ON DELETE CASCADE`
+     - `FOREIGN KEY(target_entity_id) REFERENCES entities(id) ON DELETE CASCADE`
+   - `relation_type TEXT NOT NULL` constrained by `CHECK(relation_type IN ('imports', 'calls', 'implements', 'extends', 'references'))`.
+   - Indexes:
+     - `idx_entity_deps_source ON entity_dependencies(source_entity_id)` for outgoing dependency traversals.
+     - `idx_entity_deps_target ON entity_dependencies(target_entity_id)` for incoming impact / caller lookups.
 
 ### Project Bootstrapping & Credential Sanitization
 
@@ -955,6 +984,8 @@ The exported `MUNINN_TOOLS: Tool[]` array is dynamically generated from `TOOL_RE
 | `muninn_context` | `MuninnContextSchema` | - `limit`: Optional integer, 1–500, default: 20<br>- `category`: Optional category enum<br>- `topicKey`: Optional trimmed string, max 256 chars<br>- `allProjects`: Optional boolean | `service.getContext(input)` |
 | `muninn_link_symbol` | `MuninnLinkSymbolSchema` | - `observationId`: Trimmed string, min 1 char<br>- `symbol`: String (min 1 char) or `SymbolSchema` object | `service.linkSymbol(input.observationId, input.symbol)` |
 | `muninn_stats` | `MuninnStatsSchema` | - `allProjects`: Optional boolean (default: false) | `service.getStats(allProjects ? undefined : currentProject.id)` |
+| `muninn_inspect_symbol` | `MuninnInspectSymbolSchema` | - `symbol`: Trimmed string, 1–2,000 chars<br>- `projectId` / `project_id`: Optional trimmed string | `service.inspectSymbol(symbol, projectId)` returning symbol definition, file location, incoming/outgoing dependencies, and linked observations |
+| `muninn_verify_contract` | `MuninnVerifyContractSchema` | - `files`: Optional array of strings or single string (transformed to array), max 500 items, 1–1,000 chars per path<br>- `projectRoot` / `project_root`: Optional trimmed string (enforced inside permitted project root) | `verifyTypeScriptContracts(targetRoot, files)` returning `{ valid, errorsCount, diagnostics }` with line/column locations and visual code snippets |
 
 #### Symbol Schema Refinement (`SymbolSchema`)
 
@@ -1015,24 +1046,28 @@ flowchart TD
     CLI["cli.ts parseArgs(argv)"] --> DISPATCH{"_command"}
     DISPATCH -- "memory" --> MEM["handleMemoryCommand(subcommand, args, positionals)"]
     DISPATCH -- "mcp" --> MCP["handleMcpCommand(subcommand, args)"]
+    DISPATCH -- "check" --> CHK["handleCheckCommand(files, args)"]
     DISPATCH -- "run / plan / live / install" --> CORE["Core Harness Engines"]
 
     MEM --> SUBCMD{"subcommand"}
     SUBCMD -- "init" --> INIT["MemoryService.init / ensureProject"]
     SUBCMD -- "search" --> SRCH["MemoryService.search() (BM25)"]
     SUBCMD -- "sync" --> SYNC["MemoryService.syncToDisk() / importFromDisk()"]
+    SUBCMD -- "index" --> IDX["indexFilesIntoMuninn()"]
     SUBCMD -- "help / unknown" --> USAGE["printMemoryUsage()"]
 
     MCP --> MCPSUBCMD{"subcommand"}
     MCPSUBCMD -- "run" --> RUN["startMcpServer() + Stdio Keepalive"]
     MCPSUBCMD -- "help / unknown" --> MCPUSAGE["printMcpUsage()"]
+
+    CHK --> CHKRUN["verifyTypeScriptContracts(projectRoot, files)"]
 ```
 
 ### Argument Parser Enhancements (`parseArgs`)
 
 1. **Multi-Positional Capture (`_positionals`)**:
    - Rather than retaining only the first non-command token in `_positional`, `parseArgs` populates `_positionals: string[]`.
-   - The first positional argument after the command name determines the subcommand (`init`, `search`, `sync`, `run`), while remaining entries (`positionals.slice(1)`) are forwarded as positional arguments (such as search queries or file paths).
+   - The first positional argument after the command name determines the subcommand (`init`, `search`, `sync`, `index`, `run`), while remaining entries (`positionals.slice(1)`) are forwarded as positional arguments (such as search queries or file paths).
 2. **Boolean Flag Protection (`BOOLEAN_FLAGS`)**:
    - A dedicated `Set` flags boolean parameters (`--yes`, `--force`, `--resume`, `--force-restart`, `--ignore-plan-changes`, `--tui`, `--headless`, `--import`, `--help`, `-h`).
    - For any flag in `BOOLEAN_FLAGS`, the parser assigns `true` immediately without consuming the next token, preventing flags like `--import` from consuming subsequent positional file paths.
@@ -1085,7 +1120,21 @@ flowchart TD
     - Outputs `Imported N memories (skipped M duplicates) from <path>.`
   - Guarantees database closure in `finally`.
 
-#### 4. `huginn mcp run`
+#### 4. `huginn memory index [files...]`
+- **Purpose**: Extracts AST symbols and topological dependencies from TypeScript/JavaScript files and indexes them into Muninn's `entities` and `entity_dependencies` database tables.
+- **Workflow**:
+  - Accepts optional list of target files or recursively discovers all source files in the project via `findSourceFiles(root)`.
+  - Accepts `--project <path>` and `--db <path>` options.
+  - Instantiates `MemoryService({ dbPath, projectRoot })`.
+  - Invokes `indexFilesIntoMuninn(service, targetFiles, { projectRoot: root })`.
+  - Validates paths against path traversal, checks supported extensions, enforces 2MB size limit, parses ASTs in-memory, and writes symbols and dependencies in a single atomic SQLite transaction with zombie entity pruning.
+  - Outputs formatted green status badge and summary:
+    ```
+    ✔ Indexed N file(s) (X symbol(s), Y dependency link(s)) into Muninn memory.
+    ```
+  - Calls `service.close?.()` in a mandatory `finally` block to release file locks.
+
+#### 5. `huginn mcp run`
 - **Purpose**: Spawns and manages the long-running Model Context Protocol stdio server process.
 - **Workflow**:
   - Accepts optional `--db <path>` and `--project <path>`.
@@ -1096,6 +1145,22 @@ flowchart TD
     - Monitors `transport.onclose` to detect client disconnections.
     - Registers signal listeners for `SIGINT` and `SIGTERM`.
     - On termination, safely shuts down `MemoryService` and closes `MuninnServer` in a `finally` block before exiting.
+
+### TypeScript Contract Verification Command (`src/commands/check.ts`)
+
+#### `huginn check [files...] [--project <path>]`
+- **Purpose**: Static verification of TypeScript execution contracts and type consistency via the TypeScript Compiler API without compiling or emitting JavaScript files.
+- **Workflow**:
+  - Parses target files from positionals or checks the entire project root.
+  - Resolves project root via `--project <path>`, `--root <path>`, or `process.cwd()`.
+  - Invokes `verifyTypeScriptContracts(projectRoot, targetFiles)`.
+  - **Pass Path** (`result.valid === true`):
+    - Prints green status: `✔ TypeScript contracts verified: 0 errors (N diagnostic(s)).`
+    - If non-error diagnostics (warnings or suggestions) exist, prints formatted location details and visual code snippets.
+  - **Fail Path** (`result.valid === false`):
+    - Prints bold red header: `✖ TypeScript contracts check failed with N error(s):`
+    - Prints each diagnostic with file path, line, character, error code (e.g. `[TS2322]`), category, message, and visual caret underline snippet.
+    - Sets `process.exitCode = 1` for terminal automation and CI pipelines.
 
 ### Error Handling & Process Exit Protocol
 
@@ -1115,6 +1180,297 @@ To guarantee that asynchronous output streams flush completely and child handles
       });
   }
   ```
+
+## 17. Verified Execution Contracts via TypeScript Compiler API
+
+Static verification of code contracts is implemented in `src/contracts/compiler.ts`. Instead of shelling out to `tsc` or `bun build` as a child process, Huginn embeds the TypeScript Compiler API directly within the runtime. This provides low-latency, in-process diagnostic extraction, structured error objects, and deterministic gate evaluation.
+
+### Architectural Motivation & Core Principles
+
+1. **Zero Subprocess Overhead**: Spawning external CLI processes introduces process startup latency, terminal stream parsing fragility, and IPC overhead. In-process compilation via `ts.createProgram` evaluates ASTs directly in Bun's address space.
+2. **Deterministic Pre-Emit Diagnostics**: Uses `ts.getPreEmitDiagnostics(program, sourceFile)` to intercept semantic, syntactic, and structural errors before any emission stage.
+3. **No Artifact Side-Effects**: Always enforces `noEmit: true` so that verifying contracts never touches the disk, generates build artifacts, or invalidates git working trees.
+4. **Sandboxed & Fail-Closed**: Target files and configuration files are strictly bounded within `projectRoot`. Missing target files or invalid configuration files fail closed immediately.
+5. **Gate Loop Integration**: Formats verification results into machine-parsable markdown diagnostics with verdict markers (`### Overall gate: 🔴\n🛑 BLOCKED: ...`), enabling Huginn's `CycleEngine` to automatically feed compiler errors directly into thinker fix phases (`FIX_VALIDATE`, `FIX_SPEC`).
+
+### Configuration Discovery & Containment (`loadProjectConfig`)
+
+Configuration discovery enforces strict directory isolation:
+
+```ts
+export function loadProjectConfig(projectRoot: string): {
+  configPath: string | undefined;
+  options: ts.CompilerOptions;
+  fileNames: string[];
+  errors: ts.Diagnostic[];
+}
+```
+
+- **Strict Root Resolution (`REV-005`, `SEC-007`)**: Resolves `path.join(resolvedRoot, "tsconfig.json")`. The loader explicitly refrains from walking parent directories (`ts.findConfigFile` is deliberately avoided) to prevent path traversal outside the project repository.
+- **Safe Fallback (`DEFAULT_COMPILER_OPTIONS`)**: If `tsconfig.json` does not exist, safe default compiler options are applied:
+  - `target: ts.ScriptTarget.ES2022`
+  - `module: ts.ModuleKind.NodeNext`
+  - `moduleResolution: ts.ModuleResolutionKind.NodeNext`
+  - `strict: true`
+  - `esModuleInterop: true`
+  - `skipLibCheck: true`
+  - `allowJs: true`
+  - `noEmit: true`
+- **Fail-Closed Parse Errors (`REV-002`)**: If `tsconfig.json` exists but contains syntax or configuration errors, `loadProjectConfig` returns the diagnostic errors, causing `verifyTypeScriptContracts` to fail immediately and report the configuration flaw.
+
+### Target File Resolution & Traversal Containment (`resolveTargetFiles`)
+
+Path validation protects against directory traversal and non-existent targets:
+
+```ts
+export function resolveTargetFiles(
+  projectRoot: string,
+  filePaths?: string[]
+): ResolveTargetFilesResult
+```
+
+- **Path Traversal Guard (`SEC-001`)**: Computes `path.relative(projectRoot, resolved)`. If the relative path starts with `..` or is absolute, validation fails immediately with error code `TS6054` (`File '<path>' is outside project root.`).
+- **File Existence Guard (`REV-003`)**: Validates that each target file exists on disk and is a regular file (`fs.statSync(resolved).isFile()`). Missing files trigger `TS6053` (`File '<path>' not found.`).
+
+### Targeted Compilation & Diagnostics Pipeline (`verifyTypeScriptContracts`)
+
+The verification pipeline executes in seven distinct phases:
+
+```mermaid
+flowchart TD
+    A["verifyTypeScriptContracts(projectRoot, filePaths)"] --> B["resolveTargetFiles() (SEC-001, REV-003)"]
+    B -- invalid path / missing file --> ERR1["Return failure ContractVerificationResult"]
+    B -- valid --> C["loadProjectConfig() (REV-005, SEC-007)"]
+    C -- config parse errors --> ERR2["Return configuration diagnostics"]
+    C -- valid config --> D{"Determine rootNames"}
+    D -- filePaths provided --> E["rootNames = targetFiles (REV-004)"]
+    D -- tsconfig fileNames --> F["rootNames = fileNames"]
+    D -- fallback --> G["findSourceFilesInDir(src/)"]
+    E & F & G --> H["ts.createProgram({ rootNames, options })"]
+    H --> I["Collect optionsDiagnostics + globalDiagnostics"]
+    H --> J["Iterate checkFiles → ts.getPreEmitDiagnostics(program, file)"]
+    I & J --> K["Deduplicate diagnostics by file:pos:code:message"]
+    K --> L["Filter diagnostics: skip node_modules & outside root (SEC-004)"]
+    L --> M["Format diagnostics with visual snippets"]
+    M --> N{"errorsCount === 0?"}
+    N -- yes --> PASS["valid: true, errorsCount: 0"]
+    N -- no --> FAIL["valid: false, errorsCount: N"]
+```
+
+1. **Targeted `rootNames` Optimization (`REV-004`, `SEC-005`)**: When verifying specific files, only those files are passed as `rootNames` to `ts.createProgram`, minimizing symbol resolution overhead.
+2. **Pre-Emit Diagnostics Collection**: Gathers `program.getOptionsDiagnostics()`, `program.getGlobalDiagnostics()`, and for each target file, `ts.getPreEmitDiagnostics(program, sourceFile)`.
+3. **Diagnostic Deduplication**: Eliminates duplicate diagnostics caused by multiple source file import graphs using a composite key: `${fileName}:${start}:${code}:${messageText}`.
+4. **Project Boundary & `node_modules` Filtering (`SEC-004`)**: Excludes diagnostics originating within `node_modules` or outside `projectRoot` (using trailing path separators to prevent prefix collisions).
+5. **Structured Return Shape**: Returns `ContractVerificationResult`:
+   ```ts
+   export interface ContractVerificationResult {
+     valid: boolean;
+     errorsCount: number;
+     diagnostics: FormattedDiagnostic[];
+   }
+   ```
+
+### Visual Caret Snippet Generation (`createVisualSnippet`)
+
+To provide high-fidelity diagnostic feedback to LLMs and terminal users, `createVisualSnippet` formats source code snippets with aligned caret indicators (`^`):
+
+```ts
+export function createVisualSnippet(
+  sourceFile: ts.SourceFile,
+  start: number,
+  length: number = 1
+): string
+```
+
+- **Line Extraction**: Identifies line starts via `sourceFile.getLineStarts()` and extracts the exact source line containing the error.
+- **Resource & Memory Bounds (`SEC-006`, `REV-008`)**:
+  - Clamps source line length to a maximum of 300 characters to prevent memory exhaustion on minified or bundled single-line files.
+  - Clamps character indentation to a maximum of 300 spaces.
+  - Clamps caret underline span between 1 and 200 characters, bounded by the remaining line length.
+- **Visual Gutter Output**:
+  ```typescript
+  12 | const count: number = "not-a-number";
+     |                       ^^^^^^^^^^^^^^
+  ```
+
+### Markdown Gate Report Formatting (`formatDiagnosticsReport`)
+
+`formatDiagnosticsReport(result)` converts `ContractVerificationResult` into a Markdown document ready for Huginn's gate evaluation and prompt injection:
+
+- **Pass Output**:
+  ```markdown
+  ### TypeScript Compiler Contract: 🟢 PASSED
+
+  No compilation type errors detected.
+  ```
+- **Fail Output**:
+  ```markdown
+  ### TypeScript Compiler Contract: 🔴 BLOCKED
+  Found 1 type compilation error(s):
+
+  - **src/app.ts:12:7** [TS2322] (ERROR): Type 'string' is not assignable to type 'number'.
+  ```typescript
+  12 | const count: number = "not-a-number";
+     |       ^^^^^
+  ```
+
+  ### Overall gate: 🔴
+  🛑 BLOCKED: TypeScript compilation contract errors found (1 error(s)).
+  ```
+
+### Exported Namespace (`TypeValidator`)
+
+`src/contracts/compiler.ts` exports the unified `TypeValidator` object:
+```ts
+export const TypeValidator = {
+  check: verifyTypeScriptContracts,
+  formatReport: formatDiagnosticsReport,
+  DEFAULT_COMPILER_OPTIONS,
+};
+```
+
+---
+
+## 18. Topological AST Symbol & Dependency Indexer
+
+Codebase intelligence and semantic memory in Muninn are powered by the AST indexer in `src/muninn/indexer/ast-indexer.ts`. It parses TypeScript and JavaScript source files into an entity-relationship graph representing code symbols (functions, classes, interfaces, methods) and their structural dependencies (imports, extends, implements, calls, references).
+
+### Architectural Motivation & Knowledge Graph Role
+
+LLM agents operating on source code often suffer from "context blindness" regarding symbol hierarchies, type implementations, and impact radius. The AST indexer builds an in-database dependency graph in SQLite (`entities` and `entity_dependencies` tables) that allows agents to:
+- Instantly locate symbol declarations and their containing files.
+- Inspect incoming and outgoing dependencies (who imports/calls/extends this symbol).
+- Associate Muninn memory observations (architectural decisions, bug fixes, conventions) with exact code symbols via `observation_entities`.
+
+### AST Parsing Engine & Memory Optimization (`extractAstData`)
+
+```ts
+export function extractAstData(
+  filePath: string,
+  sourceText: string
+): AstExtractionResult
+```
+
+- **Lightweight Source Parser (`REV-010`)**: Calls `ts.createSourceFile(normalizedFilePath, sourceText, ts.ScriptTarget.Latest, false)`. Setting `setParentNodes = false` significantly reduces memory overhead and garbage collection pressure when processing large codebases.
+- **Line & Column Resolution**: Uses `sourceFile.getLineAndCharacterOfPosition(pos).line + 1` for accurate 1-indexed line spans (`startLine`, `endLine`).
+- **Export Modifier Detection**: Evaluates `ts.getCombinedModifierFlags(node)` and `ts.canHaveModifiers(node)` to classify public API symbols (`isExported: true`).
+
+### Extracted Symbol Taxonomy & Canonical Identifiers
+
+Symbols are uniquely identified across the project using canonical format `<relPath>::<symbolName>`:
+
+| Entity Type | Source AST Node | Canonical Identifier Format | Scope & Access Rules |
+|---|---|---|---|
+| `file` | Source file itself | `src/app.ts` | Base container for all symbols |
+| `function` | `ts.isFunctionDeclaration` | `src/utils/math.ts::add` | Top-level function declarations |
+| `function` | `ts.isVariableStatement` | `src/api/client.ts::fetchData` | Arrow functions and function expressions |
+| `class` | `ts.isClassDeclaration` | `src/auth/service.ts::AuthService` | Top-level class declarations |
+| `function` | `ts.isMethodDeclaration` | `src/auth/service.ts::AuthService.login` | Public class methods (skips `private`, `protected`, `#`) |
+| `interface` | `ts.isInterfaceDeclaration` | `src/types/user.ts::User` | Interface declarations |
+| `interface` | `ts.isTypeAliasDeclaration` | `src/types/user.ts::UserID` | Type alias declarations |
+
+### Dependency Extraction & Module Specifier Normalization
+
+The indexer extracts five types of topological relationships:
+
+```mermaid
+flowchart LR
+    FILE["File Entity (src/app.ts)"] -- references --> SYM["Symbol (AuthService)"]
+    SYM -- extends --> BASE["BaseService"]
+    SYM -- implements --> INTF["IAuth"]
+    FILE -- imports --> MOD["Module (./utils.js → ./utils.ts)"]
+    FILE -- imports --> NAMED["Named Symbol (./utils.ts::formatDate)"]
+```
+
+1. **`imports`**: Extracted from `ts.ImportDeclaration` and `ts.ExportDeclaration` (re-exports). Records both module-level dependencies and named imported symbols.
+2. **`normalizeModuleSpecifier`**: Resolves relative imports (`./foo.js` -> `./foo.ts`, `.mjs`/`.cjs` -> `.ts`, `.jsx` -> `.tsx`) against the importing file's directory according to TypeScript ESM conventions, while preserving non-relative package specifiers (e.g. `chalk`, `@opencode-ai/sdk`).
+3. **`extends`**: Extracted from class and interface `heritageClauses` (`clause.token === ts.SyntaxKind.ExtendsKeyword`).
+4. **`implements`**: Extracted from class `heritageClauses` (`clause.token === ts.SyntaxKind.ImplementsKeyword`).
+5. **`references`**: Created automatically between the file entity and every symbol declared within that file.
+
+### Two-Stage Non-Blocking Batch Indexing Architecture (`indexFilesIntoMuninn`)
+
+To ensure database concurrency, WAL performance, and stability, indexing separates file I/O from database transactions (`REV-001`):
+
+```ts
+export function indexFilesIntoMuninn(
+  memoryService: IMemoryService,
+  filePaths: string[],
+  options?: { projectRoot?: string }
+): IndexSummary
+```
+
+```mermaid
+sequenceDiagram
+    participant CLI as CLI / MCP Caller
+    participant FS as File System (In-Memory)
+    participant AST as TypeScript AST Parser
+    participant DB as SQLite WAL Transaction
+
+    Note over FS,AST: Stage 1: In-Memory File I/O & Parsing (Zero DB Lock)
+    CLI->>FS: Check path traversal (SEC-001) & 2MB limit
+    FS->>AST: Read content & extractAstData()
+    AST-->>FS: Extracted symbols & dependencies
+
+    Note over DB: Stage 2: Short-Lived Database Transaction
+    CLI->>DB: db.transaction()
+    DB->>DB: getOrCreateEntity(fileEntity)
+    DB->>DB: Prune zombie/ghost entities for file (REV-003, SEC-003)
+    DB->>DB: Batch upsert active symbol entities
+    DB->>DB: Purge stale outgoing dependencies & insert new edges
+    DB-->>CLI: Return IndexSummary
+```
+
+#### Stage 1: In-Memory Parsing (Outside DB Transaction)
+- **Path Traversal Containment (`SEC-001`)**: Target paths must resolve strictly within `projectRoot`. Escaping paths are silently skipped.
+- **Extension Filtering**: Only supported extensions (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`) are processed.
+- **Size Bounds**: Files exceeding `MAX_FILE_SIZE_BYTES = 2MB` are skipped to protect system memory.
+- **Fault Tolerance (`REV-007`)**: Unreadable files or syntax errors in individual files do not abort the indexing of remaining files.
+
+#### Stage 2: Short-Lived Atomic SQLite Transaction
+- Executed inside `db.transaction(...)` for minimal WAL lock duration.
+- **`getOrCreateEntity`**: Upserts entity records, authoritatively updating `entity_type` and `file_path` if already present.
+
+### Zombie / Ghost Entity Pruning & Cascading Integrity (`REV-003`, `SEC-003`)
+
+When a source file is edited, symbols may be renamed, removed, or moved. If stale entities remained in the database, agents would navigate to obsolete ghost symbols:
+
+1. **Active Identifier Gathering**: During Stage 1 AST extraction, the indexer collects all currently valid identifiers in the file (`activeIdentifiers: Set<string>`).
+2. **Zombie Detection**: Queries all existing entities for the file:
+   ```sql
+   SELECT id, identifier FROM entities WHERE project_id = ? AND file_path = ?;
+   ```
+3. **Cascading Pruning**: Any database entity for that file whose identifier is *not* in `activeIdentifiers` is deleted:
+   ```sql
+   DELETE FROM entities WHERE id = ?;
+   ```
+4. **Referential Cascade**: SQLite's `FOREIGN KEY ... ON DELETE CASCADE` automatically and atomically cleans up all associated records in `entity_dependencies` (both incoming and outgoing links) and `observation_entities`.
+
+### Symbol Inspection API (`MemoryService.inspectSymbol`)
+
+`MemoryService` exposes `inspectSymbol(symbol: string, projectId?: string): SymbolInspection | null` to serve both MCP agent queries (`muninn_inspect_symbol`) and developer inspection:
+
+```ts
+export interface SymbolInspection {
+  entity: Entity;
+  dependencies: {
+    outgoing: SymbolInspectionDependency[];
+    incoming: SymbolInspectionDependency[];
+  };
+  observations: Observation[];
+}
+```
+
+- **Multi-Tier Matching Strategy**:
+  1. **Exact Match**: Queries `WHERE project_id = ? AND identifier = ?`.
+  2. **Suffix Match (`REV-005`, `REV-008`, `SEC-004`)**: If exact match fails, searches for symbol names or method names across files using suffix patterns:
+     ```sql
+     identifier LIKE '%::' || ? ESCAPE '\' OR identifier LIKE '%.' || ? ESCAPE '\'
+     ```
+     Enables queries like `"login"` to find `"src/auth.ts::AuthManager.login"`.
+  3. **Prefix / Path Match**: Matches namespaces or file paths (`identifier LIKE ? || '%' ESCAPE '\' OR file_path = ?`).
+- **SQL Injection Prevention (`_escapeLikePattern`)**: Escapes `%`, `_`, and `\` before binding to LIKE clauses.
+- **Graph & Observation Aggregation**: Fetches outgoing dependencies, incoming dependents, and all linked memory observations, returning a complete 360-degree topological view of the symbol.
 
 
 
