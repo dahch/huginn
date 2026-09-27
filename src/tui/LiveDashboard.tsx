@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import { LiveAbortError, type LiveEngine } from "../engine/liveMode";
-import type { RunConfig } from "../config";
+import { saveUserConfig, saveGlobalUserConfig, type RunConfig } from "../config";
+import { AGENT_TARGETS } from "../agents/integrator";
 import { events, type LiveStage } from "../engine/engineEvents";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
+import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -29,7 +31,15 @@ const STAGE_LABEL: Record<LiveStage, { label: string; color: string }> = {
   execute: { label: "EXECUTE", color: "green" },
 };
 
-export function LiveApp({ live, cfg }: { live: LiveEngine; cfg: RunConfig }) {
+export function LiveApp({
+  live,
+  cfg,
+  initialShowModelPicker,
+}: {
+  live: LiveEngine;
+  cfg: RunConfig;
+  initialShowModelPicker?: boolean;
+}) {
   const { exit } = useApp();
   const [cycle, setCycle] = useState<CycleEngine | null>(null);
   const seededIdea = useRef(false);
@@ -92,7 +102,15 @@ export function LiveApp({ live, cfg }: { live: LiveEngine; cfg: RunConfig }) {
   }, [cycle, exit, live]);
 
   if (cycle) return <Dashboard engine={cycle} cfg={cfg} autoExit={false} />;
-  return <RefineView live={live} cfg={cfg} onApprove={onApprove} seededIdeaRef={seededIdea} />;
+  return (
+    <RefineView
+      live={live}
+      cfg={cfg}
+      onApprove={onApprove}
+      seededIdeaRef={seededIdea}
+      initialShowModelPicker={initialShowModelPicker ?? Boolean(cfg.chooseModel)}
+    />
+  );
 }
 
 function RefineView({
@@ -100,11 +118,13 @@ function RefineView({
   cfg,
   onApprove,
   seededIdeaRef,
+  initialShowModelPicker = false,
 }: {
   live: LiveEngine;
   cfg: RunConfig;
   onApprove: () => Promise<void>;
   seededIdeaRef: React.MutableRefObject<boolean>;
+  initialShowModelPicker?: boolean;
 }) {
   const { exit } = useApp();
   const terminalSize = useTerminalSize();
@@ -113,6 +133,9 @@ function RefineView({
   const [decision, setDecision] = useState<DecisionRequest | undefined>();
   const [draftInput, setDraftInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState<boolean>(initialShowModelPicker);
+  const [currentThinker, setCurrentThinker] = useState(cfg.thinker);
+  const [currentExecutor, setCurrentExecutor] = useState(cfg.executor);
   const [focusCard, setFocusCard] = useState<"chat" | "stream">("chat");
   const [chatScroll, setChatScroll] = useState(0);
   const [streamScroll, setStreamScroll] = useState(0);
@@ -262,7 +285,7 @@ function RefineView({
   // Seed the CLI-provided initial idea into the conversation (matches headless).
   useEffect(() => {
     const idea = live.ideaText.trim();
-    if (!idea || seededIdeaRef.current) return;
+    if (!idea || seededIdeaRef.current || showModelPicker) return;
     seededIdeaRef.current = true;
     clearStream();
     void (async () => {
@@ -275,7 +298,7 @@ function RefineView({
         setBusy(false);
       }
     })();
-  }, [live, seededIdeaRef]);
+  }, [live, seededIdeaRef, showModelPicker]);
 
   const resolveDecisionKey = (input: string): DecisionChoice | undefined => {
     const c = input.toLowerCase();
@@ -328,6 +351,72 @@ function RefineView({
       failSession(new LiveAbortError());
       return;
     }
+    if (text === "/models" || text === "/model") {
+      setShowModelPicker(true);
+      return;
+    }
+    if (text.startsWith("/model ")) {
+      const parts = text.slice(7).trim().split(/\s+/).filter(Boolean);
+      if (parts.length > 0) {
+        const newThinker = parts[0]!;
+        const newExecutor = parts[1] || currentExecutor;
+        const isValidModel = (s: string) => {
+          const idx = s.indexOf("/");
+          return idx > 0 && idx < s.length - 1;
+        };
+        if (!isValidModel(newThinker)) {
+          events.emit("liveChat", {
+            role: "system",
+            text: `Invalid model format "${newThinker}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
+          });
+          return;
+        }
+        if (!isValidModel(newExecutor)) {
+          events.emit("liveChat", {
+            role: "system",
+            text: `Invalid model format "${newExecutor}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
+          });
+          return;
+        }
+        try {
+          live.updateModels({ thinker: newThinker, executor: newExecutor });
+          setCurrentThinker(newThinker);
+          setCurrentExecutor(newExecutor);
+          events.emit("liveChat", {
+            role: "system",
+            text: `Active models updated: thinker = ${newThinker}, executor = ${newExecutor} (session only)`,
+          });
+        } catch (err) {
+          events.emit("liveChat", {
+            role: "system",
+            text: (err as Error).message,
+          });
+        }
+        return;
+      }
+    }
+    if (text === "/agent") {
+      events.emit("liveChat", {
+        role: "system",
+        text: `Available agent runtimes: ${AGENT_TARGETS.join(", ")} (active: ${live.runtime.name})`,
+      });
+      return;
+    }
+    if (text.startsWith("/agent ")) {
+      const target = text.slice(7).trim();
+      if ((AGENT_TARGETS as readonly string[]).includes(target)) {
+        events.emit("liveChat", {
+          role: "system",
+          text: `Agent runtime selected: ${target} (active: ${live.runtime.name})`,
+        });
+      } else {
+        events.emit("liveChat", {
+          role: "system",
+          text: `Unknown agent target "${target}". Available: ${AGENT_TARGETS.join(", ")}`,
+        });
+      }
+      return;
+    }
     clearStream();
     setBusy(true);
     try {
@@ -338,6 +427,39 @@ function RefineView({
       setBusy(false);
     }
   };
+
+  const handleModelSelect = useCallback(
+    (result: ModelPickerResult) => {
+      try {
+        if (result.saveScope === "project") {
+          saveUserConfig(cfg.projectPath, { thinker: result.thinker, executor: result.executor });
+        } else if (result.saveScope === "global") {
+          saveGlobalUserConfig({ thinker: result.thinker, executor: result.executor });
+        }
+        live.updateModels({ thinker: result.thinker, executor: result.executor });
+        setCurrentThinker(result.thinker);
+        setCurrentExecutor(result.executor);
+        const scopeMsg =
+          result.saveScope === "project"
+            ? "saved to project config (.huginn/config.json)"
+            : result.saveScope === "global"
+              ? "saved to global config (~/.huginn/config.json)"
+              : "session only";
+        events.emit("liveChat", {
+          role: "system",
+          text: `Active models updated: thinker = ${result.thinker}, executor = ${result.executor} (${scopeMsg})`,
+        });
+        setShowModelPicker(false);
+      } catch (err) {
+        events.emit("liveChat", {
+          role: "system",
+          text: `Failed to update models: ${(err as Error).message}`,
+        });
+        throw err;
+      }
+    },
+    [live, cfg.projectPath],
+  );
 
   // Dynamic layout calculations based on terminal size
   const headerHeight = 4;
@@ -369,6 +491,9 @@ function RefineView({
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
 
   useInput((input, key) => {
+    if (showModelPicker) {
+      return;
+    }
     if (decision) {
       const choice = resolveDecisionKey(input);
       if (choice) live.resolveDecision(choice);
@@ -456,44 +581,84 @@ function RefineView({
       paddingX={1}
       paddingY={0}
     >
-      <LiveHeader stage={stage} cfg={cfg} now={now} spinner={spinner} />
-
-      <ScrollableChatCard
-        lines={visibleChatLines}
-        totalLines={formattedChatLines.length}
-        scrollOffset={chatScroll}
-        maxScroll={maxChatScroll}
-        isFocused={focusCard === "chat"}
-        busy={busy}
+      <LiveHeader
+        stage={stage}
+        cfg={cfg}
+        now={now}
         spinner={spinner}
-        height={chatHeight}
+        runtimeName={live.runtime.name}
+        thinker={currentThinker}
+        executor={currentExecutor}
       />
 
-      <ScrollableStreamCard
-        lines={visibleStreamLines}
-        totalLines={streamLines.length}
-        scrollOffset={streamScroll}
-        chars={streamChars}
-        isFocused={focusCard === "stream"}
-        spinner={spinner}
-        busy={busy}
-        height={streamHeight}
-      />
+      {showModelPicker ? (
+        <ModelPickerModal
+          runtime={live.runtime}
+          initialThinker={currentThinker}
+          initialExecutor={currentExecutor}
+          onSelect={handleModelSelect}
+          onCancel={() => setShowModelPicker(false)}
+        />
+      ) : (
+        <>
+          <ScrollableChatCard
+            lines={visibleChatLines}
+            totalLines={formattedChatLines.length}
+            scrollOffset={chatScroll}
+            maxScroll={maxChatScroll}
+            isFocused={focusCard === "chat"}
+            busy={busy}
+            spinner={spinner}
+            height={chatHeight}
+          />
+
+          <ScrollableStreamCard
+            lines={visibleStreamLines}
+            totalLines={streamLines.length}
+            scrollOffset={streamScroll}
+            chars={streamChars}
+            isFocused={focusCard === "stream"}
+            spinner={spinner}
+            busy={busy}
+            height={streamHeight}
+          />
+        </>
+      )}
 
       {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
 
       {decision ? <DecisionModal req={decision} /> : null}
 
-      <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  /draft when ready · /quit to abort" />
-      <Box justifyContent="space-between">
-        <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · /draft to draft · /quit to abort</Text>
-        <Text dimColor>stage: {STAGE_LABEL[stage].label}</Text>
-      </Box>
+      {!showModelPicker && (
+        <>
+          <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  /draft when ready · /quit to abort" />
+          <Box justifyContent="space-between">
+            <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · /draft to draft · /quit to abort</Text>
+            <Text dimColor>stage: {STAGE_LABEL[stage].label}</Text>
+          </Box>
+        </>
+      )}
     </Box>
   );
 }
 
-function LiveHeader({ stage, cfg, now, spinner }: { stage: LiveStage; cfg: RunConfig; now: number; spinner: string }) {
+function LiveHeader({
+  stage,
+  cfg,
+  now,
+  spinner,
+  runtimeName,
+  thinker,
+  executor,
+}: {
+  stage: LiveStage;
+  cfg: RunConfig;
+  now: number;
+  spinner: string;
+  runtimeName: string;
+  thinker: string;
+  executor: string;
+}) {
   const s = STAGE_LABEL[stage];
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1}>
@@ -504,11 +669,21 @@ function LiveHeader({ stage, cfg, now, spinner }: { stage: LiveStage; cfg: RunCo
             [{spinner} {s.label}]
           </Text>
         </Box>
-        <Text dimColor>project: {cfg.projectPath}</Text>
+        <Box>
+          <Text dimColor>runtime: </Text>
+          <Text color="yellow">{runtimeName}</Text>
+          <Text dimColor> · project: {cfg.projectPath}</Text>
+        </Box>
       </Box>
       <Box justifyContent="space-between">
-        <Text dimColor>thinker: </Text>
-        <Text color="magenta">{cfg.thinker}</Text>
+        <Box>
+          <Text dimColor>thinker: </Text>
+          <Text color="magenta">{thinker}</Text>
+        </Box>
+        <Box>
+          <Text dimColor>executor: </Text>
+          <Text color="green">{executor}</Text>
+        </Box>
       </Box>
     </Box>
   );

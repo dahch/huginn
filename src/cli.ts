@@ -2,7 +2,14 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
-import { loadConfigLayers, resolveModelsFromConfig, type RunConfig } from "./config";
+import {
+  DEFAULT_EXECUTOR_MODEL,
+  DEFAULT_THINKER_MODEL,
+  describeModelSources,
+  loadConfigLayers,
+  resolveModelsFromConfig,
+  type RunConfig,
+} from "./config";
 import { MAIN_PHASES, type PhaseName } from "./engine/types";
 import { loadPlan } from "./plan/parser";
 import {
@@ -125,6 +132,7 @@ Optional:
   --server-timeout <ms> server startup timeout  (default: 60000)
   --phase-timeout <ms>  hard deadline per phase step (0 disables)  (default: 1200000, 20 min)
   --agent <target>      target agent runtime (opencode, claude, codex, omp, etc.)
+  --choose-model        open the interactive model selector on startup
 
 Install:
   --yes                 install without asking (non-interactive / CI)
@@ -152,6 +160,7 @@ const BOOLEAN_FLAGS = new Set([
   "--sandbox",
   "--no-sandbox",
   "--global",
+  "--choose-model",
   "--help",
   "-h",
 ]);
@@ -376,6 +385,7 @@ export async function main(argv: string[]): Promise<void> {
     serverTimeoutMs: num(args["--server-timeout"], 60000),
     phaseTimeoutMs: num(args["--phase-timeout"], 20 * 60 * 1000),
     ignorePlanChanges: Boolean(args["--ignore-plan-changes"]),
+    chooseModel: Boolean(args["--choose-model"]),
     sandbox: !args["--no-sandbox"],
   };
 
@@ -606,12 +616,14 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
   const layers = loadConfigLayers(projectPath);
-  const { thinker, executor } = resolveModelsFromConfig({
+  const modelSources = describeModelSources({
     flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
     flagExecutor: typeof args["--executor"] === "string" ? args["--executor"] : undefined,
     projectConfig: layers.project,
     userConfig: layers.user,
   });
+  const thinker = modelSources.thinker.value;
+  const executor = modelSources.executor.value;
   if (!existsSync(join(projectPath, ".git"))) {
     console.error(`"${projectPath}" is not a git repository.`);
     process.exit(1);
@@ -662,6 +674,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     serverTimeoutMs: num(args["--server-timeout"], 60000),
     phaseTimeoutMs: num(args["--phase-timeout"], 20 * 60 * 1000),
     ignorePlanChanges: Boolean(args["--ignore-plan-changes"]),
+    chooseModel: Boolean(args["--choose-model"]),
     sandbox: !args["--no-sandbox"],
   };
 
@@ -697,6 +710,24 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   } catch (err) {
     console.error(chalk.red(`[huginn] failed to start ${runtime.name} daemon: ${(err as Error).message}`));
     process.exit(1);
+  }
+
+  // Pre-flight model check: if thinker or executor came from default source, check if runtime.getAvailableModels()
+  // returns models and whether defaults are present. If models are returned and neither default is present,
+  // set cfg.chooseModel = true for auto-onboarding! (REV-003)
+  if (modelSources.thinker.source === "default" || modelSources.executor.source === "default") {
+    try {
+      const models = await runtime.getAvailableModels();
+      if (models && models.length > 0) {
+        const hasDefaultThinker = models.some((m) => m.id === DEFAULT_THINKER_MODEL);
+        const hasDefaultExecutor = models.some((m) => m.id === DEFAULT_EXECUTOR_MODEL);
+        if (!hasDefaultThinker && !hasDefaultExecutor) {
+          cfg.chooseModel = true;
+        }
+      }
+    } catch {
+      // Best-effort pre-flight check; proceed if discovery fails
+    }
   }
 
   const serverUrl = runtime instanceof OpencodeRuntimeAdapter ? runtime.serverUrl : undefined;
