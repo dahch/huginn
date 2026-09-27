@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PhaseName } from "./engine/types";
+import { AGENT_TARGETS } from "./agents/integrator";
 
 export interface RunConfig {
   projectPath: string;
@@ -21,6 +22,7 @@ export interface RunConfig {
   adrPath: string;
   thinker: string;
   executor: string;
+  agent?: string;
   mode: "auto" | "supervised";
   permissions: "auto" | "ask" | "deny";
   maxRetries: number;
@@ -42,6 +44,7 @@ export interface RunConfig {
 export interface UserConfig {
   thinker?: string;
   executor?: string;
+  agent?: string;
   mode?: "auto" | "supervised";
   [key: string]: unknown;
 }
@@ -53,6 +56,7 @@ export interface UserConfig {
 export interface ModelSources {
   flagThinker?: string;
   flagExecutor?: string;
+  flagAgent?: string;
   projectConfig?: UserConfig;
   userConfig?: UserConfig;
   env?: Record<string, string | undefined>;
@@ -63,6 +67,8 @@ export const DEFAULT_EXECUTOR_MODEL = "opencode/gpt-5.1-codex";
 
 export const ENV_THINKER_MODEL = "HUGINN_THINKER_MODEL";
 export const ENV_EXECUTOR_MODEL = "HUGINN_EXECUTOR_MODEL";
+export const DEFAULT_AGENT = "opencode";
+export const ENV_AGENT = "HUGINN_AGENT";
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   for (const value of values) {
@@ -187,6 +193,14 @@ function sanitizeConfig(value: unknown, path: string): UserConfig {
     if (key === "thinker" || key === "executor") {
       if (typeof raw === "string") out[key] = raw;
       else console.warn(`[huginn] config ${path}: "${key}" must be a string; ignoring`);
+    } else if (key === "agent") {
+      if (typeof raw === "string" && (AGENT_TARGETS as readonly string[]).includes(raw.trim().toLowerCase())) {
+        out.agent = raw.trim().toLowerCase();
+      } else {
+        console.warn(
+          `[huginn] config ${path}: "agent" must be one of [${AGENT_TARGETS.join(", ")}]; ignoring`,
+        );
+      }
     } else if (key === "mode") {
       if (raw === "auto" || raw === "supervised") out.mode = raw;
       else console.warn(`[huginn] config ${path}: "mode" must be "auto" or "supervised"; ignoring`);

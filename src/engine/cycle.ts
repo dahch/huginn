@@ -38,6 +38,8 @@ import type { HarnessState, HistoryEntry } from "../state/schema";
 import { createClient, createSession, sessionExists, abortSession } from "../server/client";
 import { WorktreeManager, type Sandbox } from "./worktree";
 import { resolveDatabasePath } from "../muninn/db/client.js";
+import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
+import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
 
 type PhaseFn = (ctx: PhaseContext) => Promise<{ text: string; messageId: string }>;
 
@@ -68,6 +70,7 @@ const MAX_JUDGE_ACTION_ITEMS = 8;
 export interface CycleEngineOptions {
   cfg: RunConfig;
   client?: OpencodeClient;
+  runtime?: IAgentRuntime;
   plan: { content: string; iterations: Iteration[] };
   state?: HarnessState;
   /**
@@ -79,7 +82,9 @@ export interface CycleEngineOptions {
 
 export class CycleEngine {
   private cfg: RunConfig;
-  readonly client: OpencodeClient;
+  readonly client?: OpencodeClient;
+  readonly runtime: IAgentRuntime;
+  private activeSession?: IAgentSession;
   private plan: { content: string; iterations: Iteration[] };
   private state: HarnessState;
   private models: Models;
@@ -92,7 +97,22 @@ export class CycleEngine {
 
   constructor(opts: CycleEngineOptions) {
     this.cfg = opts.cfg;
-    this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
+    if (opts.runtime) {
+      this.runtime = opts.runtime;
+      if (opts.client) {
+        this.client = opts.client;
+      } else if ("client" in opts.runtime && (opts.runtime as unknown as { client?: OpencodeClient }).client) {
+        this.client = (opts.runtime as unknown as { client: OpencodeClient }).client;
+      }
+      // Non-OpenCode runtimes: leave client undefined — all prompts go through session
+    } else {
+      this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
+      this.runtime = new OpencodeRuntimeAdapter({
+        client: this.client,
+        port: opts.cfg.port,
+        projectPath: opts.cfg.projectPath,
+      });
+    }
     this.plan = opts.plan;
     this.models = resolveModels(opts.cfg.thinker, opts.cfg.executor);
     this.worktrees = opts.worktrees;
@@ -190,11 +210,14 @@ export class CycleEngine {
 
   requestAbort(): void {
     this.abortRequested = true;
+    this.outcome = { reason: "aborted" };
     this.decisions.resolveAll("abort");
     // Interrupt the in-flight agent request so the loop can observe the abort
     // immediately instead of waiting out a long phase timeout: aborting the
     // session server-side rejects the pending `session.prompt`/`command`.
-    if (this.state.iterationSessionId) {
+    if (this.activeSession) {
+      void this.activeSession.abort();
+    } else if (this.runtime.id === "opencode" && this.client && this.state.iterationSessionId) {
       void abortSession(this.client, this.state.iterationSessionId);
     }
   }
@@ -361,6 +384,7 @@ export class CycleEngine {
       const explicitModules = iteration.modules ?? [];
       const ctx: PhaseContext = {
         client: this.client,
+        session: this.activeSession,
         sessionId,
         models: this.models,
         projectPath: workPath,
@@ -468,17 +492,17 @@ export class CycleEngine {
     // A persisted session was bound to the directory it was created with; under
     // sandboxing that directory changes every run, so never reuse it.
     const existing = this.state.iterationSessionId;
-    if (!sandboxed && existing && (await sessionExists(this.client, existing))) {
+    if (!sandboxed && existing && this.activeSession && this.activeSession.id === existing) {
       return existing;
     }
-    const created = await createSession(
-      this.client,
-      `iter ${iteration.index}: ${iteration.title}`,
+    const session = await this.runtime.createSession({
+      title: `iter ${iteration.index}: ${iteration.title}`,
       directory,
-    );
-    this.state.iterationSessionId = created.id;
+    });
+    this.activeSession = session;
+    this.state.iterationSessionId = session.id;
     this.persist();
-    return created.id;
+    return session.id;
   }
 
   private attemptKey(iteration: number, phase: PhaseName): string {
@@ -554,8 +578,12 @@ export class CycleEngine {
       } else if (step.gate === "validate-step") {
         verdict = this.gatedVerdict(step.phase, result, parseValidateStepVerdict(result.raw));
       } else if (step.gate === "judge") {
+        const sessionOrClient = this.activeSession ?? this.client;
+        if (!sessionOrClient) {
+          throw new Error("No agent session or OpenCode client available for judge phase");
+        }
         const judge = await judgePhase(
-          this.client,
+          sessionOrClient,
           sessionId,
           this.models.executor,
           step.phase,

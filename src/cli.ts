@@ -13,12 +13,13 @@ import {
 } from "./state/store";
 import { CycleEngine } from "./engine/cycle";
 import { subscribeToEvents } from "./engine/permissions";
-import { startServer, type ServerHandle } from "./server/lifecycle";
 import { events } from "./engine/engineEvents";
 import { printBanner, type BannerInfo } from "./banner";
 import { runPlanMode } from "./engine/planMode";
 import { LiveEngine } from "./engine/liveMode";
 import { maybePrintUpdateReminder } from "./update";
+import { resolveAgent, getAgentRuntime, OpencodeRuntimeAdapter } from "./engine/agent/index.js";
+import type { AgentTarget } from "./agents/integrator.js";
 import {
   describeTemplates,
   getMissing,
@@ -123,6 +124,7 @@ Optional:
   --port <n>            port for the opencode server  (default: free port)
   --server-timeout <ms> server startup timeout  (default: 60000)
   --phase-timeout <ms>  hard deadline per phase step (0 disables)  (default: 1200000, 20 min)
+  --agent <target>      target agent runtime (opencode, claude, codex, omp, etc.)
 
 Install:
   --yes                 install without asking (non-interactive / CI)
@@ -345,6 +347,12 @@ export async function main(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
+  const resolvedAgent = await resolveAgent({
+    flagAgent: typeof args["--agent"] === "string" ? args["--agent"] : undefined,
+    projectConfig: layers.project,
+    userConfig: layers.user,
+  });
+
   const cfg: RunConfig = {
     projectPath,
     planPath: canonicalize(resolve(join(projectPath, String(args["--plan"] ?? "plan.md")))),
@@ -352,6 +360,7 @@ export async function main(argv: string[]): Promise<void> {
     adrPath: canonicalize(resolve(join(projectPath, String(args["--adr"] ?? "adr.md")))),
     thinker,
     executor,
+    agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
     permissions:
       args["--permissions"] === "ask"
@@ -420,7 +429,7 @@ export async function main(argv: string[]): Promise<void> {
     void maybePrintUpdateReminder();
     console.log(
       `[huginn] project=${projectPath}\n` +
-        `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}\n` +
+        `[huginn] agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}\n` +
         `[huginn] iterations=${plan.iterations.length}` +
         (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
     );
@@ -428,7 +437,7 @@ export async function main(argv: string[]): Promise<void> {
     events.emit("log", {
       level: "info",
       message:
-        `project=${projectPath} thinker=${thinker} executor=${executor} mode=${cfg.mode} ` +
+        `project=${projectPath} agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} ` +
         `iterations=${plan.iterations.length}` +
         (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
     });
@@ -436,30 +445,42 @@ export async function main(argv: string[]): Promise<void> {
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
-  let server: ServerHandle;
+  const runtime = getAgentRuntime(resolvedAgent as AgentTarget, {
+    projectPath,
+    port: cfg.port,
+    serverTimeoutMs: cfg.serverTimeoutMs,
+  });
+
   try {
-    server = await startServer(projectPath, cfg.port, cfg.serverTimeoutMs);
+    await runtime.startDaemon?.();
   } catch (err) {
-    console.error(chalk.red(`[huginn] failed to start opencode server: ${(err as Error).message}`));
+    console.error(chalk.red(`[huginn] failed to start ${runtime.name} daemon: ${(err as Error).message}`));
     process.exit(1);
   }
 
-  if (!cfg.tui) {
-    console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
-  } else {
-    events.emit("log", {
-      level: "info",
-      message: `opencode server ready at ${server.url}`,
-    });
+  const serverUrl = runtime instanceof OpencodeRuntimeAdapter ? runtime.serverUrl : undefined;
+  if (serverUrl) {
+    if (!cfg.tui) {
+      console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(serverUrl)}`);
+    } else {
+      events.emit("log", {
+        level: "info",
+        message: `opencode server ready at ${serverUrl}`,
+      });
+    }
   }
 
-  const engine = new CycleEngine({ cfg, plan, state });
-  await validateModels(engine.client, cfg);
-  const sub = subscribeToEvents(engine.client, cfg, (req) => engine.ask(req));
+  const engine = new CycleEngine({ cfg, plan, state, runtime });
+  if (runtime.id === "opencode" && engine.client) {
+    await validateModels(engine.client, cfg);
+  }
+  const sub = runtime.id === "opencode" && engine.client
+    ? subscribeToEvents(engine.client, cfg, (req) => engine.ask(req))
+    : { close: () => {} };
 
   const cleanup = async (code: number) => {
     sub.close();
-    await server.close();
+    await runtime.stopDaemon?.();
     process.exit(code);
   };
   process.on("SIGINT", async () => {
@@ -501,7 +522,7 @@ export async function main(argv: string[]): Promise<void> {
     console.error(chalk.red(`[huginn] fatal: ${(err as Error).message}`));
   } finally {
     sub.close();
-    await server.close();
+    await runtime.stopDaemon?.();
   }
 }
 
@@ -612,6 +633,12 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     idea = String(args._positional ?? "").trim();
   }
 
+  const resolvedAgent = await resolveAgent({
+    flagAgent: typeof args["--agent"] === "string" ? args["--agent"] : undefined,
+    projectConfig: layers.project,
+    userConfig: layers.user,
+  });
+
   const cfg: RunConfig = {
     projectPath,
     planPath: canonicalize(resolve(join(projectPath, String(args["--plan"] ?? "plan.md")))),
@@ -619,6 +646,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     adrPath: canonicalize(resolve(join(projectPath, String(args["--adr"] ?? "adr.md")))),
     thinker,
     executor,
+    agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
     permissions:
       args["--permissions"] === "ask"
@@ -644,44 +672,56 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     void maybePrintUpdateReminder();
     console.log(
       `[huginn] live mode · project=${projectPath}\n` +
-        `[huginn] thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}` +
+        `[huginn] agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}` +
         (idea ? `\n[huginn] initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
     );
   } else {
     events.emit("log", {
       level: "info",
       message:
-        `live mode · project=${projectPath} thinker=${thinker} executor=${executor} mode=${cfg.mode}` +
+        `live mode · project=${projectPath} agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode}` +
         (idea ? ` initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
     });
   }
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
-  let server: ServerHandle;
+  const runtime = getAgentRuntime(resolvedAgent as AgentTarget, {
+    projectPath,
+    port: cfg.port,
+    serverTimeoutMs: cfg.serverTimeoutMs,
+  });
+
   try {
-    server = await startServer(projectPath, cfg.port, cfg.serverTimeoutMs);
+    await runtime.startDaemon?.();
   } catch (err) {
-    console.error(chalk.red(`[huginn] failed to start opencode server: ${(err as Error).message}`));
+    console.error(chalk.red(`[huginn] failed to start ${runtime.name} daemon: ${(err as Error).message}`));
     process.exit(1);
   }
 
-  if (!cfg.tui) {
-    console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(server.url)}`);
-  } else {
-    events.emit("log", {
-      level: "info",
-      message: `opencode server ready at ${server.url}`,
-    });
+  const serverUrl = runtime instanceof OpencodeRuntimeAdapter ? runtime.serverUrl : undefined;
+  if (serverUrl) {
+    if (!cfg.tui) {
+      console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(serverUrl)}`);
+    } else {
+      events.emit("log", {
+        level: "info",
+        message: `opencode server ready at ${serverUrl}`,
+      });
+    }
   }
 
-  const live = new LiveEngine({ cfg, idea: idea || undefined });
-  await validateModels(live.client, cfg);
-  const sub = subscribeToEvents(live.client, cfg, (req) => live.ask(req));
+  const live = new LiveEngine({ cfg, idea: idea || undefined, runtime });
+  if (runtime.id === "opencode" && live.client) {
+    await validateModels(live.client, cfg);
+  }
+  const sub = runtime.id === "opencode" && live.client
+    ? subscribeToEvents(live.client, cfg, (req) => live.ask(req))
+    : { close: () => {} };
 
   const cleanup = async (code: number) => {
     sub.close();
-    await server.close();
+    await runtime.stopDaemon?.();
     process.exit(code);
   };
   process.on("SIGINT", async () => {
@@ -720,7 +760,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     console.error(chalk.red(`[huginn] fatal: ${(err as Error).message}`));
   } finally {
     sub.close();
-    await server.close();
+    await runtime.stopDaemon?.();
   }
 }
 

@@ -1,6 +1,8 @@
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { RunConfig } from "../config";
 import { createClient, createSession, prompt, abortSession } from "../server/client";
+import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
+import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
 import { DecisionBroker } from "./decisionBroker";
 import { events, type LiveStage } from "./engineEvents";
 import type { DecisionChoice, DecisionRequest } from "./types";
@@ -23,6 +25,7 @@ export class LiveAbortError extends Error {
 export interface LiveEngineOptions {
   cfg: RunConfig;
   client?: OpencodeClient;
+  runtime?: IAgentRuntime;
   /** Initial idea. The TUI sends messages one at a time; headless passes the whole idea here. */
   idea?: string;
 }
@@ -91,7 +94,9 @@ function firstLine(text: string): string {
 }
 
 export class LiveEngine {
-  readonly client: OpencodeClient;
+  readonly client?: OpencodeClient;
+  readonly runtime: IAgentRuntime;
+  private session?: IAgentSession;
   private cfg: RunConfig;
   private models: Models;
   private decisions = new DecisionBroker();
@@ -105,7 +110,22 @@ export class LiveEngine {
 
   constructor(opts: LiveEngineOptions) {
     this.cfg = opts.cfg;
-    this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
+    if (opts.runtime) {
+      this.runtime = opts.runtime;
+      if (opts.client) {
+        this.client = opts.client;
+      } else if ("client" in opts.runtime && (opts.runtime as unknown as { client?: OpencodeClient }).client) {
+        this.client = (opts.runtime as unknown as { client: OpencodeClient }).client;
+      }
+      // Non-OpenCode runtimes: leave client undefined — all prompts go through session
+    } else {
+      this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
+      this.runtime = new OpencodeRuntimeAdapter({
+        client: this.client,
+        port: opts.cfg.port,
+        projectPath: opts.cfg.projectPath,
+      });
+    }
     this.models = resolveModels(opts.cfg.thinker, opts.cfg.executor);
     this.idea = opts.idea;
   }
@@ -143,7 +163,8 @@ export class LiveEngine {
   requestAbort(): void {
     this.aborted = true;
     this.decisions.resolveAll("abort");
-    if (this.sessionId) void abortSession(this.client, this.sessionId);
+    if (this.session) void this.session.abort();
+    else if (this.client && this.sessionId) void abortSession(this.client, this.sessionId);
     if (this.cycle) this.cycle.requestAbort();
     events.emit("done", { reason: "aborted", error: "live session aborted" });
   }
@@ -166,9 +187,12 @@ export class LiveEngine {
   }
 
   async start(): Promise<void> {
-    if (this.sessionId) return;
-    const session = await createSession(this.client, `huginn live: ${this.cfg.projectPath}`);
-    this.sessionId = session.id;
+    if (this.sessionId && this.session) return;
+    this.session = await this.runtime.createSession({
+      title: `huginn live: ${this.cfg.projectPath}`,
+      directory: this.cfg.projectPath,
+    });
+    this.sessionId = this.session.id;
     this.setStage("refine");
     events.emit("liveChat", {
       role: "system",
@@ -188,14 +212,26 @@ export class LiveEngine {
     events.emit("liveChat", { role: "user", text });
     const first = this.messages.filter((m) => m.role === "user").length === 1;
     const body = first ? `${refineSystemPrompt(this.cfg.projectPath)}\n\nUSER IDEA:\n${text}` : text;
-    const res = await prompt(this.client, this.sessionId!, {
-      text: body,
-      model: this.models.thinker,
-      timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
-    });
-    this.pushMessage("assistant", res.text);
-    events.emit("liveChat", { role: "assistant", text: res.text });
-    return res.text;
+    let replyText: string;
+    if (this.session) {
+      const res = await this.session.prompt(body, {
+        model: formatModel(this.models.thinker),
+        timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+        directory: this.cfg.projectPath,
+      });
+      replyText = res.text;
+    } else {
+      if (!this.client) throw new Error("No agent session or OpenCode client available for chat");
+      const res = await prompt(this.client, this.sessionId!, {
+        text: body,
+        model: this.models.thinker,
+        timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+      });
+      replyText = res.text;
+    }
+    this.pushMessage("assistant", replyText);
+    events.emit("liveChat", { role: "assistant", text: replyText });
+    return replyText;
   }
 
   private throwIfAborted(): void {
@@ -209,27 +245,41 @@ export class LiveEngine {
 
   private async extractScope(): Promise<string> {
     this.throwIfAborted();
-    const res = await prompt(this.client, this.sessionId!, {
-      text: [
-        `The user is ready to proceed. Based on the entire conversation, produce the refined scope for this project.`,
-        ``,
-        `Respond with ONLY a fenced block:`,
-        ``,
-        `SCOPE:`,
-        "```markdown",
-        `<complete refined scope: what to build or change, goals, non-goals, constraints>`,
-        "```",
-        ``,
-        `OUTPUT FORMAT CONTRACT — obey strictly:`,
-        `- The reply must start with the line "SCOPE:" followed by a fenced markdown block.`,
-        `- The block contains ONLY the refined scope: what to build or change, goals, non-goals, constraints.`,
-        `- No preamble, no closing remarks, no commentary outside the block.`,
-      ].join("\n"),
-      model: this.models.thinker,
-      timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
-    });
-    this.pushMessage("assistant", res.text);
-    const scope = extractScopeBlock(res.text);
+    const promptLines = [
+      `The user is ready to proceed. Based on the entire conversation, produce the refined scope for this project.`,
+      ``,
+      `Respond with ONLY a fenced block:`,
+      ``,
+      `SCOPE:`,
+      "```markdown",
+      `<complete refined scope: what to build or change, goals, non-goals, constraints>`,
+      "```",
+      ``,
+      `OUTPUT FORMAT CONTRACT — obey strictly:`,
+      `- The reply must start with the line "SCOPE:" followed by a fenced markdown block.`,
+      `- The block contains ONLY the refined scope: what to build or change, goals, non-goals, constraints.`,
+      `- No preamble, no closing remarks, no commentary outside the block.`,
+    ].join("\n");
+
+    let replyText: string;
+    if (this.session) {
+      const res = await this.session.prompt(promptLines, {
+        model: formatModel(this.models.thinker),
+        timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+        directory: this.cfg.projectPath,
+      });
+      replyText = res.text;
+    } else {
+      if (!this.client) throw new Error("No agent session or OpenCode client available for scope extraction");
+      const res = await prompt(this.client, this.sessionId!, {
+        text: promptLines,
+        model: this.models.thinker,
+        timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+      });
+      replyText = res.text;
+    }
+    this.pushMessage("assistant", replyText);
+    const scope = extractScopeBlock(replyText);
     if (scope) {
       events.emit("liveChat", { role: "system", text: `✓ Refined scope captured: ${firstLine(scope)}` });
       return scope;
@@ -257,6 +307,15 @@ export class LiveEngine {
   private async promptModel(text: string, label: string): Promise<string> {
     this.throwIfAborted();
     events.emit("log", { level: "info", message: `${label} (${formatModel(this.models.thinker)})...` });
+    if (this.session) {
+      const res = await this.session.prompt(text, {
+        model: formatModel(this.models.thinker),
+        timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+        directory: this.cfg.projectPath,
+      });
+      return res.text;
+    }
+    if (!this.client) throw new Error("No agent session or OpenCode client available for prompt");
     const res = await prompt(this.client, this.sessionId!, {
       text,
       model: this.models.thinker,
@@ -400,7 +459,12 @@ export class LiveEngine {
     }
     resetHarnessState(this.cfg.projectPath);
     const plan = loadPlan(this.cfg.planPath);
-    const engine = new CycleEngine({ cfg: this.cfg, plan, client: this.client });
+    const engine = new CycleEngine({
+      cfg: this.cfg,
+      plan,
+      client: this.client,
+      runtime: this.runtime,
+    });
     this.cycle = engine;
     return engine;
   }

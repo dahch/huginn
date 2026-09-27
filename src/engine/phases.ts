@@ -2,9 +2,9 @@ import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { Iteration } from "../plan/types";
-import type { Models } from "./modelRouter";
-import { formatModel } from "./modelRouter";
-import { prompt, runCommand, type PromptResult } from "../server/client";
+import { formatModel, type Models } from "./modelRouter";
+import { prompt, runCommand } from "../server/client";
+import type { IAgentSession, PromptResult } from "./agent/types.js";
 import { git, pendingChanges, changedFilesSince } from "./diff";
 import {
   verifyTypeScriptContracts,
@@ -15,7 +15,8 @@ import { MemoryService } from "../muninn/service/memory-service.js";
 import { resolveDatabasePath } from "../muninn/db/client.js";
 
 export interface PhaseContext {
-  client: OpencodeClient;
+  client?: OpencodeClient;
+  session?: IAgentSession;
   sessionId: string;
   models: Models;
   projectPath: string;
@@ -55,6 +56,59 @@ function agentDirectory(ctx: PhaseContext): string {
   return ctx.directory ?? ctx.projectPath;
 }
 
+async function promptWithContext(
+  ctx: PhaseContext,
+  opts: {
+    text: string;
+    agent?: string;
+    model?: { providerID: string; modelID: string };
+    timeoutMs?: number;
+    directory?: string;
+  },
+): Promise<PromptResult> {
+  if (ctx.session) {
+    return ctx.session.prompt(opts.text, {
+      agent: opts.agent,
+      model: opts.model ? formatModel(opts.model) : undefined,
+      timeoutMs: opts.timeoutMs,
+      directory: opts.directory,
+    });
+  }
+  if (!ctx.client) {
+    throw new Error("No agent session or OpenCode client available for prompt");
+  }
+  return prompt(ctx.client, ctx.sessionId, opts);
+}
+
+async function runCommandWithContext(
+  ctx: PhaseContext,
+  opts: {
+    command: string;
+    arguments: string;
+    agent?: string;
+    model?: string;
+    timeoutMs?: number;
+    directory?: string;
+  },
+): Promise<PromptResult> {
+  if (ctx.session) {
+    if (typeof ctx.session.runCommand === "function") {
+      return ctx.session.runCommand(opts.command, opts.arguments, opts);
+    }
+    const text = `/${opts.command}${opts.arguments ? ` ${opts.arguments}` : ""}`;
+    return ctx.session.prompt(text, {
+      agent: opts.agent,
+      model: opts.model,
+      timeoutMs: opts.timeoutMs,
+      directory: opts.directory,
+    });
+  }
+  if (!ctx.client) {
+    throw new Error("No agent session or OpenCode client available for command");
+  }
+  return runCommand(ctx.client, ctx.sessionId, opts);
+}
+
 function readOptional(path: string): string {
   try {
     return existsSync(path) ? readFileSync(path, "utf8") : "";
@@ -91,7 +145,7 @@ export async function specAudit(ctx: PhaseContext): Promise<PromptResult> {
     ``,
     `Produce the full Spec Audit Report as defined in your system prompt, ending with the "Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION" line.`,
   ].join("\n");
-  return prompt(ctx.client, ctx.sessionId, { text, agent: "spec-auditor", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
+  return promptWithContext(ctx, { text, agent: "spec-auditor", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
 }
 
 export async function execute(ctx: PhaseContext): Promise<PromptResult> {
@@ -102,7 +156,7 @@ export async function execute(ctx: PhaseContext): Promise<PromptResult> {
     ``,
     ctx.iteration.prompt,
   ].join("\n");
-  return prompt(ctx.client, ctx.sessionId, { text, agent: "build", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
+  return promptWithContext(ctx, { text, agent: "build", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
 }
 
 const EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build"]);
@@ -208,7 +262,7 @@ export async function validateStep(ctx: PhaseContext): Promise<PromptResult> {
 
   // 2. Standard validation slash command
   const args = [...ctx.modules, ctx.specPath].join(" ");
-  return runCommand(ctx.client, ctx.sessionId, {
+  return runCommandWithContext(ctx, {
     command: "validate-step",
     arguments: args,
     model: formatModel(ctx.models.executor),
@@ -218,7 +272,7 @@ export async function validateStep(ctx: PhaseContext): Promise<PromptResult> {
 }
 
 export async function testModule(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommand(ctx.client, ctx.sessionId, {
+  return runCommandWithContext(ctx, {
     command: "test-module",
     arguments: ctx.modules.join(" "),
     model: formatModel(ctx.models.executor),
@@ -228,7 +282,7 @@ export async function testModule(ctx: PhaseContext): Promise<PromptResult> {
 }
 
 export async function secureCheck(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommand(ctx.client, ctx.sessionId, {
+  return runCommandWithContext(ctx, {
     command: "secure-check",
     arguments: "",
     model: formatModel(ctx.models.executor),
@@ -238,7 +292,7 @@ export async function secureCheck(ctx: PhaseContext): Promise<PromptResult> {
 }
 
 export async function review(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommand(ctx.client, ctx.sessionId, {
+  return runCommandWithContext(ctx, {
     command: "review",
     arguments: "",
     model: formatModel(ctx.models.executor),
@@ -248,7 +302,7 @@ export async function review(ctx: PhaseContext): Promise<PromptResult> {
 }
 
 export async function docSync(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommand(ctx.client, ctx.sessionId, {
+  return runCommandWithContext(ctx, {
     command: "doc-sync",
     arguments: "",
     model: formatModel(ctx.models.executor),
@@ -268,7 +322,7 @@ export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
     // ignore git error
   }
 
-  const result = await runCommand(ctx.client, ctx.sessionId, {
+  const result = await runCommandWithContext(ctx, {
     command: "commit-all",
     arguments: "",
     model: formatModel(ctx.models.executor),
@@ -339,7 +393,7 @@ export async function fixFindings(
     ``,
     `Apply the fixes, then summarize exactly what you changed and why.`,
   ].join("\n");
-  return prompt(ctx.client, ctx.sessionId, { text, agent: "build", model: ctx.models.thinker, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
+  return promptWithContext(ctx, { text, agent: "build", model: ctx.models.thinker, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
 }
 
 export async function fixSpec(ctx: PhaseContext, report: string): Promise<PromptResult> {
