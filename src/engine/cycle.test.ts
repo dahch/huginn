@@ -36,6 +36,7 @@ function makeCfg(overrides: Partial<RunConfig> = {}): RunConfig {
     serverTimeoutMs: 1000,
     phaseTimeoutMs: 0,
     ignorePlanChanges: false,
+    sandbox: false,
     ...overrides,
   };
 }

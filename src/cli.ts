@@ -2,7 +2,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
-import type { RunConfig } from "./config";
+import { loadUserConfig, resolveModelsFromConfig, type RunConfig } from "./config";
 import { MAIN_PHASES, type PhaseName } from "./engine/types";
 import { loadPlan } from "./plan/parser";
 import {
@@ -31,22 +31,32 @@ import {
 } from "./setup/install";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleCheckCommand } from "./commands/check";
+import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
 
 export function usage(): string {
   return `huginn — the raven that thinks, builds, and remembers.
 Orchestrator for the opencode spec→commit cycle.
 
 Usage:
-  huginn run --project <repo> --thinker <provider/model> --executor <provider/model> [flags]
+  huginn "<idea>" [flags]     live-first default: refine the idea, draft the docs, approve, build
+  huginn run [flags]          explicit build-cycle execution (CI/batch)
   huginn plan --project <repo> --thinker <provider/model> "<idea>" [flags]
-  huginn live --project <repo> --thinker <provider/model> --executor <provider/model> ["<idea>"] [flags]
+  huginn live [flags]         explicit live mode ["<idea>"]
   huginn install [--yes] [--force] [--only agents|commands]
   huginn memory init [--db <path>] [--project <path>]
   huginn memory search <query> [--category <cat>] [--limit <n>] [--project <path>]
   huginn memory sync [--import] [--file <path>] [--project <path>]
   huginn memory index [files...] [--project <path>] [--db <path>]
   huginn check [files...] [--project <path>]
+  huginn setup [--agent <target>] [--project <path>] [--force]
+  huginn doctor [--project <path>]
   huginn mcp run [--db <path>] [--project <path>]
+
+Default (live-first):
+  Running huginn with no known subcommand — including a bare free-text idea such
+  as \`huginn "crear módulo de pagos"\` — enters live mode. The project defaults
+  to the current working directory and the models are resolved from configuration
+  (see "Model resolution" below) instead of requiring flags.
 
 Commands:
   run     execute the build cycle against plan.md/spec.md/adr.md
@@ -54,14 +64,25 @@ Commands:
   live    interactive refinement + autonomous execution: chat-refine the idea
           (or extend an existing project), draft/update spec.md/adr.md/plan.md,
           approve, then run the build cycles in the same dashboard
+  setup   register Muninn MCP + rules with Cursor, Claude, OpenCode and Windsurf
+  doctor  diagnose the local environment, providers and Muninn database
   check   verify TypeScript execution contracts and pre-emit diagnostics
   install install the opencode subagents and slash commands huginn needs into
           ~/.config/opencode (agents/ and commands/)
   memory  query and manage persistent codebase memory (init, search, sync, index)
   mcp     start the Muninn MCP server for agent memory integration (run)
 
+Model resolution (run/live):
+  Models are resolved in strict precedence order, first non-empty value wins:
+    1. CLI flag          --thinker <m> / --executor <m>
+    2. project config    <project>/.huginn/config.json  ({ "thinker", "executor" })
+    3. user config       ~/.huginn/config.json
+    4. environment       HUGINN_THINKER_MODEL / HUGINN_EXECUTOR_MODEL
+    5. defaults          thinker: anthropic/claude-opus-4-5
+                         executor: opencode/gpt-5.1-codex
+
 Required (run):
-  --project <path>      git repo being built (must contain plan.md, spec.md, adr.md)
+  --project <path>      git repo being built (must contain plan.md, spec.md, adr.md)  (default: cwd)
   --thinker <m>         "thinking" model used to FIX findings (auditor + reviewer + any blocker)
   --executor <m>        model used for everything else (execution, gates, docs, commits)
 
@@ -72,7 +93,7 @@ Required (plan):
   --prompt-file <file>  alternative to <idea> for long prompts (reads the file)
 
 Required (live):
-  --project <path>      git repo being built/iterated (docs are drafted if missing)
+  --project <path>      git repo being built/iterated (docs are drafted if missing)  (default: cwd)
   --thinker <m>         model that refines the idea and drafts the documents
   --executor <m>        model used for the build cycles after approval
   <idea>                optional initial idea; in the TUI you can also type it
@@ -89,6 +110,8 @@ Optional:
   --max-retries <n>     fix attempts per blocked gate before escalating  (default: 3)
   --from-iteration <n>  start at iteration n
   --only-phase <name>   run a single phase per iteration (debugging)
+  --sandbox             run each iteration in an isolated git worktree sandbox  (default)
+  --no-sandbox          run iterations in place (disables worktree sandboxing)
   --resume              resume from saved state; errors if no saved state exists
   --force-restart       discard saved state and start over
   --ignore-plan-changes resume even if plan.md/spec.md/adr.md changed
@@ -120,8 +143,26 @@ const BOOLEAN_FLAGS = new Set([
   "--tui",
   "--headless",
   "--import",
+  "--sandbox",
+  "--no-sandbox",
   "--help",
   "-h",
+]);
+
+/**
+ * Subcommands that keep explicit routing. Anything else (no command, or a
+ * free-text idea positional) is treated as live-first input (REQ-14.4).
+ */
+const KNOWN_COMMANDS = new Set([
+  "run",
+  "plan",
+  "live",
+  "install",
+  "memory",
+  "mcp",
+  "check",
+  "setup",
+  "doctor",
 ]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -197,14 +238,8 @@ async function getFreePort(): Promise<number> {
 
 export async function main(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
-  const command = args._command ?? "run";
-  if (
-    command === "help" ||
-    command === "--help" ||
-    command === "-h" ||
-    ((command === "run" || args._command === undefined) &&
-      (args["--help"] || args["-h"]))
-  ) {
+  const command = args._command;
+  if (command === "help" || args["--help"] || args["-h"]) {
     printBanner({});
     console.log(usage());
     return;
@@ -261,25 +296,29 @@ export async function main(argv: string[]): Promise<void> {
     );
     return;
   }
-  if (command !== "run") {
-    console.error(`Unknown command: ${command}\n\n${usage()}`);
-    process.exit(1);
+  if (command === "setup") {
+    await handleSetupCommand(args as Record<string, string | boolean | undefined>);
+    return;
+  }
+  if (command === "doctor") {
+    await handleDoctorCommand(args as Record<string, string | boolean | undefined>);
+    return;
+  }
+  // Live-first default (REQ-14.4): an unknown/absent subcommand — including a
+  // bare free-text idea such as `huginn "crear módulo"` — enters live mode.
+  if (command === undefined || !KNOWN_COMMANDS.has(command)) {
+    await runLive(args, command);
+    return;
   }
 
   const projectPath = canonicalize(
-    typeof args["--project"] === "string" ? args["--project"] : ""
+    typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
-  if (!projectPath) {
-    console.error("Missing required --project.\n\n" + usage());
-    process.exit(1);
-  }
-  const thinker = typeof args["--thinker"] === "string" ? args["--thinker"] : "";
-  const executor =
-    typeof args["--executor"] === "string" ? args["--executor"] : "";
-  if (!thinker || !executor) {
-    console.error("Missing required --thinker and/or --executor.\n\n" + usage());
-    process.exit(1);
-  }
+  const { thinker, executor } = resolveModelsFromConfig({
+    flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
+    flagExecutor: typeof args["--executor"] === "string" ? args["--executor"] : undefined,
+    projectConfig: loadUserConfig(projectPath),
+  });
 
   if (!existsSync(join(projectPath, ".git"))) {
     console.error(`"${projectPath}" is not a git repository.`);
@@ -308,6 +347,7 @@ export async function main(argv: string[]): Promise<void> {
     serverTimeoutMs: num(args["--server-timeout"], 60000),
     phaseTimeoutMs: num(args["--phase-timeout"], 20 * 60 * 1000),
     ignorePlanChanges: Boolean(args["--ignore-plan-changes"]),
+    sandbox: !args["--no-sandbox"],
   };
 
   for (const [name, path] of [
@@ -488,26 +528,20 @@ async function runPlan(args: ParsedArgs): Promise<void> {
   await runPlanMode({ projectPath, idea, thinker, specPath, adrPath, planPath, port, serverTimeoutMs });
 }
 
-async function runLive(args: ParsedArgs): Promise<void> {
+async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   if (args["--help"] || args["-h"]) {
     printBanner({});
     console.log(usage());
     return;
   }
   const projectPath = canonicalize(
-    typeof args["--project"] === "string" ? args["--project"] : ""
+    typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
-  if (!projectPath) {
-    console.error("Missing required --project.\n\n" + usage());
-    process.exit(1);
-  }
-  const thinker = typeof args["--thinker"] === "string" ? args["--thinker"] : "";
-  const executor =
-    typeof args["--executor"] === "string" ? args["--executor"] : "";
-  if (!thinker || !executor) {
-    console.error("Missing required --thinker and/or --executor.\n\n" + usage());
-    process.exit(1);
-  }
+  const { thinker, executor } = resolveModelsFromConfig({
+    flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
+    flagExecutor: typeof args["--executor"] === "string" ? args["--executor"] : undefined,
+    projectConfig: loadUserConfig(projectPath),
+  });
   warnIfMissingTemplates();
   if (!existsSync(join(projectPath, ".git"))) {
     console.error(`"${projectPath}" is not a git repository.`);
@@ -524,6 +558,8 @@ async function runLive(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
     idea = await Bun.file(p).text();
+  } else if (ideaOverride !== undefined) {
+    idea = ideaOverride.trim();
   } else {
     idea = String(args._positional ?? "").trim();
   }
@@ -550,6 +586,7 @@ async function runLive(args: ParsedArgs): Promise<void> {
     serverTimeoutMs: num(args["--server-timeout"], 60000),
     phaseTimeoutMs: num(args["--phase-timeout"], 20 * 60 * 1000),
     ignorePlanChanges: Boolean(args["--ignore-plan-changes"]),
+    sandbox: !args["--no-sandbox"],
   };
 
   printBanner({ thinker, executor, projectPath, iteration: 1, phase: "LIVE" });
