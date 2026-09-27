@@ -550,3 +550,42 @@ avoids. They are ordered by how central the decision is to the design.
   - *Positive*: Intuitive, Unix-compliant CLI interface for memory operations; robust parsing preventing flag ingestion bugs; immune to positional keyword collisions; perfectly compliant stdio MCP server execution; graceful process termination; unified CI test automation.
   - *Negative*: `parseArgs` maintains a manual `BOOLEAN_FLAGS` registry rather than full schema-driven CLI parsing (such as `yargs` or `commander`), chosen to avoid adding heavy CLI dependencies to huginn.
 
+---
+
+## ADR-18: Verified Execution Contracts via Compiler API & Automatic AST Symbol Graph
+
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: In SDD/ODD-based autonomous agent architectures, verification has historically relied exclusively on running test suites (`npm test`) or asking an LLM to self-review its output. This approach presents two critical problems:
+  1. *Wasted Thought Cycles*: Agents frequently introduce obvious syntax or type errors that slip past local generation and are only caught in late phases (`TEST_MODULE` or `REVIEW`), triggering expensive prompt recovery loops with thinker models.
+  2. *Memory Disconnect*: Muninn's Phase 1 linked observations to code entities only when explicitly passed by agent tool calls. Without an automated AST indexer, Muninn remains blind to the code symbol topology, imports, and inheritance graphs.
+  Huginn requires:
+  1. A compiler verification contract ("Compiler Contract") operating in the pipeline (`VALIDATE_STEP` and pre-commit) that inspects syntactic and semantic diagnostics directly using the TypeScript Compiler API.
+  2. A lightweight static AST symbol indexer that scans files modified during an iteration, extracts functions, classes, methods, interfaces, and dependencies, and populates `entities` and `entity_dependencies` in Muninn.
+- **Decision**:
+  1. **Compiler Verification Contract (`src/contracts/`)**:
+     - Implement `verifyTypeScriptContracts` and `TypeValidator` using the TypeScript Compiler API (`ts.readConfigFile`, `ts.parseJsonConfigFileContent`, `ts.createProgram`, `ts.getPreEmitDiagnostics`).
+     - Load project `tsconfig.json` or fall back to safe strict defaults (`strict: true`, `target: ES2022`, `moduleResolution: NodeNext`).
+     - Filter diagnostics strictly to requested or modified files.
+     - Implement `createVisualSnippet` to render formatted line/column snippets with ASCII underline carats (`^^^^`) and file line context.
+     - Return `{ valid: boolean, errorsCount: number, diagnostics: FormattedDiagnostic[] }`.
+  2. **Topological AST Indexer & Graph Storage (`src/muninn/indexer/`)**:
+     - Add `entity_dependencies` table to Muninn SQLite schema with `(source_entity_id, target_entity_id, relation_type)` primary key and cascading foreign keys.
+     - Traverse AST using `ts.createSourceFile` and `ts.forEachChild` identifying functions, classes, public methods, interfaces, and type aliases.
+     - Format canonical identifiers as `<relPath>::<symbolName>` and `<relPath>::<ClassName>.<methodName>`.
+     - Extract static dependency relationships (`imports`, `calls`, `implements`, `extends`, `references`).
+     - Ingest symbols into `entities` and dependencies into `entity_dependencies` idempotently via `indexFilesIntoMuninn`.
+  3. **Harness Cycle Integration (`src/engine/phases.ts`)**:
+     - In `validateStep`: Before test execution, run `verifyTypeScriptContracts` on iteration modules. If severe compilation errors exist, block the gate and inject structured diagnostics into the prompt context for `FIX_VALIDATE`.
+     - In `commitAll` or post-execution: Run `indexFilesIntoMuninn` over iteration modified files (`git diff`) to keep Muninn's symbol graph synchronized automatically.
+  4. **MCP Tooling Extensions (`src/muninn/mcp/`)**:
+     - Expose `muninn_inspect_symbol`: Returns symbol definition, file path, incoming/outgoing dependencies, and linked observations.
+     - Expose `muninn_verify_contract`: Enables on-demand typecheck diagnostics for specified files.
+  5. **CLI Extensions (`src/commands/check.ts`, `src/commands/memory.ts`, `src/cli.ts`)**:
+     - Add `huginn check [files...]` for standalone compiler contract validation.
+     - Add `huginn memory index [files...]` for AST re-indexing.
+- **Consequences**:
+  - *Positive*: Immediate, zero-overhead failure detection in `VALIDATE_STEP` before executing slow tests; clear, actionable diagnostics for thinker recovery loops; automated, transparent symbol and dependency topology for Muninn; dual runtime Node.js and Bun compatibility.
+  - *Negative*: TypeScript Compiler API program creation has CPU/memory overhead, mitigated by filtering diagnostics to modified files.
+
+

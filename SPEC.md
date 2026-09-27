@@ -43,6 +43,10 @@ Muninn is the persistent semantic and code-symbol memory subsystem for Huginn an
 5. **Observations Full-Text Index (`observations_fts`)**:
    - SQLite FTS5 virtual table indexing `title`, `content`, and `topic_key` with automatic triggers on `observations` (`obs_ai`, `obs_ad`, `obs_au`).
 
+6. **Entity Dependency (`entity_dependencies`)**:
+   - Topological relationship between code entities (imports, calls, implements, extends, references).
+   - Attributes: `source_entity_id` (FK to `entities`), `target_entity_id` (FK to `entities`), `relation_type` (`imports`, `calls`, `implements`, `extends`, `references`). Primary key: `(source_entity_id, target_entity_id, relation_type)`. Foreign keys enforce cascading deletions (`ON DELETE CASCADE`).
+
 ---
 
 ## 3. Ports & Adapters Architecture
@@ -171,6 +175,36 @@ The subsystem must have full unit and integration test coverage under `test/muni
 - **AC-10.3**: Integration tests verify MCP tool handlers, schema validation, argument normalization, and JSON-RPC dispatch in `test/muninn/mcp.test.ts`.
 - **AC-10.4**: Integration and CLI unit tests verify argument parsing, multi-positional extraction, subcommand routing, search formatting, sync import/export, error exit codes, and signal teardown in `test/muninn/commands.test.ts`.
 - **AC-10.5**: All test suites pass cleanly via `npm test` (`bun test && vitest run`), enforced during package publishing via `prepublishOnly` (`bun run build && npm run test && bun run typecheck`).
+
+### REQ-11: Verified Execution Contracts via TypeScript Compiler API
+The system must provide static typecheck and compiler diagnostic verification for affected files during the execution cycle and on demand.
+- **AC-11.1**: `verifyTypeScriptContracts(projectRoot: string, filePaths?: string[])` in `src/contracts/compiler.ts` searches and parses `tsconfig.json` using `ts.readConfigFile` and `ts.parseJsonConfigFileContent`. If absent, applies safe strict defaults (`strict: true`, `target: ES2022`, `moduleResolution: NodeNext`).
+- **AC-11.2**: Creates a TypeScript program (`ts.createProgram`) and extracts diagnostics via `ts.getPreEmitDiagnostics`.
+- **AC-11.3**: Filters diagnostics exclusively to requested `filePaths` (or all modified files if omitted), preventing irrelevant codebase noise.
+- **AC-11.4**: Returns structured result `{ valid: boolean, errorsCount: number, diagnostics: FormattedDiagnostic[] }`.
+- **AC-11.5**: Each diagnostic includes `filePath`, `line`, `character`, `code` (e.g. `TS2322`), `category`, `message`, and an ASCII visual snippet with caret underlining (`^^^^`) highlighting the exact error span.
+- **AC-11.6**: Exposes `TypeValidator` class and `formatDiagnosticsReport` helper for consumption by harness phases and CLI tools.
+
+### REQ-12: Topological AST Symbol & Dependency Indexer
+The system must extract code symbols and dependency relationships from source files using TypeScript AST traversal and persist them in Muninn.
+- **AC-12.1**: `extractSymbolsFromSource(filePath: string, sourceText: string)` parses the AST using `ts.createSourceFile` and identifies:
+  - Top-level and exported functions (`ts.isFunctionDeclaration`).
+  - Classes and their public methods (`ts.isClassDeclaration`, `ts.isMethodDeclaration`).
+  - Interfaces and type aliases (`ts.isInterfaceDeclaration`, `ts.isTypeAliasDeclaration`).
+  - Import declarations (`ts.isImportDeclaration`), extracting imported module specifiers and symbols.
+- **AC-12.2**: Formats canonical entity identifiers as `<relPath>::<symbolName>` (for top-level declarations) and `<relPath>::<ClassName>.<methodName>` (for class methods).
+- **AC-12.3**: `indexFilesIntoMuninn(memoryService: IMemoryService, filePaths: string[])` reads source files from disk, extracts symbols and dependency edges (`imports`, `calls`, `implements`, `extends`, `references`), and persists them into `entities` and `entity_dependencies` within an atomic transaction.
+- **AC-12.4**: Cascading deletes: removing an entity automatically cascades deletion to its outgoing and incoming rows in `entity_dependencies`.
+
+### REQ-13: Pipeline Harness Integration, MCP Tools & CLI Extensions
+The verification contracts and AST symbol indexer must integrate seamlessly into Huginn's execution loop, MCP server, and CLI commands.
+- **AC-13.1**: In `src/engine/phases.ts` `validateStep`: Executes `verifyTypeScriptContracts` on iteration modules before or alongside test execution. If severe compilation errors exist, fails closed with `blocked` verdict and injects structured diagnostic feedback into the prompt context for `FIX_VALIDATE`.
+- **AC-13.2**: In `src/engine/phases.ts` `commitAll` (or post-execution): Runs `indexFilesIntoMuninn` over iteration modified files (`git diff`) to keep Muninn's symbol graph continuously synchronized.
+- **AC-13.3**: MCP Tool `muninn_inspect_symbol`: Registered in `TOOL_REGISTRY` with `MuninnInspectSymbolSchema`. Accepts `{ symbol: string, projectId?: string }`, resolves the entity, and returns entity metadata, source file path, incoming/outgoing dependencies from `entity_dependencies`, and linked observations.
+- **AC-13.4**: MCP Tool `muninn_verify_contract`: Registered in `TOOL_REGISTRY` with `MuninnVerifyContractSchema`. Accepts optional `{ files?: string[] }`, runs `verifyTypeScriptContracts`, and returns realtime compiler diagnostics to autonomous agents.
+- **AC-13.5**: CLI Command `huginn check [files...]`: Implemented in `src/commands/check.ts` and routed from `src/cli.ts`. Scans specified files or auto-discovers TypeScript sources in `src/`, validates contracts via `verifyTypeScriptContracts`, renders colorized error reports, and sets `process.exitCode = 1` on error.
+- **AC-13.6**: CLI Command `huginn memory index [files...]`: Subcommand in `src/commands/memory.ts`. Scans specified files or project sources, extracts symbols and dependencies via `indexFilesIntoMuninn`, and reports indexed counts.
+- **AC-13.7**: Dual Runtime Portability: All modules and test suites maintain 100% green status under both Node.js (via Vitest) and Bun (via `bun test`), with git diff spawning compatibility in `src/engine/diff.ts`.
 
 ---
 
