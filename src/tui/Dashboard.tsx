@@ -9,6 +9,12 @@ import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
+import {
+  RavenHeader,
+  headerValue,
+  useRavenHeaderPlan,
+  type RavenHeaderPlan,
+} from "./RavenHeader.js";
 
 const BASE_PHASES = [
   "SPEC_AUDIT",
@@ -22,6 +28,26 @@ const BASE_PHASES = [
 ] as const;
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/** Footer row (always reserved). */
+const FOOTER_HEIGHT = 1;
+/** Columns the dashboard's outer `paddingX={1}` spends around the header. */
+const VIEW_OUTER_INSET = 2;
+/** The pipeline/stream cards' floor, so their title row is never clipped. */
+const MIDDLE_MIN_ROWS = 6;
+/** Tallest log tail the dashboard renders (5 entries + border). */
+const LOGS_MAX_ROWS = 5;
+/** The decision modal, and the last-report pill. */
+const DECISION_HEIGHT = 6;
+const REPORT_HEIGHT = 1;
+
+/**
+ * Rows the header may not spend: the middle cards' floor, the footer, the
+ * tallest log tail and the decision/report pills. The header's own row cost is
+ * added when the plan is derived (REQ-29 / AC-29.3).
+ */
+const VIEWPORT_RESERVED_ROWS =
+  MIDDLE_MIN_ROWS + FOOTER_HEIGHT + LOGS_MAX_ROWS + DECISION_HEIGHT + REPORT_HEIGHT;
 
 interface PhaseStatus {
   verdict?: Verdict;
@@ -270,11 +296,19 @@ export function Dashboard({
     };
   }, [exit, autoExit]);
 
-  // Calculate dynamic heights
-  const headerHeight = ui.iterationModules.length > 0 ? 6 : 5;
-  const footerHeight = 1;
-  const reportHeight = ui.lastReport && !ui.decision ? 1 : 0;
-  const decisionHeight = ui.decision ? 6 : 0;
+  // Calculate dynamic heights. The raven header's row cost is derived from the
+  // same plan the header renders, so art never eats into the cards (AC-29.3).
+  const headerContextRows = ui.iterationModules.length > 0 ? 4 : 3;
+  const headerPlan = useRavenHeaderPlan(
+    headerContextRows,
+    VIEWPORT_RESERVED_ROWS,
+    terminalSize,
+    VIEW_OUTER_INSET,
+  );
+  const headerHeight = headerPlan.height;
+  const footerHeight = FOOTER_HEIGHT;
+  const reportHeight = ui.lastReport && !ui.decision ? REPORT_HEIGHT : 0;
+  const decisionHeight = ui.decision ? DECISION_HEIGHT : 0;
 
   // Dynamically allocate log count to ensure middle cards remain comfortably visible
   let maxLogsAllowed = 0;
@@ -287,7 +321,7 @@ export function Dashboard({
   const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
 
   const middleHeight = Math.max(
-    6,
+    MIDDLE_MIN_ROWS,
     terminalSize.rows - headerHeight - footerHeight - logsHeight - decisionHeight - reportHeight - 1,
   );
   const streamLinesCount = Math.max(1, middleHeight - 3);
@@ -356,6 +390,7 @@ export function Dashboard({
       paddingY={0}
     >
       <HeaderCard
+        plan={headerPlan}
         iteration={ui.currentIteration}
         totalIterations={ui.totalIterations}
         iterationTitle={ui.iterationTitle}
@@ -405,6 +440,7 @@ export function Dashboard({
 }
 
 function HeaderCard({
+  plan,
   iteration,
   totalIterations,
   iterationTitle,
@@ -417,6 +453,7 @@ function HeaderCard({
   cfg,
   mcpStatus,
 }: {
+  plan: RavenHeaderPlan;
   iteration: number;
   totalIterations: number;
   iterationTitle: string;
@@ -432,60 +469,116 @@ function HeaderCard({
   const isFix = currentPhase.startsWith("FIX");
   const progressStr = renderProgressBar(iteration, Math.max(1, totalIterations));
   const mcpBadge = formatMcpBadge(mcpStatus);
+  // The raven brand is followed by meaningful run context (AC-29.4). Every
+  // dynamic value is sanitized and clamped to the columns actually left over,
+  // and detail that no longer fits is dropped instead of wrapped, so each row
+  // costs exactly the one line the layout budgeted for it (AC-29.3).
+  const rowWidth = plan.contentWidth;
+  const gap = 2;
+  const statusLabel = paused ? "[⏸ PAUSED]" : `[${spinner} RUNNING]`;
+  const modeLabel = "mode: ";
+  const modeBudget = Math.max(4, Math.min(14, rowWidth - statusLabel.length - modeLabel.length - 20));
+  const safeMode = headerValue(cfg.mode, modeBudget);
+  const elapsedLabel = `Elapsed: ${formatDurationSec(totalElapsed)}`;
+  const usedStatus = statusLabel.length + 1 + modeLabel.length + safeMode.length + 3;
+  const mcpRoom = rowWidth - usedStatus - elapsedLabel.length - gap - 2;
+  const mcpText = mcpRoom >= 10 ? headerValue(mcpBadge.text, Math.min(26, mcpRoom)) : "";
 
-  return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1}>
-      <Box justifyContent="space-between">
-        <Box>
-          <Text bold color="cyan">🦅 HUGINN </Text>
-          <Text bold color={paused ? "yellow" : "green"}>
-            {paused ? " [⏸ PAUSED] " : ` [${spinner} RUNNING] `}
-          </Text>
-          <Text dimColor>mode: </Text>
-          <Text bold color="white">{cfg.mode} </Text>
-          <Text dimColor>· </Text>
-          <Text color={mcpBadge.color}>{mcpBadge.text}</Text>
-        </Box>
-        <Box>
-          <Text dimColor>Elapsed: </Text>
-          <Text bold color="white">{formatDurationSec(totalElapsed)}</Text>
-        </Box>
-      </Box>
+  const iterLabel = `Iter ${iteration}/${totalIterations}: `;
+  const titleRoom = rowWidth - iterLabel.length - progressStr.length - gap - 2;
+  const titleValue = titleRoom >= 8 ? headerValue(iterationTitle, titleRoom) : "";
+  const progressValue = titleRoom >= 8 ? progressStr : "";
 
-      <Box marginTop={0} justifyContent="space-between">
-        <Box flexDirection="column">
-          <Text>
-            <Text bold color="white">{`Iter ${iteration}/${totalIterations}: `}</Text>
-            <Text color="cyanBright">{iterationTitle || "(initializing...)"}</Text>
+  const modulesLine = headerValue(modules.join(", "), Math.max(8, rowWidth - "modules: ".length - 2));
+
+  const phaseLabel = "Active Phase: ";
+  const durationLabel = ` (${formatDurationSec(phaseElapsed)})`;
+  const phaseBudget = Math.max(6, Math.min(22, Math.floor(rowWidth * 0.24)));
+  const safePhase = headerValue(currentPhase, phaseBudget);
+  const usedLeft = phaseLabel.length + safePhase.length + durationLabel.length;
+  // Models live in the right cell of the phase row: labels + both ids must fit.
+  const modelLabels = "thinker: ".length + " · executor: ".length;
+  const modelRoom = rowWidth - usedLeft - gap - modelLabels - 2;
+  const bothModels = modelRoom >= 16;
+  const modelBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : 0);
+  const thinkerName = (cfg.thinker ?? "").split("/").pop() ?? "";
+  const executorName = (cfg.executor ?? "").split("/").pop() ?? "";
+  const safeThinker = bothModels ? headerValue(thinkerName, modelBudget) : "";
+  const executorBudget = modelRoom - safeThinker.length;
+  const safeExecutor =
+    bothModels && executorBudget >= 4 ? headerValue(executorName, executorBudget) : "";
+
+  const rows: React.ReactNode[][] = [
+    [
+      <>
+        <Text bold color={paused ? "yellow" : "green"} wrap="truncate">
+          {`${statusLabel} `}
+        </Text>
+        <Text dimColor>mode: </Text>
+        <Text bold color="white" wrap="truncate">
+          {safeMode}
+        </Text>
+        {mcpText ? (
+          <Text key="mcp" color={mcpBadge.color} wrap="truncate">
+            {` · ${mcpText}`}
           </Text>
-          {modules.length > 0 && (
-            <Text dimColor>
-              modules: <Text color="yellow">{modules.join(", ")}</Text>
+        ) : null}
+      </>,
+      <Text key="elapsed" bold color="white" wrap="truncate">
+        {elapsedLabel}
+      </Text>,
+    ],
+    [
+      <>
+        <Text bold color="white">{iterLabel}</Text>
+        <Text color="cyanBright" wrap="truncate">
+          {titleValue || "(initializing...)"}
+        </Text>
+      </>,
+      ...(progressValue
+        ? [
+            <Text key="progress" color="cyan" wrap="truncate">
+              {progressValue}
+            </Text>,
+          ]
+        : []),
+    ],
+  ];
+
+  if (modules.length > 0) {
+    rows.push([
+      <Text key="modules" dimColor wrap="truncate">
+        modules: <Text color="yellow">{modulesLine}</Text>
+      </Text>,
+    ]);
+  }
+
+  rows.push([
+    <>
+      <Text dimColor>{phaseLabel}</Text>
+      <Text bold color={isFix ? "magenta" : "blueBright"} wrap="truncate">
+        {safePhase}
+      </Text>
+      <Text dimColor>{durationLabel}</Text>
+    </>,
+    ...(safeThinker
+      ? [
+          <>
+            <Text dimColor>thinker: </Text>
+            <Text color="magenta" wrap="truncate">
+              {safeThinker}
             </Text>
-          )}
-        </Box>
-        <Box flexDirection="column" alignItems="flex-end">
-          <Text color="cyan">{progressStr}</Text>
-        </Box>
-      </Box>
+            {safeExecutor ? (
+              <Text key="executor" color="blueBright" wrap="truncate">
+                {` · executor: ${safeExecutor}`}
+              </Text>
+            ) : null}
+          </>,
+        ]
+      : []),
+  ]);
 
-      <Box marginTop={0} justifyContent="space-between">
-        <Box>
-          <Text dimColor>Active Phase: </Text>
-          <Text bold color={isFix ? "magenta" : "blueBright"}>
-            {currentPhase}
-          </Text>
-          <Text dimColor> ({formatDurationSec(phaseElapsed)})</Text>
-        </Box>
-        <Box>
-          <Text dimColor>thinker: </Text>
-          <Text color="magenta">{cfg.thinker.split("/").pop()}</Text>
-          <Text dimColor> · executor: </Text>
-          <Text color="blueBright">{cfg.executor.split("/").pop()}</Text>
-        </Box>
-      </Box>
-    </Box>
-  );
+  return <RavenHeader plan={plan} rows={rows} />;
 }
 
 function PipelineCard({

@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import pkg from "../package.json";
+import { HUGINN_WORDMARK } from "./brand.js";
 
 export interface BannerInfo {
   version?: string;
@@ -11,13 +12,12 @@ export interface BannerInfo {
   phase?: string;
 }
 
-const ART = [
-  "    __  ____  _____________   ___   __",
-  "   / / / / / / / ____/  _/ | / / | / /",
-  "  / /_/ / / / / / __ / //  |/ /  |/ / ",
-  " / __  / /_/ / /_/ // // /|  / /|  /  ",
-  "/_/ /_/\\____/\\____/___/_/ |_/_/ |_/   ",
-];
+/**
+ * The CLI wordmark is the shared brand asset (`src/brand.ts`) — the TUI headers
+ * render the very same rows next to the raven mark, so the two surfaces cannot
+ * drift apart (REQ-29/AC-29.2).
+ */
+const ART = HUGINN_WORDMARK;
 
 const QUOTE = [
   "  Two ravens fly each day over the whole world;",

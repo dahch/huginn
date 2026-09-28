@@ -25,6 +25,12 @@ import { loadSkills, findSkill, type Skill } from "../engine/skills/index.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import {
+  RavenHeader,
+  headerValue,
+  useRavenHeaderPlan,
+  type RavenHeaderPlan,
+} from "./RavenHeader.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -33,11 +39,25 @@ const STATUS_VALUE_WIDTH = 35;
 const STATUS_LINE_WIDTH = STATUS_LABEL_WIDTH + STATUS_VALUE_WIDTH + 4;
 const STATUS_TITLE = "System Diagnostics";
 
+/** Live context rows rendered by `LiveHeader` (stage/badge + models). */
+const LIVE_HEADER_CONTEXT_ROWS = 2;
+/** Columns the live view's outer `paddingX={1}` spends around the header. */
+const LIVE_VIEW_OUTER_INSET = 2;
+/** `minHeight` both scrollable cards keep so their title row is never clipped. */
+const CARD_MIN_ROWS = 4;
+const INPUT_HEIGHT = 2;
+const FOOTER_HEIGHT = 1;
+/** The palette's own rounded border (top + bottom). */
+const PALETTE_BORDER_ROWS = 2;
+
 /**
- * Rows the command palette may not spend: header (4) + input (2) + footer (1) +
- * the 8-row floor for the chat/stream cards + the palette border (2).
+ * Rows the header may not spend: the card floors, the input row, the footer and
+ * the tallest command palette (6 content rows + border). The header's own row
+ * cost is added on top when the plan is derived, so the art can never squeeze
+ * the viewport (AC-29.3 / AC-28.4).
  */
-const PALETTE_RESERVED_ROWS = 17;
+const VIEWPORT_RESERVED_ROWS =
+  CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT + MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS;
 
 function statusRow(label: string, value: string): string {
   return `│ ${label.padEnd(STATUS_LABEL_WIDTH)} ${value.padEnd(STATUS_VALUE_WIDTH)}│`;
@@ -159,6 +179,20 @@ function RefineView({
 }) {
   const { exit } = useApp();
   const terminalSize = useTerminalSize();
+  // The raven header's real row cost (raven mark + live context, or the
+  // plain-text fallback) comes from the same plan the component renders, so the
+  // layout budget can never disagree with the header (REQ-29 / AC-29.3).
+  // `outerInset: 2` is this view's own `paddingX={1}` around the header.
+  const headerPlan = useRavenHeaderPlan(
+    LIVE_HEADER_CONTEXT_ROWS,
+    VIEWPORT_RESERVED_ROWS,
+    terminalSize,
+    LIVE_VIEW_OUTER_INSET,
+  );
+  const headerHeight = headerPlan.height;
+  /** Rows the palette must leave for the header, cards, input and footer. */
+  const paletteReservedRows =
+    headerHeight + INPUT_HEIGHT + FOOTER_HEIGHT + CARD_MIN_ROWS * 2 + PALETTE_BORDER_ROWS;
   const [stage, setStage] = useState<LiveStage>("refine");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [decision, setDecision] = useState<DecisionRequest | undefined>();
@@ -368,7 +402,7 @@ function RefineView({
     suggestionMatches.length > 0;
   const suggestionRowCap = Math.max(
     1,
-    Math.min(MAX_SUGGESTION_ROWS, terminalSize.rows - PALETTE_RESERVED_ROWS),
+    Math.min(MAX_SUGGESTION_ROWS, terminalSize.rows - paletteReservedRows),
   );
   const suggestionRows = useMemo<SuggestionRow[]>(
     () => (suggestionsOpen ? buildSuggestionRows(suggestionMatches, suggestionIndex, suggestionRowCap) : []),
@@ -725,10 +759,8 @@ function RefineView({
     [live, cfg.projectPath],
   );
 
-  // Dynamic layout calculations based on terminal size
-  const headerHeight = 4;
-  const inputHeight = 2;
-  const footerHeight = 1;
+  // Dynamic layout calculations based on terminal size.
+  // `headerPlan`/`paletteReservedRows` are derived at the top of the component.
   const decisionHeight = decision ? 6 : 0;
   // The palette is height-bounded (≤6 content rows + border) and part of the budget.
   const suggestionHeight = suggestionOverlayHeight(suggestionRows);
@@ -751,8 +783,8 @@ function RefineView({
     1,
     terminalSize.rows -
       headerHeight -
-      inputHeight -
-      footerHeight -
+      INPUT_HEIGHT -
+      FOOTER_HEIGHT -
       logsHeight -
       decisionHeight -
       suggestionHeight,
@@ -903,6 +935,7 @@ function RefineView({
       paddingY={0}
     >
       <LiveHeader
+        plan={headerPlan}
         stage={stage}
         cfg={cfg}
         spinner={spinner}
@@ -981,13 +1014,20 @@ function RefineView({
               maxRows={suggestionRowCap}
             />
           )}
-          <Box justifyContent="space-between">
-            {suggestionsOpen ? (
-              <Text dimColor>[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss · type to filter</Text>
-            ) : (
-              <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · / to list commands</Text>
-            )}
-            <Text dimColor>stage: {STAGE_LABEL[stage].label}</Text>
+          {/* Single-line footer (AC-28.4): the hint must never wrap, or it costs
+              a row the layout budget did not reserve and pushes the frame off
+              screen. The stage label never shrinks; the hint truncates. */}
+          <Box justifyContent="space-between" height={FOOTER_HEIGHT} overflow="hidden" flexDirection="row">
+            <Box flexShrink={1} overflow="hidden">
+              {suggestionsOpen ? (
+                <Text dimColor wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
+              ) : (
+                <Text dimColor wrap="truncate">[Tab] Toggle focus · [↑/↓] Scroll · [Enter] Send · / for commands</Text>
+              )}
+            </Box>
+            <Box flexShrink={0}>
+              <Text dimColor wrap="truncate">stage: {STAGE_LABEL[stage].label}</Text>
+            </Box>
           </Box>
         </>
       )}
@@ -996,6 +1036,7 @@ function RefineView({
 }
 
 function LiveHeader({
+  plan,
   stage,
   cfg,
   spinner,
@@ -1004,6 +1045,7 @@ function LiveHeader({
   executor,
   mcpStatus,
 }: {
+  plan: RavenHeaderPlan;
   stage: LiveStage;
   cfg: RunConfig;
   spinner: string;
@@ -1014,38 +1056,89 @@ function LiveHeader({
 }) {
   const s = STAGE_LABEL[stage];
   const mcpBadge = formatMcpBadge(mcpStatus);
-  const safeRuntimeName = sanitizeTerminalText(runtimeName).slice(0, 40);
-  const safeProjectPath = sanitizeTerminalText(cfg.projectPath).slice(0, 80);
-  const safeThinker = sanitizeTerminalText(thinker).slice(0, 60);
-  const safeExecutor = sanitizeTerminalText(executor).slice(0, 60);
+  // Presence over decoration (AC-29.4): the raven brand is followed by the live
+  // stage, a (truthful) MCP badge, the active runtime, the project path and the
+  // active models. Every dynamic value is sanitized and clamped to the columns
+  // actually left over, and detail that no longer fits is dropped rather than
+  // wrapped, so each row costs exactly the one line the budget reserved (AC-29.3).
+  const rowWidth = plan.contentWidth;
+  const gap = 2;
+  const sep = " · ";
+  const stageBadge = `[${spinner} ${s.label}]`;
+  const mcpText = headerValue(mcpBadge.text, 30);
+
+  // Row 1: right cell, left to right — MCP badge → runtime → project path. The
+  // 2-column slack absorbs badges drawing wider than their code-point length.
+  const rightBudget = Math.max(0, rowWidth - stageBadge.length - gap - 2);
+  const runtimeLabel = `${sep}runtime: `;
+  const runtimeBudget = Math.max(6, Math.min(24, Math.floor(rightBudget * 0.25)));
+  const runtimeValue =
+    rightBudget - mcpText.length - runtimeLabel.length >= runtimeBudget
+      ? headerValue(runtimeName, runtimeBudget)
+      : "";
+  const projectRoom =
+    rightBudget - mcpText.length - (runtimeValue ? runtimeLabel.length + runtimeValue.length : 0) - sep.length;
+  const projectValue = projectRoom >= 10 ? headerValue(cfg.projectPath, projectRoom) : "";
+
+  // Row 2: thinker always, executor while both ids still fit side by side.
+  const modelLabels = "thinker: ".length + "executor: ".length;
+  const modelRoom = rowWidth - gap - modelLabels - 2;
+  const bothModels = modelRoom >= 16;
+  const thinkerBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : rowWidth - "thinker: ".length - gap);
+  const safeThinker = headerValue(thinker, thinkerBudget);
+  const executorBudget = modelRoom - safeThinker.length;
+  const safeExecutor = bothModels && executorBudget >= 4 ? headerValue(executor, executorBudget) : "";
 
   return (
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1}>
-      <Box justifyContent="space-between">
-        <Box>
-          <Text bold color="cyan">🦅 HUGINN LIVE </Text>
-          <Text bold color={s.color}>
-            [{spinner} {s.label}]
-          </Text>
-        </Box>
-        <Box>
-          <Text color={mcpBadge.color}>{mcpBadge.text}</Text>
-          <Text dimColor> · runtime: </Text>
-          <Text color="yellow">{safeRuntimeName}</Text>
-          <Text dimColor> · project: {safeProjectPath}</Text>
-        </Box>
-      </Box>
-      <Box justifyContent="space-between">
-        <Box>
-          <Text dimColor>thinker: </Text>
-          <Text color="magenta">{safeThinker}</Text>
-        </Box>
-        <Box>
-          <Text dimColor>executor: </Text>
-          <Text color="green">{safeExecutor}</Text>
-        </Box>
-      </Box>
-    </Box>
+    <RavenHeader
+      plan={plan}
+      suffix="LIVE"
+      rows={[
+        [
+          <Text key="stage" bold color={s.color} wrap="truncate">
+            {stageBadge}
+          </Text>,
+          <>
+            <Text key="mcp" color={mcpBadge.color} wrap="truncate">
+              {mcpText}
+            </Text>
+            {runtimeValue ? (
+              <>
+                <Text key="runtime-label" dimColor wrap="truncate">
+                  {runtimeLabel}
+                </Text>
+                <Text key="runtime" color="yellow" wrap="truncate">
+                  {runtimeValue}
+                </Text>
+              </>
+            ) : null}
+            {projectValue ? (
+              <Text key="project" dimColor wrap="truncate">
+                {`${sep}${projectValue}`}
+              </Text>
+            ) : null}
+          </>,
+        ],
+        [
+          <>
+            <Text dimColor>thinker: </Text>
+            <Text color="magenta" wrap="truncate">
+              {safeThinker}
+            </Text>
+          </>,
+          ...(safeExecutor
+            ? [
+                <>
+                  <Text dimColor>executor: </Text>
+                  <Text color="green" wrap="truncate">
+                    {safeExecutor}
+                  </Text>
+                </>,
+              ]
+            : []),
+        ],
+      ]}
+    />
   );
 }
 
@@ -1075,7 +1168,7 @@ function ScrollableChatCard({
       flexDirection="column"
       paddingX={1}
       height={height}
-      minHeight={4}
+      minHeight={CARD_MIN_ROWS}
     >
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={isFocused ? "cyanBright" : "cyan"}>
@@ -1165,7 +1258,7 @@ function ScrollableStreamCard({
       flexDirection="column"
       paddingX={1}
       height={height}
-      minHeight={4}
+      minHeight={CARD_MIN_ROWS}
     >
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={isFocused ? "cyanBright" : "cyan"}>
