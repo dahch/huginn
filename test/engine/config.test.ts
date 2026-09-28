@@ -186,6 +186,33 @@ describe("loadUserConfig", () => {
     silenceWarnings();
     expect(loadUserConfig(project, home)).toEqual({ keepMe: { a: 1 } });
   });
+
+  it("names the successor when the config uses a removed agent (AC-35.3)", () => {
+    const { project, home } = makeEnv();
+    writeProjectConfig(project, { agent: "gemini" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Dropped from the result (so the run falls back to detection), but the
+      // message says *why* and what to use instead — not just "must be one of".
+      expect(loadUserConfig(project, home)).toEqual({});
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("removed"));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("agy"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("still rejects an arbitrary unknown agent in config (SEC-001)", () => {
+    const { project, home } = makeEnv();
+    writeProjectConfig(project, { agent: "evil-script" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(loadUserConfig(project, home)).toEqual({});
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("must be one of"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("saveUserConfig", () => {

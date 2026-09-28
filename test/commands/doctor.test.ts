@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { setup } from "../../src/agents/integrator.js";
+import { setup, AGENT_TARGETS } from "../../src/agents/integrator.js";
 import {
   handleDoctorCommand,
   runDoctorChecks,
@@ -128,7 +128,7 @@ describe("runDoctorChecks", () => {
     const report = runDoctorChecks(options(env));
     const integrations = byId(report).get("integrations");
     expect(integrations?.status).toBe("ok");
-    expect(integrations?.detail).toContain("12/12");
+    expect(integrations?.detail).toContain(`${AGENT_TARGETS.length}/${AGENT_TARGETS.length}`);
   });
 
   it("marks the git-repo critical check failed outside a repo", () => {

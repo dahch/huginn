@@ -1,7 +1,12 @@
 import { delimiter, join } from "node:path";
 import { accessSync, constants, statSync } from "node:fs";
 import type { OpencodeClient } from "@opencode-ai/sdk";
-import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../../agents/integrator.js";
+import {
+  AGENT_REGISTRY,
+  AGENT_TARGETS,
+  REMOVED_AGENT_TARGETS,
+  type AgentTarget,
+} from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
 import {
   AGY_MCP_LIST_TIMEOUT_MS,
@@ -27,7 +32,6 @@ export const AGENT_BINARIES: Record<AgentTarget, string[]> = {
   pi: ["pi"],
   cursor: ["cursor"],
   windsurf: ["windsurf"],
-  gemini: ["gemini"],
   agy: ["agy"],
 };
 
@@ -114,17 +118,35 @@ export async function resolveAgent(sources: AgentResolutionSources = {}): Promis
     return candidate;
   };
 
+  /**
+   * A *persisted* agent that was **removed** (e.g. `gemini`, superseded by `agy`)
+   * must not break the run: warn and fall through to detection, so an old
+   * `.huginn/config.json` keeps working (AC-35.3). An arbitrary unknown value is
+   * still rejected, so a hostile config cannot name an arbitrary binary (SEC-001).
+   */
+  const fromStoredConfig = (val: string | undefined, where: string): AgentTarget | undefined => {
+    const candidate = val?.trim().toLowerCase();
+    if (!candidate) return undefined;
+    if (isAgentTarget(candidate)) return candidate;
+    if (REMOVED_AGENT_TARGETS.has(candidate)) {
+      console.warn(
+        `[huginn] ⚠ the agent "${candidate}" in ${where} was removed ` +
+          `(superseded by "${REMOVED_AGENT_TARGETS.get(candidate)}"); falling back to auto-detection.`,
+      );
+      return undefined;
+    }
+    throw new Error(`Unknown agent target: "${val}". Supported targets: ${AGENT_TARGETS.join(", ")}`);
+  };
+
   if (sources.flagAgent && sources.flagAgent.trim().length > 0) {
     return validateTarget(sources.flagAgent);
   }
 
-  if (sources.projectConfig?.agent && sources.projectConfig.agent.trim().length > 0) {
-    return validateTarget(sources.projectConfig.agent);
-  }
+  const projectAgent = fromStoredConfig(sources.projectConfig?.agent, "the project config");
+  if (projectAgent) return projectAgent;
 
-  if (sources.userConfig?.agent && sources.userConfig.agent.trim().length > 0) {
-    return validateTarget(sources.userConfig.agent);
-  }
+  const userAgent = fromStoredConfig(sources.userConfig?.agent, "the user config");
+  if (userAgent) return userAgent;
 
   const env = sources.env ?? process.env;
   if (env.HUGINN_AGENT && env.HUGINN_AGENT.trim().length > 0) {
@@ -186,21 +208,12 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         homeDir: options.homeDir,
         env: options.env,
       });
-    // REQ-27: `gemini`, `kimi`, `pi`, `cursor` and `windsurf` expose no listing
+    // REQ-27 / REQ-35.3: `kimi`, `pi`, `cursor` and `windsurf` expose no listing
     // command (verified by probing `--help` where installed), so discovery is
     // honestly empty (`[]` — the `${id}/default` placeholder is gone) and the
     // picker offers free-text ids. `agy` *does* list (`agy models`) and is wired
-    // below.
-    case "gemini":
-      return new GenericSubprocessRuntimeAdapter({
-        id: "gemini",
-        name: AGENT_REGISTRY.gemini?.label ?? "gemini",
-        command: "gemini",
-        modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
-        projectPath: options.projectPath,
-        homeDir: options.homeDir,
-        env: options.env,
-      });
+    // below. (`gemini` was removed entirely: its non-interactive form needs
+    // `-p <arg>` and it is superseded by `agy`.)
     case "agy":
       return new GenericSubprocessRuntimeAdapter({
         id: "agy",

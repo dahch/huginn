@@ -64,7 +64,7 @@ function stripAnsi(value: string): string {
   return value.replace(/\u001B\[[0-9;]*m/g, "");
 }
 
-/** A full 12-target PATH scan in the real registry order; two are installed. */
+/** A full 11-target PATH scan in the real registry order; two are installed. */
 const DETECTED: AgentDetection[] = AGENT_TARGETS.map((id) =>
   id === "claude" || id === "opencode"
     ? { id, available: true, path: `/usr/local/bin/${id}` }

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AGENT_TARGETS } from "../../../src/agents/integrator.js";
 import {
   detectAvailableAgents,
   getAgentRuntime,
@@ -152,17 +153,13 @@ describe("Agent Registry & Factory", () => {
     expect(windsurf.id).toBe("windsurf");
     expect(windsurf.name).toBe("Windsurf");
 
-    const gemini = getAgentRuntime("gemini");
-    expect(gemini.id).toBe("gemini");
-    expect(gemini.name).toBe("Gemini CLI");
-
     const agy = getAgentRuntime("agy");
     expect(agy.id).toBe("agy");
     expect(agy.name).toBe("Antigravity CLI (agy)");
   });
 
   it("never fabricates a model catalog for runtimes without a listing command (REQ-27)", async () => {
-    for (const target of ["kimi", "pi", "cursor", "windsurf", "gemini", "claude", "qwen", "codex"] as const) {
+    for (const target of ["kimi", "pi", "cursor", "windsurf", "claude", "qwen", "codex"] as const) {
       const runtime = getAgentRuntime(target, { env: { PATH: "/dev/null" } });
       // AC-27.4: no `${id}/default` placeholder, no static list — honest [].
       expect(await runtime.getAvailableModels()).toEqual([]);
@@ -222,47 +219,53 @@ describe("Agent Registry & Factory", () => {
     }
   });
 
-  it("exposes the runtime's native model flag for the runtimes without a listing command (AC-27.5)", async () => {
-    // REV-003/S1: `kimi`/`pi`/`cursor`/`windsurf` used to have no `modelArgs` at
-    // all, so `HUGINN_MODEL` was their only (unread) model channel.
-    const tempDir = mkdtempSync(join(tmpdir(), "huginn-modelargs-"));
-    try {
-      const cases: Array<[string, string[]]> = [
-        ["kimi", ["-m", "moonshot/kimi-k2.5"]],
-        ["pi", ["-m", "moonshot/kimi-k2.5"]],
-        ["cursor", ["--model", "moonshot/kimi-k2.5"]],
-        ["windsurf", ["--model", "moonshot/kimi-k2.5"]],
-      ];
+  // Spawns five short-lived processes; the default 5s budget is tight under the
+  // parallel full-suite run, so this one gets its own (REV-3302/O2).
+  it(
+    "exposes the runtime's native model flag for the runtimes without a listing command (AC-27.5)",
+    async () => {
+      // REV-003/S1: `kimi`/`pi`/`cursor`/`windsurf` used to have no `modelArgs` at
+      // all, so `HUGINN_MODEL` was their only (unread) model channel.
+      const tempDir = mkdtempSync(join(tmpdir(), "huginn-modelargs-"));
+      try {
+        const cases: Array<[AgentTarget, string[]]> = [
+          ["kimi", ["-m", "moonshot/kimi-k2.5"]],
+          ["pi", ["-m", "moonshot/kimi-k2.5"]],
+          ["cursor", ["--model", "moonshot/kimi-k2.5"]],
+          ["windsurf", ["--model", "moonshot/kimi-k2.5"]],
+        ];
 
-      for (const [target, expected] of cases) {
-        const fake = join(tempDir, target);
-        writeFileSync(fake, '#!/bin/sh\nprintf \'%s\\n\' "$@"\n');
-        chmodSync(fake, 0o755);
+        for (const [target, expected] of cases) {
+          const fake = join(tempDir, target);
+          writeFileSync(fake, '#!/bin/sh\nprintf \'%s\\n\' "$@"\n');
+          chmodSync(fake, 0o755);
 
-        const runtime = getAgentRuntime(target as "kimi", { env: { PATH: tempDir } });
-        expect(runtime.id).toBe(target);
+          const runtime = getAgentRuntime(target, { env: { PATH: tempDir } });
+          expect(runtime.id).toBe(target);
 
-        const session = await runtime.createSession({ title: target });
+          const session = await runtime.createSession({ title: target });
+          const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
+          const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
+          expect(argv).toEqual(expected);
+        }
+
+        // The flag stays overridable through `RuntimeOptions`.
+        const overridden = getAgentRuntime("kimi", {
+          env: { PATH: tempDir },
+          modelArgs: (model) => ["--kimi-model", model],
+        });
+        const session = await overridden.createSession({ title: "override" });
         const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
-        const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
-        expect(argv).toEqual(expected);
+        expect(result.text.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual([
+          "--kimi-model",
+          "moonshot/kimi-k2.5",
+        ]);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
       }
-
-      // The flag stays overridable through `RuntimeOptions`.
-      const overridden = getAgentRuntime("kimi", {
-        env: { PATH: tempDir },
-        modelArgs: (model) => ["--kimi-model", model],
-      });
-      const session = await overridden.createSession({ title: "override" });
-      const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
-      expect(result.text.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual([
-        "--kimi-model",
-        "moonshot/kimi-k2.5",
-      ]);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
+    },
+    20_000,
+  );
 
   it("resolves agent target with strict precedence", async () => {
     // 1. Flag wins over everything
@@ -335,6 +338,20 @@ describe("Agent Registry & Factory", () => {
     await expect(resolveAgent({ flagAgent: "malicious-cmd" })).rejects.toThrow(/Unknown agent target/);
     await expect(resolveAgent({ projectConfig: { agent: "evil-script" } })).rejects.toThrow(/Unknown agent target/);
     await expect(resolveAgent({ env: { HUGINN_AGENT: "bad-agent" } })).rejects.toThrow(/Unknown agent target/);
+  });
+
+  it("falls back with a warning when a persisted config names the removed gemini (AC-35.3)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Empty PATH keeps detection instant and deterministic (no local CLIs).
+      const resolved = await resolveAgent({ projectConfig: { agent: "gemini" }, env: { PATH: "" } });
+      // `gemini` no longer exists, but an old config must not break the run.
+      expect(AGENT_TARGETS).not.toContain("gemini");
+      expect(resolved).toBe("opencode");
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("detects installed agent binaries from PATH and ignores directories (SEC-004)", async () => {

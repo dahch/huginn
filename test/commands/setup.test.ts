@@ -72,13 +72,12 @@ afterAll(() => {
 });
 
 describe("AGENT_REGISTRY", () => {
-  it("contains exactly the twelve documented targets", () => {
+  it("contains exactly the eleven documented targets (gemini removed — REQ-35.3)", () => {
     expect(AGENT_TARGETS).toEqual([
       "cursor",
       "claude",
       "opencode",
       "windsurf",
-      "gemini",
       "qwen",
       "codex",
       "agy",
@@ -147,8 +146,10 @@ describe("registerMcpForTarget", () => {
 
   it("writes the mcpServers shape exactly", () => {
     const env = makeEnv();
-    registerMcpForTarget("gemini", baseOpts(env));
-    const parsed = JSON.parse(readFileSync(join(env.home, ".gemini", "settings.json"), "utf8"));
+    registerMcpForTarget("windsurf", baseOpts(env));
+    const parsed = JSON.parse(
+      readFileSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"), "utf8"),
+    );
     expect(parsed.mcpServers.muninn).toEqual({
       command: "huginn",
       args: ["mcp", "run", "--project", env.project],
@@ -239,7 +240,7 @@ describe("registerMcpForTarget", () => {
 
   it("creates a new config file with restrictive 0o600 permissions (SEC-1001)", () => {
     const env = makeEnv();
-    const regs = registerMcpForTarget("gemini", baseOpts(env));
+    const regs = registerMcpForTarget("windsurf", baseOpts(env));
     expect(regs.length).toBeGreaterThan(0);
     expect(statSync(regs[0].path).mode & 0o777).toBe(0o600);
   });

@@ -22,7 +22,6 @@ export type AgentTarget =
   | "claude"
   | "opencode"
   | "windsurf"
-  | "gemini"
   | "qwen"
   | "codex"
   | "agy"
@@ -32,6 +31,16 @@ export type AgentTarget =
   | "omp";
 
 export type McpFormat = "mcpServers" | "opencode" | "toml";
+
+/**
+ * Targets that were once supported and have been **removed** (with their
+ * successor where one exists). A persisted config naming one of them warns and
+ * falls back instead of failing the run (AC-35.3); any other unknown value is
+ * still rejected (SEC-001).
+ */
+export const REMOVED_AGENT_TARGETS: ReadonlyMap<string, string> = new Map([
+  ["gemini", "agy"],
+]);
 
 export interface AgentSpec {
   id: AgentTarget;
@@ -78,13 +87,6 @@ export const AGENT_REGISTRY: Record<AgentTarget, AgentSpec> = {
     format: "mcpServers",
     mcpPaths: ["{home}/.codeium/windsurf/mcp_config.json"],
     rulesFile: ".windsurfrules",
-  },
-  gemini: {
-    id: "gemini",
-    label: "Gemini CLI",
-    format: "mcpServers",
-    mcpPaths: ["{home}/.gemini/settings.json"],
-    rulesFile: "GEMINI.md",
   },
   qwen: {
     id: "qwen",
