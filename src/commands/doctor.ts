@@ -167,10 +167,13 @@ function opencodeCheck(): DoctorCheck {
 function integrationCheck(base: ResolveOptions): DoctorCheck {
   const specs = listRegistry();
   const registered: string[] = [];
+  const missing: string[] = [];
   for (const spec of specs) {
     const paths = resolveMcpPaths(spec.id, base);
     if (paths.some((p) => configRegistersMuninn(p, spec.format))) {
       registered.push(spec.id);
+    } else {
+      missing.push(spec.id);
     }
   }
   const total = specs.length;
@@ -182,7 +185,12 @@ function integrationCheck(base: ResolveOptions): DoctorCheck {
     detail:
       `${registered.length}/${total} targets register muninn` +
       (registered.length > 0 ? ` (${registered.join(", ")})` : "") +
-      (all ? "" : " — run `huginn setup`"),
+      // Muninn is the shared brain; the actionable fix names the exact gaps, and
+      // `--installed` keeps it to the agents actually on this machine (AC-38.4).
+      (all
+        ? ""
+        : `; missing: ${missing.join(", ")} — run \`huginn setup --agent ${missing.join(",")}\`` +
+          ` (add --installed to target only the agents installed here)`),
     critical: false,
   };
 }

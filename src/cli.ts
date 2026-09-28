@@ -107,7 +107,7 @@ Usage:
   huginn memory sync [--import] [--file <path>] [--project <path>]
   huginn memory index [files...] [--project <path>] [--db <path>]
   huginn check [files...] [--project <path>]
-  huginn setup [--agent <target>] [--project <path>] [--force]
+  huginn setup [--agent <t1,t2|all>] [--installed] [--status] [--dry-run] [--project <path>] [--force]
   huginn doctor [--project <path>] [--home <path>] [--opencode-config-dir <path>]
   huginn mcp run [--db <path>] [--project <path>]
   huginn config show [--project <path>] [--home <path>]
@@ -216,6 +216,9 @@ const BOOLEAN_FLAGS = new Set([
   "--choose-model",
   "--skip-setup",
   "--all",
+  "--installed",
+  "--status",
+  "--dry-run",
   "--help",
   "-h",
 ]);

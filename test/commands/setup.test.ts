@@ -409,4 +409,148 @@ describe("handleSetupCommand", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("provisions only the agents the user names (REQ-38 / AC-38.2)", async () => {
+    const env = makeEnv();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await handleSetupCommand({
+        "--agent": "windsurf,claude",
+        "--project": env.project,
+        "--home": env.home,
+        "--opencode-config-dir": env.opencodeConfigDir,
+      });
+      // Exactly those two — the other nine targets are untouched.
+      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(true);
+      expect(existsSync(join(env.home, ".claude.json"))).toBe(true);
+      expect(existsSync(join(env.home, ".gemini", "settings.json"))).toBe(false);
+      expect(existsSync(join(env.project, ".cursor", "mcp.json"))).toBe(false);
+      // ...and the shared brain is still reachable through the portable fallback.
+      expect(existsSync(join(env.home, ".huginn", "mcp.json"))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("rejects an unknown name inside a comma-separated list (AC-38.2)", async () => {
+    const env = makeEnv();
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const previous = process.exitCode;
+    process.exitCode = 0;
+    try {
+      await handleSetupCommand({
+        "--agent": "claude,nope",
+        "--project": env.project,
+        "--home": env.home,
+      });
+      expect(process.exitCode).toBe(1);
+      expect(existsSync(join(env.home, ".claude.json"))).toBe(false);
+    } finally {
+      process.exitCode = previous;
+      errSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("prints the provisioning matrix with the exact fix command (AC-38.4)", async () => {
+    const env = makeEnv();
+    const lines: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    try {
+      await handleSetupCommand({
+        "--status": true,
+        "--project": env.project,
+        "--home": env.home,
+        "--opencode-config-dir": env.opencodeConfigDir,
+      });
+      const output = lines.join("\n");
+      expect(output).toContain("Muninn provisioning");
+      // Every supported target is listed with its registration state...
+      for (const id of AGENT_TARGETS) expect(output).toContain(id);
+      expect(output).toContain("not registered");
+      // ...and the fix names the gaps, not a vague "run huginn setup".
+      expect(output).toMatch(/fix: huginn setup --agent /);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("--dry-run reports the same work but writes nothing (AC-38.6)", async () => {
+    const env = makeEnv();
+    const lines: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    try {
+      await handleSetupCommand({
+        "--agent": "windsurf,claude",
+        "--dry-run": true,
+        "--project": env.project,
+        "--home": env.home,
+        "--opencode-config-dir": env.opencodeConfigDir,
+      });
+
+      // The preview still describes the work...
+      expect(lines.join("\n")).toMatch(/dry-run/i);
+      // ...and touches *nothing*: no MCP config, no rules, no portable fallback.
+      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(false);
+      expect(existsSync(join(env.home, ".claude.json"))).toBe(false);
+      expect(existsSync(join(env.project, ".windsurfrules"))).toBe(false);
+      expect(existsSync(join(env.project, "CLAUDE.md"))).toBe(false);
+      expect(existsSync(join(env.home, ".huginn", "mcp.json"))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("--installed filters the selection and never widens it (AC-38.2)", async () => {
+    const env = makeEnv();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    // Only `claude` is "installed" and only `windsurf` is named: the intersection
+    // is empty, so *nothing* may be written — the flag must not fall back to the
+    // whole installed fleet.
+    const detect = async () =>
+      AGENT_TARGETS.map((id) => ({ id, available: id === "claude" })) as never;
+    try {
+      await handleSetupCommand(
+        {
+          "--agent": "windsurf",
+          "--installed": true,
+          "--project": env.project,
+          "--home": env.home,
+          "--opencode-config-dir": env.opencodeConfigDir,
+        },
+        { detect },
+      );
+
+      expect(existsSync(join(env.home, ".claude.json"))).toBe(false);
+      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("--installed with no selection configures exactly the installed agents (AC-38.2)", async () => {
+    const env = makeEnv();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const detect = async () =>
+      AGENT_TARGETS.map((id) => ({ id, available: id === "claude" || id === "windsurf" })) as never;
+    try {
+      await handleSetupCommand(
+        { "--installed": true, "--project": env.project, "--home": env.home, "--opencode-config-dir": env.opencodeConfigDir },
+        { detect },
+      );
+
+      expect(existsSync(join(env.home, ".claude.json"))).toBe(true);
+      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(true);
+      // An uninstalled target is untouched.
+      expect(existsSync(join(env.home, ".qwen", "settings.json"))).toBe(false);
+      expect(existsSync(join(env.project, ".cursor", "mcp.json"))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
 });

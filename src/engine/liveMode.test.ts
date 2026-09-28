@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { LiveEngine, extractScopeBlock } from "./liveMode";
+import { MemoryService } from "../muninn/service/memory-service.js";
+import { resolveDatabasePath } from "../muninn/db/client.js";
 import { updateSpecPrompt, appendAdrPrompt, remainingPlanPrompt, unwrapFences, validateDraftFormat } from "./planMode";
 import { events } from "./engineEvents";
 import type { DecisionChoice } from "./types";
@@ -491,6 +493,55 @@ describe("LiveEngine flow", () => {
       // signal `/status` renders.
       expect(diag.memoryStats.entitiesCount).toBe(0);
       expect(diag.memoryStats.observationsCount).toBe(0);
+    });
+
+    it("keeps the same memory across a runtime switch (REQ-38 / AC-38.1)", async () => {
+      // Muninn is Huginn's brain, not the agent's: the database is project-scoped,
+      // so switching runtime must read and write the *same* memory. Nothing in the
+      // engine may key memory by `runtime.id`.
+      const mkRuntime = (id: string, name: string) =>
+        ({
+          id,
+          name,
+          isAvailable: async () => true,
+          getAvailableModels: async () => [],
+          getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+          createSession: async () => ({
+            id: `session_${id}`,
+            prompt: async () => ({ messageId: "1", text: "ok" }),
+            abort: async () => {},
+          }),
+        }) as never;
+
+      const engine = new LiveEngine({
+        cfg: makeCfg(),
+        runtimeFactory: () => mkRuntime("claude", "Mock Claude"),
+      });
+
+      // Seed the brain first: without content, "unchanged" would be 0 == 0 and the
+      // test could not catch a runtime-scoped database (REV-365).
+      const seedService = new MemoryService({
+        projectRoot: dir,
+        dbPath: resolveDatabasePath(undefined, dir),
+      });
+      seedService.saveObservation({
+        category: "discovery",
+        title: "seeded",
+        content: "shared brain",
+      });
+      seedService.close();
+
+      const before = await engine.getDiagnostics();
+      expect(before.memoryStats.observationsCount).toBeGreaterThan(0);
+
+      await engine.switchRuntime("claude");
+      const after = await engine.getDiagnostics();
+
+      expect(engine.runtime.id).toBe("claude");
+      // The runtime changed; the *memory* did not — it is project-scoped.
+      expect(after.memoryStats).toEqual(before.memoryStats);
+      expect(after.memoryStats.observationsCount).toBeGreaterThan(0);
+      expect(after.runtimeName).not.toBe(before.runtimeName);
     });
   });
 });

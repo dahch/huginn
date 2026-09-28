@@ -42,6 +42,56 @@ export const REMOVED_AGENT_TARGETS: ReadonlyMap<string, string> = new Map([
   ["gemini", "agy"],
 ]);
 
+/**
+ * One row of the Muninn provisioning matrix (REQ-38 / AC-38.4): whether the
+ * agent is installed and whether its config already registers Muninn.
+ *
+ * Muninn is Huginn's primary brain and is deliberately **agent-independent**:
+ * the database is project-scoped, so provisioning the same server for several
+ * agents shares one memory rather than forking it (AC-38.1).
+ */
+export interface MuninnProvisioningRow {
+  id: AgentTarget;
+  label: string;
+  installed: boolean;
+  registered: boolean;
+  /** Config files that were inspected for a `muninn` entry. */
+  paths: string[];
+}
+
+/**
+ * Build the agent × (installed · muninn registered) matrix.
+ *
+ * `registersMuninn` is injected (rather than imported) to keep this module free
+ * of a cycle with `commands/doctor.ts`, which owns the config parsing.
+ */
+export function describeMuninnProvisioning(opts: {
+  projectPath: string;
+  homeDir?: string;
+  opencodeConfigDir?: string;
+  env?: Record<string, string | undefined>;
+  /** Availability from `detectAvailableAgents()`; omitted → treated as unknown. */
+  detected?: Array<{ id: AgentTarget; available: boolean }>;
+  registersMuninn: (filePath: string, format: McpFormat) => boolean;
+}): MuninnProvisioningRow[] {
+  const installedById = new Map(opts.detected?.map((d) => [d.id, d.available]));
+  return listRegistry().map((spec) => {
+    const paths = resolveMcpPaths(spec.id, {
+      projectPath: opts.projectPath,
+      homeDir: opts.homeDir ?? homedir(),
+      opencodeConfigDir: opts.opencodeConfigDir,
+      env: opts.env,
+    });
+    return {
+      id: spec.id,
+      label: spec.label,
+      installed: installedById.get(spec.id) ?? true,
+      registered: paths.some((p) => opts.registersMuninn(p, spec.format)),
+      paths,
+    };
+  });
+}
+
 export interface AgentSpec {
   id: AgentTarget;
   label: string;
@@ -168,6 +218,11 @@ export interface ResolveOptions {
 
 export interface RegistrationOptions extends ResolveOptions {
   force?: boolean;
+  /**
+   * Compute the exact same report but write **nothing** (AC-38.6). A preview flag
+   * must never mutate third-party configs.
+   */
+  dryRun?: boolean;
 }
 
 export interface MCPRegistration {
@@ -269,7 +324,8 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * `defaultMode` (callers pass `0o600` for MCP configs, `0o644` for rules files).
  * Parent directories are created with `0o700`.
  */
-function writeAtomic(path: string, body: string, defaultMode: number): void {
+function writeAtomic(path: string, body: string, defaultMode: number, dryRun = false): void {
+  if (dryRun) return;
   let mode = defaultMode;
   try {
     mode = statSync(path).mode & 0o777;
@@ -338,6 +394,7 @@ function mergeJsonFile(
   containerKey: string,
   desired: Record<string, unknown>,
   force: boolean,
+  dryRun = false,
 ): { changed: boolean; skipped: boolean } {
   const root = readJsonIfExists(path);
   const existingContainer = root[containerKey];
@@ -361,7 +418,7 @@ function mergeJsonFile(
   }
   container.muninn = desired;
   root[containerKey] = container;
-  writeAtomic(path, `${JSON.stringify(root, null, 2)}\n`, 0o600);
+  writeAtomic(path, `${JSON.stringify(root, null, 2)}\n`, 0o600, dryRun);
   return { changed: true, skipped: false };
 }
 
@@ -469,6 +526,7 @@ function registerTomlPath(
   path: string,
   projectPath: string,
   force: boolean,
+  dryRun = false,
 ): MCPRegistration {
   let content: string;
   try {
@@ -490,7 +548,7 @@ function registerTomlPath(
       `[huginn] setup ${target}: ${(err as Error).message} in ${path}; file left untouched`,
     );
   }
-  if (merged.changed) writeAtomic(path, merged.content, 0o600);
+  if (merged.changed) writeAtomic(path, merged.content, 0o600, dryRun);
   return { target, path, format: "toml", changed: merged.changed, skipped: merged.skipped };
 }
 
@@ -500,10 +558,11 @@ function registerJsonPath(
   containerKey: string,
   desired: Record<string, unknown>,
   force: boolean,
+  dryRun = false,
 ): MCPRegistration {
   let result: { changed: boolean; skipped: boolean };
   try {
-    result = mergeJsonFile(path, containerKey, desired, force);
+    result = mergeJsonFile(path, containerKey, desired, force, dryRun);
   } catch (err) {
     throw new Error(
       `[huginn] setup ${target}: ${(err as Error).message}; file left untouched`,
@@ -545,9 +604,10 @@ export function registerMcpForTarget(
   const force = opts.force === true;
   const desired = desiredJsonEntry(spec.format, opts.projectPath);
   return resolveMcpPaths(target, opts).map((path) => {
-    if (spec.format === "toml") return registerTomlPath(target, path, opts.projectPath, force);
+    if (spec.format === "toml")
+      return registerTomlPath(target, path, opts.projectPath, force, opts.dryRun === true);
     const containerKey = spec.format === "opencode" ? "mcp" : "mcpServers";
-    return registerJsonPath(target, path, containerKey, desired, force);
+    return registerJsonPath(target, path, containerKey, desired, force, opts.dryRun === true);
   });
 }
 
@@ -557,7 +617,7 @@ export function writePortableMcpConfig(
 ): { path: string; changed: boolean } {
   const path = join(opts.homeDir, ".huginn", "mcp.json");
   const desired = desiredJsonEntry("mcpServers", opts.projectPath);
-  const result = mergeJsonFile(path, "mcpServers", desired, opts.force === true);
+  const result = mergeJsonFile(path, "mcpServers", desired, opts.force === true, opts.dryRun);
   return { path, changed: result.changed };
 }
 
@@ -601,7 +661,7 @@ export function injectRulesForTarget(
     }
   }
   const { content, changed } = injectRulesBlock(existing);
-  if (changed) writeAtomic(path, content, 0o644);
+  if (changed) writeAtomic(path, content, 0o644, opts.dryRun);
   return { path, changed };
 }
 
@@ -619,6 +679,7 @@ export function setup(opts: {
   projectPath: string;
   homeDir?: string;
   force?: boolean;
+  dryRun?: boolean;
   opencodeConfigDir?: string;
   env?: Record<string, string | undefined>;
 }): SetupReport {
@@ -629,6 +690,7 @@ export function setup(opts: {
     opencodeConfigDir: opts.opencodeConfigDir,
     env: opts.env,
     force: opts.force,
+    dryRun: opts.dryRun,
   };
 
   const registrations: MCPRegistration[] = [];

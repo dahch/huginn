@@ -131,8 +131,19 @@ describe("runDoctorChecks", () => {
     expect(integrations?.detail).toContain(`${AGENT_TARGETS.length}/${AGENT_TARGETS.length}`);
   });
 
-  it("marks the git-repo critical check failed outside a repo", () => {
-    const env = makeEnv(false);
+  it("names the missing targets and the exact fix when Muninn is not provisioned (AC-38.4)", () => {
+    // A fresh environment has nothing registered, so the detail must be actionable
+    // rather than just "run huginn setup".
+    const report = runDoctorChecks(options(makeEnv()));
+    const integrations = byId(report).get("integrations");
+
+    expect(integrations?.status).toBe("warn");
+    expect(integrations?.detail).toContain("missing: ");
+    expect(integrations?.detail).toContain("huginn setup --agent ");
+    expect(integrations?.detail).toContain("--installed");
+  });
+
+  it("marks the git-repo critical check failed outside a repo", () => {    const env = makeEnv(false);
     const report = runDoctorChecks(options(env));
     const checks = byId(report);
 
