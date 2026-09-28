@@ -726,3 +726,72 @@ avoids. They are ordered by how central the decision is to the design.
 - **Consequences**:
   - *Positive*: a fresh clone gets a discoverable five-minute onboarding (`huginn init`, or just `huginn` on a TTY) that ends with a working agent, models and Muninn MCP registration; `huginn --help` is now scannable in one screen while `--all` preserves the full reference; no raw "not a git repository" failure or missing-template warning dump on first contact; the wizard cannot drift from `setup`/`config` semantics because it owns no I/O; CI and piped usage can never hang on a prompt; and the whole wizard is exercised safely in-process by `test/commands/init.test.ts`.
   - *Negative*: the wizard's default agent now follows `PRIMARY_AGENT_CLIS` (opencode first) rather than `AGENT_TARGETS`/`AGENT_REGISTRY` order, so it can disagree with `resolveAgent`'s terminal first-detected step on a machine where several CLIs are installed — the wizard's choice is display-consistent, the engine's is registry-consistent, and only the wizard order is the deliberate one (engine behavior is unchanged); greenfield detection based on `.huginn/` means a repository that previously ran only a huginn command which never created that directory is still treated as fresh (and, conversely, an empty `.huginn/` directory suppresses onboarding); the wizard writes project-local state (`AGENTS.md`/`CLAUDE.md`, `.mcp.json`, `.cursor/…`) through the real `huginn setup`, so onboarding is not purely additive — `--skip-setup` exists for that case; a failed MCP registration still writes the project config and then reports `process.exitCode = 1`, so a caller must inspect the exit code rather than assume a written config means fully-onboarded; and the two help surfaces (`usageCore`/`usage`) still have to be kept in sync by hand, now guarded by an explicit drift test rather than a duplicated alias.
+
+---
+
+## ADR-27: Connected-Provider Model Discovery with CLI Fallback & Native Model Selection
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: A hand-driven verification on this machine proved the Phase 5 model path (ADR-23) non-functional in practice. `OpencodeRuntimeAdapter.getAvailableModels()` reads `provider.list().all` — the entire models.dev catalog — and returns **8 195** models across 226 providers, where only **581** belong to the 10 providers in the response's `connected` array (byte-identical to the `opencode models` CLI output). The method then catches *any* throw and returns two hardcoded models (`anthropic/claude-opus-4-5`, `opencode/gpt-5.1-codex`) that happen to equal `DEFAULT_THINKER_MODEL`/`DEFAULT_EXECUTOR_MODEL`, which both hides real failure and defeats the `cfg.chooseModel` auto-onboarding gate in `src/cli.ts`. Every other adapter is worse: `CommandCodeRuntimeAdapter` returns a single literal `commandcode/default` while its real CLI lists **82** models; `claude`/`codex`/`qwen`/`omp`/`gemini` return small static arrays, one of them (`codex`) even when the binary is absent. Separately, `validateModels` (`src/cli.ts`) reads `.all` from `config.providers()`, which returns `{ providers, default }`, so its `known` set is always empty and it warns "provider not in the configured provider list" for both roles on every opencode run. Finally, the selected model is forwarded to subprocess CLIs only as a `HUGINN_MODEL` environment variable, which none of those CLIs read, so choosing a model silently has no effect.
+- **Decision**:
+  1. **opencode discovery filters to `connected`.** `getAvailableModels()` intersects `provider.list().all` with the response's `connected` ids before flattening models, so only models the user can actually run are offered (581 here, not 8 195). Flattened models always carry the provider **id** — never the provider's display name — so the picker badge and filtering are identical whichever discovery path answered.
+  2. **CLI fallback instead of fake defaults.** When the SDK is unreachable, discovery parses `opencode models` (one `provider/model` per line). On failure or an empty result the method returns an explicit empty/error signal — never a hardcoded catalog — so the picker and the pre-flight gate react honestly.
+  3. **Real catalog per runtime.** `CommandCodeRuntimeAdapter` parses `commandcode --list-models` (group headings, `id` + description rows, ignore the trailing help/docs footer); `omp` parses `omp models` (`<provider> (<count>)` sections + box-drawing table, ids `provider/model`); `agy` parses `agy models` (`id<TAB>name` TSV, provider from the id prefix else the runtime label); other generic adapters gain a declarative per-runtime listing command where the CLI supports one, and return an empty-with-reason result where it does not. The reason travels on an optional `getModelCatalog(): Promise<{ models, reason? }>` (`ModelCatalog`) so "no listing mechanism", "the CLI failed" (missing binary / non-zero exit with the first stderr line / timeout / empty output) and "nothing discovered" stay distinguishable, and `getAvailableModels()` is a thin projection of it. Verified listing mechanisms and counts on the reference machine: `opencode` (SDK `provider.list().connected` + `opencode models` fallback, **581**), `commandcode` (`--list-models`, **82**), `omp` (`models`, **192**), `agy` (`models`, **14**); `claude`, `qwen`, `gemini`, `kimi`, `pi`, `cursor`, `windsurf` and `codex` expose none and return `[]` with a reason. Flattened models carry the **provider id**, with one deliberate exception: a Command Code bare id (no `/`) has no provider prefix, so it carries the CLI's own group heading (`Anthropic`, `OpenAI`, …). A selected model is forwarded verbatim through the runtime's native flag — including bare ids, which the picker accepts from the catalog and (for runtimes that expose them) as free text.
+  4. **Native model forwarding.** Subprocess runtimes pass the selected model through their documented flag (`--model`/`-m`); `HUGINN_MODEL` is retained only as an extra hint. When the base argv already carries that flag (`--flag old` or `--flag=old`) its **value** is replaced with the user's selection, so a configured preset can never silently swallow the choice.
+  5. **Correct provider validation.** `validateModels` reads `config.providers().providers`.
+  6. **Honest picker.** `ModelPickerModal` no longer substitutes `DEFAULT_FALLBACK_MODELS` for an empty or failed discovery; it shows a distinct empty state with free-text entry, surfaces the (sanitized) error, and renders large catalogs incrementally.
+  7. **Realistic tests.** Discovery is verified against a local HTTP server serving a captured `GET /provider` payload and against captured `--list-models`/`models` fixtures, not hand-written mocks alone.
+- **Consequences**:
+  - *Positive*: the picker shows models the user can actually run; a runtime failure is visible instead of masked by a plausible-looking fake list; model selection actually takes effect; the auto-onboarding gate can finally fire on a real catalog.
+  - *Negative*: the connected set is host-specific, so the offered catalog changes with the user's provider auth/config (correct, but non-deterministic across machines); the `opencode models` fallback and `commandcode --list-models` parsers are coupled to human-readable CLI output that may change between CLI versions and therefore need fixture-based tests and tolerant parsing; and returning an empty catalog where a CLI has no listing mechanism means those runtimes rely on free-text model ids.
+
+---
+
+## ADR-28: Command Registry as the Single Source of Truth for Dispatch, Help & Autocomplete
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: The Live input bar handles `/…` input through a linear `if`-chain inside `submit()` (`src/tui/LiveDashboard.tsx`), while `HelpModal.tsx` exports a separate, hand-maintained `SLASH_COMMANDS` array for display. The two have already drifted: the cheat sheet omits `/model`, `/models <t> <e>` and `/agent <id>` as distinct entries. Typing `/` does nothing interactive — the character is appended as plain text — so a user must already know the command set. Up/down arrows are deliberately trapped while typing (to prevent terminal scroll leakage) and `Tab` is bound to focus-toggling, so an autocomplete overlay must intercept those keys before they reach the existing handlers.
+- **Decision**:
+  1. **One registry.** A single exported command registry (`id`, `aliases`, `argHint`, `description`, `category`) is the source of truth. `submit()` dispatches by looking the input up in the registry; `HelpModal` and the new palette both render from it.
+  2. **Inline overlay.** Typing `/` at the start of the input opens a suggestion overlay rendered directly beneath the input row, filtered by id/alias substring as the user types; accepting inserts the command plus its argument hint.
+  3. **Key precedence while open.** With the overlay visible, `↑`/`↓`/`j`/`k` move the highlight, `Tab` accepts, `Enter` submits/accepts, `Esc` dismisses — taking precedence over focus-toggle and scroll-trap *only* while open.
+  4. **Bounded layout.** The overlay is height-capped (≤6 visible rows with scroll markers) and counted in the layout budget so chat/stream cards never overflow.
+  5. **Drift guard.** A test asserts every command dispatched by `submit()` is present in the registry and vice versa, and that every Phase 5 command remains dispatchable.
+- **Consequences**:
+  - *Positive*: the UI can no longer advertise a command the dispatcher does not implement (or hide one it does); discoverability is intrinsic rather than documented in a modal; the two headers/help surfaces stop drifting.
+  - *Negative*: `submit()`'s bespoke per-command argument parsing still lives in code (only the command *identity* is centralised), so a new command touches both the registry and its handler; and the overlay adds an input-mode to a view that already multiplexes modals, focus and scroll, which the key-precedence rules must keep unambiguous.
+
+---
+
+## ADR-29: ASCII Raven Identity Component for the TUI Header
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: Both TUI headers render an eagle emoji (`🦅 HUGINN` in `Dashboard.tsx`, `🦅 HUGINN LIVE` in `LiveDashboard.tsx`). Huginn is a raven (the `banner.ts` CLI art and the Grímnismál quote already say so), and a single emoji is not identity — the user reported the interface has "no personality". The ASCII wordmark already exists in `src/banner.ts` but is CLI-only and unused by the TUI.
+- **Decision**:
+  1. **One brand component** (e.g. `src/tui/RavenHeader`) renders an ASCII raven mark alongside the `HUGINN` wordmark and is used by both dashboards, so the headers cannot diverge.
+  2. **No eagle glyph** remains anywhere in the source.
+  3. **Graceful degradation**: on narrow terminals the mark collapses to the wordmark only, and its row cost is part of the layout budget so the chat/stream viewport never collapses.
+  4. **Presence over decoration**: the header also carries live, useful context (runtime, thinker/executor, project, truthful MCP badge), so the personality is reinforced by meaningful feedback rather than a lone glyph.
+- **Consequences**:
+  - *Positive*: the interface reads as Huginn; the CLI and TUI share one visual identity; the header becomes informative rather than decorative.
+  - *Negative*: ASCII art is wider than an emoji, so narrow-terminal and low-row rendering need explicit fallbacks and must be covered by tests.
+
+---
+
+## ADR-30: Honest MCP Status & Hardened MCP Server stdio Lifecycle
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: The user reported Muninn "was connected and then suddenly disconnected". Investigation showed Huginn holds no MCP client at all: the agent CLI spawns `huginn mcp run`, which serves JSON-RPC over a `StdioServerTransport`. Its lifecycle resolves on `transport.onclose` or a signal, but `StdioServerTransport.start()` only subscribes to `'data'`/`'error'` — never stdin `'end'`/`'close'` — so a parent disconnect is never observed; `send()` writes to `process.stdout`, whose `'error'` (EPIPE) is unhandled and crashes the process; `server.onerror` is never assigned, so protocol errors are discarded; and `send()` waits on a `'drain'` that a broken pipe never emits, hanging the request. On the display side, `GenericSubprocessRuntimeAdapter.getMcpStatus()` derives status from *config files* and hardcodes `status: "connected"`, so for every subprocess runtime the badge stays `MCP: 🟢 n active` after the server has died, while opencode's real probe converts a failure into an indistinguishable `⚪ 0 active`. Nothing detects the drop, and nothing can recover it.
+- **Decision**:
+  1. **Never fabricate status.** Config-discovered servers are reported as `unknown` (rendered distinctly); only a real probe (opencode) reports `connected`/`error`.
+  2. **Propagate errors.** A throwing `getMcpStatus()` yields `degraded: true` plus the sanitized error, so `formatMcpBadge` shows `MCP: 🟡 error` rather than a neutral empty state.
+  3. **Harden the stdio server**: install a `process.stdout` `'error'` handler (EPIPE-safe), bridge stdin `'end'`/`'close'` to `transport.onclose`, assign `server.onerror` to log, and bound `send()` so a broken pipe fails the pending request.
+  4. **Supervise the opencode daemon** after the initial health check: detect mid-session exit, log it, and attempt recovery so a dead daemon is neither silent nor permanent.
+  5. **Surface Muninn DB failures**: `getDiagnostics`/`/status` distinguish "unavailable/error" from "empty", and best-effort indexing failures are logged rather than swallowed.
+- **Consequences**:
+  - *Positive*: the badge can no longer claim a dead server is healthy; a transient daemon death is visible and recoverable; the MCP server exits cleanly with its parent instead of hanging or crashing with an unhandled EPIPE.
+  - *Negative*: reporting `unknown` for config-only servers is a visible regression from the previous always-green badge (intentional truthfulness); daemon supervision adds a poll/retry loop that must not leak timers or fight normal shutdown.

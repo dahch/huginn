@@ -324,12 +324,12 @@ The execution cycle and live refinement loop must interact with AI coding agents
 
 ### REQ-23: Interactive Model & Provider Selector & Persistence
 Huginn must discover available models from the active runtime and provide interactive selection and persistence.
-- **AC-23.1 (Provider & Model Auto-Discovery)**: At startup or upon opening the model picker, Huginn queries `runtime.getAvailableModels()`. If the runtime is offline or returns an empty list, Huginn falls back to `DEFAULT_FALLBACK_MODELS`. Models display provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.), model names, IDs, and descriptions.
+- **AC-23.1 (Provider & Model Auto-Discovery)**: At startup or upon opening the model picker, Huginn queries `runtime.getAvailableModels()`. Models display provider badges, model names, IDs, and descriptions. *(**Superseded by AC-27.7**: an empty or failed discovery no longer falls back to `DEFAULT_FALLBACK_MODELS` — the picker shows an honest empty/error state carrying the discovery `reason`.)*
 - **AC-23.2 (Interactive 3-Step Modal (`ModelPickerModal`))**: Renders an interactive 3-step modal directly over the TUI:
   - *Step 1 (Thinker)*: Select reasoning/architecture model with live search filter and custom fallback.
   - *Step 2 (Executor)*: Select implementation/gate model.
   - *Step 3 (Save Preferences)*: Select persistence destination (`[1] Project Default`, `[2] Global Default`, `[3] Session Only`).
-  - Enforces `provider/model` format for both thinker and executor models, displaying inline error banners on invalid input.
+  - Enforces `provider/model` format for free-text ids on runtimes whose catalog is fully qualified, displaying inline error banners on invalid input. *(Amended by AC-27.3/AC-27.5: a model chosen from the catalog is accepted verbatim, and runtimes that expose bare ids — e.g. `agy`, Command Code — accept a bare free-text id too, since they resolve the short name themselves.)*
   - Traps keyboard events (`↑`/`↓` / `k`/`j` to navigate, `1`/`2`/`3` direct scope pick, `Enter` to confirm, `Esc` to cancel), maintains scroll containment (6 visible items), and bridges inputs via `useRef` to eliminate React 19 / Ink memoization race conditions.
 - **AC-23.3 (Multi-Scope Atomic Persistence)**:
   - *Project Default*: Saves to `<project>/.huginn/config.json` via `saveUserConfig`.
@@ -383,3 +383,75 @@ The CLI must offer clear, structured commands and a frictionless initialization 
   - Prompts developer to choose default agent and preferred models.
   - Registers Muninn MCP (`huginn setup`) and creates initial `.huginn/config.json`.
 - **AC-26.2 (Streamlined Help)**: `huginn --help` presents a concise, visually grouped summary (Core commands: `live`, `run`, `init`, `setup`, `doctor`). Advanced technical options are cleanly categorized or surfaced via `huginn --help --all`.
+
+---
+
+# Spec: Runtime Fidelity, Discoverability & Live Diagnostics (Phase 6)
+
+## 9. Executive Summary & Goals
+
+Phase 6 fixes what a real, hand-driven session on this machine proved to be broken. Verified defects: (a) **model discovery is fake or unusable** — `OpencodeRuntimeAdapter.getAvailableModels()` returns **8 195** models (every provider in the models.dev catalog) instead of the **581** belonging to the 10 `connected` providers, and silently substitutes two hardcoded models on any failure or empty result; every other adapter returns a static literal (Command Code returns one `commandcode/default` while its real CLI offers **82** models via `commandcode --list-models`); `validateModels` in `src/cli.ts` reads `.all` from `config.providers()`, which returns `.providers`, so it warns spuriously on every opencode run; and model selection is emitted as a `HUGINN_MODEL` env var that no subprocess CLI reads. (b) The **TUI is undiscoverable** — typing `/` produces plain text with no suggestion list, and the `submit()` dispatcher and the `HelpModal` cheat sheet have drifted apart. (c) The **brand is wrong** — the header renders an eagle emoji (`🦅`) although Huginn is a raven. (d) **MCP/Muninn status lies** — subprocess adapters fabricate `status: "connected"` from config files, so a dead server keeps a green badge, and the MCP server's stdio lifecycle has no EOF/EPIPE handling.
+
+### Goals
+- **Truthful model discovery**: every adapter reports the models the runtime can actually use, or an explicit empty/error state — never a fabricated catalog — and the selected model reaches the CLI through the flag it actually understands.
+- **Discoverability by construction**: a single command registry drives both execution and an inline `/` autocomplete overlay, so the UI can never advertise a command the dispatcher does not implement.
+- **Identity**: an ASCII raven/wordmark header that reads as *Huginn*, not a generic emoji.
+- **Honest live status**: MCP/Muninn health reflects a real probe (or is explicitly reported as unverifiable), recovers from transient daemon death, and surfaces errors instead of swallowing them.
+- **Fluid feedback**: every user action produces a visible, sanitized result (success, progress, or error) in the TUI.
+
+### Non-Goals
+- Reworking the engine's phase pipeline, sandboxing, or the Muninn SQLite schema.
+- Adding new agent runtimes or new slash commands beyond those already specified in Phase 5.
+- Changing the `provider/model` id format used on the wire.
+
+---
+
+## 10. Functional Requirements (Phase 6)
+
+### REQ-27: Truthful Cross-Runtime Model Discovery & Selection
+`IAgentRuntime.getAvailableModels()` must return the models the active runtime can actually use, and the chosen model must be passed to the runtime through its native mechanism.
+- **AC-27.1 (opencode — connected providers only)**: `OpencodeRuntimeAdapter.getAvailableModels()` must return models drawn **only from providers listed in the `connected` set** of `client.provider.list()`. Verified contract: the response is `{ all: Provider[], default, connected: string[] }`; filtering `all` to `connected` yields **581** models on this machine, byte-identical to `opencode models`. Models from unconnected providers (e.g. the 7 614 catalog-only models) must not be offered.
+- **AC-27.2 (opencode — CLI fallback)**: when the SDK client is unreachable (daemon not started, request throws), discovery must fall back to parsing `opencode models` output (one `provider/model` per line). No hardcoded model may be returned on failure; an empty result must be reported as empty.
+- **AC-27.3 (commandcode — real catalog)**: `CommandCodeRuntimeAdapter.getAvailableModels()` must parse `commandcode --list-models` (verified format: a header line `Available models  ·  N models`, provider group headings on their own line, then indented `provider/model` + description rows, followed by a trailing help/docs footer that must be ignored). The id column preserves the CLI's exact spelling (bare ids such as `claude-sonnet-5` remain bare; the full `provider/model` form is used when present).
+- **AC-27.4 (generic adapters)**: `GenericSubprocessRuntimeAdapter` gains a declarative, per-runtime model-listing command (argv + parser) so `claude`, `qwen`, `omp`, `gemini`, `kimi`, `pi`, `cursor`, `windsurf` and `agy` report their real catalogs where their CLI supports listing. Where a CLI exposes no listing mechanism, the adapter must return an **empty** result with a `reason`, not the previous literal placeholder list; the picker then offers free-text entry. The reason is carried by an optional `getModelCatalog(): Promise<{ models, reason? }>` member on `IAgentRuntime` (the picker prefers it and renders `reason` in place of the generic empty copy), and a subprocess listing failure must distinguish a missing binary, a non-zero exit (with the first stderr line), a timeout and empty output. Verified listing mechanisms on this machine: `opencode models` (and the connected-provider SDK path) → 581, `commandcode --list-models` → 82, `omp models` → 192 (`<provider> (<count>)` sections + box-drawing table), `agy models` → 14 (`id<TAB>name` TSV, non-TSV preamble ignored); `claude`, `codex`, `qwen`, `gemini`, `kimi`, `pi`, `cursor` and `windsurf` expose none.
+- **AC-27.5 (native model selection)**: the selected model must be forwarded through the flag the CLI documents: opencode via the SDK model ref, and subprocess runtimes via a per-runtime `--model`/`-m` argument (replacing the current `HUGINN_MODEL` env var, which no subprocess CLI reads). The env var may be retained only as an additional hint, never the sole channel.
+- **AC-27.6 (provider validation)**: `validateModels` must read the provider list from the correct field (`config.providers()` returns `{ providers, default }`, not `{ all }`), so the "provider is not in the configured provider list" warning fires only when a provider is genuinely absent.
+- **AC-27.7 (picker honesty & scale)**: `ModelPickerModal` must (i) render a distinct "no models discovered from <runtime> — type an id and press Enter" state instead of substituting `DEFAULT_FALLBACK_MODELS`, (ii) surface a discovery error verbatim (sanitized), and (iii) stay responsive for large catalogs (~600–8 000 entries) via incremental rendering + filter, with per-runtime seed values for thinker/executor rather than opencode-centric constants.
+- **AC-27.8 (realistic verification)**: discovery tests must exercise the real parsing paths — a local HTTP server serving a captured `GET /provider` payload for opencode, and captured `--list-models`/`models` CLI fixtures for commandcode/opencode — not only hand-written mocks. Parser tests must be derived from the actual tool output captured on this machine.
+
+### REQ-28: Discoverable Slash-Command Palette
+The Live input bar must show, interactively, what the user can type.
+- **AC-28.1 (single registry)**: a single exported command registry (`id`, `aliases`, `argHint`, `description`, `category`) is the source of truth for both `submit()` dispatch and the help/autocomplete UI. `HelpModal`'s cheat sheet and the palette must be generated from it, and a drift-guard test must fail if a dispatched command is absent from the registry (or vice versa).
+- **AC-28.2 (trigger & filtering)**: typing `/` at the start of an empty-or-partial input opens an inline suggestion overlay directly beneath the input row; further typing filters by id/alias substring; selecting inserts the command (with its argument hint) without submitting.
+- **AC-28.3 (key handling while open)**: with the overlay visible, `↑`/`↓` (and `j`/`k`) move the highlight, `Tab` accepts, `Enter` submits (or accepts a partial), `Esc` dismisses the overlay without aborting the session. These bindings take precedence over the existing focus-toggle (`Tab`) and scroll-trap (`↑`/`↓`) handlers **only while the overlay is open**.
+- **AC-28.4 (layout safety)**: the overlay must not overflow the terminal — it is height-bounded (e.g. ≤6 visible rows with scroll markers) and included in the layout height budget so chat/stream cards never overflow.
+- **AC-28.5 (non-regression)**: every command documented in Phase 5 (`/help`, `/agent`, `/models`/`/model`, `/mcp`, `/skills`/`/skill`, `/status`, `/clear`, `/draft`/`/go`, `/quit`/`/abort`) remains dispatchable, and unknown `/…` input is still answered with a system message rather than forwarded to the model.
+
+### REQ-29: Raven Identity & TUI Presence
+The interface must read as Huginn the raven, with real brand presence.
+- **AC-29.1 (no eagle)**: no eagle emoji (`🦅`) may remain anywhere in the source; the top-left header of both `LiveDashboard` and `Dashboard` renders an ASCII raven/wordmark treatment instead.
+- **AC-29.2 (shared brand component)**: a single reusable component (`src/tui/RavenHeader` or equivalent) renders the raven mark plus the wordmark, and is used by both dashboards so the two headers cannot diverge.
+- **AC-29.3 (non-blocking across sizes)**: the ASCII mark degrades gracefully on narrow terminals (wordmark-only fallback) and never consumes so many rows that the chat/stream viewport collapses.
+- **AC-29.4 (presence, not decoration)**: the header additionally surfaces live, useful context (active runtime, thinker/executor, project, and — see REQ-30 — a truthful MCP badge), so the personality comes from meaningful feedback rather than a lone glyph.
+
+### REQ-30: Honest MCP/Muninn Liveness & Recovery
+MCP status must reflect reality and survive transient failure.
+- **AC-30.1 (no fabricated status)**: `GenericSubprocessRuntimeAdapter.getMcpStatus()` must stop reporting `status: "connected"` for servers it merely found in a config file. Discovered-but-unprobed servers are reported as `unknown` (rendered distinctly, e.g. `MCP: ⚪ n configured (unverified)`), and a real probe is used where the runtime offers one (opencode).
+- **AC-30.2 (error propagation)**: when `runtime.getMcpStatus()` throws, the report must carry `degraded: true` and the error message (sanitized) so `formatMcpBadge` renders `MCP: 🟡 error`, not an ambiguous `⚪ 0 active`.
+- **AC-30.3 (stdio lifecycle hardening)**: `huginn mcp run` must (i) install a `process.stdout` `'error'` handler so an EPIPE from a closed parent pipe cannot crash the server, (ii) bridge stdin `'end'`/`'close'` to `transport.onclose` so the process exits when the parent goes away, (iii) assign `server.onerror` to log protocol failures instead of discarding them, and (iv) bound `send()` so a broken pipe fails a pending request instead of hanging forever.
+- **AC-30.4 (daemon supervision)**: `startServer` (opencode) must supervise the child after the initial health check — if it exits mid-session, the failure is logged and the runtime reports a recoverable error; where feasible a restart is attempted, and the TUI is notified.
+- **AC-30.5 (Muninn diagnostics)**: the `/status` `Muninn Memory:` row (and `getDiagnostics`) must distinguish "unavailable/error" from "empty" — a failed DB open reports the error rather than `0 entities, 0 observations`; best-effort indexing failures (`phases.ts`) remain non-fatal but are logged at debug level rather than silent.
+
+### REQ-31: Fluid Feedback & Intuitive DX
+The TUI must make every action's outcome visible.
+- **AC-31.1 (action feedback)**: each slash command and prompt emits an immediate, sanitized acknowledgement (busy indicator, result line, or error), so no input appears to do nothing.
+- **AC-31.2 (actionable errors)**: errors shown to the user name the failing component and the suggested next step (e.g. "no models discovered from Command Code — try `/model <id>` or check the CLI"), never a bare stack fragment.
+- **AC-31.3 (first-run guidance)**: an empty chat viewport shows a short, raven-flavoured hint list of what can be done (type `/` for commands, `/draft` to plan, `/mcp` to inspect), reinforcing the personality of REQ-29.
+- **AC-31.4 (no silent stdout)**: nothing bypasses the alternate-screen log buffer while the TUI is mounted (consistent with AC-21.3).
+
+---
+
+## 11. Non-Functional Requirements (Phase 6)
+- **NFR-6 (Discovery latency)**: `getAvailableModels()` must resolve within a bounded deadline (≤ 15 s — measured: `opencode models` ≈ 1.7 s, `commandcode --list-models` ≈ 3.5 s) and must never block the Ink render loop (discovery is async, the picker shows a cancellable loading state, and any spawned listing CLI is killed on expiry).
+- **NFR-7 (Catalog scale)**: the picker must remain interactive with up to ~10 000 entries (bounded, incremental rendering), and discovery must not retain more than the needed `ModelInfo` fields.
+- **NFR-8 (Type safety)**: strict TypeScript, no `any`; all parsed external CLI output is validated and sanitized (`sanitizeTerminalText`) before display.

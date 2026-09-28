@@ -393,3 +393,80 @@ Refactor CLI ergonomics to provide a welcoming developer onboarding experience:
    - When running `huginn` with no arguments in a repository that has never run Huginn, launch the init wizard or interactive onboarding instead of failing or dumping raw warnings.
 4. Add test suite in `test/commands/init.test.ts` verifying wizard steps and config emission.
 
+---
+
+# Plan: Runtime Fidelity, Discoverability & Live Diagnostics (Phase 6)
+
+Implements REQ-27…REQ-31 (SPEC.md §10). Repo facts for every iteration: Bun/TypeScript CLI, bin `src/cli.ts`; `src/**/*.test.ts` run under `bun test`, `test/**/*.test.ts` under `vitest run`; strict TS, ESM, `.js` extension on relative imports, no `any`. All parsers of external output must route every displayed string through `sanitizeTerminalText` (`src/util/text.ts`).
+
+## Iteration 25 — Truthful Cross-Runtime Model Discovery & Native Selection
+modules: src/engine/agent/adapters/, src/engine/agent/, src/cli.ts, src/tui/ModelPickerModal.tsx, test/engine/agent/
+
+Implements REQ-27. Verified defects to fix: opencode returns 8 195 catalog models instead of the 581 connected ones and falls back to two fake defaults; commandcode returns a single literal vs its real 82; `validateModels` reads the wrong response field; models are passed as an unread `HUGINN_MODEL` env var.
+
+1. `src/engine/agent/adapters/opencode.ts` `getAvailableModels()`:
+   - Type the response as `{ all?: Array<{ id: string; name: string; models?: Record<string, { id: string; name: string; description?: string }> }>; connected?: string[] }`.
+   - Build the catalog **only** from providers whose `id` is in `connected`. Do not return hardcoded models on failure or empty.
+   - On throw/empty, fall back to parsing the `opencode models` CLI (one `provider/model` per line) via a bounded `spawnSync`/`Bun.spawn` with a short timeout; strip blank lines and any non-`provider/model` noise. Return `[]` (not fakes) if that also fails.
+2. `src/engine/agent/adapters/commandcode.ts`: implement `getAvailableModels()` by running `commandcode --list-models` and parsing it. Parser rules (derived from the real output): skip the `Available models  ·  N models` header; a line with no leading whitespace and no double-space gap to a description is a **group heading** (skip); a line matching `^\s*(\S+)\s{2,}(.+)$` is a model row → id = group 1, description = group 2; stop consuming once the atomic-list block ends (the trailing `Pass the full id…` / `cmd --model …` / `Docs:` / `Decision models` footer must be ignored — detect the footer start and break). Provider = the id's prefix before the first `/` when present, else the current group heading. Map to `ModelInfo[]`; on any failure return `[]`.
+3. `src/engine/agent/adapters/generic.ts`: add `modelListCommand?: { command: string; args: string[]; parse: (stdout: string) => ModelInfo[] }` to `GenericSubprocessOptions`, and have `getAvailableModels()` prefer it over the static `models` array. When neither is present, return `[]` (delete the `${id}/default` fabrication). Add `modelArgs?: (model: string) => string[]` so a runtime can pass its native flag.
+4. Per-runtime wiring: set `modelListCommand` for `claude`, `qwen`, `omp`, `gemini`, `kimi`, `pi` where the CLI supports listing (probe each CLI's help first and only wire the ones that expose it); fix the wrong `args` for commandcode (verified: the non-interactive form is `-p`/`--print`, **not** `exec`) and pass the model via `--model`/`-m`.
+5. `src/engine/agent/adapters/generic.ts` `prompt()`: replace the `HUGINN_MODEL`-only channel with the runtime's `modelArgs(model)` appended to argv (keep `HUGINN_MODEL` as an additional env hint only). Guard against duplicate/conflicting flags.
+6. `src/cli.ts` `validateModels()`: read `(res as { providers?: Array<{ id: string }> }).providers ?? []` instead of `.all`.
+7. `src/tui/ModelPickerModal.tsx`: remove the `DEFAULT_FALLBACK_MODELS` substitution for empty/error results; render a distinct empty state ("No models discovered from <runtime> — type a provider/model id and press Enter") and a sanitized error state; make large catalogs responsive (incremental/bounded rendering while keeping the existing 6-row window and substring filter); replace the opencode-centric seed values with per-runtime seeds.
+8. Tests (vitest, `test/engine/agent/`):
+   - opencode: start a local `node:http` server returning a **captured real** `GET /provider` payload (with `all` > `connected`) and assert only connected-provider models are returned; assert the fallback parser maps captured `opencode models` output (581 lines) correctly and that failure returns `[]`.
+   - commandcode: assert the parser maps the captured `commandcode --list-models` fixture (82 models, group headings + footer) to the exact expected ids and ignores the footer.
+   - generic: assert `modelListCommand` is preferred, `[]` is returned with no fake default, and `modelArgs` appears in the spawned argv (use a fake executable in the temp dir).
+9. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 26 — Slash-Command Palette & Inline Autocomplete
+modules: src/tui/, src/engine/liveMode.ts
+
+Implements REQ-28.
+1. Create a single command registry (`src/tui/commandRegistry.ts` or `src/engine/commands.ts`): `{ id, aliases, argHint, description, category }` covering every Phase 5 command (`/help`, `/agent`, `/models`|`/model`, `/mcp`, `/skills`|`/skill`, `/status`, `/clear`, `/draft`|`/go`, `/quit`|`/abort`) plus lookup helpers (`matchCommands(prefix)`, `findCommand(token)`).
+2. Refactor `src/tui/LiveDashboard.tsx` `submit()` to resolve the command through the registry (identity + alias), keeping the existing per-command argument handling. Keep unknown-`/…` behavior unchanged.
+3. Add a `CommandSuggestions` component rendered directly beneath `ChatInputRow` when `draftInput.startsWith("/")` and no space has been typed yet; filter by id/alias substring; render ≤6 rows with `▲/▼` scroll markers; highlight the selected row.
+4. `useInput` precedence: when the overlay is open, intercept `↑`/`↓`/`j`/`k` (move highlight), `Tab` (accept), `Enter` (accept+submit), `Esc` (dismiss overlay) **before** the existing focus (`Tab`) and scroll-trap (`↑`/`↓`) branches; when closed, behavior is unchanged.
+5. Include the overlay height in the layout budget (`availableHeight`) so chat/stream cards never overflow; re-verify the `headerHeight`/`inputHeight` math.
+6. `HelpModal.tsx`: generate `SLASH_COMMANDS` from the registry (delete the hand-maintained array) so the cheat sheet cannot drift.
+7. Tests (vitest, `test/tui/`): registry-drift guard (every dispatched command present, every registry entry dispatchable); prefix matching; overlay renders on `/` and filters as more characters are typed; accepting inserts the command with its arg hint; existing model-picker/mcp/skills/help modal tests still pass.
+8. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 27 — Raven Identity & TUI Presence
+modules: src/tui/, src/banner.ts
+
+Implements REQ-29.
+1. Create `src/tui/RavenHeader.tsx` exporting the ASCII raven mark + `HUGINN` wordmark (reuse/adapt the `banner.ts` art), with a narrow-terminal fallback (wordmark only) driven by `useTerminalSize()`.
+2. Replace the `🦅 HUGINN` header text in `src/tui/Dashboard.tsx` (`HeaderCard`) and `src/tui/LiveDashboard.tsx` (`LiveHeader`) with the shared component. Remove every `🦅` from the source.
+3. Keep/relocate live context (runtime, thinker/executor, project, MCP badge) into the header so presence is meaningful; ensure the header's row cost stays within the existing layout budget.
+4. Ensure the ASCII art is sanitization-safe and contains no control characters; guard against terminals narrower than the art.
+5. Tests (vitest, `test/tui/`): header renders the raven mark + wordmark at ≥80 cols; collapses to wordmark-only when narrow; no `🦅` appears in the rendered output; existing dashboard/header tests updated.
+6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 28 — Honest MCP/Muninn Liveness & stdio Hardening
+modules: src/commands/memory.ts, src/muninn/mcp/, src/engine/agent/adapters/, src/engine/agent/mcpStatus.ts, src/server/lifecycle.ts, src/tui/
+
+Implements REQ-30.
+1. `src/engine/agent/adapters/generic.ts` `getMcpStatus()`: stop hardcoding `status: "connected"`. Config-discovered servers are reported as `unknown` (extend `McpServerStatus.status` with `"unknown"`, or use `disconnected` + an explicit `unverified` flag — pick one and thread it through `formatMcpBadge` and `McpInspectorModal`). `healthy` must be false when servers are unverified.
+2. `src/engine/agent/adapters/opencode.ts` `getMcpStatus()` catch: return `{ servers: [], totalTools: 0, healthy: false, degraded: true, error: sanitizeTerminalText(err.message) }` so the badge shows `MCP: 🟡 error` instead of a neutral gray.
+3. `src/engine/agent/mcpStatus.ts` `formatMcpBadge()`: render the new `unknown`/error states distinctly (e.g. `MCP: ⚪ n unverified`, `MCP: 🟡 error`), and ensure the 1.5 s timeout timer is `.unref()`'d.
+4. `src/commands/memory.ts` `handleMcpCommand` ("run" branch): install `process.stdout.on("error", …)` (swallow EPIPE / exit cleanly); bridge `process.stdin` `'end'`/`'close'` to the same `done()` used by `transport.onclose`; assign `server.onerror = (e) => log`; ensure the `finally` still closes service+server.
+5. `src/muninn/mcp/server.ts`: give `send()` a bounded write so a broken pipe rejects instead of awaiting `'drain'` forever (wrap with a timeout + `stdout` error rejection).
+6. `src/server/lifecycle.ts`: after `waitForHealth`, attach an `exit`/`error` listener on the child that marks the handle unhealthy and logs (`[huginn] opencode server exited (code N)`); expose the state so `OpencodeRuntimeAdapter` can report a recoverable error and (best-effort) restart once.
+7. `src/engine/liveMode.ts` `getDiagnostics()`: distinguish a Muninn DB failure from an empty DB — on error, report the sanitized error rather than `0 entities, 0 observations`; update the `/status` row accordingly.
+8. `src/engine/phases.ts`: keep indexing non-fatal but log at debug (`HUGINN_DEBUG`) instead of a bare `catch {}`.
+9. Tests (vitest/bun): `getMcpStatus` unverified path; opencode catch → degraded+error; badge formatting for unknown/error; mcp-run exits on stdin `'close'` (spawn the built CLI, close stdin, assert exit within a bound); `send()` broken-pipe does not hang; diagnostics error path.
+10. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 29 — Fluid Feedback & Intuitive DX Polish
+modules: src/tui/, src/cli.ts, src/engine/liveMode.ts
+
+Implements REQ-31.
+1. Audit every `submit()` branch and ensure each emits a sanitized acknowledgement (busy → result → error) so no input is a silent no-op; standardize the system-message wording for success/failure.
+2. Actionable errors: replace bare `(err as Error).message` output with a component + next-step hint (e.g. models → "try `/model <id>`"; runtime → "run `/agent`"; mcp → "run `/mcp`").
+3. Empty-chat guidance: when the chat viewport is empty, render a short raven-flavoured hint list (type `/` for commands, `/draft` to plan, `/mcp` to inspect) consistent with REQ-29's identity.
+4. Confirm no stdout leaks while mounted (AC-21.3) and that the palette from Iteration 26 is reachable from the hint.
+5. Tests (vitest, `test/tui/`): each command emits a visible message; error messages contain the hint; empty-state hint renders; no direct `console.log` on the TUI path.
+6. Final quality gate: `npm test` (`bun test && vitest run`) 100% green, `bun run typecheck` zero errors, `bun run build` succeeds.
+
