@@ -118,7 +118,7 @@ huginn mcp run
 ```
 
 The project defaults to the current working directory and the models are resolved from configuration
-(see [Model configuration](#model-configuration)) rather than requiring `--thinker`/`--executor`.
+(see [Model and Agent configuration](#model-and-agent-configuration)) rather than requiring `--thinker`/`--executor`.
 
 In a repository that has never run huginn (no `.huginn/` directory), a bare `huginn` opens the
 **init wizard** instead of the live console — interactive onboarding on a TTY, a short pointer to
@@ -159,6 +159,8 @@ and `HUGINN_AGENT_RULES_PATH` / `HUGINN_AGENT_<ID>_RULES_PATH`.
 
 `huginn doctor` exits `0` only when its **critical** checks pass (git repository, a runtime, and the
 Muninn database); the `git` binary, Node, `opencode` CLI and missing agent integrations are warnings.
+Its `integrations` check renders the same Muninn provisioning matrix as `huginn setup --status` — agent
+× installed × registered — with the exact `huginn setup --agent <id>` fix for every installed gap.
 
 `huginn init` runs six non-blocking steps: git detection (informational — it just prints a `git init`
 tip), package-manager detection from the lockfile (`bun`/`pnpm`/`yarn`/`npm`, else `unknown`), a `PATH`
@@ -180,6 +182,7 @@ override the detected locations.
 | `--executor <m>` | resolved from config | model used for everything else (execution, gates, docs, commits) |
 | `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents |
 | `--mode auto\|supervised` | `auto` | `auto`: autonomous with a fix-retry budget, escalating to you only when it is exhausted; `supervised`: pause for your call at every blocked gate |
+| `--profile <id>` | `huginn` | Methodology profile: `huginn` (the **Huginn Cycle**, below) · `sdd` · `odd` · `rdd` · `strict-tdd` (see [Methodology profiles](#methodology-profiles)) |
 | `--permissions auto\|ask\|deny` | `auto` | auto-approve tool permission requests |
 | `--max-retries <n>` | `3` | thinker fix attempts per blocked gate before escalating to you |
 | `--from-iteration <n>` | — | start at iteration n |
@@ -223,12 +226,15 @@ The project config file is a JSON object with documented keys:
   "agent": "claude",
   "thinker": "anthropic/claude-opus-4-5",
   "executor": "opencode/gpt-5.1-codex",
-  "mode": "auto"
+  "mode": "auto",
+  "profile": "huginn"
 }
 ```
 
 - `agent` must be one of the registered agent targets (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `agy`).
 - `thinker` / `executor` are model strings (`provider/model`); `mode` is `auto` or `supervised`.
+- `profile` is `huginn` (default), `sdd`, `odd`, `rdd` or `strict-tdd`; an unrecognised value is dropped with a warning rather than failing the run.
+- A persisted `agent` naming a **removed** target (`gemini`, superseded by `agy`) is not fatal: it warns and falls back to PATH detection.
 - Unknown keys are preserved verbatim, so third-party tooling can keep its own settings alongside.
 - The project file overrides the user file key-by-key; a missing file is treated as empty and a
   malformed one is ignored with a warning (never fatal), falling back to the next layer.
@@ -241,11 +247,11 @@ The `huginn config` command is the CLI surface for this layer:
 huginn config show [--project <path>] [--home <path>]
 
 # Persist to <project>/.huginn/config.json, or ~/.huginn/config.json with --global
-huginn config set [--thinker <m>] [--executor <m>] [--global] [--project <path>] [--home <path>]
+huginn config set [--thinker <m>] [--executor <m>] [--profile <id>] [--global] [--project <path>] [--home <path>]
 ```
 
-`set` requires at least one of `--thinker`/`--executor`; `--project`/`--home` override the paths
-(used by tests).
+`set` requires at least one of `--thinker`/`--executor`/`--profile`; `--project`/`--home` override the paths
+(used by tests). `show` also prints the effective methodology profile and its display name.
 
 ## Sandboxing (git worktrees)
 
@@ -338,6 +344,10 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
 - **Console Log Drawer (Zero Stdout Pollution)**: Background server logs, provider warnings, and runtime notices are intercepted via `patchConsole()` and routed into an in-app log drawer (`LogsCard`) rather than dumping to stdout and tearing the alternate screen.
 - **Stream Batching & Scroll Containment**: Real-time agent streaming (`phaseStream`) is throttled to 60ms flushes and capped with a 1,000-line ring buffer to prevent Ink rerender lag. Mouse and keyboard scrolling are trapped within the active card (`[PageUp]`/`[PageDown]` for 4 lines, `[↑]`/`[↓]` line-by-line) without leaking into the terminal scrollback history.
 - **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` aborts immediately, while `/quit` (alias `/abort`) aborts after a two-step confirmation.
+- **Composer with Input History**: the message row is the anchor of the view — its own accent border and a `❯` prompt glyph — and `↑` recalls the previous submission of the session (the last 50), `↓` walks forward and ends at the empty draft. Recalled drafts stay editable and slash-command submissions are never stored. Recall applies only while the command palette is closed and the draft is empty, so it never fights the palette's own `↑`/`↓`.
+- **Honest Panels**: the old `REFINEMENT CONVERSATION` card is simply **`Conversation`**, and the agent-output (stream) panel **collapses automatically** while the agent has emitted no reasoning/stream content for the session — its rows return to the conversation and it is never shown as an empty bordered box; it expands on the first content.
+- **Selectable Runtime Picker (`AgentPickerModal`)**: bare `/agent` opens a modal over every registered target, each with an availability marker (`✔` / `— not installed`), the active runtime marked, and the highlighted entry's resolved binary path. `↑`/`↓` (or `j`/`k`) navigate, `Enter` switches, `Esc` cancels; a failed switch keeps the picker open so another runtime can be chosen immediately. `/agent <id>` still works for power users.
+- **Agent-Agnostic Questions**: any runtime can ask you a clarifying question through a marked output block; the decision modal renders the real option rows — a digit picks that option verbatim, `Enter` accepts the recommended one, `d` skips and `Esc` aborts (see [Clarifying questions](#clarifying-questions-agent-agnostic)).
 - **Interactive Model & Provider Selector (`ModelPickerModal`)**:
   - Launch with `--choose-model` flag: `huginn --choose-model` or `huginn live --choose-model`.
   - In-session slash commands:
@@ -353,21 +363,22 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
   - **Native Model Forwarding**: the chosen model is passed to the runtime through the flag it documents (`--model`/`-m`, or the OpenCode SDK model ref), so selecting a model actually takes effect; `HUGINN_MODEL` is kept only as an extra environment hint for wrapper scripts.
   - **Auto-Onboarding Preflight Check**: if thinker or executor came from the documented defaults and the runtime's catalog is non-empty while containing **neither** default, Huginn automatically opens the model selector on startup.
 - **Live MCP Monitor & Server Inspector (`McpInspectorModal`)**:
-  - **Live Header Status Badge**: Real-time indicator in the TUI header with periodic 15-second health checks. It only claims liveness it actually verified: `MCP: 🟢 <count> active (<tools> tools)` for servers a real probe reported reachable, `MCP: ⚪ <n> unverified` for servers merely declared in a config file (Huginn holds no MCP client for subprocess runtimes, so it never calls them connected), `MCP: 🟡 error — <reason>` or `MCP: 🟡 timeout` when a probe fails or exceeds the deadline, and `MCP: ⚪ 0 active` when nothing is registered.
-  - **Render Loop Protection**: `fetchMcpStatusWithTimeout` enforces a strict 1500ms `Promise.race` timeout, guaranteeing third-party or unresponsive MCP servers never block or freeze the Ink render loop.
+  - **Live Header Status Badge**: real-time indicator with 15-second polls over a bounded 12 s budget. MCP is **per-agent** — Huginn holds no client, the active agent owns every connection — so the badge is always self-describing and **attributes the agent it describes**, never rendering a bare or unexplained number: `MCP: 🟢 3 connected · opencode` for servers a real probe reported reachable, `MCP: ⚪ 5 configured · agy` for servers the agent's own CLI enumerated as configured-but-unprobed, `MCP: ⚪ none · omp` when nothing is registered, and `MCP: 🟡 error — <reason> · <agent>` / `MCP: 🟡 timeout · <agent>` on failure. Every numeric field is nullish-coalesced, so `undefined`/`NaN` can no longer reach the screen.
+  - **Render Loop Protection**: `fetchMcpStatusWithTimeout` enforces a strict `Promise.race` deadline (with `.unref()`'d timers) so an unresponsive MCP server never blocks the Ink render loop; a completed listing is cached for 60 s per runtime and one spawn is shared across polls, so a slow CLI (`claude mcp list` health-checks every server, ~23 s measured) is fetched once and reused instead of being killed and retried forever.
   - **Interactive Inspector (`/mcp`)**: Type `/mcp` in the live chat input to open an interactive two-pane inspector modal:
-    - *Left Pane (Servers)*: Lists the discovered MCP servers with their connection state (`[connected]` only after a real probe, `[unknown]` for config-discovered servers that were never probed, `[error]`, `[disconnected]`), transport (`[stdio]`, `[sse]`), and roundtrip latency; the inspector's header count marks those servers as `n/total unverified` instead of counting them as active.
+    - *Left Pane (Servers)*: lists each server as `name · transport · status · detail` — `[connected]` only after a real probe, `[unknown]` for a server the agent's CLI reports as merely configured (`enabled`/`disabled`/`pending`), plus whatever detail the CLI exposed (command, scope, auth); the header summarizes `n/total active` or `n/total unverified` instead of counting unprobed servers as live.
+    - *Attribution & Muninn*: the header names the source runtime (*"Servers come from **&lt;agent&gt;** — add or change them with the agent's own config or CLI; Huginn only observes them"*) and states whether Muninn is registered for that agent (`✓ Muninn (the memory brain) is registered for <agent> … one project-scoped brain, shared by every agent`), or, when it is missing, the exact fix command `huginn setup --agent <id>`.
     - *Right Pane (Tools)*: Inspects exposed tools for the selected server with descriptions and paginated windowing (10 visible tools with scroll overflow indicators).
     - *Navigation*: `[↑]`/`[↓]` or `[k]`/`[j]` to navigate, `[Tab]` or `[Enter]` to switch focus between servers and tools panes, `[Esc]` to return to chat.
     - *Terminal Injection Defense*: All server names, tool descriptions, and error strings are sanitized via `sanitizeTerminalText` (shared module `src/util/text.ts`) to strip ANSI escape sequences, C0 and C1 non-printable control characters.
 - **Inline Command Palette**: typing `/` in an empty-or-partial input opens an autocomplete overlay directly beneath the input row — `↑`/`↓` (or `j`/`k` while the draft is exactly `/`) move the highlight, `Tab` accepts the highlighted command, `Enter` runs it, and `Esc` dismisses the overlay without aborting the session. Further typing filters by id/alias substring; accepting a command that takes arguments inserts its argument hint. These bindings take precedence over focus/scroll only while the overlay is open, and the palette is height-bounded (≤6 rows with `▲`/`▼` markers, shrinking on short terminals) so it can never push the frame off-screen.
 - **Rich Live Slash Commands**: a single command registry (`src/tui/commandRegistry.ts`) is the source of truth for dispatch, the palette and the `/help` cheat sheet (a drift-guard test keeps them in sync), so the UI can never advertise a command the dispatcher does not implement. The Live input bar intercepts any `/<…>` input before model dispatch, so typos are reported (``Unknown command "<cmd>" — type /help for the command reference.``) instead of being sent to the model as chat text. Available commands:
   - `/help`: opens the **cheat-sheet modal** (`HelpModal`) with every command, the navigation shortcuts, and the active agent/thinker/executor/project banner.
-  - `/agent`: lists the registered agent runtimes (marking the active one). `/agent <id>` hot-switches the runtime in-session (fails closed if the target binary is unavailable).
+  - `/agent`: opens the interactive **runtime picker** (`AgentPickerModal`) described above. `/agent <id>` hot-switches the runtime in-session (fails closed if the target binary is unavailable).
   - `/models` or `/model`: opens the interactive model picker; `/model <thinker> [executor]` sets both models inline for the session.
   - `/mcp [id]`: opens the MCP inspector, optionally pre-selecting a server by id.
   - `/skills` (or bare `/skill`): opens the skills browser; `/skill <name>` executes a skill immediately.
-  - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, and Muninn entity/observation counts (a failed Muninn database open reports the error instead of `0 entities, 0 observations`).
+  - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, the active **methodology profile**, and Muninn entity/observation counts (a failed Muninn database open reports the error instead of `0 entities, 0 observations`).
   - `/clear`: clears the conversation and stream viewports.
   - `/draft` (alias `/go`): runs scope extraction and document drafting.
   - `/quit` (alias `/abort`): exits the session after a two-step confirmation.
@@ -376,10 +387,43 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
 `--choose-model` to open the model selector modal on launch,
-plus the run-mode flags `--mode`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,
+plus the run-mode flags `--mode`, `--profile`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,
 `--port`, `--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless mode the chat
 refinement is skipped (the CLI idea is used as-is) and approvals are answered on stdin;
 non-interactive stdin aborts with a hint to use the TUI.
+
+### Clarifying questions (agent-agnostic)
+
+Every runtime — not just OpenCode — can ask you a question mid-turn, because a one-shot subprocess
+CLI cannot open a prompt of its own. When the agent needs a decision it emits a marked block:
+
+```
+<<<HUGINN_QUESTION>>>
+[{"question": "Which database?", "header": "Storage",
+  "options": [{"label": "Postgres", "description": "managed, needs a server"},
+              {"label": "SQLite", "description": "embedded, single file"}]}]
+<<<END_HUGINN_QUESTION>>>
+```
+
+Huginn parses the JSON `QuestionItem[]` out of the reply, **strips the block from what you see**,
+and opens its decision modal with the real options. Keys: a digit `1`–`9` picks that option verbatim,
+`Enter` accepts the recommended (first) one, `d` skips the question (the turn continues without an
+answer) and `Esc` aborts it. The chosen answer is sent back to the agent as a follow-up turn, so it
+can continue with your decision. Only the **first** question in a block is selectable — a block with
+more says so. An unparseable, unclosed or empty block is surfaced as a warning (sanitized) instead of
+being dropped, and a question left unanswered aborts the turn after a bounded deadline.
+
+To make your own agent ask, the protocol is wired into the refine system prompt and the injected
+Muninn rules block; the instruction is simply:
+
+> If you genuinely need the user to choose before you can continue, emit a single question block
+> instead of guessing: `<<<HUGINN_QUESTION>>>` followed by a JSON array of
+> `{"question": string, "options": [{"label": string, "description"?: string}]}` and
+> `<<<END_HUGINN_QUESTION>>>`, each on its own line.
+
+**Not honoured today (deliberately de-scoped):** the `multiple` (multi-select) and `custom`
+(free-text) fields are parsed but ignored, and there is no arrow-key selection — a future iteration
+must amend the spec before claiming them.
 
 ### Project skills (`.huginn/skills/`)
 
@@ -431,6 +475,31 @@ auditable.
 
 Modules for steps 3–4 come from the `modules:` line of the iteration heading, or are inferred
 automatically from `git diff` since the iteration started.
+
+### Methodology profiles
+
+The eight phases above are the **Huginn Cycle** — the default `--profile huginn`, unchanged and pinned
+by a snapshot test. `--profile` selects a different ordered pipeline over the same phase vocabulary,
+so switching methodology changes *what runs and in what order*, not how a phase works:
+
+| Profile | Name | Pipeline |
+|---|---|---|
+| `huginn` | Huginn Cycle (default) | spec-audit → execute → validate-step → test-module → secure-check → review → doc-sync → commit-all |
+| `sdd` | Spec-Driven Development | spec-audit → execute → validate-step → test-module → review → doc-sync → commit-all, with a spec/design/tasks **preamble** folded into execute and the run committed only after verification |
+| `odd` | Organic-Driven Development | execute → test-module → commit-all (lightweight daily changes, no heavy gates) |
+| `rdd` | Receipt-Driven Development | execute → test-module → validate-step → commit-all, where verification **freezes a receipt** the commit references |
+| `strict-tdd` | Strict TDD | test-module (**expected to fail**) → execute → test-module → validate-step → commit-all, with a **frozen worktree snapshot** recorded as evidence |
+
+- **Selecting it**: `--profile <id>` on `run` and `live`, `"profile"` in `.huginn/config.json`, or
+  `huginn config set --profile <id>`. An unknown id fails closed with usage; a persisted unknown
+  profile is dropped with a warning (never a crash).
+- **Announced**: the active profile is printed in the CLI banner (e.g. `profile=huginn`) and shown as
+  the **Methodology** row in the `/status` box, so you always know which cycle is running.
+- **Frozen evidence (`rdd` / `strict-tdd`)**: on iteration success a receipt is written to
+  `.huginn/receipts/iter-<n>.json` (mode `0o600`) recording the profile, the base and resulting
+  commits, the tree hash and the per-phase verdicts; `strict-tdd` also pins the pre-`EXECUTE` tree,
+  so "the tests were failing first" is checkable against a hash instead of a claim. Writing a receipt
+  is best-effort and never fails an otherwise-successful iteration.
 
 ## `plan.md` convention
 

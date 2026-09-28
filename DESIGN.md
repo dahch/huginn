@@ -30,7 +30,7 @@ rationalized in [`ADR.md`](./ADR.md).
 src/
 ├── cli.ts                  entry point; arg parsing (run/live/plan/install/setup/doctor/memory/mcp/check/config), banner, lifecycle wiring
 ├── agents/
-│   └── integrator.ts       AGENT_REGISTRY + setup(): Muninn MCP registration and rules injection across 12 agents
+│   └── integrator.ts       AGENT_REGISTRY (11 targets) + setup(): Muninn MCP registration, per-target rules injection, and the installed × registered provisioning matrix (REQ-15/REQ-38)
 ├── commands/
 │   ├── check.ts            CLI commands: handleCheckCommand (verify TypeScript contracts), printCheckUsage
 │   ├── config.ts           CLI commands: handleConfigCommand (show/set thinker+executor), printConfigUsage
@@ -50,7 +50,7 @@ src/
 │   ├── agent/
 │   │   ├── types.ts            IAgentRuntime, IAgentSession, ModelInfo, ModelCatalog, McpStatusReport contracts
 │   │   ├── registry.ts         Agent factory, PATH auto-detection, resolution precedence, isExecutableBinary
-│   │   ├── mcpStatus.ts        fetchMcpStatusWithTimeout (1.5 s race) + truthful formatMcpBadge (REQ-30)
+│   │   ├── mcpStatus.ts        fetchMcpStatusWithTimeout (bounded `Promise.race`, 60 s listing cache) + attributed, `undefined`-safe formatMcpBadge (REQ-30/REQ-32)
 │   │   ├── index.ts            barrel export for runtime subsystem
 │   │   └── adapters/
 │   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK); connected-provider discovery + `opencode models` fallback
@@ -61,11 +61,15 @@ src/
 │   │       ├── commandcode.ts  CommandCodeRuntimeAdapter (Command Code CLI) + `--list-models` parser
 │   │       ├── qwen.ts         QwenRuntimeAdapter (Qwen Code CLI)
 │   │       ├── modelList.ts    runModelListCommand: bounded, sanitized spawn used by every listing CLI (REQ-27)
+│   │       ├── mcpList.ts      per-CLI `mcp list` parsers (opencode/claude/qwen/agy/commandcode) + listMcpServersViaCommand (REQ-32)
 │   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio, native model flags)
 │   │       └── index.ts        re-exports all adapters
-│   ├── cycle.ts            CycleEngine: pipeline-as-data, retry/fix/escalate loop, state machine
+│   ├── cycle.ts            CycleEngine: pipeline-as-data (per profile), retry/fix/escalate loop, state machine
 │   ├── phases.ts           the 8 phase functions + 3 fix functions; builds prompts/commands
 │   ├── gate.ts             verdict parsers, JSON judge, fail-closed logic
+│   ├── profiles.ts         PROFILES: the named pipelines (huginn Cycle + sdd/odd/rdd/strict-tdd) over the phase vocabulary (REQ-36)
+│   ├── receipts.ts         frozen iteration evidence under .huginn/receipts/ (tree hash + verdicts) for rdd/strict-tdd (REQ-36)
+│   ├── questionBlock.ts    agent-agnostic `<<<HUGINN_QUESTION>>>` block parser + answer formatter (REQ-37)
 │   ├── decisionBroker.ts   FIFO queue of pending human/permission decisions
 │   ├── permissions.ts      opencode event subscription: permission handling + stream forwarding
 │   ├── planMode.ts         `huginn plan`: drafts spec/adr/plan via the thinker; exported prompt
@@ -117,7 +121,8 @@ src/
     ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
     ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
     ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette)
-    ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp)
+    ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp), attributed to the active agent
+    ├── AgentPickerModal.tsx interactive runtime picker (/agent): availability, active marker, detected path (REQ-33)
     ├── HelpModal.tsx       live slash-command cheat sheet (generated from the registry), shortcuts & active config (/help)
     ├── SkillsModal.tsx     project/built-in skills browser & prompt-body preview (/skills)
     └── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence (honest discovery states)
@@ -191,6 +196,12 @@ interface PipelineStep {
 | REVIEW | `review` | judge | FIX_REVIEW | ✅ |
 | DOC_SYNC | `docSync` | none | — | — |
 | COMMIT_ALL | `commitAll` | none | — | — |
+
+That table is the **Huginn Cycle** — `profile: "huginn"`, the default. Since REQ-36 the pipeline is
+selected per run from `PROFILES` (`src/engine/profiles.ts`), a record of named `PhaseName[]`
+pipelines; `sdd`/`odd`/`rdd` reorder or subset these same steps (each step keeps its own `gate`/`fix`
+column), and `strict-tdd` adds a second `TEST_MODULE` that is *expected to fail* and never blocks
+(REQ-36, § 27.4). `--only-phase` validates against the union of every profile's phases.
 
 The retry/fix/escalation loop (`runPhase`) is the same for every step:
 
@@ -2181,7 +2192,7 @@ export async function fetchMcpStatusWithTimeout(
 ): Promise<McpStatusReport>
 ```
 
-1. **Strict 1500 ms Race**: Creates an internal timer racing against `runtime.getMcpStatus()`. If the runtime adapter or underlying agent CLI takes longer than 1500 ms, the promise resolves with a degraded status object:
+1. **Strict Bounded Race**: Creates an internal timer racing against the runtime's MCP read. The TUI passes a 12 s budget (`MCP_STATUS_POLL_TIMEOUT_MS`, REQ-32) so a slow listing CLI (`opencode mcp list` ≈ 5 s, `commandcode` ≈ 8 s, `claude mcp list` health-checks at ≈ 23 s) is not killed mid-flight; if the budget expires the promise resolves with a degraded status object:
    ```ts
    {
      servers: [],
@@ -2193,16 +2204,17 @@ export async function fetchMcpStatusWithTimeout(
    ```
 2. **Deterministic Cleanup**: Timer handles are cleared in a mandatory `finally` block to prevent timer leakages across repeated polls, and the deadline timer is `.unref()`'d so a pending probe can never hold the process (or an Ink test runner) open.
 3. **Degraded State Normalization**: If any individual server reports `status === "error"` but the overall report does not explicitly flag `degraded`, `fetchMcpStatusWithTimeout` automatically sets `degraded: true`.
-4. **Periodic Polling Lifecycle**: Both `Dashboard` and `LiveDashboard` poll on mount and every 15 seconds via `setInterval`. Unmount callbacks clear intervals and set `active = false` flags, preventing state updates after component teardown.
+4. **Listing-first order + cache (REQ-32)**: when the runtime implements `listMcpServers()`, that enumeration is tried first (it is the only source that can *attribute* servers to the active agent); an empty result falls through to `getMcpStatus()` config discovery, and a listing that outruns the poll still lands in a per-runtime cache (60 s) with a single shared in-flight spawn, so `claude mcp list` is not killed and retried forever.
+5. **Periodic Polling Lifecycle**: Both `Dashboard` and `LiveDashboard` poll on mount and every 15 seconds via `setInterval`. Unmount callbacks clear intervals and set `active = false` flags, preventing state updates after component teardown.
 
 #### Status Badge Formatting (`formatMcpBadge`)
 
-`formatMcpBadge` maps report metrics to concise colored terminal badges. The states are deliberately distinguishable, and none of them claims liveness Huginn did not verify (REQ-30 / AC-30.1, AC-30.2):
-- **Verified connected (Green)**: `MCP: 🟢 <count> active (<tools> tools)` — only servers a **real probe** reported reachable (e.g. `MCP: 🟢 3 active (18 tools)`)
-- **Error (Yellow)**: `MCP: 🟡 error — <sanitized reason>` (or `MCP: 🟡 error` when no reason is carried) when the report is `degraded`, carries an `error`, or any server reports `status === "error"`
-- **Timeout (Yellow)**: `MCP: 🟡 timeout` when the failure *is* the deadline (`MCP status timed out after 1500ms`)
-- **Unverified (Gray)**: `MCP: ⚪ <n> unverified` — servers found in config (or carrying the explicit `unverified` flag) that were never probed; a config-only report is `healthy: false` even though nothing failed
-- **Empty / Inactive (Gray)**: `MCP: ⚪ 0 active` — nothing registered, or nothing reported
+`formatMcpBadge(report, agentName)` maps report metrics to concise colored terminal badges. Every badge is **self-describing and attributed** to the active agent (REQ-30 / REQ-32 / AC-32.4; the caller passes `runtime.id`), and every numeric field is nullish-coalesced so `undefined`/`NaN` cannot render (NFR-10):
+- **Verified connected (Green)**: `MCP: 🟢 <n> connected (<tools> tools) · <agent>` — only servers a **real probe** reported reachable (e.g. `MCP: 🟢 3 connected · opencode`); the tool count appears only when a probe actually reported it
+- **Error (Yellow)**: `MCP: 🟡 error — <sanitized reason> · <agent>` (or `MCP: 🟡 error · <agent>` when no reason is carried) when the report is `degraded`, carries an `error`, or any server reports `status === "error"`
+- **Timeout (Yellow)**: `MCP: 🟡 timeout · <agent>` when the failure *is* the deadline (`MCP status timed out after <ms>ms`)
+- **Configured / unverified (Gray)**: `MCP: ⚪ <n> configured · <agent>` — servers the agent's own CLI enumerated as configured (`enabled`/`disabled`/`pending`/`unknown`), i.e. known but never probed; only `connected` is ever described as live
+- **Empty / Inactive (Gray)**: `MCP: ⚪ none · <agent>` — nothing registered, or nothing reported
 
 ### 23.4 Interactive Two-Pane Inspector Modal (`McpInspectorModal.tsx`)
 
@@ -2223,7 +2235,8 @@ Mounted via the `/mcp` slash command in `LiveDashboard`, `McpInspectorModal` ren
 ```
 
 #### Dual-Pane Focus & Keyboard Navigation
-- **Left Pane (Servers)**: Displays registered servers, health status (`[connected]` only for a verified probe, `[unknown]` for a config-discovered server that was never probed, `[error]`, `[disconnected]`), transport protocol (`[stdio]`, `[sse]`), and round-trip latency (`latencyMs`). The pane header marks unverified servers as `n/total unverified` rather than counting them as active (AC-30.1).
+- **Left Pane (Servers)**: Displays each server as `name · transport · status · detail` — `[connected]` only for a verified probe, `[unknown]` for a server the agent's CLI reports as merely configured (`enabled`/`disabled`/`pending`), and whatever detail the CLI exposed (command, scope, auth) clamped to one column. Round-trip latency is shown only when a probe actually measured it. The pane header marks unverified servers as `n/total unverified` rather than counting them as active (AC-30.1).
+- **Attribution & Muninn (AC-32.3 / AC-38.4)**: a header line names the source runtime (*"Servers come from **&lt;agent&gt;** — add or change them with the agent's own config or CLI; Huginn only observes them"*), and a second line states whether Muninn is registered for that agent (`✓ Muninn (the memory brain) is registered for <agent> … one project-scoped brain, shared by every agent`) or, when absent, the exact fix command `huginn setup --agent <id>`. An unknown server status reads "Status not reported by &lt;agent&gt; — configured, not probed" (AC-32.5).
 - **Right Pane (Tools)**: Displays tools exposed by the currently highlighted server, with tool names and descriptions.
 - **Focus Toggle**: `[Tab]` or `[Enter]` toggles `focusView` between `"servers"` and `"tools"`.
 - **Directional Navigation**: `[↑]`/`[↓]` and `[k]`/`[j]` navigate the active pane. When navigating the server list, the tool list automatically resets selection to the first tool.
@@ -2377,7 +2390,7 @@ Because skills are read from the repository, the loader treats discovery and rea
 | Command | Behaviour |
 |---|---|
 | `/help` | Mounts `HelpModal` — command cheat sheet, navigation shortcuts, and the active agent/thinker/executor/project banner. `Esc`, `q` or `Enter` closes. |
-| `/agent` | Emits a system message listing every registered runtime, marking the active one (no modal). |
+| `/agent` | Opens the interactive `AgentPickerModal` (REQ-33): every `AGENT_TARGETS` row with an availability marker (`✔` / `— not installed`), the active one marked, and the highlighted entry's detected path; `↑`/`↓`/`j`/`k` move, `Enter` switches (a failed switch keeps the modal open), `Esc` cancels. |
 | `/agent <id>` | Hot-switches the runtime via `LiveEngine.switchRuntime(id)`; an unknown id is rejected with the available-target list. |
 | `/models`, `/model` | Mounts the interactive `ModelPickerModal`. |
 | `/model <thinker> [executor]` (also `/models …`) | Validates `provider/model` syntax for both values (executor defaults to the current one), rejects extra args or malformed values, then calls `LiveEngine.updateModels(...)` for the session. |
@@ -2668,6 +2681,218 @@ an error names the failing component and what to do next instead of dumping a ba
 empty chat viewport renders `EMPTY_CHAT_HINTS`, a short raven-flavoured list pointing at the palette,
 `/draft`, `/mcp`, `/status` and `/help`, sliced to the rows the card actually has so it can never
 push the frame past the terminal height.
+
+## 27. Phase 7 — Per-Agent MCP Truth, Composer Ergonomics & Methodology Profiles
+
+Phase 7 answers what a live session on this machine exposed. **MCP is per-agent** — Huginn holds no
+client, the active agent owns every connection — yet the header reported an unattributed,
+unexplained number that could print `undefined`. `/agent` could only *list* runtimes, so selecting
+one (e.g. `agy`) meant memorising its id. The composer had no recall and no visual presence, the
+agent-stream panel assumed reasoning most frontier models no longer emit, `gemini` was a dead target
+whose `-p` needs an argument Huginn never passed, and agent questions only ever surfaced on opencode.
+The implementation lives in `src/engine/agent/` (`mcpList.ts`, `mcpStatus.ts`, the adapters),
+`src/engine/profiles.ts`, `src/engine/receipts.ts`, `src/engine/questionBlock.ts`,
+`src/engine/liveMode.ts`, `src/agents/integrator.ts`, `src/commands/setup.ts`, `src/commands/doctor.ts`,
+`src/config.ts`, `src/tui/` (`AgentPickerModal.tsx`, `LiveDashboard.tsx`, `Dashboard.tsx`) and the
+fixtures under `test/fixtures/`. The phase pipeline's *engine* (`runPhase`/`runIteration`), the
+sandboxing model and the Muninn schema are untouched.
+
+### 27.1 Per-agent MCP enumeration & honest attribution (REQ-32)
+
+The active agent is the only authority on its own servers, so `IAgentRuntime` gains an optional
+`listMcpServers(): Promise<McpServerListing[]>` (`McpServerListing = { name; transport?;
+status: "connected"|"enabled"|"disabled"|"pending"|"unknown"; detail? }`). Runtimes whose CLI can
+list use it; the rest fall back to config-file discovery with `status: "unknown"`:
+
+| runtime | listing command | parser | statuses seen |
+|---|---|---|---|
+| `opencode` | `opencode mcp list` | `parseOpencodeMcpList` | `connected` (box list, ANSI stripped) |
+| `claude` | `claude mcp list` | `parseClaudeMcpList` | `connected` (`✔`, health-checks ≈ 23 s) |
+| `qwen` | `qwen mcp list` | `parseQwenMcpList` | `connected` |
+| `agy` | `agy mcp list` | `parseAgyMcpList` | `enabled`/`disabled` (TSV; **config state**) |
+| `commandcode` | `commandcode mcp list` | `parseCommandcodeMcpList` | scope/auth surfaced as `detail` |
+| `omp`, `kimi`, `pi`, `cursor`, `windsurf` | *(none)* | — | config discovery → `unknown` |
+
+```mermaid
+flowchart TD
+    P["fetchMcpStatusWithTimeout(runtime, budget)"] --> L{"runtime.listMcpServers?"}
+    L -- yes --> C{"cached (< 60 s)?"}
+    C -- yes --> R["reportFromListings(agent, listings)"]
+    C -- no --> RUN["listMcpServersViaCommand → runMcpListCommand (bounded, sanitized)"]
+    RUN -- empty/timeout --> G["fall back to getMcpStatus() config discovery"]
+    RUN -- listings --> R
+    G --> R
+    R --> B["formatMcpBadge(report, runtime.id)"]
+    B --> H["MCP: 🟢 n connected · agent / ⚪ n configured · agent / ⚪ none · agent"]
+```
+
+- **Honest mapping (`mapListingToServerState`).** Only `connected` maps to `connected`; `disabled` →
+  `disconnected`; `enabled`/`pending`/`unknown` → `unknown` (configured, never probed). A listing word
+  is never upgraded to liveness (AC-32.2).
+- **Attribution.** `reportFromListings` ids every server `<agent>:<name>`, defaults a missing
+  transport to `"unknown"` rather than assuming stdio, and flags `unverified` whenever nothing was
+  probed. The badge (`formatMcpBadge(report, agentName)`) names its source; every numeric field is
+  nullish-coalesced (`count()` / `mcpToolTotal()`), so `undefined`/`NaN` cannot render (AC-32.4 /
+  NFR-10).
+- **Never fabricate, never block.** `runMcpListCommand` reuses `runModelListCommand`'s bounded spawn
+  (timeout, stdout cap, process-group kill, sanitized `reason`) and returns `{ error }` rather than
+  throwing; `listMcpServersViaCommand` collapses that to `[]` so a missing binary or unparseable
+  output silently degrades to config discovery instead of failing the poll.
+- **Deeper truth where it exists (AC-32.5).** Whatever per-server detail the CLI exposed (command,
+  scope, auth) travels on `detail` and is shown verbatim; where the agent reports no status the panel
+  says so ("Status not reported by &lt;agent&gt; — configured, not probed").
+- **Verification.** Each format is fixture-tested against captured output
+  (`test/fixtures/*-mcp-list.txt`, documented in `test/fixtures/README.md`), the status mapping and
+  badge strings have their own tests, and a guard drives every badge state asserting the literal
+  `undefined`/`NaN` never appears.
+
+### 27.2 Interactive runtime picker (REQ-33)
+
+`src/tui/AgentPickerModal.tsx` turns runtime switching into a selection. `/agent` (no argument) opens
+it; `/agent <id>` is unchanged. The modal renders `AGENT_TARGETS` in registry order via
+`buildAgentRows`, resolving availability from `detectAvailableAgents()` asynchronously (a detection
+failure simply leaves every row "not installed", never blocks render). Each row shows the label, a
+`✔` or `— not installed`, a `● active` marker for the current runtime, and — for the highlighted row
+only — its resolved binary path; the list is windowed (`VISIBLE_AGENT_ROWS = 6`) with
+`▲`/`▼` overflow markers. `↑`/`↓` (or `j`/`k`) move, `Enter` calls `onSelect` and `Esc` cancels; the
+caller (`LiveDashboard`) keeps the modal open when a switch fails, so another runtime can be chosen
+immediately, and its footer reminds the user that Muninn memory is project-scoped and unaffected.
+
+### 27.3 Composer ergonomics & honest panels (REQ-34 / REQ-35)
+
+- **Input history.** `LiveDashboard` keeps a bounded `inputHistory` (`INPUT_HISTORY_LIMIT = 50`); `↑`
+  recalls the previous submission when the palette is closed, the draft is empty and the chat card is
+  focused, and `↓` walks forward ending at the empty draft. Recalled drafts stay editable, and
+  slash-command submissions are excluded from history.
+- **Composer presence (AC-34.2).** `ChatInputRow` owns its accent border/background and a `❯` glyph,
+  and reserves exactly one content line regardless of placeholder or history hint, so the layout
+  budget at 80×24 is unchanged.
+- **Honest panels.** The `REFINEMENT CONVERSATION` card is renamed **`Conversation`** wherever
+  rendered or documented (AC-35.1). The agent-stream panel is adaptive (AC-35.2): it renders
+  collapsed — returning its rows to the conversation — until the session has real stream content, and
+  expands on the first content; it is never an empty bordered box.
+- **Target hygiene (AC-35.3, ADR-34).** `gemini` is removed from `AGENT_TARGETS`/`AGENT_REGISTRY`. The
+  persisted-config path stays safe: `REMOVED_AGENT_TARGETS` (`gemini → agy`) makes `resolveAgent`
+  warn and fall back to detection instead of throwing, and any *other* unknown value is still rejected.
+
+### 27.4 Methodology profiles — the Huginn Cycle + SDD/ODD/RDD/Strict-TDD (REQ-36)
+
+The pipeline was already data (`PipelineStep[]`), so a profile is a **named, ordered subset of the
+existing phase vocabulary** plus the evidence it must freeze — `runPhase`/`runIteration` are
+untouched. `src/engine/profiles.ts` defines `PROFILES: Record<ProfileName, ProfileSpec>`
+(`ProfileName = "huginn"|"sdd"|"odd"|"rdd"|"strict-tdd"`, `DEFAULT_PROFILE = "huginn"`, i.e. the
+**Huginn Cycle**), each with `phases`, an `evidence` rule (`none`/`receipt`/`snapshot`), and an
+optional `preamble` folded into the iteration prompt:
+
+| profile | phases | evidence |
+|---|---|---|
+| `huginn` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → SECURE_CHECK → REVIEW → DOC_SYNC → COMMIT_ALL | none |
+| `sdd` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → REVIEW → DOC_SYNC → COMMIT_ALL (+ spec-first preamble) | receipt |
+| `odd` | EXECUTE → TEST_MODULE → COMMIT_ALL | none |
+| `rdd` | EXECUTE → TEST_MODULE → VALIDATE_STEP → COMMIT_ALL | receipt |
+| `strict-tdd` | TEST_MODULE → EXECUTE → TEST_MODULE → VALIDATE_STEP → COMMIT_ALL | snapshot |
+
+- **Surface.** `--profile <id>` on `run` and `live`, `profile` in `RunConfig`/`UserConfig`/
+  `stateSchema` (sanitized like `mode`), and `huginn config set --profile`. `resolveProfile` fails
+  closed with usage on an unknown flag; a persisted unknown profile is dropped with a warning.
+- **Profile-aware lists.** `--only-phase` validates against `PROFILE_PHASES` (the union over all
+  profiles), and `MAIN_PHASES`-derived progress/`PHASE_LABEL` render from the active profile.
+- **Two subtleties the gate forced.** The resume cursor is occurrence-aware (keyed off the first step
+  the iteration has *not* recorded, not `currentPhase` which starts at SPEC_AUDIT), so a profile that
+  does not begin with SPEC_AUDIT no longer runs zero phases and reports success; and `strict-tdd`'s
+  pre-EXECUTE `TEST_MODULE` (`testFirst: true`) is **judged but never blocks or triggers `FIX_TEST`**,
+  so the failing test is recorded as evidence rather than "fixed" into an inverted TDD.
+- **Frozen evidence (`src/engine/receipts.ts`).** For `rdd`/`strict-tdd`, `buildIterationReceipt`
+  produces an `IterationReceipt` (profile, base/head commits, `treeHash`, verdicts, and for
+  `strict-tdd` the `preExecuteTree`) and `writeIterationReceipt` persists it to
+  `.huginn/receipts/iter-<n>.json` (`0o600`) — best-effort, so a receipt can never fail an otherwise
+  successful iteration. The claim "tests passed" is checkable against a hash instead of prose.
+- **Announced & fail-closed.** The active profile is printed in the CLI banner (`profile=huginn`) and
+  shown as the **Methodology** row in `/status`; `validateProfilePhases` rejects a profile naming an
+  unimplemented phase rather than silently degrading to the default.
+
+### 27.5 Agent-agnostic question protocol (REQ-37)
+
+Only opencode could surface a mid-turn question (and only with `permissions: ask` through its own
+event stream); every subprocess CLI closes `stdin` after the prompt. `src/engine/questionBlock.ts`
+defines a **marked block** that needs no protocol support from the CLI:
+
+```
+<<<HUGINN_QUESTION>>>
+[{"question": "Which database?", "header": "Storage",
+  "options": [{"label": "Postgres", "description": "managed"},
+              {"label": "SQLite", "description": "embedded"}]}]
+<<<END_HUGINN_QUESTION>>>
+```
+
+```mermaid
+sequenceDiagram
+    participant Agent as Any runtime (subprocess or opencode)
+    participant Live as LiveEngine.chat()
+    participant Parser as parseQuestionBlock()
+    participant UI as DecisionModal
+    Agent->>Live: reply text + marked block
+    Live->>Parser: parseQuestionBlock(reply)
+    Parser-->>Live: { questions, cleanedText }
+    Live->>Live: emit cleanedText (block stripped)
+    alt questions present
+        Live->>UI: DecisionRequest { kind: "question", questionItems }
+        UI-->>Live: digit → option label / Enter → recommended / d → skip / Esc → abort
+        Live->>Agent: follow-up turn (formatQuestionAnswer)
+    end
+```
+
+- **Parsing.** `parseQuestionBlock` returns `{ questions, cleanedText, warning? }`. It strips **every**
+  block from the displayed text (so a second block cannot leak raw markers), bounds the payload
+  (64 KiB), the question count (10) and the options (8), sanitizes every field, and — for an
+  unparseable, oversized, unclosed or options-less block — returns a sanitized `warning` **without
+  truncating the rest of the reply**. `normalizeQuestion` keeps `multiple`/`custom` flags if present.
+- **Wiring.** `LiveEngine.chat()` parses the reply, emits any warning to the system log, strips the
+  block, and when questions exist raises a `kind: "question"` `DecisionRequest` through the decision
+  broker; the chosen answer(s) are sent back as a plain follow-up turn (`formatQuestionAnswer`) so it
+  works on every runtime. `askQuestion` bounds the wait (`QUESTION_TIMEOUT_MS = 10 min`, `.unref()`'d)
+  and aborts the turn on expiry rather than hanging. opencode's native `question.asked` /
+  `permission.asked` path is untouched and produces the same `DecisionRequest`.
+- **Decision UI.** `DecisionModal` (and `LiveDashboard.resolveDecisionKey`) render one row per option
+  with its description, inline (a `<Box>` column, not a `<Box>` inside a `<Text>` — Ink would not draw
+  it). A digit `1`–`9` picks that option verbatim, `Enter` accepts the recommended (first) one, `d`
+  skips and `Esc` aborts; keys are matched explicitly, so the `input === ""` that Ink sends for
+  non-alphanumeric keys (Escape included) can no longer silently answer. Only the **first** question
+  is selectable, and a multi-question block says so.
+- **Deliberately de-scoped (AC-37.3).** `multiple` (multi-select) and `custom` (free-text) are parsed
+  but honoured nowhere, and there is no arrow-key selection; a future iteration must amend the AC
+  before claiming them, rather than assume them.
+- **Taught to the agent.** The protocol is injected into the refine system prompt and the Muninn rules
+  block (`integrator.ts`), so any agent can be told how to ask.
+
+### 27.6 Muninn provisioning & agent-independent memory (REQ-38)
+
+Memory is Huginn's differentiator, so it must not belong to any agent. The database stays
+**project-scoped** (`<project>/.huginn/muninn.db`, ADR-20); the engine never keys memory by
+`runtime.id`, so switching runtime mid-session reads and writes the *same* brain (asserted by a test
+that observes identical stats across a switch).
+
+`huginn setup` gains a provisioning surface built on `describeMuninnProvisioning` (a
+`MuninnProvisioningRow[]` of agent × installed × registered, with the inspected paths):
+
+- **`--status`** prints the matrix (`✔ registered` / `• not registered`, `installed` / `not installed`)
+  plus the exact fix command for the installed gaps (`huginn setup --agent <id1,id2>`), and writes
+  nothing. `huginn doctor` renders the same rows in its `integrations` check.
+- **`--agent a,b`** selects exactly that subset (comma-separated; `all` is the default); an unknown
+  name — alone or in a list — exits non-zero with usage.
+- **`--installed`** *filters* the selection to agents whose CLI is present and reports the skipped
+  ones; it never widens the selection.
+- **`--dry-run`** computes the identical report and writes **nothing**: `writeAtomic` returns early
+  while still reporting what would be registered, skipped as conflicting, and which rules files would
+  change.
+- **One registration mechanism (AC-38.3, verified).** A native-first path (`opencode/claude/qwen/agy/
+  commandcode mcp add`) was evaluated and rejected — `opencode mcp add` takes no command positional
+  (it prompts interactively) and `commandcode mcp add` accepts only `url`, so shelling out would need
+  per-CLI special cases for strictly less safety than the hardened file writer the agents already
+  read. Provisioning keeps the single `registerMcpForTarget` (atomic, symlink-safe, key- and
+  sibling-preserving, `0o600`); an existing registration is a no-op and an unparseable config is
+  reported, never rewritten.
+
 
 
 
