@@ -1608,7 +1608,7 @@ unreachable config layer:
 
 ### 19.2 Universal Agent Integrator (`huginn setup`)
 
-`huginn setup [--agent <id|all>] [--list] [--force] [--project <path>] [--home <path>]
+`huginn setup [--agent <t1,t2|all>] [--installed] [--status] [--dry-run] [--list] [--force] [--project <path>] [--home <path>]
 [--opencode-config-dir <path>]` idempotently registers the `muninn` MCP server (command
 `huginn mcp run --project <projectPath>`) and injects a marked rules block into every supported
 agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`

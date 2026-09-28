@@ -139,7 +139,7 @@ and default — while `huginn init --help` prints the wizard's own usage.
 | `live` | `huginn live [flags] ["<idea>"]` | Interactive chat refinement with thinker model, drafting, approval, and execution |
 | `plan` | `huginn plan [flags] "<idea>"` | Generate `spec.md`, `adr.md`, and `plan.md` in one shot using thinker model |
 | `init` | `huginn init [--yes] [--skip-setup] [flags]` | Guided onboarding: detect git/package manager/agent CLIs, pick agent + models, register Muninn MCP, write `.huginn/config.json` |
-| `setup` | `huginn setup [--agent <id\|all>] [--list] [flags]` | Register the Muninn MCP server + agent directives across supported agents |
+| `setup` | `huginn setup [--agent <t1,t2\|all>] [--installed] [--status] [--dry-run] [flags]` | Register the Muninn MCP server + agent directives across supported agents (or inspect the provisioning matrix) |
 | `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
 | `config` | `huginn config show\|set [flags]` | Inspect the effective models, or persist `thinker`/`executor` to project or user config |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
@@ -148,9 +148,13 @@ and default — while `huginn init --help` prints the wizard's own usage.
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |
 
 `huginn setup` targets: `cursor`, `claude`, `opencode`, `windsurf`, `qwen`, `codex`, `agy`,
-`kimi`, `pi`, `commandcode`, `omp`, or `all` (default). `--list` prints the registry without writing
-anything; `--force` overwrites a conflicting existing `muninn` entry (otherwise it is left untouched
-and reported as skipped). Paths are overridable via `HUGINN_AGENT_<ID>_MCP_PATH` (colon-separated)
+`kimi`, `pi`, `commandcode`, `omp`, or `all` (default). `--status` prints the provisioning matrix
+(agent × installed × muninn registered) with the exact fix command and writes nothing; `--installed`
+**filters** the selection to the agents whose CLI is present (never widening it) and reports what it
+skipped; `--agent a,b` configures exactly that subset. `--dry-run` reports exactly what would change
+and writes **nothing** — a preview never mutates a third-party config. `--list` prints the registry
+without writing anything; `--force` overwrites a conflicting existing `muninn` entry (otherwise it is
+left untouched and reported as skipped). Paths are overridable via `HUGINN_AGENT_<ID>_MCP_PATH` (colon-separated)
 and `HUGINN_AGENT_RULES_PATH` / `HUGINN_AGENT_<ID>_RULES_PATH`.
 
 `huginn doctor` exits `0` only when its **critical** checks pass (git repository, a runtime, and the
