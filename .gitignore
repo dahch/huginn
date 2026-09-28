@@ -8,3 +8,7 @@ package-lock.json
 *.db-wal
 *.db-shm
 coverage/
+.commandcode/
+.gemini/
+GEMINI.md
+opencode.jsonc
