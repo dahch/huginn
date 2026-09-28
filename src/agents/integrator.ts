@@ -206,6 +206,11 @@ const RULES_BLOCK = [
   "dependency paths. Before emitting any final code, call `muninn_verify_contract`.",
   "",
   "Do not emit final code that has not been contract-verified.",
+  "",
+  "If you need a decision from the user to proceed, ask with a marked block:",
+  "`<<<HUGINN_QUESTION>>>` + a JSON array of",
+  '`{"question", "options":[{"label","description"}]}` + `<<<END_HUGINN_QUESTION>>>`',
+  "on their own lines, and Huginn will present the choices.",
   MUNINN_RULES_END,
 ].join("\n");
 

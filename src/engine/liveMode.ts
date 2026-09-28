@@ -9,7 +9,9 @@ import { MemoryService } from "../muninn/service/memory-service.js";
 import { resolveDatabasePath } from "../muninn/db/client.js";
 import { DecisionBroker } from "./decisionBroker";
 import { events, type LiveStage } from "./engineEvents";
-import type { DecisionChoice, DecisionRequest } from "./types";
+import { formatQuestionAnswer, parseQuestionBlock } from "./questionBlock.js";
+import { randomUUID } from "node:crypto";
+import type { DecisionChoice, DecisionRequest, QuestionItem } from "./types";
 import { formatModel, resolveModels, type Models } from "./modelRouter";
 import { appendAdrPrompt, remainingPlanPrompt, unwrapFences, updateSpecPrompt, validateDraftFormat, type DraftDocType } from "./planMode";
 import { CycleEngine } from "./cycle";
@@ -18,6 +20,8 @@ import { commitDocs, readOptional, repoContext, resetHarnessState, stageDocsForR
 import { git } from "./diff.js";
 import { sanitizeTerminalText } from "../util/text.js";
 
+/** How long an unanswered clarifying question waits before the turn aborts (AC-37.4). */
+const QUESTION_TIMEOUT_MS = 10 * 60_000;
 const LIVE_PROMPT_TIMEOUT_MS = 20 * 60 * 1000;
 
 export interface DiagnosticsInfo {
@@ -107,7 +111,8 @@ Your job: help the human refine their idea into a concrete, well-scoped plan for
 - Probe scope, non-goals, constraints, and what must NOT change.
 - Ground yourself in the repository state above — reference real modules/files.
 - Stay concise: one focused question or a short clarification per turn.
-- Output your questions and responses directly in conversational markdown text (do not invoke interactive question tools).
+- Output your questions and responses directly in conversational markdown text (do not invoke interactive question tools). If you genuinely need the user to choose before you can continue, emit a single question block instead of guessing:
+<<<HUGINN_QUESTION>>> followed by a JSON array of {"question": string, "options": [{"label": string, "description"?: string}]} and <<<END_HUGINN_QUESTION>>> on their own lines. Huginn shows the options and resumes the turn with the user's choice..
 
 When the human types /draft, respond with ONLY the refined scope in this shape:
 
@@ -320,12 +325,17 @@ export class LiveEngine {
     return this.decisions.request(req);
   }
 
-  resolveDecision(choice: DecisionChoice): void {
-    if (this.cycle) {
-      this.cycle.resolveDecision(choice);
-      return;
-    }
-    this.decisions.resolve(choice);
+  /**
+   * Resolve the pending decision. `answers` carries the option labels a
+   * clarifying question was answered with (REQ-37 / AC-37.3) — the five-value
+   * `DecisionChoice` cannot express them.
+   */
+  resolveDecision(choice: DecisionChoice, answers?: string[]): void {
+    // Resolve on *both* brokers: whichever holds the pending request answers, the
+    // other is a no-op. Routing only to the cycle deadlocked a question raised by
+    // `chat` after a cycle had run (REV-004).
+    this.decisions.resolve(choice, answers);
+    this.cycle?.resolveDecision(choice);
   }
 
   requestAbort(): void {
@@ -409,9 +419,86 @@ export class LiveEngine {
       });
       replyText = res.text;
     }
+    // Agent-agnostic question protocol (REQ-37 / AC-37.1): a marked block lets any
+    // runtime ask, even a one-shot subprocess CLI that closes stdin after the
+    // prompt. The block is stripped from what the user sees, presented through the
+    // normal decision UI, and the chosen answers resume the turn.
+    const parsed = parseQuestionBlock(replyText);
+    if (parsed.warning) {
+      events.emit("liveChat", { role: "system", text: `⚠ ${parsed.warning}` });
+    }
+    replyText = parsed.cleanedText;
+
+    if (parsed.questions.length > 0) {
+      const choice = await this.askQuestion(parsed.questions);
+      const answers = this.decisions.takeAnswers();
+      if (choice === "deny" || choice === "abort") {
+        events.emit("liveChat", {
+          role: "system",
+          text: "Question declined — continuing without those answers.",
+        });
+      } else {
+        const followUp = await this.sendPrompt(
+          formatQuestionAnswer(parsed.questions, answers),
+        );
+        const followParsed = parseQuestionBlock(followUp);
+        if (followParsed.warning) {
+          events.emit("liveChat", { role: "system", text: `⚠ ${followParsed.warning}` });
+        }
+        replyText = `${replyText}\n\n${followParsed.cleanedText}`.trim();
+      }
+    }
+
     this.pushMessage("assistant", replyText);
     events.emit("liveChat", { role: "assistant", text: replyText });
     return replyText;
+  }
+
+  /**
+   * Ask the user, with a deadline (AC-37.4): a question that is never answered
+   * must abort the turn with a message rather than hanging forever.
+   */
+  private async askQuestion(questions: QuestionItem[]): Promise<DecisionChoice> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<DecisionChoice>((resolve) => {
+      timer = setTimeout(() => resolve("abort"), QUESTION_TIMEOUT_MS);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+    try {
+      return await Promise.race([
+        this.decisions.request({
+          id: randomUUID(),
+          kind: "question",
+          iteration: 0,
+          phase: "LIVE",
+          attempt: 1,
+          message: questions.map((q) => q.question).join("\n"),
+          questionItems: questions,
+        }),
+        timeout,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** Send one prompt through whichever transport this engine has (shared by chat). */
+  private async sendPrompt(body: string): Promise<string> {
+    if (this.session) {
+      const res = await this.session.prompt(body, {
+        model: formatModel(this.models.thinker),
+        timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+        directory: this.cfg.projectPath,
+      });
+      return res.text;
+    }
+    if (!this.client) throw new Error("No agent session or OpenCode client available for chat");
+    const res = await prompt(this.client, this.sessionId!, {
+      text: body,
+      model: this.models.thinker,
+      timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+    });
+    return res.text;
   }
 
   private throwIfAborted(): void {

@@ -865,10 +865,30 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
       </>
     ) : isQuestion ? (
       <>
-        <Text bold color="green">[c/1] </Text>
-        <Text>Accept / Proceed with recommended   </Text>
-        <Text bold color="red">[d] </Text>
-        <Text>Reject / Skip question</Text>
+        {/* Real options (AC-37.3): a digit picks that answer verbatim instead of
+            only "accept the recommended one". Only the first question is
+            selectable, so it is the only one whose options are numbered. */}
+        <Text color="white">
+          {req.questionItems?.[0] ? req.questionItems[0].question : req.message}
+        </Text>
+        {(req.questionItems?.[0]?.options ?? []).map((option, optionIndex) => (
+          <Box key={`opt-${optionIndex}`}>
+            <Text bold color="green">{`  [${optionIndex + 1}] `}</Text>
+            <Text>{option.label}</Text>
+            {option.description ? <Text dimColor> — {option.description}</Text> : null}
+          </Box>
+        ))}
+        {req.questionItems && req.questionItems.length > 1 ? (
+          <Text dimColor>
+            + {req.questionItems.length - 1} more question(s) — answer the first, the rest follow.
+          </Text>
+        ) : null}
+        <Text>
+          <Text bold color="green">[1-9/Enter] </Text>
+          <Text>Pick an option   </Text>
+          <Text bold color="red">[d] </Text>
+          <Text>Reject / skip question</Text>
+        </Text>
       </>
     ) : (
       <>
@@ -888,9 +908,9 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
       <Text color="white" bold>
         {req.message}
       </Text>
-      <Box marginTop={1}>
-        <Text>{keys}</Text>
-      </Box>
+      {/* A column, not a <Text>: Ink does not render a <Box> subtree inside a
+          <Text>, which made the question options invisible (REV-001). */}
+      <Box marginTop={1} flexDirection="column">{keys}</Box>
     </Box>
   );
 }

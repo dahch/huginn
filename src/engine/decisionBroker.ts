@@ -18,6 +18,12 @@ export interface PendingDecision {
  */
 export class DecisionBroker {
   private queue: PendingDecision[] = [];
+  /**
+   * Free-form answers that accompany the *last* resolved decision (REQ-37 /
+   * AC-37.3): a clarifying question's chosen option labels cannot be expressed by
+   * the five-value `DecisionChoice`, so they ride alongside it.
+   */
+  private lastAnswers: string[] = [];
 
   request(req: DecisionRequest): Promise<DecisionChoice> {
     return new Promise<DecisionChoice>((resolve) => {
@@ -28,13 +34,21 @@ export class DecisionBroker {
     });
   }
 
-  resolve(choice: DecisionChoice): void {
+  resolve(choice: DecisionChoice, answers?: string[]): void {
     const pd = this.queue.shift();
     if (!pd) return;
+    this.lastAnswers = answers ? [...answers] : [];
     events.emit("decisionResolved", { id: pd.req.id, choice });
     pd.resolve(choice);
     const next = this.queue[0];
     if (next) events.emit("decision", next.req);
+  }
+
+  /** The answers handed to the most recently resolved decision (may be empty). */
+  takeAnswers(): string[] {
+    const answers = this.lastAnswers;
+    this.lastAnswers = [];
+    return answers;
   }
 
   /** Resolve every pending request with the same choice (used on abort). */

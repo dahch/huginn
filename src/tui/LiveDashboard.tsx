@@ -482,22 +482,41 @@ function RefineView({
     })();
   }, [live, seededIdeaRef, showModelPicker]);
 
-  const resolveDecisionKey = (input: string): DecisionChoice | undefined => {
+  /**
+   * Map a keypress to a decision (REQ-37 / AC-37.3). For a clarifying question the
+   * *answer* is the chosen option's label — a digit picks that option directly, and
+   * `c`/Enter accepts the recommended one — rather than only "accept or reject".
+   */
+  const resolveDecisionKey = (
+    input: string,
+    key?: { escape?: boolean; return?: boolean; tab?: boolean },
+  ): { choice: DecisionChoice; answers?: string[] } | undefined => {
     const c = input.toLowerCase();
+    // Never match on `input === ""`: Ink sends it for *every* non-alphanumeric key
+    // — including Escape — so that silently answered with the first option
+    // (REV-002). Decision keys are matched explicitly instead.
     if (decision?.kind === "permission") {
-      if (c === "a") return "continue";
-      if (c === "o") return "retry";
-      if (c === "d") return "deny";
+      if (c === "a") return { choice: "continue" };
+      if (c === "o") return { choice: "retry" };
+      if (c === "d") return { choice: "deny" };
       return undefined;
     }
     if (decision?.kind === "question") {
-      if (c === "c" || c === "a" || c === "1" || c === "y") return "continue";
-      if (c === "d" || c === "n") return "deny";
+      if (key?.escape) return { choice: "abort" };
+      if (c === "d" || c === "n") return { choice: "deny" };
+      const options = decision.questionItems?.[0]?.options ?? [];
+      // A digit selects that option verbatim; Enter accepts the recommended one.
+      const picked = /^[1-9]$/.test(c) ? options[Number(c) - 1] : undefined;
+      if (picked) return { choice: "continue", answers: [picked.label] };
+      if (c === "c" || c === "a" || c === "y" || key?.return) {
+        return { choice: "continue", answers: options[0] ? [options[0].label] : [] };
+      }
       return undefined;
     }
-    if (c === "r") return "retry";
-    if (c === "c") return "continue";
-    if (c === "a") return "abort";
+    if (key?.escape) return { choice: "abort" };
+    if (key?.return || c === "c") return { choice: "continue" };
+    if (c === "r") return { choice: "retry" };
+    if (c === "a") return { choice: "abort" };
     return undefined;
   };
 
@@ -930,8 +949,20 @@ function RefineView({
       return;
     }
     if (decision) {
-      const choice = resolveDecisionKey(input);
-      if (choice) live.resolveDecision(choice);
+      const resolved = resolveDecisionKey(input, key);
+      if (resolved) {
+        live.resolveDecision(resolved.choice, resolved.answers);
+      } else if (decision.questionItems?.length) {
+        // Never swallow a keypress silently on a question (AC-37.3).
+        const count = decision.questionItems[0]?.options?.length ?? 0;
+        events.emit("liveChat", {
+          role: "system",
+          text:
+            count > 0
+              ? `Press 1-${count} to pick an option, Enter for the recommended one, or d to skip.`
+              : "Press Enter to accept, or d to skip this question.",
+        });
+      }
       return;
     }
 
