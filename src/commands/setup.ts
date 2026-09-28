@@ -118,12 +118,22 @@ function statusMarkerFromChanged(changed: boolean): string {
   return changed ? chalk.green("✔") : chalk.dim("=");
 }
 
+/**
+ * `huginn setup` handler. Returns the {@link SetupReport} that was applied, or
+ * the terminal status of the handler when no registration happened (`undefined`
+ * for `--help`/`--list`, an unknown agent, or a failed `setup()`).
+ *
+ * Handlers in this CLI report failures through `process.exitCode` instead of
+ * throwing; returning the report as well lets programmatic callers (the `init`
+ * wizard) observe the outcome instead of assuming success on any resolved
+ * await. `src/cli.ts`'s `setup` routing ignores the return value.
+ */
 export async function handleSetupCommand(
   args: Record<string, string | boolean | undefined>,
-): Promise<void> {
+): Promise<SetupReport | undefined> {
   if (args["--help"] || args["-h"]) {
     printSetupUsage();
-    return;
+    return undefined;
   }
 
   const agentArg = typeof args["--agent"] === "string" ? args["--agent"] : "all";
@@ -139,14 +149,14 @@ export async function handleSetupCommand(
 
   if (list) {
     printRegistryTable();
-    return;
+    return undefined;
   }
 
   if (agentArg !== "all" && !AGENT_TARGETS.includes(agentArg as AgentTarget)) {
     console.error(chalk.red(`✖ Unknown agent "${agentArg}".`));
     printSetupUsage();
     process.exitCode = 1;
-    return;
+    return undefined;
   }
 
   let report: SetupReport;
@@ -161,8 +171,9 @@ export async function handleSetupCommand(
   } catch (err) {
     console.error(chalk.red(`✖ setup failed: ${(err as Error).message}`));
     process.exitCode = 1;
-    return;
+    return undefined;
   }
 
   printReport(report, projectPath, homeDir);
+  return report;
 }
