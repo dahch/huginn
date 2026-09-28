@@ -7,6 +7,8 @@ import type { PhaseResult, DecisionRequest, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, verdictColor, verdictIcon } from "../format";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
+import type { McpStatusReport } from "../engine/agent/types.js";
+import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
 
 const BASE_PHASES = [
   "SPEC_AUDIT",
@@ -99,6 +101,8 @@ export function Dashboard({
     ui.logs,
   );
 
+  const [mcpStatus, setMcpStatus] = useState<McpStatusReport | null>(null);
+
   // Animation spinner tick
   useEffect(() => {
     const timer = setInterval(() => {
@@ -107,6 +111,34 @@ export function Dashboard({
     }, 80);
     return () => clearInterval(timer);
   }, []);
+
+  // Poll MCP status periodically (on mount, and every 15s) strictly bounded by timeout
+  useEffect(() => {
+    if (!engine?.runtime) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const report = await fetchMcpStatusWithTimeout(engine.runtime, 1500);
+        if (active) setMcpStatus(report);
+      } catch {
+        if (active) {
+          setMcpStatus({
+            servers: [],
+            totalTools: 0,
+            healthy: false,
+            degraded: true,
+            error: "Failed to poll MCP status",
+          });
+        }
+      }
+    };
+    void poll();
+    const timer = setInterval(poll, 15000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [engine?.runtime]);
 
   useEffect(() => {
     let streamTimer: ReturnType<typeof setTimeout> | null = null;
@@ -334,6 +366,7 @@ export function Dashboard({
         phaseElapsed={phaseElapsed}
         spinner={spinner}
         cfg={cfg}
+        mcpStatus={mcpStatus}
       />
 
       <Box flexDirection="row" height={middleHeight} marginTop={0}>
@@ -382,6 +415,7 @@ function HeaderCard({
   phaseElapsed,
   spinner,
   cfg,
+  mcpStatus,
 }: {
   iteration: number;
   totalIterations: number;
@@ -393,9 +427,11 @@ function HeaderCard({
   phaseElapsed: number;
   spinner: string;
   cfg: RunConfig;
+  mcpStatus?: McpStatusReport | null;
 }) {
   const isFix = currentPhase.startsWith("FIX");
   const progressStr = renderProgressBar(iteration, Math.max(1, totalIterations));
+  const mcpBadge = formatMcpBadge(mcpStatus);
 
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1}>
@@ -407,6 +443,8 @@ function HeaderCard({
           </Text>
           <Text dimColor>mode: </Text>
           <Text bold color="white">{cfg.mode} </Text>
+          <Text dimColor>· </Text>
+          <Text color={mcpBadge.color}>{mcpBadge.text}</Text>
         </Box>
         <Box>
           <Text dimColor>Elapsed: </Text>

@@ -10,6 +10,9 @@ import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
+import { McpInspectorModal } from "./McpInspectorModal";
+import type { McpStatusReport } from "../engine/agent/types.js";
+import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -134,6 +137,8 @@ function RefineView({
   const [draftInput, setDraftInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState<boolean>(initialShowModelPicker);
+  const [showMcpInspector, setShowMcpInspector] = useState<boolean>(false);
+  const [mcpStatus, setMcpStatus] = useState<McpStatusReport | null>(null);
   const [currentThinker, setCurrentThinker] = useState(cfg.thinker);
   const [currentExecutor, setCurrentExecutor] = useState(cfg.executor);
   const [focusCard, setFocusCard] = useState<"chat" | "stream">("chat");
@@ -200,6 +205,36 @@ function RefineView({
     }, 80);
     return () => clearInterval(timer);
   }, []);
+
+  // Poll MCP status periodically (on mount, and every 15s) strictly bounded by timeout
+  useEffect(() => {
+    let active = true;
+    const pollMcp = async () => {
+      try {
+        const report = await fetchMcpStatusWithTimeout(live.runtime, 1500);
+        if (active) {
+          setMcpStatus(report);
+        }
+      } catch {
+        if (active) {
+          setMcpStatus({
+            servers: [],
+            totalTools: 0,
+            healthy: false,
+            degraded: true,
+            error: "Failed to poll MCP status",
+          });
+        }
+      }
+    };
+
+    void pollMcp();
+    const interval = setInterval(pollMcp, 15000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [live.runtime]);
 
   // Format messages into distinct lines for scrolling
   const formattedChatLines = useMemo<FormattedLine[]>(() => {
@@ -355,6 +390,10 @@ function RefineView({
       setShowModelPicker(true);
       return;
     }
+    if (text === "/mcp" || text.startsWith("/mcp ")) {
+      setShowMcpInspector(true);
+      return;
+    }
     if (text.startsWith("/model ")) {
       const parts = text.slice(7).trim().split(/\s+/).filter(Boolean);
       if (parts.length > 0) {
@@ -491,7 +530,7 @@ function RefineView({
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
 
   useInput((input, key) => {
-    if (showModelPicker) {
+    if (showModelPicker || showMcpInspector) {
       return;
     }
     if (decision) {
@@ -589,6 +628,7 @@ function RefineView({
         runtimeName={live.runtime.name}
         thinker={currentThinker}
         executor={currentExecutor}
+        mcpStatus={mcpStatus}
       />
 
       {showModelPicker ? (
@@ -598,6 +638,12 @@ function RefineView({
           initialExecutor={currentExecutor}
           onSelect={handleModelSelect}
           onCancel={() => setShowModelPicker(false)}
+        />
+      ) : showMcpInspector ? (
+        <McpInspectorModal
+          runtime={live.runtime}
+          initialReport={mcpStatus ?? undefined}
+          onClose={() => setShowMcpInspector(false)}
         />
       ) : (
         <>
@@ -629,11 +675,11 @@ function RefineView({
 
       {decision ? <DecisionModal req={decision} /> : null}
 
-      {!showModelPicker && (
+      {!showModelPicker && !showMcpInspector && (
         <>
-          <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  /draft when ready · /quit to abort" />
+          <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  /draft when ready · /mcp to inspect · /quit to abort" />
           <Box justifyContent="space-between">
-            <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · /draft to draft · /quit to abort</Text>
+            <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · /draft to draft · /mcp to inspect · /quit to abort</Text>
             <Text dimColor>stage: {STAGE_LABEL[stage].label}</Text>
           </Box>
         </>
@@ -650,6 +696,7 @@ function LiveHeader({
   runtimeName,
   thinker,
   executor,
+  mcpStatus,
 }: {
   stage: LiveStage;
   cfg: RunConfig;
@@ -658,8 +705,11 @@ function LiveHeader({
   runtimeName: string;
   thinker: string;
   executor: string;
+  mcpStatus?: McpStatusReport | null;
 }) {
   const s = STAGE_LABEL[stage];
+  const mcpBadge = formatMcpBadge(mcpStatus);
+
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1}>
       <Box justifyContent="space-between">
@@ -670,7 +720,8 @@ function LiveHeader({
           </Text>
         </Box>
         <Box>
-          <Text dimColor>runtime: </Text>
+          <Text color={mcpBadge.color}>{mcpBadge.text}</Text>
+          <Text dimColor> · runtime: </Text>
           <Text color="yellow">{runtimeName}</Text>
           <Text dimColor> · project: {cfg.projectPath}</Text>
         </Box>
