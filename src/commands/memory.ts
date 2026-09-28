@@ -4,6 +4,7 @@ import chalk from "chalk";
 import { MemoryService } from "../muninn/service/memory-service.js";
 import { startMcpServer } from "../muninn/mcp/server.js";
 import { indexFilesIntoMuninn } from "../muninn/indexer/ast-indexer.js";
+import { sanitizeTerminalText } from "../util/text.js";
 
 const IGNORED_INDEX_DIRS = new Set([
   "node_modules",
@@ -248,6 +249,58 @@ export async function handleMemoryCommand(
   process.exitCode = 1;
 }
 
+/**
+ * Logs to stderr without ever risking a second crash (ADR-30.3): once the
+ * parent pipe is gone, even the diagnostic write can fail with EPIPE.
+ */
+function logToStderr(line: string): void {
+  try {
+    process.stderr.write(line.endsWith("\n") ? line : `${line}\n`);
+  } catch {
+    /* stderr is gone too — the process is exiting anyway */
+  }
+}
+
+interface StdioGuards {
+  /** Removes every listener this branch installed. */
+  dispose(): void;
+}
+
+/**
+ * Installs the stdio guards that keep `huginn mcp run` from crashing or hanging
+ * when its parent goes away (REQ-30 / AC-30.3):
+ *
+ * - an `'error'` handler on `process.stdout` so an EPIPE from a closed parent
+ *   pipe is logged and turned into a clean shutdown instead of an unhandled
+ *   exception that kills the server mid-response;
+ * - a no-op `'error'` handler on `process.stderr` for the same reason (a dead
+ *   parent usually breaks both ends);
+ * - `'end'`/`'close'` on `process.stdin` — the SDK transport only observes
+ *   `'data'`/`'error'`, so without this bridge a parent disconnect is invisible
+ *   and the server would keep running forever.
+ */
+function installStdioGuards(onStdoutFailure: () => void): StdioGuards {
+  const onStdoutError = (err: Error) => {
+    logToStderr(
+      `[huginn] mcp run: stdout write failed (${sanitizeTerminalText(err.message)}); shutting down.`,
+    );
+    onStdoutFailure();
+  };
+  const onStderrError = () => {
+    /* a broken stderr must never crash the JSON-RPC server */
+  };
+
+  process.stdout.on("error", onStdoutError);
+  process.stderr.on("error", onStderrError);
+
+  return {
+    dispose() {
+      process.stdout.off("error", onStdoutError);
+      process.stderr.off("error", onStderrError);
+    },
+  };
+}
+
 export async function handleMcpCommand(
   subcommand: string | undefined,
   args: Record<string, string | boolean | undefined>
@@ -278,18 +331,44 @@ export async function handleMcpCommand(
       projectRoot,
     });
     try {
+      // Protocol failures were previously discarded (AC-30.3): surface them on
+      // stderr (never stdout — that stream carries JSON-RPC) without aborting.
+      if (server) {
+        server.onerror = (err: Error) => {
+          logToStderr(`[huginn] mcp run: protocol error: ${sanitizeTerminalText(err.message)}`);
+        };
+      }
+
       // Keep process alive while stdio transport is connected:
       await new Promise<void>((resolve) => {
+        let finished = false;
+        const onStdinClosed = () => {
+          if (process.env.HUGINN_DEBUG) {
+            logToStderr("[huginn] mcp run: stdin closed by the client; shutting down.");
+          }
+          done();
+        };
+        const guards = installStdioGuards(() => done());
         const done = () => {
+          if (finished) return;
+          finished = true;
           process.removeListener("SIGINT", done);
           process.removeListener("SIGTERM", done);
+          process.stdin.removeListener("end", onStdinClosed);
+          process.stdin.removeListener("close", onStdinClosed);
+          guards.dispose();
           resolve();
         };
         if (transport) {
           transport.onclose = () => done();
         } else {
           done();
+          return;
         }
+        // The parent disappearing is a lifecycle event, not a hang: bridge EOF
+        // (and an abruptly closed pipe) to the same shutdown path as onclose.
+        process.stdin.on("end", onStdinClosed);
+        process.stdin.on("close", onStdinClosed);
         process.on("SIGINT", done);
         process.on("SIGTERM", done);
       });

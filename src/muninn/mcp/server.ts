@@ -1,12 +1,15 @@
 import path from "node:path";
+import type { Readable, Writable } from "node:stream";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  type JSONRPCMessage,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { sanitizeTerminalText } from "../../util/text.js";
 import {
   MemoryService,
   VALID_CATEGORIES,
@@ -444,6 +447,104 @@ export type MuninnServer = Server & {
 };
 
 /**
+ * Deadline for a single JSON-RPC write (AC-30.3 / ADR-30.3). The SDK transport
+ * resolves `send()` on `'drain'`, which a *broken* stdout pipe never emits, so
+ * an unbounded write would hang the pending request forever.
+ */
+export const MCP_WRITE_TIMEOUT_MS = 5000;
+
+export interface BoundedStdioTransportOptions {
+  /** Read-buffer ceiling (SDK default: 10 MB). */
+  maxBufferSize?: number;
+  /** Write deadline before the pending request is rejected; ≤ 0 disables it. */
+  writeTimeoutMs?: number;
+}
+
+/**
+ * `StdioServerTransport` with a *bounded* write path (REQ-30 / AC-30.3).
+ *
+ * `send()` races the SDK's write against (i) a short deadline and (ii) an error
+ * on the output stream (EPIPE / ERR_STREAM_DESTROYED). Either one **rejects**,
+ * so a broken parent pipe fails the pending request with a clear error instead
+ * of awaiting a `'drain'` that can never arrive. The reader side (`start()`,
+ * buffering, framing) is untouched.
+ */
+export class BoundedStdioServerTransport extends StdioServerTransport {
+  private readonly output: Writable;
+  private readonly writeTimeoutMs: number;
+
+  constructor(
+    stdin: Readable = process.stdin,
+    stdout: Writable = process.stdout,
+    options: BoundedStdioTransportOptions = {},
+  ) {
+    super(stdin, stdout, { maxBufferSize: options.maxBufferSize });
+    this.output = stdout;
+    this.writeTimeoutMs = options.writeTimeoutMs ?? MCP_WRITE_TIMEOUT_MS;
+  }
+
+  override send(message: JSONRPCMessage): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        this.output.off("error", onError);
+      };
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const onError = (err: Error) =>
+        fail(
+          new Error(
+            `MCP stdio write failed (the MCP client pipe is closed): ${sanitizeTerminalText(err.message)}`,
+          ),
+        );
+
+      // A broken pipe emits 'error' on stdout; without a listener that is an
+      // unhandled exception, so the transport listens for its own writes too.
+      this.output.on("error", onError);
+
+      if (this.writeTimeoutMs > 0) {
+        timer = setTimeout(
+          () =>
+            fail(
+              new Error(
+                `MCP stdio write timed out after ${this.writeTimeoutMs}ms (the MCP client stopped reading)`,
+              ),
+            ),
+          this.writeTimeoutMs,
+        );
+        if (typeof timer.unref === "function") {
+          timer.unref();
+        }
+      }
+
+      try {
+        super.send(message).then(succeed, (err: unknown) =>
+          fail(err instanceof Error ? err : new Error(String(err))),
+        );
+      } catch (err) {
+        fail(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+}
+
+/**
  * Creates and configures a Model Context Protocol (MCP) server for Muninn memory.
  */
 export function createMcpServer(
@@ -535,20 +636,21 @@ export function createMcpServer(
 }
 
 /**
- * Starts the Muninn MCP server using StdioServerTransport.
+ * Starts the Muninn MCP server using the bounded {@link BoundedStdioServerTransport}.
  */
 export async function startMcpServer(
-  options?: MemoryServiceOptions | IMemoryService
+  options?: MemoryServiceOptions | IMemoryService,
+  transportOptions?: BoundedStdioTransportOptions,
 ): Promise<{
   server: MuninnServer;
-  transport: StdioServerTransport;
+  transport: BoundedStdioServerTransport;
   service: IMemoryService;
 }> {
   const service: IMemoryService = isMemoryService(options)
     ? options
     : new MemoryService(options);
   const server = createMcpServer(service);
-  const transport = new StdioServerTransport();
+  const transport = new BoundedStdioServerTransport(process.stdin, process.stdout, transportOptions);
   await server.connect(transport);
   return { server, transport, service };
 }
