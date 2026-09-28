@@ -63,6 +63,15 @@ function findBinaryPath(candidates: string[], pathEnv: string): string | undefin
 }
 
 /**
+ * Narrow an arbitrary string to a registered {@link AgentTarget}. The single
+ * allowlist check shared by `resolveAgent`, the CLI and the init wizard, so
+ * none of them re-implements the `AGENT_TARGETS` membership test.
+ */
+export function isAgentTarget(value: string): value is AgentTarget {
+  return (AGENT_TARGETS as readonly string[]).includes(value);
+}
+
+/**
  * Scan PATH to discover installed CLI binaries for all known agent targets.
  */
 export async function detectAvailableAgents(
@@ -88,13 +97,9 @@ export async function detectAvailableAgents(
  * CLI flag --agent -> project config -> user config -> HUGINN_AGENT env -> first detected available agent -> fallback to opencode.
  */
 export async function resolveAgent(sources: AgentResolutionSources = {}): Promise<AgentTarget> {
-  const isTarget = (val: string): val is AgentTarget => {
-    return (AGENT_TARGETS as readonly string[]).includes(val);
-  };
-
   const validateTarget = (val: string): AgentTarget => {
     const candidate = val.trim().toLowerCase();
-    if (!isTarget(candidate)) {
+    if (!isAgentTarget(candidate)) {
       throw new Error(`Unknown agent target: "${val}". Supported targets: ${AGENT_TARGETS.join(", ")}`);
     }
     return candidate;
