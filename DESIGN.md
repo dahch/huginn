@@ -1519,21 +1519,28 @@ directly. The implementation lives in `src/config.ts`, `src/commands/config.ts`,
 
 ### 19.1 Live-first entrypoint & persistent model configuration
 
-`main()` (`src/cli.ts`) routes on `args._command`. `help`/`--help`/`-h` print usage; the
-subcommands in `KNOWN_COMMANDS` (`run`, `plan`, `live`, `install`, `memory`, `mcp`, `check`,
-`setup`, `doctor`, `config`) route to their handlers. **Anything else — no command at all, or a bare
-free-text token such as `huginn "crear módulo de pagos"` — enters `runLive(args, command)`, and the
-stray token is passed through as the initial idea (REQ-14.4).** `run` and `plan` remain explicit
-subcommands for batch/CI use.
+`main()` (`src/cli.ts`) routes on `args._command`. Help is a two-tier hierarchy (Iteration 24,
+§ 25.5): `help`/`--help`/`-h` print the banner plus the concise `usageCore()`, `--help --all`
+(or `help --all`) print the full `usage()` reference instead, and `huginn init --help` prints the
+wizard's own `printInitUsage()`. The subcommands in `KNOWN_COMMANDS` (`run`, `plan`, `live`, `init`,
+`install`, `memory`, `mcp`, `check`, `setup`, `doctor`, `config`) route to their handlers.
+**Anything else — no command at all, or a bare free-text token such as `huginn "crear módulo de
+pagos"` — enters `runLive(args, command)`, and the stray token is passed through as the initial idea
+(REQ-14.4)** — with one exception: a *bare* invocation in a repository that has never run huginn
+(no `.huginn/`) is onboarded through `handleGreenfieldLaunch` instead (§ 25.4). `run` and `plan`
+remain explicit subcommands for batch/CI use.
 
 ```mermaid
 flowchart TD
     A["huginn <argv>"] --> P["parseArgs"]
     P --> H{"help / --help / -h?"}
-    H -- yes --> USAGE["usage()"]
+    H -- "yes, --all" --> USAGE["usage() (full reference)"]
+    H -- yes --> CORE["usageCore() (concise)"]
     H -- no --> K{"_command in KNOWN_COMMANDS?"}
-    K -- "run/plan/live/install/memory/mcp/check/setup/doctor/config" --> EX["explicit handler"]
-    K -- "otherwise (none, or free-text idea)" --> LIVE["runLive(args, idea)"]
+    K -- "run/plan/live/init/install/memory/mcp/check/setup/doctor/config" --> EX["explicit handler"]
+    K -- "otherwise (none, or free-text idea)" --> G{"bare greenfield launch?"}
+    G -- yes --> INIT["handleGreenfieldLaunch (init wizard / pointer)"]
+    G -- no --> LIVE["runLive(args, idea)"]
 ```
 
 Both `run` and `live` default `--project` to `canonicalize(process.cwd())` (realpath, so embedded
@@ -2382,6 +2389,152 @@ Two engine additions back the dispatcher (`src/engine/liveMode.ts`):
 - **`switchRuntime(agentId)`**: resolves the target runtime via the injected `runtimeFactory` (a new optional `LiveEngineOptions.runtimeFactory` field used by tests) or `getAgentRuntime(...)`, then **fails closed** — if `isAvailable()` is false it throws and the active runtime is left untouched. On success it aborts the previous `session` (or `sessionId` via `abortSession`), swaps the runtime, clears the session handle, and sets `needsSystemPrompt` so the architect/system prompt is re-seeded on the next `prompt` rather than lost with the disposed session. A `liveChat` system event announces the switch.
 - **`getDiagnostics()`**: returns `DiagnosticsInfo` assembled from best-effort git probes (`rev-parse --abbrev-ref HEAD`, `status --porcelain`, `--git-dir` worktree detection), the active `runtime.name`, the formatted thinker/executor models, and Muninn `getStats()` entity/observation counts — each wrapped in `try/catch` so a missing git repo or uninitialized memory DB degrades to defaults instead of throwing.
 - `runtime` is now a **private field behind a public getter** (`get runtime()`), mutated only by the constructor and `switchRuntime`.
+
+## 25. Iteration 24 — `huginn init` Onboarding Wizard, Two-Tier Help & Greenfield Launch
+
+Iteration 24 removes the CLI's remaining first-run friction: a developer who cloned a repository and
+typed a bare `huginn` got an unconditional live-mode launch — or the terse `"<path>" is not a git
+repository.` failure once live mode reached its git check — with no route to the agent/model/MCP
+configuration the engine needs, while `huginn --help` dumped one flat ~90-line string in which the
+five commands a newcomer actually wants were indistinguishable from installer internals and
+model-resolution precedence. Three changes ship together: a guided `huginn init` wizard, a two-tier
+`--help` hierarchy, and greenfield-launch onboarding. The implementation lives in
+`src/commands/init.ts` (new), `src/cli.ts`, `src/commands/setup.ts`, `src/setup/install.ts`, and
+`src/engine/agent/registry.ts`.
+
+### 25.1 Motivation & Architectural Objectives
+
+1. **Onboarding with no new primitives**: every step the wizard needs already exists and is already
+   hardened — `handleSetupCommand` (Muninn MCP + rules registration), `saveUserConfig` (atomic,
+   symlink-safe, unknown-key preserving), `detectAvailableAgents` (PATH scan over `AGENT_TARGETS`)
+   and `promptYesNo` (returns its fallback when non-interactive). `huginn init` is therefore a *thin
+   orchestrator*: it adds only `existsSync` probes and sectioned output and delegates the rest. It
+   owns no I/O, so it cannot drift from `setup`/`config` semantics.
+2. **A scannable help surface**: the concise default must fit on one screen without abandoning the
+   full reference, which other tools and `test/muninn/commands.test.ts` assert on — hence two
+   functions rather than one aliased string.
+3. **Greenfield safety on a live-first dispatcher**: because an unknown or absent subcommand is
+   *already* meaningful input (a free-text idea, REQ-14.4), onboarding cannot hijack the no-argument
+   case wholesale; it must stay out of the way of `huginn "add a checkout flow"`.
+
+### 25.2 Architecture Overview & Data Flow
+
+```mermaid
+flowchart TD
+    Main["main(argv) — src/cli.ts"] --> Help{"help / --help / -h?"}
+    Help -- "yes, --all" --> Full["usage() — full reference"]
+    Help -- "yes (-h too)" --> Core["usageCore() — concise"]
+    Help -- no --> Route{"_command in KNOWN_COMMANDS?"}
+    Route -- "known" --> Handler["explicit handler (incl. init)"]
+    Route -- "none, or free-text idea" --> Green{"shouldLaunchInit(args, projectPath)?"}
+    Green -- "yes — bare launch, no .huginn/" --> Launch["handleGreenfieldLaunch"]
+    Green -- no --> Live["runLive(args, idea)"]
+    Launch -- "TTY" --> Init["handleInitCommand — src/commands/init.ts"]
+    Launch -- "non-interactive" --> Pointer["stdout pointer to huginn init (exit 0)"]
+    Init --> Detect["detectAvailableAgents(PATH) — agent CLIs"]
+    Init --> SetupCmd["handleSetupCommand — SetupReport / undefined"]
+    Init --> Save["saveUserConfig — project config.json"]
+    Init --> Prompt["promptLine / promptYesNo — PromptIo seam"]
+```
+
+### 25.3 The `huginn init` wizard (`src/commands/init.ts`)
+
+`handleInitCommand(args, deps?)` prints six numbered sections and mirrors each finding into the
+returned `InitReport`:
+
+| Step | Detection / action | Source |
+|---|---|---|
+| 1. Repository | `existsSync(join(project, ".git"))` — informational only; a missing repo prints a `git init` tip and never fails | `src/commands/init.ts` |
+| 2. Package manager | `detectPackageManager(projectPath)`: `bun.lock`/`bun.lockb` → `bun`, `pnpm-lock.yaml` → `pnpm`, `yarn.lock` → `yarn`, `package-lock.json` → `npm`, a lone `package.json` → `npm`, nothing → `unknown` (bun wins when lockfiles coexist) | `detectPackageManager` |
+| 3. Agent CLIs | `detectAvailableAgents(env.PATH)`, printed primary-first (`PRIMARY_AGENT_CLIS` = `opencode`, `claude`, `codex`, `omp`) then the remaining `AGENT_TARGETS` in registry order; available entries show a green `✔` and their path, unavailable ones are dimmed | `src/engine/agent/registry.ts` |
+| 4. Agent & models | TTY-only prompts, else the flags/defaults; the default agent is the first `available: true` entry of the *same* printed list, falling back to `DEFAULT_AGENT` (`opencode`) | `promptChoiceDefault` / `promptTextDefault` |
+| 5. Muninn MCP | delegates to `handleSetupCommand({ "--agent", "--project", "--home"[, "--opencode-config-dir", "--force"] })`; `--skip-setup` skips it | `src/commands/setup.ts` |
+| 6. Project config | `saveUserConfig(projectPath, { agent, thinker, executor })` → `<project>/.huginn/config.json` (atomic, unknown keys preserved); overwrite prompt on a TTY unless `--force` | `src/config.ts` |
+
+- **Agent precedence inside the wizard**: `--agent` (case-folded, validated by `isAgentTarget`) →
+  first detected available of the primary-first list → `DEFAULT_AGENT`. Because the default derives
+  from the list the wizard just printed, the pre-selected agent can never contradict the first line
+  of section 3 (REV-203). Unlike `resolveAgent`, the wizard reads no config or `HUGINN_AGENT` layer —
+  there is nothing configured yet on a greenfield run — and it always writes the *project* config so
+  the choices stay repo-local.
+- **`InitReport`** is the contract callers consume: `projectPath`, `homeDir`, `configPath`, `agent`,
+  `thinker`, `executor`, `setupRan`, `configWritten`. Pure step-mirror state (the git / package
+  manager / agent findings) is printed but deliberately not part of it.
+- **Non-blocking by construction**: `canPrompt = interactive && !env.CI && !--yes`; otherwise the
+  flags and the documented `DEFAULT_THINKER_MODEL` / `DEFAULT_EXECUTOR_MODEL` are used. The only
+  interactive question is overwriting an existing config, whose `promptYesNo` fallback is `true`, so
+  a non-interactive re-run stays idempotent.
+- **Failure semantics**: an unknown `--agent` and a failed config write print an error, set
+  `process.exitCode = 1` and return before any write; a failed `huginn setup` delegation warns and
+  sets `process.exitCode = 1` but still writes the config so the repository stays usable. The handler
+  never throws and never calls `process.exit`.
+- **`--help`/`-h`** early-returns `printInitUsage()` and writes nothing: the CLI's
+  `huginn init --help` route and a programmatic caller both get the same "print usage, write nothing"
+  contract.
+- **`InitDeps`** makes every side effect injectable (`projectPath`, `homeDir`, `env`, `isTTY`,
+  `stdin`, `stdout`, `detectAgents`, `runSetup`, `promptText`, `promptChoice`, `confirm`, `log`,
+  `error`), so `test/commands/init.test.ts` exercises the production readline path against scripted
+  TTY streams without touching the real `~`, the real opencode config or the terminal.
+
+### 25.4 Greenfield launch onboarding (`src/cli.ts`)
+
+Three exports add the routing rule without touching the live-first default:
+
+- **`isGreenfieldLaunch(projectPath)`** — `!existsSync(join(projectPath, ".huginn"))`. The `.huginn/`
+  directory is created by *every* stateful huginn command (`init`, `config set`, `memory`, live
+  state), so its absence is the cheapest reliable "this repository has never run huginn" signal — no
+  lock file or version marker needed.
+- **`shouldLaunchInit(args, projectPath)`** — true only when there is no `_command`, no `_positional`
+  idea, no `--help`/`-h`, no flag outside `BENIGN_BARE_FLAGS` (`--project`, `--home`,
+  `--opencode-config-dir`, `--yes`), and the project is greenfield. An explicit idea, a work/mode flag
+  such as `--headless`/`--resume`/`--thinker`, or an already-configured project keeps the documented
+  live-first behavior, so the caller's explicit intent always wins over first-run guidance.
+- **`handleGreenfieldLaunch(args, projectPath, deps?)`** — on an interactive TTY it forwards the
+  canonical path as both the `--project` flag (so a raw/relative flag cannot win) and the wizard's
+  `projectPath` default, then delegates to `handleInitCommand`; otherwise it prints a four-line
+  pointer to `huginn init` / `huginn --help` on **stdout with exit code 0** — an unconfigured
+  repository is guidance, not an error. The delegated wizard still reports a failed step (e.g. MCP
+  registration) through `process.exitCode` (REV-201).
+
+`main()` applies the predicate only inside the live-first branch (no known subcommand), so
+`huginn run --project …` and `huginn "my idea"` are untouched.
+
+### 25.5 Two-tier help hierarchy (`usageCore` / `usage`)
+
+| Surface | Trigger | Content |
+|---|---|---|
+| `usageCore()` | `huginn --help`, `huginn help`, `huginn -h` | usage line, the five Core commands (`live`, `run`, `init`, `setup`, `doctor`), four copy-pasteable examples, the common flags, and a single "run `huginn --help --all`" pointer |
+| `usage()` | `huginn --help --all`, `huginn help --all` | the full reference: every subcommand, every flag and default, and the model-resolution precedence order |
+| `printInitUsage()` | `huginn init --help` | the wizard's own flags, steps and non-interactive note |
+
+- `usage()` is kept byte-stable: `test/muninn/commands.test.ts` asserts on it (e.g. the
+  `huginn memory init …` line) and it remains the long-form reference; `usageCore()` is a strict
+  subset of it. All help surfaces print the banner first (`printBanner({})`) and exit 0.
+- `--all` (and the wizard's `--skip-setup`) were added to `BOOLEAN_FLAGS` so `parseArgs` never
+  swallows the following argument.
+- **Drift guard**: `test/commands/init.test.ts` parses the `Core commands:` block out of
+  `usageCore()` and asserts it is exactly `["live", "run", "init", "setup", "doctor"]`, that every
+  one of those tokens also appears in `usage()`, and that `usage()` is longer than `usageCore()` — so
+  the subset relationship is enforced rather than assumed.
+
+### 25.6 Shared prompt seam & delegated-setup contract
+
+Three small extractions keep the wizard from re-implementing existing behaviour:
+
+- **`promptLine(question, fallback, io)` + `PromptIo { env?, stdin?, stdout? }`**
+  (`src/setup/install.ts`) — one readline implementation whose TTY/CI guard and `node:readline`
+  plumbing are shared. `promptYesNo(question, fallback, io)` now delegates to it (asking `[y/N]`
+  with the `"yes"`/`"no"` fallback), so the `install` command and the wizard read answers through the
+  identical seam; every field defaults to the real `process.*` primitive, so production callers omit
+  it, and a blank answer resolves to `fallback`.
+- **`handleSetupCommand` returns `Promise<SetupReport | undefined>`** (`src/commands/setup.ts`) —
+  `undefined` for `--help`/`--list`, an unknown agent, or a failed `setup()`. Handlers in this CLI
+  signal failure through `process.exitCode`, so a merely-resolved `await` is *not* success: the
+  wizard sets `setupRan` only when the delegation both returned a report and left
+  `process.exitCode !== 1` (REV-201). `src/cli.ts`'s own `setup` route ignores the return value.
+- **`isAgentTarget(value): value is AgentTarget`** (`src/engine/agent/registry.ts`) — the single
+  `AGENT_TARGETS` allowlist check, now exported and reused by `resolveAgent`, the CLI and the wizard
+  (replacing `resolveAgent`'s former private `isTarget` closure), so the membership test exists once.
 
 
 

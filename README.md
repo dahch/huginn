@@ -77,6 +77,9 @@ huginn
 # ...or start it with an idea: refine, draft, approve, then build
 huginn "create a payments module"
 
+# Set up a brand-new repository: agent, models, Muninn MCP and .huginn/config.json
+huginn init
+
 # The examples below all remain available as explicit subcommands.
 # Run the 8-phase spec-build cycle against an existing plan
 huginn run \
@@ -117,9 +120,15 @@ huginn mcp run
 The project defaults to the current working directory and the models are resolved from configuration
 (see [Model configuration](#model-configuration)) rather than requiring `--thinker`/`--executor`.
 
-Run `huginn help` (or `huginn -h`) for all flags — note a bare `--help` is parsed
-as a run-mode flag and falls through to argument validation (it prints usage, but
-exits 1); `huginn help` exits 0.
+In a repository that has never run huginn (no `.huginn/` directory), a bare `huginn` opens the
+**init wizard** instead of the live console — interactive onboarding on a TTY, a short pointer to
+`huginn init` otherwise. Passing an idea, or a repository that already has `.huginn/`, keeps the
+live-first default described above.
+
+`huginn --help` (also `huginn help` or `huginn -h`) prints a concise, grouped overview: the Core
+commands (`live`, `run`, `init`, `setup`, `doctor`), copy-pasteable examples and the flags you need
+first. `huginn --help --all` (or `huginn help --all`) prints the full reference — every command, flag
+and default — while `huginn init --help` prints the wizard's own usage.
 
 ### Commands
 
@@ -129,6 +138,7 @@ exits 1); `huginn help` exits 0.
 | `run` | `huginn run [flags]` | Execute the build cycle against `plan.md`/`spec.md`/`adr.md` |
 | `live` | `huginn live [flags] ["<idea>"]` | Interactive chat refinement with thinker model, drafting, approval, and execution |
 | `plan` | `huginn plan [flags] "<idea>"` | Generate `spec.md`, `adr.md`, and `plan.md` in one shot using thinker model |
+| `init` | `huginn init [--yes] [--skip-setup] [flags]` | Guided onboarding: detect git/package manager/agent CLIs, pick agent + models, register Muninn MCP, write `.huginn/config.json` |
 | `setup` | `huginn setup [--agent <id\|all>] [--list] [flags]` | Register the Muninn MCP server + agent directives across supported agents |
 | `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
 | `config` | `huginn config show\|set [flags]` | Inspect the effective models, or persist `thinker`/`executor` to project or user config |
@@ -145,6 +155,16 @@ and `HUGINN_AGENT_RULES_PATH` / `HUGINN_AGENT_<ID>_RULES_PATH`.
 
 `huginn doctor` exits `0` only when its **critical** checks pass (git repository, a runtime, and the
 Muninn database); the `git` binary, Node, `opencode` CLI and missing agent integrations are warnings.
+
+`huginn init` runs six non-blocking steps: git detection (informational — it just prints a `git init`
+tip), package-manager detection from the lockfile (`bun`/`pnpm`/`yarn`/`npm`, else `unknown`), a `PATH`
+scan of the agent CLIs (`opencode`, `claude`, `codex`, `omp` first, then the rest), the agent and
+thinker/executor prompts, `huginn setup` for the chosen agent, and finally
+`<project>/.huginn/config.json`. With `--yes`, in CI or without a TTY it never prompts: the flags and
+the documented model defaults (`DEFAULT_THINKER_MODEL`/`DEFAULT_EXECUTOR_MODEL`) are used instead.
+`--agent`, `--thinker` and `--executor` pre-select values, `--skip-setup` skips the MCP registration,
+`--force` overwrites conflicting MCP entries, and `--project`/`--home`/`--opencode-config-dir`
+override the detected locations.
 
 ### Run Flags
 
