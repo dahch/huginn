@@ -86,7 +86,79 @@ describe("ModelPickerModal Component", () => {
     expect(output).toContain("Runtime: OpenCode");
   });
 
-  it("falls back to default fallback models when runtime returns empty or throws", async () => {
+  it("accepts a bare catalog id (no provider/) verbatim for runtimes that expose bare ids (REQ-27)", async () => {
+    const stdout = new PassThrough();
+    const stdin = createMockStdin();
+    const runtime = createMockRuntime([
+      { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", provider: "agy" },
+    ]);
+    const onSelect = vi.fn();
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect,
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Enter on thinker selects the bare catalog id (previously rejected by the
+    // provider/model check), advancing to the executor step.
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 50));
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 50));
+    stdin.write("1");
+    await new Promise((r) => setTimeout(r, 30));
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 50));
+    instance.unmount();
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0][0].thinker).toBe("gemini-3.8-flash-high");
+    expect(onSelect.mock.calls[0][0].executor).toBe("gemini-3.8-flash-high");
+  });
+
+  it("stays bounded and responsive with a large catalog (~8000 entries) (AC-27.7 / NFR-7)", async () => {
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    const stdin = createMockStdin();
+    const bigCatalog: ModelInfo[] = Array.from({ length: 8000 }, (_, i) => ({
+      id: `openrouter/model-${i}`,
+      name: `Model ${i}`,
+      provider: "openrouter",
+    }));
+    const runtime = createMockRuntime(bigCatalog);
+
+    const started = Date.now();
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect: vi.fn(),
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+    await new Promise((r) => setTimeout(r, 80));
+    const elapsed = Date.now() - started;
+    instance.unmount();
+
+    // The full catalog is known (scroll indicator reports all 8000)...
+    expect(output).toContain("of 8000");
+    // ...but only a bounded window is actually rendered (not 8000 rows).
+    const renderedRows = (output.match(/openrouter\/model-\d+/g) ?? []).length;
+    expect(renderedRows).toBeGreaterThan(0);
+    expect(renderedRows).toBeLessThan(300);
+    // Rendering a huge catalog must not block the render loop.
+    expect(elapsed).toBeLessThan(3000);
+  });
+
+  it("surfaces a sanitized discovery error instead of fake fallback models (AC-27.7)", async () => {
     const stdout = new PassThrough();
     let output = "";
     stdout.on("data", (chunk) => {
@@ -97,13 +169,16 @@ describe("ModelPickerModal Component", () => {
     const runtime: IAgentRuntime = {
       ...createMockRuntime([]),
       getAvailableModels: async () => {
-        throw new Error("offline");
+        // Control character must be stripped by sanitizeTerminalText (SEC-001).
+        throw new Error("offline\u0007");
       },
     };
 
     const instance = render(
       React.createElement(ModelPickerModal, {
         runtime,
+        initialThinker: "anthropic/claude-sonnet-5",
+        initialExecutor: "opencode/gpt-5.1-codex",
         onSelect: vi.fn(),
         onCancel: vi.fn(),
       }),
@@ -113,12 +188,14 @@ describe("ModelPickerModal Component", () => {
     await new Promise((r) => setTimeout(r, 50));
     instance.unmount();
 
-    // Default fallback models include claude-opus-4-5 and gpt-5.1-codex
-    expect(output).toContain("Claude Opus 4.5");
-    expect(output).toContain("GPT-5.1 Codex");
+    // Error is shown verbatim (sanitized), never masked by a hardcoded catalog.
+    expect(output).toContain("Model discovery from OpenCode failed: offline");
+    expect(output).not.toContain("\u0007");
+    expect(output).toContain("anthropic/claude-sonnet-5 (current thinker)");
+    expect(output).toContain("Type a provider/model id and press Enter");
   });
 
-  it("falls back to default fallback models when runtime returns empty array", async () => {
+  it("renders a distinct empty state instead of a fabricated catalog (AC-27.7)", async () => {
     const stdout = new PassThrough();
     let output = "";
     stdout.on("data", (chunk) => {
@@ -143,8 +220,209 @@ describe("ModelPickerModal Component", () => {
     await new Promise((r) => setTimeout(r, 50));
     instance.unmount();
 
-    expect(output).toContain("Claude Opus 4.5");
+    const flattened = output.replace(/[│\r\n]+/g, " ").replace(/\s+/g, " ");
+    expect(flattened).toContain(
+      "No models discovered from OpenCode — type a provider/model id and press Enter",
+    );
+    // No fabricated catalog entries.
+    expect(output).not.toContain("Claude Opus 4.5");
+    expect(output).not.toContain("GPT-5.1 Codex");
+  });
+
+  it("still accepts free-text entry from the empty state (AC-27.7)", async () => {
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const stdin = createMockStdin();
+    const runtime: IAgentRuntime = {
+      ...createMockRuntime([]),
+      getAvailableModels: async () => [],
+    };
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect: vi.fn(),
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    stdin.write("anthropic/claude-sonnet-5");
+    await new Promise((r) => setTimeout(r, 40));
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 40));
+    instance.unmount();
+
+    expect(output).toContain("Step 2/3: Choose Executor");
+  });
+
+  it("prefers getModelCatalog and surfaces its reason instead of the generic copy (AC-27.4)", async () => {
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const stdin = createMockStdin();
+    const runtime: IAgentRuntime = {
+      ...createMockRuntime([]),
+      getModelCatalog: async () => ({
+        models: [],
+        reason: "no model-listing command for this runtime",
+      }),
+      // Must not be consulted when the richer catalog accessor exists.
+      getAvailableModels: async () => {
+        throw new Error("getAvailableModels should not be called");
+      },
+    };
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect: vi.fn(),
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    instance.unmount();
+
+    const flattened = output.replace(/[│\r\n]+/g, " ").replace(/\s+/g, " ");
+    expect(flattened).toContain("No models discovered from OpenCode — no model-listing command for this runtime");
+    expect(flattened).toContain("Type a provider/model id and press Enter to continue.");
+    // The reason is an honest explanation, not a fabricated catalog.
+    expect(output).not.toContain("Claude 3.7 Sonnet");
+  });
+
+  it("sanitizes the reason before rendering it (SEC-001)", async () => {
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const stdin = createMockStdin();
+    const runtime: IAgentRuntime = {
+      ...createMockRuntime([]),
+      getModelCatalog: async () => ({ models: [], reason: "catalog \u0007failed\u001b[31m" }),
+    };
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect: vi.fn(),
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    instance.unmount();
+
+    expect(output).toContain("catalog failed");
+    expect(output).not.toContain("\u0007");
+    expect(output).not.toContain("\u001b[31m");
+  });
+
+  it("renders the catalog from getModelCatalog when it has models (AC-27.4)", async () => {
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const stdin = createMockStdin();
+    const runtime: IAgentRuntime = {
+      ...createMockRuntime([]),
+      getModelCatalog: async () => ({ models: TEST_MODELS }),
+      getAvailableModels: async () => [],
+    };
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect: vi.fn(),
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    instance.unmount();
+
+    expect(output).toContain("Claude 3.7 Sonnet");
     expect(output).toContain("GPT-5.1 Codex");
+    expect(output.replace(/[│\r\n]+/g, " ")).not.toContain("No models discovered");
+  });
+  it("seeds thinker/executor from the caller-supplied current models when discovery is empty (AC-27.7)", async () => {
+    const stdout = new PassThrough();
+    const stdin = createMockStdin();
+    const runtime: IAgentRuntime = {
+      ...createMockRuntime([]),
+      getAvailableModels: async () => [],
+    };
+    const onSelect = vi.fn();
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        initialThinker: "anthropic/claude-opus-4-5",
+        initialExecutor: "opencode/gpt-5.1-codex",
+        onSelect,
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Empty filter + Enter → falls back to the prop-supplied current models.
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 40));
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 40));
+    stdin.write("1");
+    await new Promise((r) => setTimeout(r, 30));
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 60));
+    instance.unmount();
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0][0].thinker).toBe("anthropic/claude-opus-4-5");
+    expect(onSelect.mock.calls[0][0].executor).toBe("opencode/gpt-5.1-codex");
+  });
+
+  it("derives the visible current selection from the catalog, not a hardcoded seed (AC-27.7)", async () => {
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const stdin = createMockStdin();
+    const runtime = createMockRuntime();
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect: vi.fn(),
+        onCancel: vi.fn(),
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+    instance.unmount();
+
+    const flattened = output.replace(/[│\r\n]+/g, " ").replace(/\s+/g, " ");
+    expect(flattened).toContain("Current: T: anthropic/claude-3-7-sonnet");
   });
 
   it("filters models by typing search query", async () => {

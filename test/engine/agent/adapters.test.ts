@@ -16,14 +16,35 @@ import { OpencodeSession } from "../../../src/engine/agent/adapters/opencode.js"
 
 describe("Agent Runtime Adapters Interface Adherence", () => {
   it("OpencodeRuntimeAdapter conforms to IAgentRuntime interface", async () => {
-    const adapter = new OpencodeRuntimeAdapter({ port: 4096 });
+    const mockClient = {
+      provider: {
+        list: async () => ({
+          all: [
+            {
+              id: "anthropic",
+              name: "Anthropic",
+              models: { "claude-sonnet-5": { id: "claude-sonnet-5", name: "Claude Sonnet 5" } },
+            },
+          ],
+          default: {},
+          connected: ["anthropic"],
+        }),
+      },
+    } as unknown as OpencodeClient;
+    const adapter = new OpencodeRuntimeAdapter({ client: mockClient });
     expect(adapter.id).toBe("opencode");
     expect(adapter.name).toBe("OpenCode");
 
     const models = await adapter.getAvailableModels();
-    expect(Array.isArray(models)).toBe(true);
-    expect(models.length).toBeGreaterThan(0);
-    expect(models[0].id).toBeDefined();
+    expect(models).toEqual([
+      {
+        id: "anthropic/claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        // REV-004: the provider *id*, matching what the CLI fallback reports.
+        provider: "anthropic",
+        description: undefined,
+      },
+    ]);
 
     const mcp = await adapter.getMcpStatus();
     expect(mcp).toHaveProperty("servers");
@@ -31,63 +52,91 @@ describe("Agent Runtime Adapters Interface Adherence", () => {
     expect(mcp).toHaveProperty("healthy");
   });
 
-  it("ClaudeRuntimeAdapter conforms to IAgentRuntime and provides Claude models", async () => {
+  it("ClaudeRuntimeAdapter conforms to IAgentRuntime and reports no catalog (REQ-27)", async () => {
     const adapter = new ClaudeRuntimeAdapter();
     expect(adapter.id).toBe("claude");
     expect(adapter.name).toBe("Claude Code");
 
-    const models = await adapter.getAvailableModels();
-    expect(models.some((m) => m.id.includes("claude-3-7-sonnet"))).toBe(true);
-    expect(models.some((m) => m.id.includes("claude-opus"))).toBe(true);
+    // AC-27.4: the CLI exposes no listing command, so discovery is honestly empty.
+    expect(await adapter.getAvailableModels()).toEqual([]);
 
     const mcp = await adapter.getMcpStatus();
     expect(Array.isArray(mcp.servers)).toBe(true);
   });
 
-  it("CodexRuntimeAdapter conforms to IAgentRuntime and provides Codex models", async () => {
+  it("CodexRuntimeAdapter conforms to IAgentRuntime and reports no catalog (REQ-27)", async () => {
     const adapter = new CodexRuntimeAdapter();
     expect(adapter.id).toBe("codex");
     expect(adapter.name).toBe("OpenAI Codex CLI");
 
-    const models = await adapter.getAvailableModels();
-    expect(models.some((m) => m.id.includes("gpt-5.1-codex"))).toBe(true);
-    expect(models.some((m) => m.id.includes("o3-mini"))).toBe(true);
+    expect(await adapter.getAvailableModels()).toEqual([]);
 
     const mcp = await adapter.getMcpStatus();
     expect(Array.isArray(mcp.servers)).toBe(true);
   });
 
-  it("OmpRuntimeAdapter conforms to IAgentRuntime", async () => {
-    const adapter = new OmpRuntimeAdapter();
-    expect(adapter.id).toBe("omp");
-    expect(adapter.name).toBe("Oh My Pi");
+  it("OmpRuntimeAdapter lists its real catalog through `omp models` (REQ-27 / AC-27.4)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-omp-models-"));
+    try {
+      // The fake CLI only answers to `omp models`, so this asserts the wired
+      // argv as well as the parser wiring.
+      const ompBin = join(tempDir, "omp");
+      writeFileSync(
+        ompBin,
+        "#!/bin/sh\n" +
+          '[ "$1" = "models" ] || exit 9\n' +
+          "printf 'deepseek (1)\\n" +
+          "┌─┬─┐\\n" +
+          "│ model │ context │\\n" +
+          "├─┼─┤\\n" +
+          "│ deepseek-flash │ 1M │\\n" +
+          "└─┴─┘\\n'\n",
+      );
+      chmodSync(ompBin, 0o755);
 
-    const models = await adapter.getAvailableModels();
-    expect(models.some((m) => m.id.includes("omp/default"))).toBe(true);
+      const adapter = new OmpRuntimeAdapter({ env: { PATH: tempDir } });
+      expect(adapter.id).toBe("omp");
+      expect(adapter.name).toBe("Oh My Pi");
 
-    const mcp = await adapter.getMcpStatus();
-    expect(Array.isArray(mcp.servers)).toBe(true);
+      expect(await adapter.getAvailableModels()).toEqual([
+        {
+          id: "deepseek/deepseek-flash",
+          name: "deepseek-flash",
+          provider: "deepseek",
+          description: "context 1M",
+        },
+      ]);
+
+      const mcp = await adapter.getMcpStatus();
+      expect(Array.isArray(mcp.servers)).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
-  it("CommandCodeRuntimeAdapter conforms to IAgentRuntime", async () => {
-    const adapter = new CommandCodeRuntimeAdapter();
-    expect(adapter.id).toBe("commandcode");
-    expect(adapter.name).toBe("Command Code");
+  it("CommandCodeRuntimeAdapter conforms to IAgentRuntime and returns [] when the CLI is absent", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-cmdcode-models-absent-"));
+    try {
+      const adapter = new CommandCodeRuntimeAdapter({ env: { PATH: tempDir } });
+      expect(adapter.id).toBe("commandcode");
+      expect(adapter.name).toBe("Command Code");
 
-    const models = await adapter.getAvailableModels();
-    expect(models.some((m) => m.id.includes("commandcode/default"))).toBe(true);
+      // AC-27.3: no `commandcode/default` literal; no listing CLI → honest [].
+      expect(await adapter.getAvailableModels()).toEqual([]);
 
-    const mcp = await adapter.getMcpStatus();
-    expect(Array.isArray(mcp.servers)).toBe(true);
+      const mcp = await adapter.getMcpStatus();
+      expect(Array.isArray(mcp.servers)).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
-  it("QwenRuntimeAdapter conforms to IAgentRuntime", async () => {
+  it("QwenRuntimeAdapter conforms to IAgentRuntime and reports no catalog (REQ-27)", async () => {
     const adapter = new QwenRuntimeAdapter();
     expect(adapter.id).toBe("qwen");
     expect(adapter.name).toBe("Qwen Code");
 
-    const models = await adapter.getAvailableModels();
-    expect(models.some((m) => m.id.includes("qwen-2.5-coder"))).toBe(true);
+    expect(await adapter.getAvailableModels()).toEqual([]);
 
     const mcp = await adapter.getMcpStatus();
     expect(Array.isArray(mcp.servers)).toBe(true);
@@ -352,20 +401,14 @@ describe("GenericSubprocessRuntimeAdapter & Session Execution", () => {
     expect(result.raw.stdout.length).toBeLessThanOrEqual(10 * 1024 * 1024);
   });
 
-  it("returns default model info when models option is omitted", async () => {
+  it("returns an empty catalog when neither models nor modelListCommand is provided (REQ-27)", async () => {
     const adapter = new GenericSubprocessRuntimeAdapter({
       id: "pi",
       name: "Pi Agent",
       command: "pi",
     });
     const models = await adapter.getAvailableModels();
-    expect(models).toEqual([
-      {
-        id: "pi/default",
-        name: "Pi Agent Default Model",
-        provider: "Pi Agent",
-      },
-    ]);
+    expect(models).toEqual([]);
   });
 
   it("parses TOML MCP server definitions correctly", async () => {
@@ -501,7 +544,7 @@ describe("OpencodeRuntimeAdapter and OpencodeSession", () => {
     }
   });
 
-  it("maps models from client.provider.list()", async () => {
+  it("maps models from client.provider.list() for connected providers only (AC-27.1)", async () => {
     const mockClient = {
       provider: {
         list: vi.fn().mockResolvedValue({
@@ -513,7 +556,16 @@ describe("OpencodeRuntimeAdapter and OpencodeSession", () => {
                 "model-a": { name: "Model A", description: "Awesome model" },
               },
             },
+            {
+              id: "catalog-only",
+              name: "Catalog Only",
+              models: {
+                "model-b": { name: "Model B" },
+              },
+            },
           ],
+          default: {},
+          connected: ["custom-provider"],
         }),
       },
     } as unknown as OpencodeClient;
@@ -524,23 +576,94 @@ describe("OpencodeRuntimeAdapter and OpencodeSession", () => {
       {
         id: "custom-provider/model-a",
         name: "Model A",
-        provider: "Custom Provider",
+        provider: "custom-provider",
         description: "Awesome model",
       },
     ]);
   });
 
-  it("falls back to default models when client.provider.list() throws", async () => {
+  it("falls back to parsing `opencode models` when client.provider.list() throws (AC-27.2)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-opencode-fallback-"));
+    try {
+      const fakeBin = join(tempDir, "opencode");
+      writeFileSync(
+        fakeBin,
+        `#!/bin/sh\nprintf 'anthropic/claude-sonnet-5\\nfireworks-ai/accounts/fireworks/models/deepseek-v4p1-flash\\n\\nnoise line\\n'\n`,
+      );
+      chmodSync(fakeBin, 0o755);
+
+      const mockClient = {
+        provider: {
+          list: vi.fn().mockRejectedValue(new Error("Network error")),
+        },
+      } as unknown as OpencodeClient;
+
+      const adapter = new OpencodeRuntimeAdapter({
+        client: mockClient,
+        modelsCommand: fakeBin,
+      });
+      const models = await adapter.getAvailableModels();
+      expect(models).toEqual([
+        { id: "anthropic/claude-sonnet-5", name: "claude-sonnet-5", provider: "anthropic" },
+        {
+          id: "fireworks-ai/accounts/fireworks/models/deepseek-v4p1-flash",
+          name: "deepseek-v4p1-flash",
+          provider: "fireworks-ai",
+        },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns [] (never fakes) when both SDK and CLI discovery fail (AC-27.2)", async () => {
     const mockClient = {
       provider: {
         list: vi.fn().mockRejectedValue(new Error("Network error")),
       },
     } as unknown as OpencodeClient;
 
-    const adapter = new OpencodeRuntimeAdapter({ client: mockClient });
-    const models = await adapter.getAvailableModels();
-    expect(models.length).toBeGreaterThan(0);
-    expect(models.some((m) => m.id.includes("claude-opus"))).toBe(true);
+    const adapter = new OpencodeRuntimeAdapter({
+      client: mockClient,
+      modelsCommand: "__huginn_missing_opencode_binary__",
+    });
+    expect(await adapter.getAvailableModels()).toEqual([]);
+  });
+
+  it("falls back to the CLI when the connected set is empty (AC-27.2)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-opencode-empty-connected-"));
+    try {
+      const fakeBin = join(tempDir, "opencode");
+      writeFileSync(fakeBin, `#!/bin/sh\nprintf 'deepseek/deepseek-v4-pro\\n'\n`);
+      chmodSync(fakeBin, 0o755);
+
+      const mockClient = {
+        provider: {
+          list: vi.fn().mockResolvedValue({
+            all: [
+              {
+                id: "deepinfra",
+                name: "DeepInfra",
+                models: { "deepinfra-model": { name: "DeepInfra Model" } },
+              },
+            ],
+            default: {},
+            connected: [],
+          }),
+        },
+      } as unknown as OpencodeClient;
+
+      const adapter = new OpencodeRuntimeAdapter({
+        client: mockClient,
+        modelsCommand: fakeBin,
+      });
+      const models = await adapter.getAvailableModels();
+      expect(models).toEqual([
+        { id: "deepseek/deepseek-v4-pro", name: "deepseek-v4-pro", provider: "deepseek" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("maps MCP status from client.mcp.status()", async () => {

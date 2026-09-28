@@ -11,6 +11,7 @@ import {
   OmpRuntimeAdapter,
   OpencodeRuntimeAdapter,
   QwenRuntimeAdapter,
+  parseAgyModels,
 } from "./adapters/index.js";
 
 export const AGENT_BINARIES: Record<AgentTarget, string[]> = {
@@ -36,6 +37,12 @@ export interface RuntimeOptions {
   port?: number;
   serverTimeoutMs?: number;
   env?: Record<string, string | undefined>;
+  /**
+   * Overrides the runtime's native model flag (AC-27.5). Defaults to the flag
+   * documented by each CLI; injectable so a wrapper (or a test) can pin the
+   * argv without forking the registry.
+   */
+  modelArgs?: (model: string) => string[];
 }
 
 export interface AgentResolutionSources {
@@ -157,6 +164,10 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         id: "kimi",
         name: "Kimi Code CLI",
         command: "kimi",
+        // REV-003/S1: `kimi` is not installed on the reference machine, so this
+        // flag is unverified-but-conventional (kimi-code follows the `-m`
+        // convention of its siblings); `RuntimeOptions.modelArgs` overrides it.
+        modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
         projectPath: options.projectPath,
         homeDir: options.homeDir,
         env: options.env,
@@ -166,18 +177,53 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         id: "pi",
         name: "Pi coding agent",
         command: "pi",
+        // REV-003/S1: not installed on the reference machine — unverified but
+        // conventional (`-m`), and overridable via `RuntimeOptions.modelArgs`.
+        modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
+        projectPath: options.projectPath,
+        homeDir: options.homeDir,
+        env: options.env,
+      });
+    // REQ-27: `gemini`, `kimi`, `pi`, `cursor` and `windsurf` expose no listing
+    // command (verified by probing `--help` where installed), so discovery is
+    // honestly empty (`[]` — the `${id}/default` placeholder is gone) and the
+    // picker offers free-text ids. `agy` *does* list (`agy models`) and is wired
+    // below.
+    case "gemini":
+      return new GenericSubprocessRuntimeAdapter({
+        id: "gemini",
+        name: AGENT_REGISTRY.gemini?.label ?? "gemini",
+        command: "gemini",
+        modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
+        projectPath: options.projectPath,
+        homeDir: options.homeDir,
+        env: options.env,
+      });
+    case "agy":
+      return new GenericSubprocessRuntimeAdapter({
+        id: "agy",
+        name: AGENT_REGISTRY.agy?.label ?? "agy",
+        command: "agy",
+        modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
+        modelListCommand: {
+          command: "agy",
+          args: ["models"],
+          parse: parseAgyModels,
+        },
         projectPath: options.projectPath,
         homeDir: options.homeDir,
         env: options.env,
       });
     case "cursor":
     case "windsurf":
-    case "gemini":
-    case "agy":
       return new GenericSubprocessRuntimeAdapter({
         id: target,
         name: AGENT_REGISTRY[target]?.label ?? target,
         command: target,
+        // REV-003/S1: neither CLI is installed on the reference machine, so the
+        // flag is unverified-but-conventional (`--model`); overridable via
+        // `RuntimeOptions.modelArgs`.
+        modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
         projectPath: options.projectPath,
         homeDir: options.homeDir,
         env: options.env,

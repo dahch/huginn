@@ -1047,13 +1047,21 @@ function validatePhase(name: string): PhaseName {
   process.exit(1);
 }
 
-async function validateModels(
+/**
+ * Validates the configured thinker/executor provider ids against the
+ * server's configured provider list (AC-27.6).
+ *
+ * `config.providers()` returns `{ providers, default }` — NOT `{ all }` — so
+ * reading the wrong field left `known` empty and warned on every run. Exported
+ * for the provider-validation test.
+ */
+export async function validateModels(
   client: import("@opencode-ai/sdk").OpencodeClient,
   cfg: RunConfig,
 ): Promise<void> {
   try {
     const res = await client.config.providers();
-    const providers = (res as { all?: Array<{ id: string }> }).all ?? [];
+    const providers = (res as { providers?: Array<{ id: string }> }).providers ?? [];
     const known = new Set(providers.map((p) => p.id));
     for (const [role, model] of [
       ["thinker", cfg.thinker],

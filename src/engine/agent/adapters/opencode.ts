@@ -7,6 +7,7 @@ import type {
   IAgentSession,
   McpServerStatus,
   McpStatusReport,
+  ModelCatalog,
   ModelInfo,
   PromptOptions,
   PromptResult,
@@ -21,6 +22,8 @@ import {
 } from "../../../server/client.js";
 import { startServer, type ServerHandle } from "../../../server/lifecycle.js";
 import { resolveModel } from "../../modelRouter.js";
+import { sanitizeTerminalText } from "../../../util/text.js";
+import { runModelListCommand } from "./modelList.js";
 
 export interface OpencodeRuntimeOptions {
   client?: OpencodeClient;
@@ -28,6 +31,50 @@ export interface OpencodeRuntimeOptions {
   projectPath?: string;
   port?: number;
   serverTimeoutMs?: number;
+  /** Binary used for the `opencode models` CLI fallback (REQ-27 / AC-27.2). */
+  modelsCommand?: string;
+  /** Bounded spawn deadline for the CLI fallback; defaults to the shared `MODEL_LIST_TIMEOUT_MS` (8 s). */
+  modelsTimeoutMs?: number;
+  /** PATH override used when spawning the fallback CLI (also used by tests). */
+  env?: Record<string, string | undefined>;
+}
+
+/** Shape of `client.provider.list()` (ADR-27): `all` is the whole models.dev catalog. */
+interface ProviderListResponse {
+  all?: Array<{
+    id: string;
+    name: string;
+    models?: Record<string, { id?: string; name?: string; description?: string }>;
+  }>;
+  default?: Record<string, string>;
+  connected?: string[];
+}
+
+/**
+ * Pure parser for `opencode models` output: one `provider/model` id per line
+ * (model ids may themselves contain slashes, e.g. `fireworks-ai/accounts/...`).
+ * Blank lines and any non-id noise are dropped. Exported for fixture tests.
+ */
+export function parseOpencodeModels(stdout: string): ModelInfo[] {
+  const models: ModelInfo[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = sanitizeTerminalText(rawLine).trim();
+    if (!line) continue;
+    // Require exactly `<provider>/<model...>` with no whitespace anywhere.
+    if (!/^[^\s/]+\/\S+$/.test(line)) continue;
+    if (seen.has(line)) continue;
+    seen.add(line);
+
+    const slashIdx = line.indexOf("/");
+    const provider = line.slice(0, slashIdx);
+    const modelPath = line.slice(slashIdx + 1);
+    const shortName = modelPath.slice(modelPath.lastIndexOf("/") + 1);
+    models.push({ id: line, name: shortName || modelPath, provider });
+  }
+
+  return models;
 }
 
 export class OpencodeSession implements IAgentSession {
@@ -110,41 +157,81 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
     return false;
   }
 
-  async getAvailableModels(): Promise<ModelInfo[]> {
+  /**
+   * Truthful discovery (REQ-27 / AC-27.1, AC-27.2, REV-002/REV-010): only models
+   * from providers in the response's `connected` set are offered (581 on the
+   * reference machine, not the 8 195-model catalog). When the SDK is unreachable
+   * — or the connected set yields nothing — fall back to parsing
+   * `opencode models`. Never throws, never fabricates: an empty catalog carries a
+   * `reason` naming the SDK failure or the CLI failure that produced it.
+   */
+  async getModelCatalog(): Promise<ModelCatalog> {
+    let sdkReason: string | undefined;
     try {
-      const response = await this.client.provider.list();
-      const providers = (response as unknown as { all?: Array<{ id: string; name: string; models?: Record<string, { id: string; name: string; description?: string }> }> }).all ?? [];
+      const response = (await this.client.provider.list()) as unknown as ProviderListResponse;
+      const connected = new Set(response.connected ?? []);
+      const providers = response.all ?? [];
 
       const models: ModelInfo[] = [];
       for (const p of providers) {
+        if (!connected.has(p.id)) continue;
         if (!p.models) continue;
         for (const [modelId, m] of Object.entries(p.models)) {
           models.push({
             id: `${p.id}/${modelId}`,
             name: m.name ?? modelId,
-            provider: p.name ?? p.id,
+            // REV-004: always the provider *id* — the `opencode models` CLI
+            // fallback only knows ids, so badges/filtering stay consistent
+            // regardless of which discovery path answered.
+            provider: p.id,
             description: m.description,
           });
         }
       }
 
-      if (models.length > 0) return models;
-    } catch {
-      // client provider list may not be reachable yet or unauthenticated
+      if (models.length > 0) return { models };
+      sdkReason = "no connected providers reported by the opencode SDK";
+    } catch (err) {
+      sdkReason = `opencode SDK provider discovery failed: ${sanitizeTerminalText(
+        err instanceof Error ? err.message : String(err),
+      )}`;
     }
 
-    return [
-      {
-        id: "anthropic/claude-opus-4-5",
-        name: "Claude Opus 4.5",
-        provider: "anthropic",
-      },
-      {
-        id: "opencode/gpt-5.1-codex",
-        name: "GPT-5.1 Codex",
-        provider: "opencode",
-      },
-    ];
+    const fromCli = await this.getModelsFromCli();
+    if (fromCli.models.length > 0) return fromCli;
+
+    // Both paths failed: name them both (each part is short, already sanitized),
+    // so the picker can say *why* opencode reported nothing.
+    const reasons = [sdkReason, fromCli.reason].filter((r): r is string => Boolean(r));
+    return { models: [], reason: reasons.join(" · ") || "no models discovered" };
+  }
+
+  async getAvailableModels(): Promise<ModelInfo[]> {
+    return (await this.getModelCatalog()).models;
+  }
+
+  /** `opencode models` fallback — bounded spawn, tolerant parse, reasoned empty result. */
+  private async getModelsFromCli(): Promise<ModelCatalog> {
+    const command = this.options.modelsCommand ?? "opencode";
+    const result = await runModelListCommand(command, ["models"], {
+      env: this.options.env,
+      timeoutMs: this.options.modelsTimeoutMs,
+    });
+    if (result.error || result.stdout === undefined) {
+      return { models: [], reason: result.error ?? "`opencode models` printed no output" };
+    }
+    try {
+      const models = parseOpencodeModels(result.stdout);
+      if (models.length === 0) return { models: [], reason: "`opencode models` listed no models" };
+      return { models };
+    } catch (err) {
+      return {
+        models: [],
+        reason: `could not parse \`opencode models\` output: ${sanitizeTerminalText(
+          err instanceof Error ? err.message : String(err),
+        )}`,
+      };
+    }
   }
 
   async getMcpStatus(): Promise<McpStatusReport> {
@@ -175,10 +262,14 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
         healthy,
       };
     } catch (err) {
+      // REV-009 / ADR-30: never report an unreachable MCP surface as a neutral
+      // empty state — carry the (sanitized) error so the badge can go degraded.
       return {
         servers: [],
         totalTools: 0,
         healthy: false,
+        degraded: true,
+        error: sanitizeTerminalText(err instanceof Error ? err.message : String(err)),
       };
     }
   }

@@ -11,12 +11,14 @@ import {
 } from "../mcpConfig.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
 import { isExecutableBinary } from "../binaryUtils.js";
+import { runModelListCommand } from "./modelList.js";
 import type {
   CommandOptions,
   IAgentRuntime,
   IAgentSession,
   McpServerStatus,
   McpStatusReport,
+  ModelCatalog,
   ModelInfo,
   PromptOptions,
   PromptResult,
@@ -32,6 +34,24 @@ export interface GenericSubprocessOptions {
   homeDir?: string;
   env?: Record<string, string | undefined>;
   models?: ModelInfo[];
+  /**
+   * Declarative model listing (REQ-27 / AC-27.4): argv + pure parser for a CLI
+   * that can enumerate its catalog (e.g. `commandcode --list-models`). Preferred
+   * over the static `models` array; without either, discovery returns `[]`.
+   */
+  modelListCommand?: {
+    command: string;
+    args: string[];
+    parse: (stdout: string) => ModelInfo[];
+    /** Bounded spawn deadline; defaults to the shared `MODEL_LIST_TIMEOUT_MS` (8 s). */
+    timeoutMs?: number;
+  };
+  /**
+   * Native model flag for this runtime (AC-27.5), e.g. `(m) => ["-m", m]`.
+   * Appended to argv when a model is selected; `HUGINN_MODEL` is kept as an
+   * extra env hint only.
+   */
+  modelArgs?: (model: string) => string[];
   defaultTimeoutMs?: number;
   promptViaStdin?: boolean;
   maxPromptArgLength?: number;
@@ -39,6 +59,106 @@ export interface GenericSubprocessOptions {
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB bound against memory DoS (SEC-003)
 const DEFAULT_MAX_PROMPT_ARG_LENGTH = 4096;
+
+/** A model flag split into its name and (when present) its separate/inline value. */
+interface ModelFlagPair {
+  name: string;
+  inline: boolean;
+  value?: string;
+}
+
+/**
+ * Splits `modelArgs(model)` into flags (`--model new`, `--model=new`) and any
+ * bare positionals, so a flag's value can be replaced in place rather than the
+ * whole pair being dropped.
+ */
+function splitModelArgs(args: string[]): { pairs: ModelFlagPair[]; positionals: string[] } {
+  const pairs: ModelFlagPair[] = [];
+  const positionals: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (!token.startsWith("-") || token === "-") {
+      positionals.push(token);
+      continue;
+    }
+
+    const equalsIdx = token.indexOf("=");
+    if (equalsIdx > 1) {
+      pairs.push({ name: token.slice(0, equalsIdx), inline: true, value: token.slice(equalsIdx + 1) });
+      continue;
+    }
+
+    const next = args[i + 1];
+    if (next !== undefined && next.length > 0 && !next.startsWith("-")) {
+      pairs.push({ name: token, inline: false, value: next });
+      i++;
+      continue;
+    }
+    pairs.push({ name: token, inline: false });
+  }
+
+  return { pairs, positionals };
+}
+
+/**
+ * Appends the runtime's native model flag to argv (AC-27.5).
+ *
+ * REV-005: when the base argv already carries the flag — `["--model", "old"]` or
+ * `["--model=old"]` — the *value* is replaced with the user's selection instead
+ * of the flag being silently dropped, which previously ignored the choice.
+ */
+function withModelArgs(
+  baseArgs: string[],
+  modelArgs: ((model: string) => string[]) | undefined,
+  model: string | undefined,
+): string[] {
+  if (!model || !modelArgs) return [...baseArgs];
+  let args: string[];
+  try {
+    args = modelArgs(model);
+  } catch {
+    return [...baseArgs];
+  }
+  if (!Array.isArray(args) || args.length === 0) return [...baseArgs];
+
+  const { pairs, positionals } = splitModelArgs(args);
+  const result = [...baseArgs];
+  const appended: string[] = [...positionals];
+
+  for (const pair of pairs) {
+    const idx = result.findIndex((arg) => arg === pair.name || arg.startsWith(`${pair.name}=`));
+    if (idx === -1) {
+      // The flag is absent → append it in the form the runtime requested.
+      if (pair.inline) {
+        appended.push(`${pair.name}=${pair.value ?? ""}`);
+      } else {
+        appended.push(pair.name);
+        if (pair.value !== undefined) appended.push(pair.value);
+      }
+      continue;
+    }
+
+    if (pair.value === undefined) continue; // bare flag: nothing to replace
+    if (result[idx].includes("=")) {
+      result[idx] = `${pair.name}=${pair.value}`; // `--flag=old` → `--flag=new`
+    } else if (idx + 1 < result.length && !result[idx + 1].startsWith("-")) {
+      result[idx + 1] = pair.value; // `--flag old` → `--flag new`
+    } else {
+      result.splice(idx + 1, 0, pair.value); // `--flag <other flag>` → `--flag new …`
+    }
+  }
+
+  if (appended.length === 0) return result;
+
+  // Positional-args fallback: skip when the exact sequence is already present.
+  if (!appended.some((arg) => arg.startsWith("-"))) {
+    const sequence = appended.join("\u0000");
+    if (sequence && baseArgs.join("\u0000").includes(sequence)) return result;
+  }
+
+  return [...result, ...appended];
+}
 
 function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
@@ -82,7 +202,11 @@ export class GenericSubprocessSession implements IAgentSession {
     }
 
     const command = this.runtimeOptions.command;
-    const baseArgs = this.runtimeOptions.args ?? [];
+    const baseArgs = withModelArgs(
+      this.runtimeOptions.args ?? [],
+      this.runtimeOptions.modelArgs,
+      options?.model,
+    );
     const cwd = options?.directory ?? this.sessionOptions.directory ?? this.runtimeOptions.projectPath ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? this.runtimeOptions.defaultTimeoutMs ?? 120000;
 
@@ -154,6 +278,8 @@ export class GenericSubprocessSession implements IAgentSession {
           env: {
             ...process.env,
             ...this.runtimeOptions.env,
+            // AC-27.5: the native `modelArgs` flag is the real channel; this env
+            // var is retained only as an additional hint for wrapper scripts.
             ...(options?.model ? { HUGINN_MODEL: options.model } : {}),
           },
           stdio: ["pipe", "pipe", "pipe"],
@@ -372,17 +498,51 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
     });
   }
 
-  async getAvailableModels(): Promise<ModelInfo[]> {
-    if (this.options.models && this.options.models.length > 0) {
-      return [...this.options.models];
+  /**
+   * Truthful discovery (REQ-27 / AC-27.4, REV-002/REV-010): a declarative
+   * `modelListCommand` is preferred, then a caller-supplied static `models`
+   * array. Every other case returns an empty catalog **with a reason** so an
+   * empty result is never indistinguishable from a failure:
+   *
+   * - no listing mechanism → `no model-listing command for this runtime`
+   * - spawn failed / non-zero exit / timeout / empty output → the CLI's own error
+   * - unparseable output → `could not parse …`
+   *
+   * The previous `${id}/default` placeholder is deliberately gone, so the picker
+   * offers free-text entry instead of a fabricated model.
+   */
+  async getModelCatalog(): Promise<ModelCatalog> {
+    const listCommand = this.options.modelListCommand;
+    if (listCommand) {
+      const result = await runModelListCommand(listCommand.command, listCommand.args, {
+        env: this.options.env,
+        timeoutMs: listCommand.timeoutMs,
+      });
+      if (result.error || result.stdout === undefined) {
+        return { models: [], reason: result.error ?? "model listing produced no output" };
+      }
+      try {
+        const parsed = listCommand.parse(result.stdout);
+        const models = Array.isArray(parsed) ? parsed : [];
+        if (models.length === 0) {
+          return { models: [], reason: `\`${listCommand.command} ${listCommand.args.join(" ")}\` listed no models` };
+        }
+        return { models };
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return { models: [], reason: `could not parse model listing: ${sanitizeTerminalText(detail)}` };
+      }
     }
-    return [
-      {
-        id: `${this.id}/default`,
-        name: `${this.name} Default Model`,
-        provider: this.name,
-      },
-    ];
+
+    if (this.options.models && this.options.models.length > 0) {
+      return { models: [...this.options.models] };
+    }
+
+    return { models: [], reason: "no model-listing command for this runtime" };
+  }
+
+  async getAvailableModels(): Promise<ModelInfo[]> {
+    return (await this.getModelCatalog()).models;
   }
 
   async getMcpStatus(): Promise<McpStatusReport> {

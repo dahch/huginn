@@ -1,27 +1,9 @@
 import { GenericSubprocessRuntimeAdapter, type GenericSubprocessOptions } from "./generic.js";
-import type { ModelInfo } from "../types.js";
 
-const CODEX_MODELS: ModelInfo[] = [
-  {
-    id: "gpt-5.1-codex",
-    name: "GPT-5.1 Codex",
-    provider: "OpenAI",
-    description: "OpenAI Codex flagship model",
-  },
-  {
-    id: "o3-mini",
-    name: "o3-mini",
-    provider: "OpenAI",
-    description: "Fast reasoning model for math and coding",
-  },
-  {
-    id: "gpt-4o",
-    name: "GPT-4o",
-    provider: "OpenAI",
-    description: "Omni model for code and text",
-  },
-];
-
+/**
+ * OpenAI Codex CLI. Discovery returns `[]` instead of a fabricated catalog
+ * (AC-27.4); a selected model is forwarded via `-m` (AC-27.5).
+ */
 export class CodexRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
   constructor(options: Partial<GenericSubprocessOptions> = {}) {
     super({
@@ -29,7 +11,9 @@ export class CodexRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
       name: "OpenAI Codex CLI",
       command: options.command ?? "codex",
       args: options.args ?? ["exec"],
-      models: options.models ?? CODEX_MODELS,
+      models: options.models,
+      modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
+      modelListCommand: options.modelListCommand,
       projectPath: options.projectPath,
       homeDir: options.homeDir,
       env: options.env,

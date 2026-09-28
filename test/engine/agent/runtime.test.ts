@@ -161,6 +161,109 @@ describe("Agent Registry & Factory", () => {
     expect(agy.name).toBe("Antigravity CLI (agy)");
   });
 
+  it("never fabricates a model catalog for runtimes without a listing command (REQ-27)", async () => {
+    for (const target of ["kimi", "pi", "cursor", "windsurf", "gemini", "claude", "qwen", "codex"] as const) {
+      const runtime = getAgentRuntime(target, { env: { PATH: "/dev/null" } });
+      // AC-27.4: no `${id}/default` placeholder, no static list — honest [].
+      expect(await runtime.getAvailableModels()).toEqual([]);
+    }
+  });
+
+  it("wires the real `omp models` listing command (AC-27.4)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-omp-wiring-"));
+    try {
+      const ompBin = join(tempDir, "omp");
+      writeFileSync(
+        ompBin,
+        "#!/bin/sh\n" +
+          '[ "$1" = "models" ] || exit 9\n' +
+          "printf 'deepseek (1)\\n" +
+          "┌─┬─┐\\n" +
+          "│ model │ context │\\n" +
+          "├─┼─┤\\n" +
+          "│ deepseek-flash │ 1M │\\n" +
+          "└─┴─┘\\n'\n",
+      );
+      chmodSync(ompBin, 0o755);
+
+      const runtime = getAgentRuntime("omp", { env: { PATH: tempDir } });
+      expect(await runtime.getAvailableModels()).toEqual([
+        {
+          id: "deepseek/deepseek-flash",
+          name: "deepseek-flash",
+          provider: "deepseek",
+          description: "context 1M",
+        },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("wires the real `agy models` listing command and ignores its preamble (AC-27.4)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-agy-wiring-"));
+    try {
+      const agyBin = join(tempDir, "agy");
+      writeFileSync(
+        agyBin,
+        "#!/bin/sh\n" +
+          '[ "$1" = "models" ] || exit 9\n' +
+          "printf 'Fetching available models...\\n" +
+          "gemini-3.8-flash-high\\tGemini 3.8 Flash (High)\\n'\n",
+      );
+      chmodSync(agyBin, 0o755);
+
+      const runtime = getAgentRuntime("agy", { env: { PATH: tempDir } });
+      expect(await runtime.getAvailableModels()).toEqual([
+        { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", provider: "agy" },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes the runtime's native model flag for the runtimes without a listing command (AC-27.5)", async () => {
+    // REV-003/S1: `kimi`/`pi`/`cursor`/`windsurf` used to have no `modelArgs` at
+    // all, so `HUGINN_MODEL` was their only (unread) model channel.
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-modelargs-"));
+    try {
+      const cases: Array<[string, string[]]> = [
+        ["kimi", ["-m", "moonshot/kimi-k2.5"]],
+        ["pi", ["-m", "moonshot/kimi-k2.5"]],
+        ["cursor", ["--model", "moonshot/kimi-k2.5"]],
+        ["windsurf", ["--model", "moonshot/kimi-k2.5"]],
+      ];
+
+      for (const [target, expected] of cases) {
+        const fake = join(tempDir, target);
+        writeFileSync(fake, '#!/bin/sh\nprintf \'%s\\n\' "$@"\n');
+        chmodSync(fake, 0o755);
+
+        const runtime = getAgentRuntime(target as "kimi", { env: { PATH: tempDir } });
+        expect(runtime.id).toBe(target);
+
+        const session = await runtime.createSession({ title: target });
+        const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
+        const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
+        expect(argv).toEqual(expected);
+      }
+
+      // The flag stays overridable through `RuntimeOptions`.
+      const overridden = getAgentRuntime("kimi", {
+        env: { PATH: tempDir },
+        modelArgs: (model) => ["--kimi-model", model],
+      });
+      const session = await overridden.createSession({ title: "override" });
+      const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
+      expect(result.text.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual([
+        "--kimi-model",
+        "moonshot/kimi-k2.5",
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves agent target with strict precedence", async () => {
     // 1. Flag wins over everything
     const fromFlag = await resolveAgent({

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { IAgentRuntime, ModelInfo } from "../engine/agent/types.js";
+import { sanitizeTerminalText } from "../util/text.js";
 
 export interface ModelPickerResult {
   thinker: string;
@@ -15,45 +16,6 @@ export interface ModelPickerModalProps {
   onSelect: (result: ModelPickerResult) => void;
   onCancel: () => void;
 }
-
-const DEFAULT_FALLBACK_MODELS: ModelInfo[] = [
-  {
-    id: "anthropic/claude-3-7-sonnet-latest",
-    name: "Claude 3.7 Sonnet",
-    provider: "Anthropic",
-    description: "Hybrid reasoning and code generation flagship",
-  },
-  {
-    id: "anthropic/claude-3-5-sonnet-latest",
-    name: "Claude 3.5 Sonnet",
-    provider: "Anthropic",
-    description: "High capability coding model",
-  },
-  {
-    id: "anthropic/claude-opus-4-5",
-    name: "Claude Opus 4.5",
-    provider: "Anthropic",
-    description: "Advanced architectural reasoning (default thinker)",
-  },
-  {
-    id: "opencode/gpt-5.1-codex",
-    name: "GPT-5.1 Codex",
-    provider: "OpenAI",
-    description: "Frontier code execution model (default executor)",
-  },
-  {
-    id: "openai/o3-mini",
-    name: "o3-mini",
-    provider: "OpenAI",
-    description: "Fast reasoning and code synthesis",
-  },
-  {
-    id: "google/gemini-2.5-pro",
-    name: "Gemini 2.5 Pro",
-    provider: "Google",
-    description: "Multimodal and long-context reasoning",
-  },
-];
 
 type PickerStep = "thinker" | "executor" | "saveScope";
 
@@ -87,38 +49,69 @@ function sanitizeKeyInput(input: string): string {
     .replace(/[\x00-\x1F\x7F-\x9F]/g, "");
 }
 
+/**
+ * Three-step model picker (thinker → executor → persistence).
+ *
+ * REQ-27 / AC-27.7: discovery is rendered truthfully — a loading state, the
+ * (sanitized) discovery error, a distinct "no models discovered" empty state
+ * with free-text entry, or the real catalog. There is deliberately no
+ * `DEFAULT_FALLBACK_MODELS` substitution: the seeds come from the first
+ * discovered model, or from the current values passed via props. Large
+ * catalogs (≈600–8 000 entries) stay responsive because filtering happens in a
+ * `useMemo` and only a 6-row window is rendered.
+ */
 export const ModelPickerModal = React.memo(function ModelPickerModal({
   runtime,
-  initialThinker = "anthropic/claude-opus-4-5",
-  initialExecutor = "opencode/gpt-5.1-codex",
+  initialThinker,
+  initialExecutor,
   onSelect,
   onCancel,
 }: ModelPickerModalProps) {
   const [step, setStep] = useState<PickerStep>("thinker");
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [discoveryReason, setDiscoveryReason] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [selectedThinker, setSelectedThinker] = useState(initialThinker);
-  const [selectedExecutor, setSelectedExecutor] = useState(initialExecutor);
+  const [selectedThinker, setSelectedThinker] = useState(initialThinker ?? "");
+  const [selectedExecutor, setSelectedExecutor] = useState(initialExecutor ?? "");
   const [persistenceIndex, setPersistenceIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const safeRuntimeName = sanitizeTerminalText(runtime.name);
 
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
-        const catalog = await runtime.getAvailableModels();
-        if (active) {
-          if (catalog && catalog.length > 0) {
-            setAvailableModels(catalog);
-          } else {
-            setAvailableModels(DEFAULT_FALLBACK_MODELS);
-          }
+        // AC-27.4 / REV-010: prefer the richer catalog when the runtime provides
+        // one, so an empty result can carry the *reason* it is empty instead of
+        // a generic message; fall back to the plain accessor otherwise.
+        let models: ModelInfo[] = [];
+        let reason: string | undefined;
+        if (typeof runtime.getModelCatalog === "function") {
+          const catalog = await runtime.getModelCatalog();
+          models = Array.isArray(catalog?.models) ? catalog.models : [];
+          reason = catalog?.reason;
+        } else {
+          const discovered = await runtime.getAvailableModels();
+          models = Array.isArray(discovered) ? discovered : [];
         }
-      } catch {
+
+        if (!active) return;
+        setAvailableModels(models);
+        setDiscoveryReason(reason ? sanitizeTerminalText(reason) : null);
+        // Seed from the runtime's own catalog (never a hardcoded list); fall
+        // back to the current values passed via props when filled already.
+        setSelectedThinker((prev) => prev || models[0]?.id || "");
+        setSelectedExecutor((prev) => prev || models[1]?.id || models[0]?.id || "");
+      } catch (err) {
         if (active) {
-          setAvailableModels(DEFAULT_FALLBACK_MODELS);
+          setDiscoveryError(
+            sanitizeTerminalText(err instanceof Error ? err.message : String(err)) ||
+              "model discovery failed",
+          );
         }
       } finally {
         if (active) setLoading(false);
@@ -148,6 +141,15 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     }
   }, [filteredModels.length, selectedIndex]);
 
+  // Per-runtime seeds: the current values supplied by the caller (where known),
+  // used only as free-text examples — no catalog is fabricated.
+  const exampleHints = useMemo(() => {
+    const hints: string[] = [];
+    if (initialThinker) hints.push(`${sanitizeTerminalText(initialThinker)} (current thinker)`);
+    if (initialExecutor) hints.push(`${sanitizeTerminalText(initialExecutor)} (current executor)`);
+    return hints;
+  }, [initialThinker, initialExecutor]);
+
   // Ref bridge ensures useInput callbacks always access the freshest state/props
   // even under React 19's useEffectEvent memoization in Ink reconciler.
   const stateRef = useRef({
@@ -155,12 +157,11 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     selectedIndex,
     filter,
     filteredModels,
+    availableModels,
     selectedThinker,
     selectedExecutor,
     persistenceIndex,
     runtime,
-    initialThinker,
-    initialExecutor,
     onSelect,
     onCancel,
   });
@@ -169,12 +170,11 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     selectedIndex,
     filter,
     filteredModels,
+    availableModels,
     selectedThinker,
     selectedExecutor,
     persistenceIndex,
     runtime,
-    initialThinker,
-    initialExecutor,
     onSelect,
     onCancel,
   };
@@ -242,24 +242,45 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     if (key.return) {
       setErrorMsg(null);
       const chosenModel = cur.filteredModels[cur.selectedIndex];
-      let modelId: string;
+      let modelId: string | undefined;
+      // Whether the `provider/model` shape is required. It is waived for a catalog
+      // selection and for runtimes whose own catalog exposes bare ids (REQ-27 /
+      // AC-27.3): `agy` and Command Code legitimately list ids with no `/`, and a
+      // bare id must reach the CLI verbatim so it can resolve its own short name.
+      let requireQualified = true;
+      const catalogHasBareIds = cur.availableModels.some((m) => !m.id.includes("/"));
       if (chosenModel) {
         modelId = chosenModel.id;
+        requireQualified = false;
       } else {
         const trimmed = cur.filter.trim();
-        if (!trimmed) {
-          modelId = cur.step === "thinker" ? cur.initialThinker : cur.initialExecutor;
-        } else if (!trimmed.includes("/")) {
-          modelId = `${cur.runtime.id}/${trimmed}`;
+        if (trimmed) {
+          if (trimmed.includes("/") || catalogHasBareIds) {
+            modelId = trimmed;
+            requireQualified = trimmed.includes("/");
+          } else {
+            // Bare text for a fully-qualified runtime is scoped to this runtime.
+            modelId = `${cur.runtime.id}/${trimmed}`;
+          }
         } else {
-          modelId = trimmed;
+          modelId = cur.step === "thinker" ? cur.selectedThinker : cur.selectedExecutor;
+          if (catalogHasBareIds) requireQualified = false;
         }
       }
 
-      const slashIdx = modelId.indexOf("/");
-      if (slashIdx <= 0 || slashIdx === modelId.length - 1) {
-        setErrorMsg("Custom models must be in provider/model format (e.g. anthropic/claude-3-5-sonnet)");
+      if (!modelId) {
+        setErrorMsg(
+          `No models discovered from ${safeRuntimeName} — type a provider/model id and press Enter`,
+        );
         return;
+      }
+
+      if (requireQualified) {
+        const slashIdx = modelId.indexOf("/");
+        if (slashIdx <= 0 || slashIdx === modelId.length - 1) {
+          setErrorMsg("Custom models must be in provider/model format (e.g. anthropic/claude-3-5-sonnet)");
+          return;
+        }
       }
 
       if (cur.step === "thinker") {
@@ -300,6 +321,15 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
   );
   const visibleModels = filteredModels.slice(scrollOffset, scrollOffset + VISIBLE_ITEMS);
 
+  const emptyCatalog = !loading && !discoveryError && availableModels.length === 0;
+
+  const renderHints = () =>
+    exampleHints.length > 0 ? (
+      <Text color="gray" wrap="truncate-end">
+        e.g. {exampleHints.join("  ·  ")}
+      </Text>
+    ) : null;
+
   return (
     <Box
       flexDirection="column"
@@ -317,7 +347,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
               ? "⚡ MODEL SELECTOR · Step 2/3: Choose Executor (Coder & Gates)"
               : "💾 PERSISTENCE · Step 3/3: Save Model Preferences"}
         </Text>
-        <Text color="gray">Runtime: {runtime.name} (Esc to cancel)</Text>
+        <Text color="gray">Runtime: {safeRuntimeName} (Esc to cancel)</Text>
       </Box>
 
       {step !== "saveScope" && (
@@ -338,21 +368,21 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
       {errorMsg ? (
         <Box marginY={0}>
           <Text bold color="red">
-            ⚠ {errorMsg}
+            ⚠ {sanitizeTerminalText(errorMsg)}
           </Text>
         </Box>
       ) : null}
 
       {loading ? (
         <Box paddingY={1}>
-          <Text color="yellow">Discovering available models from {runtime.name}...</Text>
+          <Text color="yellow">Discovering available models from {safeRuntimeName}...</Text>
         </Box>
       ) : step === "saveScope" ? (
         <Box flexDirection="column" marginY={1}>
           <Box marginBottom={1}>
             <Text>
-              Selected: <Text bold color="cyan">{selectedThinker}</Text> (Thinker) ·{" "}
-              <Text bold color="green">{selectedExecutor}</Text> (Executor)
+              Selected: <Text bold color="cyan">{sanitizeTerminalText(selectedThinker)}</Text> (Thinker) ·{" "}
+              <Text bold color="green">{sanitizeTerminalText(selectedExecutor)}</Text> (Executor)
             </Text>
           </Box>
           <Text bold color="yellow">
@@ -371,20 +401,41 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
             );
           })}
         </Box>
+      ) : discoveryError ? (
+        <Box flexDirection="column" paddingY={1}>
+          <Text bold color="red">
+            ⚠ Model discovery from {safeRuntimeName} failed: {discoveryError}
+          </Text>
+          <Text color="gray">Type a provider/model id and press Enter to continue.</Text>
+          {renderHints()}
+        </Box>
+      ) : emptyCatalog ? (
+        <Box flexDirection="column" paddingY={1}>
+          <Text color="yellow">
+            No models discovered from {safeRuntimeName} —{" "}
+            {discoveryReason ?? "type a provider/model id and press Enter"}
+          </Text>
+          {discoveryReason ? (
+            <Text color="gray">Type a provider/model id and press Enter to continue.</Text>
+          ) : null}
+          {renderHints()}
+        </Box>
       ) : (
         <Box flexDirection="column" marginY={0}>
           {filteredModels.length === 0 ? (
             <Box paddingY={1} flexDirection="column">
-              <Text color="yellow">No models matching "{filter}"</Text>
+              <Text color="yellow">No models matching "{sanitizeTerminalText(filter)}"</Text>
               <Text color="gray">
-                Press Enter to use custom model string "{filter.trim()}"
+                Press Enter to use custom model string "{sanitizeTerminalText(filter.trim())}"
               </Text>
             </Box>
           ) : (
             visibleModels.map((m, relativeIdx) => {
               const actualIdx = scrollOffset + relativeIdx;
               const isSelected = actualIdx === selectedIndex;
-              const providerBadge = `[${m.provider}]`;
+              const providerBadge = `[${sanitizeTerminalText(m.provider)}]`;
+              const modelName = sanitizeTerminalText(m.name);
+              const modelId = sanitizeTerminalText(m.id);
               return (
                 <Box key={m.id} justifyContent="space-between">
                   <Box>
@@ -395,15 +446,15 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
                       {providerBadge.padEnd(12)}{" "}
                     </Text>
                     <Text bold color={isSelected ? "white" : "white"}>
-                      {m.name.padEnd(24)}{" "}
+                      {modelName.padEnd(24)}{" "}
                     </Text>
                     <Text color={isSelected ? "cyan" : "gray"}>
-                      ({m.id})
+                      ({modelId})
                     </Text>
                   </Box>
                   {m.description && (
                     <Text color="gray" wrap="truncate-end">
-                      {m.description.slice(0, 32)}
+                      {sanitizeTerminalText(m.description).slice(0, 32)}
                     </Text>
                   )}
                 </Box>
@@ -437,7 +488,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
             : "↑/↓: navigate · Enter: select · Type: filter/custom · Esc: cancel"}
         </Text>
         <Text color="gray">
-          Current: T: {selectedThinker} · E: {selectedExecutor}
+          Current: T: {sanitizeTerminalText(selectedThinker) || "—"} · E: {sanitizeTerminalText(selectedExecutor) || "—"}
         </Text>
       </Box>
     </Box>

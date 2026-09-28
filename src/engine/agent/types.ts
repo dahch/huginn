@@ -7,6 +7,19 @@ export interface ModelInfo {
   description?: string;
 }
 
+/**
+ * Result of a model-discovery attempt (REQ-27 / AC-27.4, REV-002/REV-010): an
+ * empty catalog must never be indistinguishable from a failure, so every path
+ * that yields no models may attach a short, already-sanitized `reason` (missing
+ * binary, non-zero exit, timeout, empty output, no listing command, …). A reason
+ * is informational — `models` may be non-empty in principle, though discovery
+ * currently never does that.
+ */
+export interface ModelCatalog {
+  models: ModelInfo[];
+  reason?: string;
+}
+
 export interface McpToolInfo {
   name: string;
   description?: string;
@@ -72,6 +85,13 @@ export interface IAgentRuntime {
   name: string;
   isAvailable(): Promise<boolean>;
   getAvailableModels(): Promise<ModelInfo[]>;
+  /**
+   * Optional richer form of {@link IAgentRuntime.getAvailableModels} (REQ-27 /
+   * AC-27.4): the catalog plus a `reason` when it came back empty. Runtimes that
+   * implement it let the picker distinguish "no listing mechanism", "CLI
+   * failed" and "nothing discovered" instead of showing one generic empty state.
+   */
+  getModelCatalog?(): Promise<ModelCatalog>;
   getMcpStatus(): Promise<McpStatusReport>;
   createSession(options: SessionOptions): Promise<IAgentSession>;
   startDaemon?(): Promise<void>;
