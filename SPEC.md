@@ -455,3 +455,105 @@ The TUI must make every action's outcome visible.
 - **NFR-6 (Discovery latency)**: `getAvailableModels()` must resolve within a bounded deadline (≤ 15 s — measured: `opencode models` ≈ 1.7 s, `commandcode --list-models` ≈ 3.5 s) and must never block the Ink render loop (discovery is async, the picker shows a cancellable loading state, and any spawned listing CLI is killed on expiry).
 - **NFR-7 (Catalog scale)**: the picker must remain interactive with up to ~10 000 entries (bounded, incremental rendering), and discovery must not retain more than the needed `ModelInfo` fields.
 - **NFR-8 (Type safety)**: strict TypeScript, no `any`; all parsed external CLI output is validated and sanitized (`sanitizeTerminalText`) before display.
+
+---
+
+# Spec: Per-Agent MCP Truth, Composer Ergonomics & Methodology Profiles (Phase 7)
+
+## 12. Executive Summary & Goals
+
+Phase 7 answers what a live session on this machine exposed. **MCP is per-agent** — Huginn holds no client; the active agent owns every connection — yet the UI reported an unattributed, unexplained number (`MCP: ⚪ 5 unverified`) and could print `undefined`. Verification proved every supported CLI can enumerate its own servers with status (`opencode mcp list` → `playwright/codegraph/engram` *connected*; `agy mcp list` → a 5-row table with `enabled`; `claude mcp list` health-checks; `qwen`/`commandcode` too), and that **Muninn works** end-to-end (7 tools; `muninn_save`/`search`/`stats` verified) but is not registered for every agent. The composer also lacked input history and presence, the stream panel assumed reasoning most frontier models no longer expose, `/agent` could only *list* runtimes (so "selecting agy" was impossible), `gemini` is a dead target whose `-p` requires an argument Huginn never passed, and agent questions only ever surfaced on opencode.
+
+### Goals
+- **Per-agent MCP truth**: enumerate the real servers of the *active agent* (CLI listing where available, config files otherwise), name them, attribute them to the agent, and say plainly that changes belong in the agent's config. Never render `undefined`; never present a bare number with no explanation.
+- **Selectable runtimes**: an interactive `/agent` picker so switching (e.g. to `agy`) needs no memorised id.
+- **A composer that feels like a composer**: ↑/↓ recall the session's previous submissions; the input row is visually the anchor of the view.
+- **Honest panels**: rename `REFINEMENT CONVERSATION` → `Conversation`; collapse the agent-stream panel when no reasoning arrives.
+- **Selectable methodology**: `profile` chooses the execution pipeline — `huginn` (default, the *Huginn Cycle*) plus SDD, ODD, RDD and Strict-TDD.
+- **Agent-agnostic questions**: any runtime can ask the user, via a marked block that Huginn parses, presents and resumes; opencode keeps its native channel.
+- **One brain, every agent**: Muninn is provisioned for whichever installed agents the user chooses (or all), is shared across runtimes because the database is project-scoped, and the `huginn` profile leans on it for context and evidence.
+
+### Non-Goals
+- Making Huginn itself an MCP client/host (agents own their connections).
+- Re-implementing agent permission systems.
+- Replacing the Thinker/Executor model split or the gate/verdict machinery.
+
+---
+
+## 13. Functional Requirements (Phase 7)
+
+### REQ-32: Per-Agent MCP Enumeration & Honest Attribution
+The MCP surface must name the active agent's servers, attribute them to it, and never show an unexplained number or `undefined`.
+- **AC-32.1 (CLI enumeration)**: `IAgentRuntime` gains `listMcpServers(): Promise<McpServerListing[]>` where `McpServerListing = { name: string; transport?: string; status: "connected" | "enabled" | "disabled" | "pending" | "unknown"; detail?: string }`. Runtimes with a listing command use it — `opencode mcp list`, `claude mcp list`, `qwen mcp list`, `agy mcp list`, `commandcode mcp list` (verified formats; parsers exported and fixture-tested). Runtimes without one fall back to config-file discovery with `status: "unknown"`.
+- **AC-32.2 (honest status mapping)**: a status reported by the CLI maps to its true meaning — `connected`/`Connected`/`✔` → `connected` (probed); `enabled`/`configured`/`➜` → `enabled` (configured, **not** probed); `disabled` → `disabled`; `pending approval` → `pending`; anything unrecognised → `unknown`. `connected` is the only status that may be described as live.
+- **AC-32.3 (attribution & expectation management)**: the `/mcp` panel must state which agent the list came from and that Huginn only observes it ("servers come from **&lt;agent&gt;** — add or change them with the agent's own config/CLI"). It must name Muninn explicitly when present, and when absent show the exact command that registers it (`huginn setup --agent <id>`).
+- **AC-32.4 (no bare numbers, no `undefined`)**: the header badge must always be self-describing and attribute its source (e.g. `MCP: 🟢 3 connected · opencode`, `MCP: ⚪ 5 configured · agy`, `MCP: ⚪ none · claude`). Every numeric field is nullish-coalesced; the literal string `undefined`/`NaN` must be impossible in any MCP surface (guarded by a test).
+- **AC-32.5 (deeper truth where possible)**: where a CLI exposes per-server detail (`commandcode mcp list` shows scope/auth; `claude`/`qwen` health-check), that detail is shown; where it cannot be known, the UI says so explicitly ("status not reported by &lt;agent&gt;") rather than implying health.
+
+### REQ-33: Interactive Runtime Picker
+Switching runtimes must be selectable, not memorised.
+- **AC-33.1**: `/agent` (no argument) opens an interactive picker listing every `AGENT_TARGETS` entry with availability (available / not installed), the active one marked, and its path where detected.
+- **AC-33.2**: ↑/↓ (and `j`/`k`) navigate, Enter switches (fails closed with an actionable message when `isAvailable()` is false), Esc cancels.
+- **AC-33.3**: `/agent <id>` keeps working for power users, and the picker's selection path is covered by tests.
+
+### REQ-34: Composer Ergonomics & Input History
+The message composer must be the view's anchor and support recall.
+- **AC-34.1 (history)**: when the palette is closed and the input is empty (or the caret is at the boundary), `↑` recalls the previous submitted input for the session and `↓` walks forward, ending at the empty draft. Recalled drafts are editable; history holds the last N (≥ 50) submissions and never stores slash commands' system-only state.
+- **AC-34.2 (presence)**: the composer is visually distinct from the panels (e.g. its own accent border/background and a clearer prompt glyph), so it reads as the primary affordance at 80×24 and above.
+- **AC-34.3 (no regressions)**: the palette's `↑`/`↓` navigation and the scroll bindings keep working while their mode applies.
+
+### REQ-35: Honest Panels & Target Hygiene
+- **AC-35.1**: `REFINEMENT CONVERSATION` is renamed to **`Conversation`** everywhere it is rendered or documented.
+- **AC-35.2 (adaptive stream panel)**: the agent-output panel collapses automatically when the agent has emitted no reasoning/stream content for the session (its rows return to the conversation), and expands when content arrives; it is never shown as an empty bordered box.
+- **AC-35.3 (remove the dead target)**: `gemini` is removed from `AGENT_TARGETS`/the registry (its non-interactive form needs `-p <arg>` and it is superseded by `agy`). Removing it must not break persisted configs: an unknown/removed `agent` in a stored config falls back to detection with a warning rather than throwing. Docs and tests are updated.
+
+### REQ-36: Selectable Methodology Profiles
+The execution cycle must be choosable, with the built-in cycle as the default.
+- **AC-36.1 (naming)**: the default pipeline is named **Huginn Cycle** and identified as `profile: "huginn"`.
+- **AC-36.2 (config surface)**: `RunConfig.profile` / `UserConfig.profile` (`"huginn" | "sdd" | "odd" | "rdd" | "strict-tdd"`, default `huginn`), a `--profile` CLI flag on both `run` and `live`, persisted via `huginn config set --profile`, and sanitized like `mode`.
+- **AC-36.3 (pipeline as data)**: each profile is a `PipelineStep[]` over the existing phase vocabulary (reusing the current `PIPELINE` table shape), so `runPhase`/`runIteration` are unchanged. `--only-phase` validation, `MAIN_PHASES`-derived progress and `PHASE_LABEL` must reflect the active profile.
+- **AC-36.4 (the four profiles)**:
+  - `huginn` — spec-audit → execute → validate-step → test-module → secure-check → review → doc-sync → commit-all (unchanged default).
+  - `sdd` — proposal/spec → design → tasks → apply → verify → archive: gates run against the spec artifacts and the run is only committed after verification.
+  - `odd` — minimal: execute → test-module → commit-all (no heavy gates; for small daily changes).
+  - `rdd` — receipt-driven: execute → test-module → validate-step producing a frozen *receipt* artifact that the commit references, → commit-all.
+  - `strict-tdd` — tests first: a failing-test step before execute, then execute, then the test/validate gates, with a **frozen worktree snapshot** recorded as evidence so a claim of "tests passed" cannot be hallucinated.
+- **AC-36.5 (announced)**: the active profile is shown in the TUI header/`/status` and in the CLI banner, so the user always knows which methodology is running.
+- **AC-36.6 (no silent degradation)**: a profile that cannot run (missing template/prompt) fails closed with an actionable message rather than silently falling back to `huginn`.
+
+### REQ-37: Agent-Agnostic Question Protocol
+Any runtime must be able to ask the user, and the decision UI must honor real options.
+- **AC-37.1 (marked block)**: a subprocess agent may emit a block delimited by `<<<HUGINN_QUESTION>>>` … `<<<END_HUGINN_QUESTION>>>` containing JSON matching `QuestionItem[]` (question, header, options[{label, description}], multiple, custom). Huginn parses it out of the agent's output, removes it from the displayed text, presents it, and resumes the session in a follow-up turn with the chosen answer(s) — all runtimes, no protocol changes needed.
+- **AC-37.2 (native channel preserved)**: opencode's `question.asked`/`permission.asked` path keeps working (gated by `permissions: ask`), and both paths produce the same `DecisionRequest` shape.
+- **AC-37.3 (real options in the UI)**: `DecisionModal` renders `questionItems` — one row per option with its description, numeric/`↑`/`↓` selection, `[Enter]` confirm, multi-select toggling when `multiple`, and free-text entry when `custom` — instead of only "accept the recommended option". Every keypress yields visible feedback; an unrecognised key is never silently swallowed.
+- **AC-37.4 (fail-closed & visible)**: an unparseable question block is surfaced as a warning with the raw (sanitized) payload rather than dropped; an empty options list degrades to a free-text answer; a timeout on a pending question aborts the turn with a message rather than hanging.
+- **AC-37.5 (portability)**: the protocol is documented for users (how to make their agent ask), and a shared contract test proves the parser works for a synthetic subprocess agent and that opencode's native path still routes through the same modal.
+
+### REQ-38: Muninn Provisioning & Agent-Independent Memory
+Muninn is Huginn's primary brain and its differentiator: memory must not belong to any agent.
+- **AC-38.1 (one brain, many agents)**: the Muninn database is **project-scoped** (`<project>/.huginn/muninn.db`, resolved from the git root/remote — see ADR-20), never agent-scoped. Switching runtime, or running two different agents against the same project, must read and write the *same* memory; the engine must never key memory by `runtime.id`. This is asserted by a test that switches runtime mid-session and observes identical stats.
+- **AC-38.2 (the user chooses the agents)**: provisioning must cover every **installed** agent by default and let the user decide. `huginn setup` (or `huginn mcp setup`) lists the agents detected by `detectAvailableAgents`, marks which ones already register Muninn, and offers **all installed** or an individual selection. Non-interactive equivalents: `--agent <id>` (repeatable) and `--all`. Uninstalled agents are skipped with a note.
+- **AC-38.3 (native registration preferred)**: where an agent exposes an idempotent `mcp add` (`opencode`, `claude`, `qwen`, `agy`, `commandcode` all do — verified), provisioning uses it; otherwise it writes the config file through the existing hardened integrator (`registerMcpForTarget`, atomic, symlink-safe, unrelated keys preserved). A registration that already exists is a no-op, never a duplicate, and a config that cannot be parsed is reported rather than silently rewritten.
+- **AC-38.4 (visible provisioning state)**: `huginn doctor` and the `/mcp` panel show a **provisioning matrix** — agent × (installed? · Muninn registered? · source of truth) — with the exact command to fix any gap (`huginn setup --agent <id>`).
+- **AC-38.5 (profiles use the brain)**: every profile that audits or verifies — `huginn` above all — requires Muninn: the injected rules block mandates `muninn_context`/`muninn_inspect_symbol` before changes and `muninn_verify_contract` before final code, and a gate may not pass on a claim that contradicting Muninn evidence refutes.
+- **AC-38.6 (safety & reviewability)**: provisioning is idempotent, never touches an agent that is not installed, supports a report/`--dry-run` mode listing exactly what would change, and preserves existing entries and unrelated keys.
+
+---
+
+## 14. Non-Functional Requirements (Phase 7)
+- **NFR-9 (MCP listing latency)**: `listMcpServers()` resolves within 5 s and never blocks the render loop; `claude mcp list` health-checks, so it is bounded and cancellable.
+- **NFR-10 (No fabricated UI text)**: no MCP or profile surface may render `undefined`, `NaN`, or an unattributed count; a guard test asserts the literal tokens are absent from the built output of those surfaces.
+- **NFR-11 (Config compatibility)**: profiles and the `gemini` removal are backward compatible with existing `.huginn/config.json` and `~/.huginn/config.json` files.
+
+---
+
+## 15. Authoritative CLI enumeration reference (verified on this machine)
+| CLI | Command | Verified shape |
+|---|---|---|
+| opencode | `opencode mcp list` | box-drawing list: `● ✓ <name> connected` + command line; trailing `N server(s)` |
+| claude | `claude mcp list` | `<name>: <command> - ✔ Connected` (health-checks; may be slow) |
+| qwen | `qwen mcp list` | `<✓> <name>: <command> (<transport>) - Connected` |
+| agy | `agy mcp list` | TSV table `NAME TYPE STATUS COMMAND/URL` (`enabled`/`disabled`) |
+| commandcode | `commandcode mcp list` | table `NAME TYPE SCOPE AUTH STATUS` + `Total: N server(s)` |
+| omp / kimi / pi / cursor / windsurf | *(none)* | config-file discovery, `status: "unknown"` |
+

@@ -470,3 +470,84 @@ Implements REQ-31.
 5. Tests (vitest, `test/tui/`): each command emits a visible message; error messages contain the hint; empty-state hint renders; no direct `console.log` on the TUI path.
 6. Final quality gate: `npm test` (`bun test && vitest run`) 100% green, `bun run typecheck` zero errors, `bun run build` succeeds.
 
+---
+
+# Plan: Per-Agent MCP Truth, Composer Ergonomics & Methodology Profiles (Phase 7)
+
+Implements REQ-32…REQ-38 (SPEC.md §13). Same repo facts as Phase 6 (Bun/TS, bin `src/cli.ts`, `src/**/*.test.ts` → `bun:test`, `test/**/*.test.ts` → vitest, strict TS, ESM, `.js` imports, no `any`, `sanitizeTerminalText` for every externally-sourced display string). Capture real CLI output as fixtures under `test/fixtures/` before writing parsers, and keep the fixture-hygiene guard green (never commit secrets — the provider payload lesson).
+
+## Iteration 30 — Per-Agent MCP Enumeration & Honest Attribution
+modules: src/engine/agent/, src/tui/, src/commands/, test/engine/agent/, test/fixtures/
+
+Implements REQ-32. Verified: `opencode mcp list` (box list, `● ✓ <name> connected` + command, `N server(s)`), `agy mcp list` (TSV `NAME TYPE STATUS COMMAND/URL`, `enabled`), `claude mcp list` (`<name>: <cmd> - ✔ Connected`, health-checks), `qwen mcp list` (`✓ <name>: <cmd> (<transport>) - Connected`), `commandcode mcp list` (table `NAME TYPE SCOPE AUTH STATUS` + `Total: N server(s)`).
+
+1. Capture each listing to `test/fixtures/<cli>-mcp-list.txt` (redact anything secret-shaped) and add the entries to `test/fixtures/README.md`.
+2. `src/engine/agent/types.ts`: add `McpServerListing = { name; transport?; status: "connected"|"enabled"|"disabled"|"pending"|"unknown"; detail? }` and optional `listMcpServers?(): Promise<McpServerListing[]>` on `IAgentRuntime`.
+3. Add exported pure parsers (one per format, in the corresponding adapter or a shared `mcpList.ts`) + a bounded runner reusing `modelList.ts`'s `runModelListCommand` (timeout, stdout cap, kill process group, stderr reason). Implement `listMcpServers()` for `opencode`, `claude`, `qwen`, `agy`, `commandcode`; `omp`/`kimi`/`pi`/`cursor`/`windsurf` fall back to config-file discovery with `status: "unknown"`.
+4. Honest status mapping per AC-32.2; only `connected` counts as live. Where a CLI reports nothing (e.g. `agy`'s `enabled`), never upgrade it to `connected`.
+5. `src/engine/agent/mcpStatus.ts` `fetchMcpStatusWithTimeout`: prefer `listMcpServers()` when present, map to `McpStatusReport`; **nullish-coalesce every numeric field** (`report.totalTools ?? 0`) and make `formatMcpBadge` self-describing and attributed: `MCP: 🟢 n connected · <agent>`, `MCP: ⚪ n configured · <agent>`, `MCP: ⚪ none · <agent>`, `MCP: 🟡 error — <reason> · <agent>`.
+6. `src/tui/McpInspectorModal.tsx`: render `name · transport · status · detail`; add a header line naming the source agent and the expectation ("these come from **<agent>** — add/change them in the agent's own config; Muninn’s brain is project-scoped and independent of the agent"); flag Muninn presence/absence with the exact fix command.
+7. Tests: fixture-based parser tests per format; status mapping; badge strings for every state; a guard asserting no MCP surface can render `undefined`/`NaN` (drive each state, assert the strings are absent); attribution present.
+
+## Iteration 31 — Interactive Runtime Picker
+modules: src/tui/, src/engine/liveMode.ts
+
+Implements REQ-33.
+1. New `src/tui/AgentPickerModal.tsx`: rows from `AGENT_TARGETS` with label, `available`/not-installed marker, detected path, active marker; `↑/↓/j/k`, `Enter` switch, `Esc` cancel.
+2. `LiveDashboard.tsx`: `/agent` (no arg) opens the picker instead of printing the list; keep `/agent <id>`; on switch failure emit an actionable message (`NEXT_STEP.runtimeSwitch`) and keep the modal open.
+3. Use `detectAvailableAgents()` for availability (async, non-blocking, loading state).
+4. Tests (vitest, `test/tui/`): picker lists all targets, marks the active one, switches on Enter, fails closed on an unavailable target, Esc cancels; existing `/agent` tests updated.
+
+## Iteration 32 — Composer Ergonomics, Panel Honesty
+modules: src/tui/
+
+Implements REQ-34 + REQ-35.1/35.2.
+1. Input history: a bounded (≥50) per-session list of submitted drafts in `RefineView`; when the palette is closed and the draft is empty (or the caret is at the boundary), `↑` recalls older and `↓` walks forward to the empty draft; recalled text stays editable; slash-command submissions are not added to history.
+2. Composer presence: give `ChatInputRow` its own accent border/background and a clearer prompt glyph so it anchors the view; keep the single-line footer and the layout budget correct at 80×24 (and after Phase 6's palette).
+3. Rename `REFINEMENT CONVERSATION` → `Conversation` (TUI + docs).
+4. Adaptive stream panel: when the session has received no reasoning/stream content, the agent panel renders collapsed (its rows return to the conversation); it expands on first content and never shows an empty bordered box.
+5. Tests: history recall/forward/editing; no history entries for slash commands; the composer keeps the frame inside 80×24 with and without the palette; the stream panel is absent until content arrives, then present; the renamed panel appears.
+
+## Iteration 33 — Target Hygiene: Remove `gemini`
+modules: src/agents/, src/engine/agent/, src/cli.ts, src/commands/, docs, tests
+
+Implements REQ-35.3. Verified: `gemini -p` requires an argument; the adapter passes none and writes the prompt to stdin, so the CLI enters interactive mode and hangs; `agy` supersedes it.
+1. Remove `gemini` from `AGENT_TARGETS`/`AGENT_REGISTRY` and the `registry.ts` factory; delete the `gemini` case and any docs/README/SPEC/DESIGN/AGENTS mentions (keep `agy`).
+2. Backward compatibility: a persisted `agent: "gemini"` must not throw — `resolveAgent`/config sanitization falls back to detection with a warning (add a test).
+3. Update every test/fixture that enumerates targets (registry barrel, setup, doctor, init wizard, `AGENT_TARGETS` counts).
+4. Verify: `bun run typecheck`, `bun test`, `bunx vitest run` green.
+
+## Iteration 34 — Methodology Profiles (Huginn Cycle + SDD/ODD/RDD/Strict-TDD)
+modules: src/config.ts, src/engine/cycle.ts, src/engine/types.ts, src/engine/phases.ts, src/state/, src/commands/config.ts, src/cli.ts, src/tui/, test/
+
+Implements REQ-36. The pipeline is already data (`PIPELINE`, cycle.ts:55-64) and `mode` is the precedent for a validated enum wired through flag → `UserConfig` → `sanitizeConfig` → persisted state.
+1. `ProfileName = "huginn" | "sdd" | "odd" | "rdd" | "strict-tdd"`; add to `RunConfig`/`UserConfig`/`stateSchema`, sanitize like `mode`, default `huginn`.
+2. `--profile <id>` on both `run` and `live` (and `huginn config set --profile`); validate against the profile list, fail closed with usage on an unknown id.
+3. Replace the `PIPELINE` constant with `PIPELINES: Record<ProfileName, PipelineStep[]>`; `CycleEngine` selects by `cfg.profile`; make `MAIN_PHASES`-derived concerns (`--only-phase` validation, progress rendering, `PHASE_LABEL`) profile-aware.
+4. Define the four profiles over the existing phase vocabulary (reorder/subset), adding new `PhaseName` members only where a methodology genuinely needs one (e.g. a failing-test step for `strict-tdd`, a receipt step for `rdd`), together with their labels and prompts. `strict-tdd`/`rdd` record a **frozen worktree snapshot** (commit SHA + tree hash) as machine-checkable evidence in the iteration state.
+5. Announce the active profile in the TUI header/`/status` and the CLI banner; a profile whose prompts/templates are unavailable fails closed with an actionable message (never silently falls back to `huginn`).
+6. Tests: profile selection per config/flag/precedence; `PIPELINES` shape per profile; fail-closed on unknown/misconfigured profile; `strict-tdd` writes a snapshot receipt and the gate references it; removed/unknown persisted profile falls back with a warning; a snapshot test on the default `huginn` pipeline proving it is unchanged.
+
+## Iteration 35 — Agent-Agnostic Question Protocol & Honest Decision UI
+modules: src/engine/, src/tui/, templates/, test/
+
+Implements REQ-37.
+1. Define the protocol: `<<<HUGINN_QUESTION>>>` … `<<<END_HUGINN_QUESTION>>>` containing `QuestionItem[]` JSON. Add an exported parser (`parseQuestionBlock`) returning `{ questions, cleanedText }`; strip the block from displayed text; sanitize everything; on unparseable payload, return the raw (sanitized) text as a warning rather than dropping it.
+2. Wire it into the subprocess session path (`generic.ts` / `phases.ts` / `liveMode.ts`): after a prompt completes, if the output carries a block, raise a `kind: "question"` `DecisionRequest` through the existing broker and, on answer, resume with a follow-up turn carrying the chosen labels (or free text). Bound the number of chained questions per turn to avoid loops.
+3. Keep opencode's `permissions.ts` native path; ensure both produce the same `DecisionRequest`.
+4. `DecisionModal` (and `resolveDecisionKey`): render `questionItems` with per-option rows + description, numeric and `↑`/`↓` selection, `Enter` confirm, multi-select when `multiple`, free-text when `custom`; every keypress yields feedback and nothing is silently swallowed; timeout on a pending question aborts with a message.
+5. Document the protocol for users (README/SPEC/DESIGN + the injected rules block) so an agent can be told to ask.
+6. Tests: parser (valid/truncated/absent/empty-options); end-to-end with a synthetic subprocess agent that emits a block and receives the follow-up; opencode native path unchanged; modal option selection, multi-select and free text (currently untested — `grep` shows no `DecisionModal` test).
+
+## Iteration 36 — Muninn Provisioning, Agent-Independent Memory & Final Gate
+modules: src/commands/, src/engine/, src/agents/, src/tui/, src/muninn/, test/, docs
+
+Implements REQ-38.
+1. **One brain assertion**: prove the DB is project-scoped and never keyed by `runtime.id`; add a test that switches runtime mid-session and observes identical Muninn stats.
+2. **Choose the fleet**: extend `huginn setup` (or add `huginn mcp setup`) to list `detectAvailableAgents()` results, mark which already register Muninn (using `listMcpServers()` from Iteration 30), and offer **all installed** or a per-agent selection; non-interactive `--agent <id>` (repeatable) and `--all`; skip uninstalled with a note; `--dry-run`/report mode.
+3. **Native `mcp add` first**: use `opencode/claude/qwen/agy/commandcode mcp add` when present (idempotent, verified argument form) and fall back to `registerMcpForTarget` (atomic, symlink-safe, key-preserving); existing entries are no-ops; unparseable configs are reported, never rewritten.
+4. **Provisioning matrix**: `huginn doctor` and `/mcp` render agent × (installed · Muninn registered · source) with the exact fix command.
+5. **Profiles lean on the brain**: ensure the injected rules block (`AGENTS.md`/`CLAUDE.md`/… via `injectRulesForTarget`) mandates `muninn_context`/`muninn_inspect_symbol` before changes and `muninn_verify_contract` before final code, and that the `huginn` profile's gates treat contradicting Muninn evidence as blocking.
+6. Doc-sync README/DESIGN/SPEC/AGENTS for Phase 7.
+7. Final quality gate: `bun run typecheck` zero errors, `npm test` green, `bun run build` succeeds; verify the real flows end-to-end (MCP listing per agent, Muninn registration on a temp fake agent config, profile selection).
+

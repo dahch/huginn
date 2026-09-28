@@ -795,3 +795,112 @@ avoids. They are ordered by how central the decision is to the design.
 - **Consequences**:
   - *Positive*: the badge can no longer claim a dead server is healthy; a transient daemon death is visible and recoverable; the MCP server exits cleanly with its parent instead of hanging or crashing with an unhandled EPIPE.
   - *Negative*: reporting `unknown` for config-only servers is a visible regression from the previous always-green badge (intentional truthfulness); daemon supervision adds a poll/retry loop that must not leak timers or fight normal shutdown.
+
+---
+
+## ADR-31: Per-Agent MCP Enumeration via the Agent's Own CLI Listing
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: Phase 6 made MCP status truthful but still *uninformative*: a live session showed `MCP: ⚪ 5 unverified`, an unattributed bare number that named nothing and could print `undefined` (`formatMcpBadge` interpolated `report.totalTools` unguarded). The deeper problem was framing: Huginn holds no MCP client — the **active agent** owns every connection — yet the UI never said so, so a user reasonably concluded Huginn's MCP was broken (and that Muninn was too, though a real MCP handshake proved 7 tools and working `muninn_save`/`search`/`stats`). Investigation showed the information was available all along: **every supported CLI can enumerate its own servers** — `opencode mcp list` (3 servers, `connected`, with command), `agy mcp list` (5-row TSV with `enabled`), `claude mcp list` (health-checks), `qwen mcp list`, `commandcode mcp list` (scope/auth columns) — none of which Huginn used.
+- **Decision**:
+  1. **Ask the agent.** `IAgentRuntime` gains `listMcpServers(): Promise<McpServerListing[]>`; runtimes with a listing command use it (parsers exported, fixture-tested against captured output), and runtimes without one fall back to config-file discovery with `status: "unknown"`.
+  2. **Map statuses honestly.** `connected`/`✔` → probed-and-live; `enabled`/`configured` → configured-but-unprobed; `disabled`/`pending` → as reported; anything unrecognised → `unknown`. Only `connected` may be described as live.
+  3. **Attribute everything.** The badge names its source (`MCP: 🟢 3 connected · opencode`), the `/mcp` panel states that the servers belong to the active agent and must be changed there, and every numeric field is nullish-coalesced so `undefined`/`NaN` cannot reach the screen.
+  4. **Show detail where it exists** (`commandcode` scope/auth, `claude`/`qwen` health) and say so plainly when it does not.
+- **Consequences**:
+  - *Positive*: the user finally sees *which* servers the active agent has and how they stand; "Huginn's MCP is broken" becomes "agent X has these servers, change them in X"; the `undefined` class of bug is closed and guarded.
+  - *Negative*: enumeration spawns a CLI per poll, and `claude mcp list` performs a health check, so the call must be bounded/cached and must not run on the render path; parsers are coupled to human-readable CLI output and need fixture tests.
+
+---
+
+## ADR-32: Interactive Runtime Picker
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: `/agent` only *listed* runtimes and printed "run `/agent <id>` to switch", so selecting a runtime meant memorising its id — the user's "no me deja seleccionar en agy" (switching itself works: `switchRuntime("agy")` succeeds and yields 14 models).
+- **Decision**: `/agent` with no argument opens an interactive picker over `AGENT_TARGETS` showing availability, the active entry and detected paths; `↑`/`↓`/`j`/`k` navigate, `Enter` switches (failing closed with an actionable message when unavailable), `Esc` cancels. `/agent <id>` keeps working.
+- **Consequences**:
+  - *Positive*: runtimes become discoverable like models; no memorised ids.
+  - *Negative*: another modal state in a view that already multiplexes palette, modals and scroll — key precedence must stay explicit.
+
+---
+
+## ADR-33: Composer Input History & Presence
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: the composer had no recall of previous submissions (every other harness offers it) and visually lost to the surrounding panels, sitting unadorned at the bottom of a busy frame.
+- **Decision**:
+  1. **History**: `↑` recalls the previous submission of the session when the palette is closed and the draft is empty (or the caret is at the boundary), `↓` walks forward and ends at the empty draft; recalled drafts stay editable; the last ≥50 submissions are retained.
+  2. **Presence**: the composer gets its own accent treatment (border/background and a clearer prompt glyph) so it reads as the primary affordance at 80×24.
+  3. Existing palette `↑`/`↓` navigation and scroll bindings keep their current mode precedence.
+- **Consequences**:
+  - *Positive*: iterative prompting stops being retyping; the view finally shows where to type.
+  - *Negative*: `↑`/`↓` now carry three meanings (palette, history, scroll) distinguished solely by mode, so the precedence rules and their tests are load-bearing.
+
+---
+
+## ADR-34: Honest Panels & Removing the Dead `gemini` Target
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: `REFINEMENT CONVERSATION` reads awkwardly for what is simply the conversation. The adjacent "THINKING & LIVE AGENT STREAM" panel assumes streaming reasoning, which most frontier/closed models increasingly withhold as anti-distillation, so it often renders as an empty box competing for rows. Separately, `gemini` is a dead agent target: its non-interactive form requires `gemini -p <arg>`, but the adapter passes no args and writes the prompt to stdin, so the CLI drops into interactive mode and hangs; the successor is Antigravity CLI (`agy`), already supported.
+- **Decision**:
+  1. Rename the panel to **`Conversation`** wherever rendered or documented.
+  2. Make the agent-stream panel **adaptive**: it collapses (returning its rows to the conversation) when the agent has emitted no reasoning/stream content for the session, and expands when content arrives; it never renders as an empty bordered box.
+  3. **Remove `gemini`** from `AGENT_TARGETS`/the registry and docs; a stored config naming a removed agent falls back to detection with a warning instead of throwing.
+- **Consequences**:
+  - *Positive*: the layout stops reserving space for output that no longer exists; the vocabulary matches reality; a broken target that would hang a run is gone.
+  - *Negative*: removing a target is a (documented) breaking change for anyone who had `agent: "gemini"` persisted — handled by the warning-and-fallback path, not a crash; the adaptive panel adds a state transition that must not thrash the layout.
+
+---
+
+## ADR-35: Methodology Profiles — the Huginn Cycle plus SDD, ODD, RDD and Strict-TDD
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: the built-in workflow had no name and no alternative. The pipeline is already **data** (`PIPELINE: PipelineStep[]` in `cycle.ts`), and `mode` (`auto|supervised`) already demonstrates the pattern for a validated enum reachable from CLI flag, `UserConfig`, `sanitizeConfig` and the persisted state. The user asked whether the cycle has a formal name and whether SDD (Proposal→Spec→Design→Tasks→Apply→Verify→Archive), ODD (lightweight daily work), RDD (receipts) and Strict-TDD (frozen evidence) could be selectable, with the built-in cycle as the default differentiator.
+- **Decision**:
+  1. **Name**: the default pipeline is the **Huginn Cycle** (`profile: "huginn"`).
+  2. **Surface**: `--profile <id>` on `run` and `live`, `UserConfig.profile`, `huginn config set --profile`, sanitized/validated like `mode`, defaulting to `huginn`.
+  3. **Pipeline as data per profile**: each profile is a `PipelineStep[]` over the existing phase vocabulary, so `runPhase`/`runIteration` are untouched; `--only-phase` validation, the progress renderer and `PHASE_LABEL` derive from the active profile.
+  4. **The profiles**: `huginn` (unchanged eight phases); `sdd` (proposal/spec → design → tasks → apply → verify → archive, gating against the spec artifacts); `odd` (execute → test-module → commit-all, no heavy gates); `rdd` (execute → test-module → validate-step emitting a frozen *receipt* the commit references → commit-all); `strict-tdd` (a failing-test step before execute, then execute, then the gates, with a **frozen worktree snapshot** recorded as evidence so "tests passed" cannot be hallucinated).
+  5. **Announced & fail-closed**: the active profile appears in the header/`/status` and the CLI banner; a profile whose prompts are missing fails with an actionable message rather than silently degrading to `huginn`.
+- **Consequences**:
+  - *Positive*: the differentiator becomes a product surface — teams pick the rigour their project warrants, and Strict-TDD/RDD attack the "the agent claims the tests passed" failure mode with frozen snapshots rather than prose.
+  - *Negative*: several lists duplicated today (`MAIN_PHASES`, `PHASE_LABEL`, `--only-phase` validation, `REQUIRED_TEMPLATES`) must become profile-aware, and every new phase id extends the closed `PhaseName` union — so profiles that only reorder/subset existing phases are cheap, while ones needing new artifacts (spec-first, receipts) are the real cost.
+
+---
+
+## ADR-36: Agent-Agnostic Question Protocol & Honest Decision UI
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: agent questions only ever surfaced on **opencode**, and only with `permissions: ask`: `subscribeToEvents` is installed by two `runtime.id === "opencode"` ternaries, and it is the sole producer of `kind: "permission"`/`"question"` requests. Every subprocess runtime closes stdin after the prompt, so it cannot ask mid-turn at all. Worse, even on opencode the `DecisionModal` ignores `questionItems` — it offers only "accept the recommended option" or "reject", and any other keypress is swallowed silently, so a multi-option question is effectively unanswerable. The user requires questions to work for **all** supported agents.
+- **Decision**:
+  1. **A marked block any agent can emit**: `<<<HUGINN_QUESTION>>>…<<<END_HUGINN_QUESTION>>>` containing `QuestionItem[]` JSON. Huginn parses it from the agent's output, strips it from the displayed text, presents it through the same `DecisionRequest` pipeline, and resumes the session in a follow-up turn carrying the chosen answer(s). This needs no protocol support from the CLI.
+  2. **opencode keeps its native channel**; both producers yield the same request shape.
+  3. **Real options in the modal**: one row per option with description, numeric and `↑`/`↓` selection, `Enter` to confirm, multi-select when `multiple`, free-text when `custom`; every keypress gives feedback and nothing is silently swallowed.
+  4. **Fail-closed and visible**: an unparseable block is surfaced (sanitized) rather than dropped, an empty option list degrades to free text, and a pending question that times out aborts the turn with a message instead of hanging.
+- **Consequences**:
+  - *Positive*: clarifying questions become a first-class, agent-independent interaction; the "recommended option or nothing" dead end is removed; a hung question can no longer stall a run silently.
+  - *Negative*: the block protocol relies on the agent honouring an output convention (it is a contract, not a transport), so it must be documented for users and injected into the agent rules; parsing adversarial output requires the same sanitization discipline as the CLI parsers.
+
+---
+
+## ADR-37: Muninn Provisioning Across Agents & Agent-Independent Memory
+
+- **Date**: 2026-09-28
+- **Status**: Accepted
+- **Context**: Muninn is Huginn's primary brain and the strongest reason to use it, yet provisioning is partial by accident: the MCP server is registered for one target at a time, a live session showed Muninn absent from the active agent's config (opencode listed `playwright/codegraph/engram`, not muninn) while the user concluded memory was broken — even though a real MCP handshake proved all 7 tools working. Memory's value compounds only if it is **independent of whichever agent is driving**, and available to every agent the user actually has.
+- **Decision**:
+  1. **Project-scoped, never agent-scoped**: the database stays `<project>/.huginn/muninn.db` (per ADR-20); the engine must never key memory by `runtime.id`, so switching runtime reads and writes the same brain. Asserted by a test that switches runtime mid-session and observes identical stats.
+  2. **The user chooses the fleet**: provisioning lists the **installed** agents (`detectAvailableAgents`), marks which already register Muninn, and offers all-installed or a per-agent selection; non-interactive `--agent <id>` (repeatable) and `--all`; uninstalled agents are skipped with a note.
+  3. **Native `mcp add` first**: `opencode`/`claude`/`qwen`/`agy`/`commandcode` all expose an idempotent `mcp add`, so provisioning prefers the agent's own command and otherwise uses the existing hardened integrator (`registerMcpForTarget`). Existing registrations are no-ops; unparseable configs are reported, never silently rewritten.
+  4. **Visible matrix**: `huginn doctor` and `/mcp` render agent × (installed · Muninn registered · source) with the exact fix command.
+  5. **Profiles lean on the brain**: every auditing/verifying profile — `huginn` above all — mandates `muninn_context`/`muninn_inspect_symbol` before changes and `muninn_verify_contract` before final code, and no gate passes on a claim that contradicting Muninn evidence refutes.
+  6. **Safe and reviewable**: idempotent, non-destructive, with a report/`--dry-run` mode enumerating exactly what would change.
+- **Consequences**:
+  - *Positive*: memory becomes a durable asset that outlives any individual agent and any switch between them; the user sees exactly which agents share the brain and can fix gaps in one command; the `huginn` profile's quality claims get an independent evidence source.
+  - *Negative*: provisioning touches many third-party configs, so it must be conservative (idempotent, key-preserving, dry-runnable) and its native-`mcp add` calls add a dependency on each CLI's argument contract, which needs fixture/behaviour tests to stay honest.
