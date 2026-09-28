@@ -11,10 +11,23 @@ import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
 import { McpInspectorModal } from "./McpInspectorModal";
+import { HelpModal } from "./HelpModal";
+import { SkillsModal } from "./SkillsModal";
+import { loadSkills, findSkill, type Skill } from "../engine/skills/index.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
+import { sanitizeTerminalText } from "../util/text.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+const STATUS_LABEL_WIDTH = 17;
+const STATUS_VALUE_WIDTH = 35;
+const STATUS_LINE_WIDTH = STATUS_LABEL_WIDTH + STATUS_VALUE_WIDTH + 4;
+const STATUS_TITLE = "System Diagnostics";
+
+function statusRow(label: string, value: string): string {
+  return `│ ${label.padEnd(STATUS_LABEL_WIDTH)} ${value.padEnd(STATUS_VALUE_WIDTH)}│`;
+}
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -64,11 +77,12 @@ export function LiveApp({
       setCycle(ce);
     } catch (err) {
       if (err instanceof LiveAbortError) {
-        events.emit("done", { reason: "aborted", error: "live session aborted" });
+        // requestAbort() already emitted "done"; avoid a duplicate emission.
+        exit();
       } else {
         events.emit("done", { reason: "error", error: (err as Error).message });
+        exit();
       }
-      exit();
     }
   };
 
@@ -138,6 +152,12 @@ function RefineView({
   const [busy, setBusy] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState<boolean>(initialShowModelPicker);
   const [showMcpInspector, setShowMcpInspector] = useState<boolean>(false);
+  const [mcpInspectorServerId, setMcpInspectorServerId] = useState<string | undefined>(undefined);
+  const [showHelp, setShowHelp] = useState<boolean>(false);
+  const [showSkills, setShowSkills] = useState<boolean>(false);
+  const [currentRuntimeName, setCurrentRuntimeName] = useState<string>(live.runtime.name);
+  const [availableSkills, setAvailableSkills] = useState<Skill[]>(() => loadSkills(cfg.projectPath));
+  const [confirmQuit, setConfirmQuit] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatusReport | null>(null);
   const [currentThinker, setCurrentThinker] = useState(cfg.thinker);
   const [currentExecutor, setCurrentExecutor] = useState(cfg.executor);
@@ -156,7 +176,6 @@ function RefineView({
   const [streamLines, setStreamLines] = useState<string[]>([]);
   const [streamChars, setStreamChars] = useState(0);
   const [spinnerIndex, setSpinnerIndex] = useState(0);
-  const [now, setNow] = useState(Date.now());
   const streamBuf = useRef("");
   const pendingChars = useRef(0);
   const streamTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -201,7 +220,6 @@ function RefineView({
   useEffect(() => {
     const timer = setInterval(() => {
       setSpinnerIndex((i) => (i + 1) % SPINNER_FRAMES.length);
-      setNow(Date.now());
     }, 80);
     return () => clearInterval(timer);
   }, []);
@@ -319,7 +337,7 @@ function RefineView({
 
   // Seed the CLI-provided initial idea into the conversation (matches headless).
   useEffect(() => {
-    const idea = live.ideaText.trim();
+    const idea = (live.ideaText ?? "").trim();
     if (!idea || seededIdeaRef.current || showModelPicker) return;
     seededIdeaRef.current = true;
     clearStream();
@@ -356,18 +374,154 @@ function RefineView({
 
   const failSession = (err: unknown): void => {
     if (err instanceof LiveAbortError) {
-      events.emit("done", { reason: "aborted", error: "live session aborted" });
-    } else {
-      events.emit("log", { level: "error", message: (err as Error).message });
-      events.emit("done", { reason: "error", error: (err as Error).message });
+      // requestAbort() already emitted "done"; avoid a duplicate emission.
+      exit();
+      return;
     }
+    events.emit("log", { level: "error", message: (err as Error).message });
+    events.emit("done", { reason: "error", error: (err as Error).message });
     exit();
+  };
+
+  const executeSkill = useCallback(
+    async (skill: Skill): Promise<void> => {
+      setShowSkills(false);
+      events.emit("liveChat", {
+        role: "system",
+        text: `Executing skill: ${sanitizeTerminalText(skill.name)} (${sanitizeTerminalText(skill.id)})`,
+      });
+      clearStream();
+      setBusy(true);
+      try {
+        await live.chat(skill.body);
+      } catch (err) {
+        failSession(err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [live],
+  );
+
+  const openSkills = (): void => {
+    setAvailableSkills(loadSkills(cfg.projectPath));
+    setShowSkills(true);
+  };
+
+  const applyModels = (parts: string[]): void => {
+    const newThinker = parts[0]!;
+    const newExecutor = parts[1] || currentExecutor;
+    const isValidModel = (s: string): boolean => {
+      const idx = s.indexOf("/");
+      return idx > 0 && idx < s.length - 1;
+    };
+    if (!isValidModel(newThinker)) {
+      events.emit("liveChat", {
+        role: "system",
+        text: `Invalid model format "${sanitizeTerminalText(newThinker)}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
+      });
+      return;
+    }
+    if (!isValidModel(newExecutor)) {
+      events.emit("liveChat", {
+        role: "system",
+        text: `Invalid model format "${sanitizeTerminalText(newExecutor)}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
+      });
+      return;
+    }
+    try {
+      live.updateModels({ thinker: newThinker, executor: newExecutor });
+      setCurrentThinker(newThinker);
+      setCurrentExecutor(newExecutor);
+      events.emit("liveChat", {
+        role: "system",
+        text: `Active models updated: thinker = ${newThinker}, executor = ${newExecutor} (session only)`,
+      });
+    } catch (err) {
+      events.emit("liveChat", {
+        role: "system",
+        text: sanitizeTerminalText(String((err as Error).message)),
+      });
+    }
   };
 
   const submit = async (): Promise<void> => {
     const text = draftInput.trim();
     setDraftInput("");
     if (!text) return;
+    if (text !== "/quit" && text !== "/abort" && confirmQuit) {
+      setConfirmQuit(false);
+    }
+
+    if (text === "/help") {
+      setShowHelp(true);
+      return;
+    }
+    if (text === "/skills" || text === "/skill") {
+      openSkills();
+      return;
+    }
+    if (text.startsWith("/skill ")) {
+      const query = text.slice(7).trim();
+      if (!query) {
+        openSkills();
+        return;
+      }
+      const matched = findSkill(availableSkills, query);
+      if (matched) {
+        await executeSkill(matched);
+      } else {
+        events.emit("liveChat", {
+          role: "system",
+          text: `Skill "${sanitizeTerminalText(query)}" not found. Type /skills to browse available skills.`,
+        });
+      }
+      return;
+    }
+    if (text === "/status") {
+      try {
+        const diag = await live.getDiagnostics();
+        const safeBranch = sanitizeTerminalText(diag.gitBranch).slice(0, STATUS_VALUE_WIDTH);
+        const sandboxStr = diag.worktreeSandbox ? "Yes (isolated worktree)" : "No (primary tree)";
+        const cleanStr = diag.gitClean ? "Clean" : "Modified / dirty";
+        const memStr = `${diag.memoryStats.entitiesCount} entities, ${diag.memoryStats.observationsCount} observations`;
+        const safeRuntime = sanitizeTerminalText(diag.runtimeName).slice(0, STATUS_VALUE_WIDTH);
+        const safeThinker = sanitizeTerminalText(diag.thinkerModel).slice(0, STATUS_VALUE_WIDTH);
+        const safeExecutor = sanitizeTerminalText(diag.executorModel).slice(0, STATUS_VALUE_WIDTH);
+        const statusText = [
+          `╭─ ${STATUS_TITLE} ${"─".repeat(STATUS_LINE_WIDTH - STATUS_TITLE.length - 5)}╮`,
+          statusRow("Git Branch:", safeBranch),
+          statusRow("Working Tree:", cleanStr),
+          statusRow("Worktree Sandbox:", sandboxStr),
+          statusRow("Active Runtime:", safeRuntime),
+          statusRow("Thinker Model:", safeThinker),
+          statusRow("Executor Model:", safeExecutor),
+          statusRow("Muninn Memory:", memStr),
+          `╰${"─".repeat(STATUS_LINE_WIDTH - 2)}╯`,
+        ].join("\n");
+        events.emit("liveChat", {
+          role: "system",
+          text: statusText,
+        });
+      } catch (err) {
+        events.emit("liveChat", {
+          role: "system",
+          text: `Failed to retrieve diagnostics: ${sanitizeTerminalText(String((err as Error).message))}`,
+        });
+      }
+      return;
+    }
+    if (text === "/clear") {
+      setMessages([]);
+      clearStream();
+      setChatScroll(0);
+      setStreamScroll(0);
+      events.emit("liveChat", {
+        role: "system",
+        text: "Conversation and stream viewport cleared.",
+      });
+      return;
+    }
     if (text === "/draft" || text === "/go") {
       clearStream();
       setBusy(true);
@@ -382,6 +536,15 @@ function RefineView({
       return;
     }
     if (text === "/quit" || text === "/abort") {
+      if (!confirmQuit) {
+        setConfirmQuit(true);
+        events.emit("liveChat", {
+          role: "system",
+          text: "Type /quit or /abort again to confirm exit.",
+        });
+        return;
+      }
+      setConfirmQuit(false);
       live.requestAbort();
       failSession(new LiveAbortError());
       return;
@@ -390,70 +553,65 @@ function RefineView({
       setShowModelPicker(true);
       return;
     }
+    if (text.startsWith("/model ") || text.startsWith("/models ")) {
+      const parts = text.replace(/^\/models?\s+/, "").trim().split(/\s+/).filter(Boolean);
+      if (parts.length === 0) {
+        events.emit("liveChat", {
+          role: "system",
+          text: "Usage: /model <thinker> [executor] (e.g. /model anthropic/claude-3-7-sonnet opencode/gpt-5.1-codex)",
+        });
+        return;
+      }
+      if (parts.length > 2) {
+        events.emit("liveChat", {
+          role: "system",
+          text: "Usage: /model <thinker> [executor] — too many arguments.",
+        });
+        return;
+      }
+      applyModels(parts);
+      return;
+    }
     if (text === "/mcp" || text.startsWith("/mcp ")) {
+      const serverId = text.slice(4).trim();
+      setMcpInspectorServerId(serverId || undefined);
       setShowMcpInspector(true);
       return;
     }
-    if (text.startsWith("/model ")) {
-      const parts = text.slice(7).trim().split(/\s+/).filter(Boolean);
-      if (parts.length > 0) {
-        const newThinker = parts[0]!;
-        const newExecutor = parts[1] || currentExecutor;
-        const isValidModel = (s: string) => {
-          const idx = s.indexOf("/");
-          return idx > 0 && idx < s.length - 1;
-        };
-        if (!isValidModel(newThinker)) {
-          events.emit("liveChat", {
-            role: "system",
-            text: `Invalid model format "${newThinker}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
-          });
-          return;
-        }
-        if (!isValidModel(newExecutor)) {
-          events.emit("liveChat", {
-            role: "system",
-            text: `Invalid model format "${newExecutor}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
-          });
-          return;
-        }
-        try {
-          live.updateModels({ thinker: newThinker, executor: newExecutor });
-          setCurrentThinker(newThinker);
-          setCurrentExecutor(newExecutor);
-          events.emit("liveChat", {
-            role: "system",
-            text: `Active models updated: thinker = ${newThinker}, executor = ${newExecutor} (session only)`,
-          });
-        } catch (err) {
-          events.emit("liveChat", {
-            role: "system",
-            text: (err as Error).message,
-          });
-        }
-        return;
-      }
-    }
     if (text === "/agent") {
+      const activeAgent = live.runtime.id;
+      const list = AGENT_TARGETS.map((t) => (t === activeAgent ? `${t} (active)` : t)).join(", ");
       events.emit("liveChat", {
         role: "system",
-        text: `Available agent runtimes: ${AGENT_TARGETS.join(", ")} (active: ${live.runtime.name})`,
+        text: `Available agent runtimes: ${list}`,
       });
       return;
     }
     if (text.startsWith("/agent ")) {
       const target = text.slice(7).trim();
       if ((AGENT_TARGETS as readonly string[]).includes(target)) {
-        events.emit("liveChat", {
-          role: "system",
-          text: `Agent runtime selected: ${target} (active: ${live.runtime.name})`,
-        });
+        try {
+          const newRuntime = await live.switchRuntime(target);
+          setCurrentRuntimeName(newRuntime.name);
+        } catch (err) {
+          events.emit("liveChat", {
+            role: "system",
+            text: `Failed to switch runtime: ${sanitizeTerminalText(String((err as Error).message))}`,
+          });
+        }
       } else {
         events.emit("liveChat", {
           role: "system",
-          text: `Unknown agent target "${target}". Available: ${AGENT_TARGETS.join(", ")}`,
+          text: `Unknown agent target "${sanitizeTerminalText(target)}". Available: ${AGENT_TARGETS.join(", ")}`,
         });
       }
+      return;
+    }
+    if (text.startsWith("/")) {
+      events.emit("liveChat", {
+        role: "system",
+        text: `Unknown command "${sanitizeTerminalText(text)}". Type /help for the command reference.`,
+      });
       return;
     }
     clearStream();
@@ -530,7 +688,7 @@ function RefineView({
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
 
   useInput((input, key) => {
-    if (showModelPicker || showMcpInspector) {
+    if (showModelPicker || showMcpInspector || showHelp || showSkills) {
       return;
     }
     if (decision) {
@@ -623,9 +781,8 @@ function RefineView({
       <LiveHeader
         stage={stage}
         cfg={cfg}
-        now={now}
         spinner={spinner}
-        runtimeName={live.runtime.name}
+        runtimeName={currentRuntimeName}
         thinker={currentThinker}
         executor={currentExecutor}
         mcpStatus={mcpStatus}
@@ -643,7 +800,22 @@ function RefineView({
         <McpInspectorModal
           runtime={live.runtime}
           initialReport={mcpStatus ?? undefined}
+          initialServerId={mcpInspectorServerId}
           onClose={() => setShowMcpInspector(false)}
+        />
+      ) : showSkills ? (
+        <SkillsModal
+          skills={availableSkills}
+          onSelect={executeSkill}
+          onClose={() => setShowSkills(false)}
+        />
+      ) : showHelp ? (
+        <HelpModal
+          runtimeName={currentRuntimeName}
+          thinker={currentThinker}
+          executor={currentExecutor}
+          projectPath={cfg.projectPath}
+          onClose={() => setShowHelp(false)}
         />
       ) : (
         <>
@@ -675,7 +847,7 @@ function RefineView({
 
       {decision ? <DecisionModal req={decision} /> : null}
 
-      {!showModelPicker && !showMcpInspector && (
+      {!showModelPicker && !showMcpInspector && !showHelp && !showSkills && (
         <>
           <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  /draft when ready · /mcp to inspect · /quit to abort" />
           <Box justifyContent="space-between">
@@ -691,7 +863,6 @@ function RefineView({
 function LiveHeader({
   stage,
   cfg,
-  now,
   spinner,
   runtimeName,
   thinker,
@@ -700,7 +871,6 @@ function LiveHeader({
 }: {
   stage: LiveStage;
   cfg: RunConfig;
-  now: number;
   spinner: string;
   runtimeName: string;
   thinker: string;
@@ -709,6 +879,10 @@ function LiveHeader({
 }) {
   const s = STAGE_LABEL[stage];
   const mcpBadge = formatMcpBadge(mcpStatus);
+  const safeRuntimeName = sanitizeTerminalText(runtimeName).slice(0, 40);
+  const safeProjectPath = sanitizeTerminalText(cfg.projectPath).slice(0, 80);
+  const safeThinker = sanitizeTerminalText(thinker).slice(0, 60);
+  const safeExecutor = sanitizeTerminalText(executor).slice(0, 60);
 
   return (
     <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1}>
@@ -722,18 +896,18 @@ function LiveHeader({
         <Box>
           <Text color={mcpBadge.color}>{mcpBadge.text}</Text>
           <Text dimColor> · runtime: </Text>
-          <Text color="yellow">{runtimeName}</Text>
-          <Text dimColor> · project: {cfg.projectPath}</Text>
+          <Text color="yellow">{safeRuntimeName}</Text>
+          <Text dimColor> · project: {safeProjectPath}</Text>
         </Box>
       </Box>
       <Box justifyContent="space-between">
         <Box>
           <Text dimColor>thinker: </Text>
-          <Text color="magenta">{thinker}</Text>
+          <Text color="magenta">{safeThinker}</Text>
         </Box>
         <Box>
           <Text dimColor>executor: </Text>
-          <Text color="green">{executor}</Text>
+          <Text color="green">{safeExecutor}</Text>
         </Box>
       </Box>
     </Box>

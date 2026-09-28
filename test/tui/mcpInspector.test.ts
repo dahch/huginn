@@ -2,7 +2,8 @@ import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "ink";
-import { McpInspectorModal, sanitizeTerminalText } from "../../src/tui/McpInspectorModal";
+import { McpInspectorModal } from "../../src/tui/McpInspectorModal";
+import { sanitizeTerminalText } from "../../src/util/text";
 import type { IAgentRuntime, McpStatusReport } from "../../src/engine/agent/types.js";
 
 function createMockStdin(): PassThrough & {
@@ -121,6 +122,31 @@ describe("McpInspectorModal Component (AC-24.2, ADR-24)", () => {
     expect(output).toContain("memory_search");
     expect(output).toContain("Search long-term memory graph");
     expect(output).toContain("memory_save");
+  });
+
+  it("preselects the server requested via initialServerId (/mcp <id>)", async () => {
+    const stdout = createMockStdout();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const instance = render(
+      React.createElement(McpInspectorModal, {
+        runtime: createMockRuntime(),
+        onClose: vi.fn(),
+        initialReport: SAMPLE_REPORT,
+        initialServerId: "github",
+      }),
+      { stdout, stdin: createMockStdin(), patchConsole: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+    instance.unmount();
+
+    expect(output).toContain("Tools for github");
+    expect(output).toContain("create_pull_request");
+    expect(output).not.toContain("Tools for muninn");
   });
 
   it("navigates servers using down/up arrow keys (or j/k) and updates detail panel", async () => {

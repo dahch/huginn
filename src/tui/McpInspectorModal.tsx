@@ -2,9 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { IAgentRuntime, McpStatusReport, McpToolInfo } from "../engine/agent/types.js";
 import { fetchMcpStatusWithTimeout } from "../engine/agent/mcpStatus.js";
-import { sanitizeTerminalText } from "../engine/agent/mcpConfig.js";
-
-export { sanitizeTerminalText };
+import { sanitizeTerminalText } from "../util/text.js";
 
 const MAX_VISIBLE_TOOLS = 10;
 
@@ -12,16 +10,19 @@ export interface McpInspectorModalProps {
   runtime: IAgentRuntime;
   onClose: () => void;
   initialReport?: McpStatusReport;
+  initialServerId?: string;
 }
 
 export const McpInspectorModal = React.memo(function McpInspectorModal({
   runtime,
   onClose,
   initialReport,
+  initialServerId,
 }: McpInspectorModalProps) {
   const [report, setReport] = useState<McpStatusReport | null>(initialReport ?? null);
   const [loading, setLoading] = useState(!initialReport);
   const [selectedServerIndex, setSelectedServerIndex] = useState(0);
+  const [pendingServerId, setPendingServerId] = useState(initialServerId);
   const [focusView, setFocusView] = useState<"servers" | "tools">("servers");
   const [selectedToolIndex, setSelectedToolIndex] = useState(0);
 
@@ -61,6 +62,16 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
       setSelectedServerIndex(Math.max(0, servers.length - 1));
     }
   }, [servers.length, selectedServerIndex]);
+
+  // Preselect the server requested via `/mcp <id>` once the report is available.
+  useEffect(() => {
+    if (!pendingServerId || !report) return;
+    const idx = report.servers.findIndex(
+      (s) => s.id === pendingServerId || s.name === pendingServerId,
+    );
+    if (idx >= 0) setSelectedServerIndex(idx);
+    setPendingServerId(undefined);
+  }, [report, pendingServerId]);
 
   useEffect(() => {
     if (selectedToolIndex >= currentTools.length && currentTools.length > 0) {

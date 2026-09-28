@@ -6,7 +6,6 @@ import { ModelPickerModal, type ModelPickerResult } from "../../src/tui/ModelPic
 import type { IAgentRuntime, ModelInfo } from "../../src/engine/agent/types.js";
 import { LiveEngine } from "../../src/engine/liveMode";
 import { events } from "../../src/engine/engineEvents";
-import { AGENT_TARGETS } from "../../src/agents/integrator";
 import type { RunConfig } from "../../src/config";
 
 function createMockStdin(): PassThrough & {
@@ -775,73 +774,6 @@ describe("Live Mode Model Switching & Slash Commands", () => {
     expect(updated.executor.modelID).toBe("gemini-2.5-pro");
     expect(live.getConfig().thinker).toBe("openai/o3-mini");
     expect(live.getConfig().executor).toBe("google/gemini-2.5-pro");
-  });
-
-  it("handles slash command /model with arguments", () => {
-    const runtime = createMockRuntime();
-    const live = new LiveEngine({ cfg: { ...baseConfig }, runtime });
-
-    // Simulate slash command logic matching LiveDashboard submit()
-    const handleCommand = (text: string) => {
-      if (text.startsWith("/model ")) {
-        const parts = text.slice(7).trim().split(/\s+/).filter(Boolean);
-        if (parts.length > 0) {
-          const newThinker = parts[0]!;
-          const newExecutor = parts[1] || live.getConfig().executor;
-          live.updateModels({ thinker: newThinker, executor: newExecutor });
-          events.emit("liveChat", {
-            role: "system",
-            text: `Active models updated: thinker = ${newThinker}, executor = ${newExecutor} (session only)`,
-          });
-        }
-      }
-    };
-
-    handleCommand("/model google/gemini-2.5-pro anthropic/claude-3-7-sonnet");
-
-    expect(live.getConfig().thinker).toBe("google/gemini-2.5-pro");
-    expect(live.getConfig().executor).toBe("anthropic/claude-3-7-sonnet");
-    expect(emittedChatMessages.length).toBe(1);
-    expect(emittedChatMessages[0].text).toContain("Active models updated: thinker = google/gemini-2.5-pro, executor = anthropic/claude-3-7-sonnet");
-  });
-
-  it("handles slash command /agent listing and selection", () => {
-    const runtime = createMockRuntime();
-    const live = new LiveEngine({ cfg: { ...baseConfig }, runtime });
-
-    const handleCommand = (text: string) => {
-      if (text === "/agent") {
-        events.emit("liveChat", {
-          role: "system",
-          text: `Available agent runtimes: ${AGENT_TARGETS.join(", ")} (active: ${live.runtime.name})`,
-        });
-        return;
-      }
-      if (text.startsWith("/agent ")) {
-        const target = text.slice(7).trim();
-        if ((AGENT_TARGETS as readonly string[]).includes(target)) {
-          events.emit("liveChat", {
-            role: "system",
-            text: `Agent runtime selected: ${target} (active: ${live.runtime.name})`,
-          });
-        } else {
-          events.emit("liveChat", {
-            role: "system",
-            text: `Unknown agent target "${target}". Available: ${AGENT_TARGETS.join(", ")}`,
-          });
-        }
-      }
-    };
-
-    handleCommand("/agent");
-    expect(emittedChatMessages[0].text).toContain("Available agent runtimes: cursor, claude");
-    expect(emittedChatMessages[0].text).toContain("(active: OpenCode)");
-
-    handleCommand("/agent claude");
-    expect(emittedChatMessages[1].text).toContain("Agent runtime selected: claude (active: OpenCode)");
-
-    handleCommand("/agent invalid-agent");
-    expect(emittedChatMessages[2].text).toContain('Unknown agent target "invalid-agent"');
   });
 
   it("LiveApp initializes with showModelPicker=true when cfg.chooseModel is true", async () => {
