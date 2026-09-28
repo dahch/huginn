@@ -345,13 +345,21 @@ Huginn must discover available models from the active runtime and provide intera
 
 ### REQ-24: Unified Multi-MCP Monitoring & Inspector
 Huginn must monitor and display the status of all connected Model Context Protocol (MCP) servers and their tools.
-- **AC-24.1 (Header Status Badge & Non-Blocking Polling)**: The TUI header displays a live MCP indicator: `MCP: 🟢 <count> active (<tools> tools)` (e.g. `MCP: 🟢 Muninn + 2 active · 14 tools`). Polling `runtime.getMcpStatus()` is strictly bounded by a 1500ms timeout via `Promise.race` / `AbortSignal.timeout(1500)` so that an unresponsive or hanging external MCP server never blocks the Ink render loop or freezes the interface. If any critical MCP fails or times out, it degrades gracefully to `MCP: 🟡 1 timeout/degraded`.
-- **AC-24.2 (Interactive `/mcp` Inspector)**: Typing `/mcp` in Live mode or pressing a shortcut opens an inspector modal listing:
-  - Connected MCP servers (Muninn, GitHub, Postgres, Filesystem, etc.).
-  - Connection transport (stdio, SSE, HTTP).
-  - Exposed tools and descriptions.
-  - Connection health and latency status.
-- **AC-24.3 (Project-Level MCP Declaration)**: Huginn reads `.huginn/mcp.json` (or target agent MCP config) and automatically verifies their availability at startup.
+- **AC-24.1 (Header Status Badge & Non-Blocking Polling)**: The TUI header displays a live MCP indicator:
+  - `MCP: 🟢 <count> active (<tools> tools)` when all servers are connected.
+  - `MCP: 🟡 degraded` when any server reports error or degraded status.
+  - `MCP: 🟡 timeout` when polling exceeds deadline.
+  - `MCP: ⚪ 0 active` when no servers are registered or report is null.
+  - Periodic polling (15s intervals) in `Dashboard` and `LiveDashboard` is bounded by a strict 1500 ms non-blocking timeout via `Promise.race` in `fetchMcpStatusWithTimeout`, protecting the Ink render loop from slow, hanging, or disconnected MCP servers.
+- **AC-24.2 (Interactive `/mcp` Inspector Modal (`McpInspectorModal`))**: In Live mode, typing `/mcp` opens an interactive two-pane inspector modal:
+  - *Left Pane (Servers)*: Lists connected MCP servers with connection status (`[connected]`, `[error]`, `[disconnected]`), transport (`[stdio]`, `[sse]`, `[file]`), and roundtrip latency in ms.
+  - *Right Pane (Tools Detail)*: Lists exposed tools for the selected server with tool names and descriptions. Implements paginated windowing (10 visible tools with `▲ ... more above` and `▼ ... more below` scroll markers) to prevent modal height overflow.
+  - *Keyboard Navigation & State Bridge*: `[↑/↓]` or `[k/j]` navigates items, `[Tab]` or `[Enter]` toggles focus between servers and tools panes, and `[Esc]` closes the modal. Uses `stateRef` bridge pattern to guarantee fresh state references in `useInput` under React 19 / Ink.
+  - *Terminal Sanitization (`SEC-001`)*: Sanitizes all server names, tool descriptions, and error strings via `sanitizeTerminalText` to strip ANSI escape sequences and non-printable control characters, mitigating terminal injection and cursor hijacking.
+- **AC-24.3 (Project-Level MCP Declaration & Safe Auto-Discovery)**: Huginn automatically discovers and loads `<project>/.huginn/mcp.json` alongside target agent configuration paths:
+  - Supports `mcpServers`, `mcp`, and `servers` configuration sections.
+  - Rejects files exceeding 1MB or non-regular files (`SEC-002`).
+  - Strips prototype pollution keys (`__proto__`, `constructor`, `prototype`) during JSON parsing (`SEC-003`).
 
 ### REQ-25: Extensible Skills System & Live Slash Commands
 Huginn must support modular project skills and interactive slash commands in the live environment.

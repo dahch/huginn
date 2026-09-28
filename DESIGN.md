@@ -2087,5 +2087,171 @@ Huginn incorporates automated pre-flight checks in `src/cli.ts` (`runLive`):
    - If the active runtime returns an available model catalog and **neither** default model (`anthropic/claude-opus-4-5` or `opencode/gpt-5.1-codex`) is present in the catalog, Huginn automatically enables `cfg.chooseModel = true`.
    - This eliminates confusing runtime failures on fresh installs with non-Anthropic / non-OpenCode runtimes (such as Codex or Claude Code), greeting the developer with an intuitive configuration wizard.
 
+---
+
+## 23. Live MCP Monitor, Inspector & Multi-MCP Configuration
+
+Iteration 22 introduces real-time Model Context Protocol (MCP) health monitoring, an interactive two-pane server and tool inspector modal (`McpInspectorModal`), strict non-blocking timeout protection for the Ink render loop, project-level `.huginn/mcp.json` declaration, and terminal injection defense.
+
+### 23.1 Motivation & Architectural Objectives
+
+Modern AI coding agents rely on tools provided by MCP servers (Muninn memory, filesystem access, git integrations, databases, web search, etc.). In previous iterations:
+1. **Zero Runtime Observability**: Developers had no visibility into whether their configured MCP servers were alive, hung, or disconnected during build and refinement sessions.
+2. **Render Loop Blocking Hazard**: If an agent runtime attempted to query an unresponsive external MCP server, the synchronous or unconstrained asynchronous call could stall React/Ink rendering, freezing the entire terminal interface.
+3. **Lack of Tool Inspection**: Developers had no in-app way to explore available MCP tools, parameters, descriptions, or latency without switching to external terminal windows or configuration files.
+4. **Project-Level MCP Disconnect**: Agent-specific MCP paths (e.g. `~/.cursor/mcp.json`, `~/.config/opencode/opencode.json`) were decoupled from repository-specific MCP servers needed for a particular codebase.
+
+The MCP monitoring architecture fulfills four core objectives:
+- **Non-blocking Resilient Polling**: Guaranteed deadline enforcement via `Promise.race` ensuring MCP status checks cannot degrade TUI frame rates or block user input.
+- **Visual Health Badging**: Dynamic header status reflecting active server counts, tool counts, and degraded/timeout alerts.
+- **Interactive Two-Pane Inspector (`/mcp`)**: A keyboard-driven TUI inspector featuring server connectivity details, transport metadata, tool definitions, and paginated windowing.
+- **Secure Multi-Source Configuration**: Safe loading of repository-scoped `.huginn/mcp.json` with prototype-pollution prevention, size constraints, and terminal sanitization against ANSI escape injection.
+
+### 23.2 Architecture Overview & Data Flow
+
+```mermaid
+flowchart TD
+    subgraph "TUI Render Layer (Dashboard / LiveDashboard)"
+        Header["HeaderCard / LiveHeader (MCP Badge)"]
+        Inspector["McpInspectorModal (/mcp slash command)"]
+    end
+
+    subgraph "Non-Blocking Polling Engine (mcpStatus.ts)"
+        Poller["fetchMcpStatusWithTimeout(runtime, 1500)"]
+        Race["Promise.race([runtime.getMcpStatus(), timeoutPromise])"]
+        Formatter["formatMcpBadge(report)"]
+    end
+
+    subgraph "Agent Runtime Port (IAgentRuntime)"
+        Runtime["runtime.getMcpStatus()"]
+    end
+
+    subgraph "Multi-Source Config Resolution (mcpConfig.ts)"
+        ProjectConfig[".huginn/mcp.json (SEC-002, SEC-003)"]
+        AgentConfigs["resolveMcpPaths(agentId) (Cursor, Claude, OpenCode, Codex)"]
+        Sanitizer["sanitizeTerminalText() (SEC-001)"]
+    end
+
+    Header --> Formatter
+    Poller --> Race
+    Race --> Runtime
+    Runtime --> ProjectConfig
+    Runtime --> AgentConfigs
+    ProjectConfig --> Sanitizer
+    AgentConfigs --> Sanitizer
+    Poller --> Header
+    Inspector --> Poller
+```
+
+### 23.3 Non-Blocking Polling & Render Protection (`fetchMcpStatusWithTimeout`)
+
+In `src/engine/agent/mcpStatus.ts`, `fetchMcpStatusWithTimeout` provides fail-safe status retrieval:
+
+```ts
+export async function fetchMcpStatusWithTimeout(
+  runtime: IAgentRuntime,
+  timeoutMs = 1500,
+): Promise<McpStatusReport>
+```
+
+1. **Strict 1500 ms Race**: Creates an internal timer racing against `runtime.getMcpStatus()`. If the runtime adapter or underlying agent CLI takes longer than 1500 ms, the promise resolves with a degraded status object:
+   ```ts
+   {
+     servers: [],
+     totalTools: 0,
+     healthy: false,
+     degraded: true,
+     error: `MCP status timed out after ${timeoutMs}ms`,
+   }
+   ```
+2. **Deterministic Cleanup**: Timer handles are cleared in a mandatory `finally` block to prevent timer leakages across repeated polls.
+3. **Degraded State Normalization**: If any individual server reports `status === "error"` but the overall report does not explicitly flag `degraded`, `fetchMcpStatusWithTimeout` automatically sets `degraded: true`.
+4. **Periodic Polling Lifecycle**: Both `Dashboard` and `LiveDashboard` poll on mount and every 15 seconds via `setInterval`. Unmount callbacks clear intervals and set `active = false` flags, preventing state updates after component teardown.
+
+#### Status Badge Formatting (`formatMcpBadge`)
+
+`formatMcpBadge` maps report metrics to concise colored terminal badges:
+- **Connected (Green)**: `MCP: 🟢 <count> active (<tools> tools)` (e.g. `MCP: 🟢 3 active (18 tools)`)
+- **Degraded / Error (Yellow)**: `MCP: 🟡 degraded`
+- **Timeout (Yellow)**: `MCP: 🟡 timeout`
+- **Empty / Inactive (Gray)**: `MCP: ⚪ 0 active`
+
+### 23.4 Interactive Two-Pane Inspector Modal (`McpInspectorModal.tsx`)
+
+Mounted via the `/mcp` slash command in `LiveDashboard`, `McpInspectorModal` renders a split-pane layout:
+
+```
+┌─ 🔌 MCP SERVER INSPECTOR ── 2/2 active ── 12 tools ─────────── Runtime: opencode ─┐
+│ ┌─ Servers (2) ──────────────────────────┐ ┌─ Tools for git ───────────────────┐ │
+│ │ ▶ git           [connected] [stdio] 5ms│ │   ▲ ... 2 more above              │ │
+│ │   memory        [connected] [stdio] 1ms│ │ ▶ git_status                      │ │
+│ │                                        │ │     Show current working tree ... │ │
+│ │                                        │ │   git_diff                        │ │
+│ │                                        │ │     Inspect diff between commits  │ │
+│ │                                        │ │   ▼ ... and 3 more                │ │
+│ └────────────────────────────────────────┘ └───────────────────────────────────┘ │
+│ [↑/↓ or k/j] Navigate · [Tab/Enter] View Tools · [Esc] Close       Focus: servers│
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Dual-Pane Focus & Keyboard Navigation
+- **Left Pane (Servers)**: Displays registered servers, health status (`[connected]`, `[error]`, `[disconnected]`), transport protocol (`[stdio]`, `[sse]`), and round-trip latency (`latencyMs`).
+- **Right Pane (Tools)**: Displays tools exposed by the currently highlighted server, with tool names and descriptions.
+- **Focus Toggle**: `[Tab]` or `[Enter]` toggles `focusView` between `"servers"` and `"tools"`.
+- **Directional Navigation**: `[↑]`/`[↓]` and `[k]`/`[j]` navigate the active pane. When navigating the server list, the tool list automatically resets selection to the first tool.
+- **Dismissal**: `[Esc]` closes the modal, restoring live dashboard chat and input without loss of context.
+- **React 19 Ref Bridge (`stateRef`)**: Uses `stateRef` synchronization to prevent stale closures in Ink's `useInput` hook during navigation.
+
+### 23.5 Tool Pagination & Windowing Engine
+
+When servers expose dozens of tools (e.g. AWS or database MCPs), rendering all items would overflow the terminal height. `McpInspectorModal` implements sliding-window pagination:
+- **`MAX_VISIBLE_TOOLS = 10`**: Restricts the maximum number of simultaneously rendered tools to 10.
+- **Centered Window Calculation**:
+  ```ts
+  const startIndex = Math.max(
+    0,
+    Math.min(
+      selectedToolIndex - Math.floor(MAX_VISIBLE_TOOLS / 2),
+      currentTools.length - MAX_VISIBLE_TOOLS,
+    ),
+  );
+  const endIndex = Math.min(currentTools.length, startIndex + MAX_VISIBLE_TOOLS);
+  const visibleTools = currentTools.slice(startIndex, endIndex);
+  ```
+- **Overflow Indicators**: Displays `▲ ... {moreAbove} more above` and `▼ ... and {moreBelow} more` markers when tools exist outside the current viewport.
+
+### 23.6 Terminal Sanitization & Injection Defense (`sanitizeTerminalText`)
+
+Server names, tool descriptions, and error payloads originate from external processes and untrusted configuration files. Unsanitized strings could emit ANSI escape sequences to hijack terminal cursors, manipulate alternate buffers, or poison logs (`SEC-001`).
+
+`sanitizeTerminalText` (`src/engine/agent/mcpConfig.ts`) sanitizes all displayed content:
+- Strips ANSI escape sequences matching `[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]`.
+- Strips non-printable ASCII control characters `[\x00-\x08\x0B-\x1F\x7F]`.
+- Preserves printable whitespace (`\n`, `\t`) and valid Unicode text.
+
+### 23.7 Project-Level MCP Declaration & Configuration Resolution
+
+In addition to target agent configuration files (e.g. `~/.config/opencode/opencode.json`, `~/.claude.json`), `GenericSubprocessRuntimeAdapter` and runtime adapters automatically discover and load project-scoped declarations from `<project>/.huginn/mcp.json`.
+
+1. **Supported Top-Level Keys**:
+   - `mcpServers` (standard MCP client format)
+   - `mcp` (OpenCode format)
+   - `servers` (alternative container)
+2. **File Size Defense (`SEC-002`)**:
+   - Validates `statSync(configPath).isFile()` and bounds size to `1024 * 1024` (1MB). Files exceeding 1MB or pointing to special device files are rejected with a warning.
+3. **Prototype Pollution Guard (`SEC-003`)**:
+   - Strips dangerous object properties (`__proto__`, `constructor`, `prototype`) during both JSON parsing reviver and object iteration:
+     ```ts
+     const parsed = JSON.parse(content, (key, value) => {
+       if (isReservedKey(key)) return undefined;
+       return value;
+     });
+     ```
+4. **Transport Inference**:
+   - If `command` is present, transport defaults to `stdio`.
+   - If `url` is present, transport defaults to `sse`.
+   - Otherwise honors explicit `transport` string, sanitized against terminal injection.
+
+
 
 

@@ -326,6 +326,14 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
        - `[2] Global Default`: writes atomically to `~/.huginn/config.json`.
        - `[3] Session Only`: updates in-memory active models for the current session without writing to disk.
   - **Auto-Onboarding Preflight Check**: If thinker or executor models are defaulted and the active runtime's model catalog does not include those defaults, Huginn automatically opens the model selector on startup.
+- **Live MCP Monitor & Server Inspector (`McpInspectorModal`)**:
+  - **Live Header Status Badge**: Real-time indicator in the TUI header (`MCP: 🟢 <count> active (<tools> tools)` / `MCP: 🟡 degraded` / `MCP: 🟡 timeout`) with periodic 15-second health checks.
+  - **Render Loop Protection**: `fetchMcpStatusWithTimeout` enforces a strict 1500ms `Promise.race` timeout, guaranteeing third-party or unresponsive MCP servers never block or freeze the Ink render loop.
+  - **Interactive Inspector (`/mcp`)**: Type `/mcp` in the live chat input to open an interactive two-pane inspector modal:
+    - *Left Pane (Servers)*: Lists connected MCP servers with connection state (`[connected]`, `[error]`), transport (`[stdio]`, `[sse]`), and roundtrip latency.
+    - *Right Pane (Tools)*: Inspects exposed tools for the selected server with descriptions and paginated windowing (10 visible tools with scroll overflow indicators).
+    - *Navigation*: `[↑]`/`[↓]` or `[k]`/`[j]` to navigate, `[Tab]` or `[Enter]` to switch focus between servers and tools panes, `[Esc]` to return to chat.
+    - *Terminal Injection Defense*: All server names, tool descriptions, and error strings are sanitized via `sanitizeTerminalText` to strip ANSI escape sequences and non-printable control characters.
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
 `--choose-model` to open the model selector modal on launch,
@@ -506,6 +514,28 @@ For running from source during development:
   }
 }
 ```
+
+#### Project-Level MCP Configuration (`.huginn/mcp.json`)
+
+Huginn automatically discovers and loads project-scoped MCP servers declared in `<project>/.huginn/mcp.json`. Supported root containers include `mcpServers`, `mcp`, or `servers`:
+
+```json
+{
+  "mcpServers": {
+    "git": {
+      "command": "mcp-server-git",
+      "args": ["--repository", "."]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}
+```
+
+- **Safe Parsing & Defense-in-Depth**: Config files exceeding 1MB are ignored; object keys including `__proto__`, `constructor`, and `prototype` are stripped to prevent prototype pollution.
+- **Unified Merge**: Automatically merged alongside target agent configurations (e.g. `.cursor/mcp.json`, `.mcp.json`, OpenCode `mcp` settings) when reporting server health and tool lists in the `/mcp` inspector.
 
 ### Muninn CLI Commands (`huginn memory`)
 
