@@ -45,7 +45,7 @@ export const RAVEN_ART_WIDTH = RAVEN_MARK_WIDTH + RAVEN_ART_GAP + WORDMARK_WIDTH
  * the budget AC-28.4 depends on. Callers pass their own figure; this is the
  * live-view default used by {@link RavenHeader}.
  */
-export const RAVEN_VIEWPORT_RESERVED_ROWS = 19;
+export const RAVEN_VIEWPORT_RESERVED_ROWS = 21;
 
 /** Rows of vertical offset applied to the mark inside the wordmark block. */
 const MARK_TOP_OFFSET = Math.floor((RAVEN_ART_ROWS - RAVEN_MARK_ROWS) / 2);

@@ -403,7 +403,7 @@ describe("first-run guidance (REQ-31 / AC-31.3)", () => {
       // The palette, the draft flow and the diagnostics remain reachable from the hint.
       expect(output).toContain("command palette");
       expect(output).toContain("/draft");
-      expect(output).toContain("REFINEMENT CONVERSATION");
+      expect(output).toContain("Conversation");
       expect(output).toContain("stage: REFINE");
 
       const plain = output.replace(ANSI, "");

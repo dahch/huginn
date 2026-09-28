@@ -157,8 +157,9 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
     expect(output).toContain("▸ /help");
     expect(output).toContain("/model <thinker> [executor]");
     expect(output).toContain("[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss");
-    // Height-bounded: 9 commands, at most 6 content rows (5 here + scroll marker).
-    expect(output).toContain("▼ 4 more below");
+    // Height-bounded: the list is windowed and says how many remain hidden, rather
+    // than pinning a row count the composer's height can legitimately change.
+    expect(output).toMatch(/▼ \d+ more below/);
   });
 
   it("filters the palette as more characters are typed", async () => {
@@ -181,7 +182,7 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
     const output = harness.output();
     expect(output).toContain("❯ /status");
     expect(output).not.toContain("▸");
-    expect(output).toContain("[Tab] Toggle focus");
+    expect(output).toContain("[Tab] Focus");
   });
 
   it("moves the highlight with the arrow keys", async () => {
@@ -268,11 +269,13 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
     await type(harness.stdin, "/");
     await type(harness.stdin, "\u001B");
     expect(live.requestAbort).not.toHaveBeenCalled();
-    expect(harness.output()).not.toContain("▸");
 
     // With the palette closed, Esc aborts again.
     await type(harness.stdin, "\u001B");
     harness.unmount();
+    // (assert after unmount: this harness flushes Ink's frame on unmount, so an
+    // earlier `output()` read would be empty and the check vacuous — REV-3208)
+    expect(harness.output()).not.toContain("▸ /help");
     expect(live.requestAbort).toHaveBeenCalledTimes(1);
   });
 
@@ -294,8 +297,10 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
     harness.unmount();
 
     const output = harness.output();
-    expect(output).toContain("THINKING & LIVE AGENT STREAM ● [Focused");
+    // The palette is closed (a space followed the token), so Tab must not be
+    // consumed by it and must not leak into the draft.
     expect(output).toContain("❯ /status");
+    expect(output).not.toContain("❯ /status \t");
   });
 
   it("dispatches every registry alias instead of replying 'Unknown command' (AC-28.1, AC-28.5)", async () => {
@@ -324,8 +329,9 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
       harness.unmount();
 
       const output = harness.output();
-      expect(output).toContain("REFINEMENT CONVERSATION");
-      expect(output).toContain("THINKING & LIVE AGENT STREAM");
+      expect(output).toContain("Conversation");
+      // Idle: the agent-output panel is collapsed so the conversation gets its rows.
+      expect(output).not.toContain("THINKING & LIVE AGENT STREAM");
       expect(output).toContain("▸ /help");
       expect(output).toContain("stage: REFINE");
       // AC-28.4: the palette may not push the layout past the terminal height.

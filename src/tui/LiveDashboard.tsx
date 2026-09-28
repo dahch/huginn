@@ -62,7 +62,10 @@ const CARD_MIN_ROWS = 4;
 const CARD_BORDER_ROWS = 2;
 /** The card's own title row, above the body. */
 const CARD_TITLE_ROWS = 1;
-const INPUT_HEIGHT = 2;
+const INPUT_HEIGHT = 4; // marginTop 1 + border 2 + the input line itself
+// ...and nothing in that row may wrap, or the reservation is a lie (REV-3201).
+/** Submitted prompts kept for ↑/↓ recall (REQ-34 / AC-34.1). */
+const INPUT_HISTORY_LIMIT = 50;
 const FOOTER_HEIGHT = 1;
 /** The palette's own rounded border (top + bottom). */
 const PALETTE_BORDER_ROWS = 2;
@@ -224,6 +227,10 @@ function RefineView({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [decision, setDecision] = useState<DecisionRequest | undefined>();
   const [draftInput, setDraftInput] = useState("");
+  /** Submitted prompts of this session, oldest first (REQ-34 / AC-34.1). */
+  const [inputHistory, setInputHistory] = useState<string[]>([]);
+  /** Position while recalling: `null` means "not recalling". */
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState<boolean>(initialShowModelPicker);
   const [showMcpInspector, setShowMcpInspector] = useState<boolean>(false);
@@ -453,6 +460,7 @@ function RefineView({
   const acceptSuggestion = (command: SlashCommand): void => {
     setDraftInput(command.takesArgs ? `${command.id} ` : command.id);
     setSuggestionIndex(0);
+    setHistoryIndex(null);
   };
 
   // Seed the CLI-provided initial idea into the conversation (matches headless).
@@ -606,7 +614,16 @@ function RefineView({
   const submit = async (override?: string): Promise<void> => {
     const text = (override ?? draftInput).trim();
     setDraftInput("");
+    setHistoryIndex(null);
     if (!text) return;
+    // Remember what the user actually asked for. Slash commands are not prompts,
+    // and an immediately-repeated prompt is not stored twice (de-duplication is
+    // consecutive only: A, B, A keeps both A entries).
+    if (!text.startsWith("/")) {
+      setInputHistory((h) =>
+        h[h.length - 1] === text ? h : [...h, text].slice(-INPUT_HISTORY_LIMIT),
+      );
+    }
     if (text !== "/quit" && text !== "/abort" && confirmQuit) {
       setConfirmQuit(false);
     }
@@ -883,8 +900,22 @@ function RefineView({
       suggestionHeight,
   );
 
-  const chatHeight = Math.max(1, Math.floor(availableHeight * 0.58));
-  const streamHeight = Math.max(1, availableHeight - chatHeight);
+  // The agent-output panel is adaptive (REQ-35 / AC-35.2): most frontier models
+  // no longer expose reasoning, so an empty bordered box would just steal rows
+  // from the conversation. Only *real* content shows it — a blank line (which the
+  // stream buffer yields for any phase that emitted nothing) does not count, and
+  // nor does "work in flight", so the panel is never an empty box.
+  const hasStreamContent = streamLines.some((line) => line.trim().length > 0);
+  const showStreamPanel = hasStreamContent;
+  const chatHeight = showStreamPanel
+    ? Math.max(1, Math.floor(availableHeight * 0.58))
+    : Math.max(1, availableHeight);
+  const streamHeight = showStreamPanel ? Math.max(1, availableHeight - chatHeight) : 0;
+
+  // Never leave focus on a card that is not rendered.
+  useEffect(() => {
+    if (!showStreamPanel && focusCard === "stream") setFocusCard("chat");
+  }, [showStreamPanel, focusCard]);
 
   const visibleChatLinesCount = Math.max(1, chatHeight - 3);
   const visibleStreamLinesCount = Math.max(1, streamHeight - 3);
@@ -959,7 +990,8 @@ function RefineView({
       return;
     }
     if (key.tab) {
-      setFocusCard((f) => (f === "chat" ? "stream" : "chat"));
+      // Focus only has meaning while both cards are mounted (REV-3207).
+      if (showStreamPanel) setFocusCard((f) => (f === "chat" ? "stream" : "chat"));
       return;
     }
 
@@ -973,6 +1005,32 @@ function RefineView({
       if (focusCard === "chat") setChatScroll((s) => Math.max(s - 4, 0));
       else setStreamScroll((s) => Math.max(s - 4, 0));
       return;
+    }
+
+    // Composer history (REQ-34 / AC-34.1): ↑ recalls the previous submission when
+    // the draft is empty (or while already recalling); ↓ walks forward and ends at
+    // the empty draft. PageUp/Down and the focused stream card still scroll.
+    if (inputEnabled) {
+      // The focused stream card keeps the arrow keys for scrolling (AC-34.3):
+      // recall lives on the composer, which is the only place you type.
+      const canRecall = (draftInput === "" && focusCard === "chat") || historyIndex !== null;
+      if (key.upArrow && canRecall && inputHistory.length > 0) {
+        const next = historyIndex === null ? inputHistory.length - 1 : Math.max(0, historyIndex - 1);
+        setHistoryIndex(next);
+        setDraftInput(inputHistory[next] ?? "");
+        return;
+      }
+      if (key.downArrow && historyIndex !== null) {
+        const next = historyIndex + 1;
+        if (next >= inputHistory.length) {
+          setHistoryIndex(null);
+          setDraftInput("");
+        } else {
+          setHistoryIndex(next);
+          setDraftInput(inputHistory[next] ?? "");
+        }
+        return;
+      }
     }
 
     // Arrow keys scroll when input is empty or when stream card is focused
@@ -1002,6 +1060,7 @@ function RefineView({
         return;
       }
       if (key.backspace) {
+        setHistoryIndex(null);
         setDraftInput((d) => d.slice(0, -1));
         return;
       }
@@ -1009,6 +1068,7 @@ function RefineView({
         .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
         .replace(/[\x00-\x1F\x7F-\x9F]/g, "");
       if (sanitized) {
+        setHistoryIndex(null);
         setDraftInput((d) => d + sanitized);
       }
     } else if (input === "q" && draftInput === "") {
@@ -1101,16 +1161,18 @@ function RefineView({
             height={chatHeight}
           />
 
-          <ScrollableStreamCard
-            lines={visibleStreamLines}
-            totalLines={streamLines.length}
-            scrollOffset={streamScroll}
-            chars={streamChars}
-            isFocused={focusCard === "stream"}
-            spinner={spinner}
-            busy={busy}
-            height={streamHeight}
-          />
+          {showStreamPanel && (
+            <ScrollableStreamCard
+              lines={visibleStreamLines}
+              totalLines={streamLines.length}
+              scrollOffset={streamScroll}
+              chars={streamChars}
+              isFocused={focusCard === "stream"}
+              spinner={spinner}
+              busy={busy}
+              height={streamHeight}
+            />
+          )}
         </>
       )}
 
@@ -1120,7 +1182,13 @@ function RefineView({
 
       {!showModelPicker && !showMcpInspector && !showHelp && !showSkills && !showAgentPicker && (
         <>
-          <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect" />
+          <ChatInputRow
+            value={draftInput}
+            enabled={inputEnabled}
+            placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect"
+            historyLength={inputHistory.length}
+            recalling={historyIndex !== null}
+          />
           {suggestionsOpen && (
             <CommandSuggestions
               matches={suggestionMatches}
@@ -1136,7 +1204,7 @@ function RefineView({
               {suggestionsOpen ? (
                 <Text dimColor wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
               ) : (
-                <Text dimColor wrap="truncate">[Tab] Toggle focus · [↑/↓] Scroll · [Enter] Send · / for commands</Text>
+                <Text dimColor wrap="truncate">[Tab] Focus · [PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands</Text>
               )}
             </Box>
             <Box flexShrink={0}>
@@ -1298,7 +1366,7 @@ function ScrollableChatCard({
     >
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={isFocused ? "cyanBright" : "cyan"}>
-          REFINEMENT CONVERSATION {isFocused ? "● [Focused: ↑/↓ Scroll]" : "○ [Tab to focus]"}
+          Conversation {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
         </Text>
         <Box>
           {maxScroll > 0 && (
@@ -1412,7 +1480,7 @@ function ScrollableStreamCard({
     >
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={isFocused ? "cyanBright" : "cyan"}>
-          THINKING & LIVE AGENT STREAM {isFocused ? "● [Focused: ↑/↓ Scroll]" : "○ [Tab to focus]"}
+          THINKING & LIVE AGENT STREAM {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
         </Text>
         <Box>
           {chars > 0 && <Text dimColor>{(chars / 1024).toFixed(1)} KB </Text>}
@@ -1437,14 +1505,54 @@ function ScrollableStreamCard({
   );
 }
 
-function ChatInputRow({ value, enabled, placeholder }: { value: string; enabled: boolean; placeholder: string }) {
+/**
+ * The composer (REQ-34 / AC-34.2): deliberately the most prominent row in the
+ * view — its own accent border, a clear prompt glyph and, while it is empty, a
+ * hint that the previous inputs can be recalled.
+ */
+function ChatInputRow({
+  value,
+  enabled,
+  placeholder,
+  historyLength = 0,
+  recalling = false,
+}: {
+  value: string;
+  enabled: boolean;
+  placeholder: string;
+  historyLength?: number;
+  recalling?: boolean;
+}) {
+  const accent = enabled ? "green" : "gray";
   return (
-    <Box marginTop={1} flexDirection="row">
-      <Text color={enabled ? "green" : "gray"}>{enabled ? "❯ " : "· "}</Text>
+    // height/overflow/truncate keep the promise INPUT_HEIGHT makes: this row is
+    // exactly one content line, whatever the placeholder or history hint length.
+    <Box
+      marginTop={1}
+      borderStyle="round"
+      borderColor={accent}
+      paddingX={1}
+      flexDirection="row"
+      height={3}
+      overflow="hidden"
+    >
+      <Text bold color={accent}>{enabled ? "❯ " : "· "}</Text>
       {value.length > 0 ? (
-        <Text color="white">{value}</Text>
+        <Text color="white" wrap="truncate">
+          {value}
+        </Text>
       ) : (
-        <Text dimColor>{placeholder}</Text>
+        <Text dimColor wrap="truncate">
+          {placeholder}
+        </Text>
+      )}
+      {historyLength > 0 && (
+        <Box flexShrink={0}>
+          <Text dimColor>
+            {"  "}
+            {recalling ? `history ${historyLength}` : "↑ history"}
+          </Text>
+        </Box>
       )}
     </Box>
   );

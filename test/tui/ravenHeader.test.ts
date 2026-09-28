@@ -376,8 +376,9 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
 
     // The compact fallback keeps the header at its original 4-row cost.
     expect(output).toContain("HUGINN LIVE");
-    expect(output).toContain("REFINEMENT CONVERSATION");
-    expect(output).toContain("THINKING & LIVE AGENT STREAM");
+    expect(output).toContain("Conversation");
+    // Idle: no stream content, so the agent-output panel is collapsed by design.
+    expect(output).not.toContain("THINKING & LIVE AGENT STREAM");
     expect(output).toContain("stage: REFINE");
     expect(visibleLines(output).length).toBeLessThanOrEqual(rows);
     for (const line of output.replace(ANSI, "").split("\n")) {
@@ -413,7 +414,7 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
 
     expect(output).toContain("▸ /help");
     expect(output).toContain("<(o");
-    expect(output).toContain("REFINEMENT CONVERSATION");
+    expect(output).toContain("Conversation");
     expect(output).toContain("stage: REFINE");
     expect(visibleLines(output).length).toBeLessThanOrEqual(rows);
   });
