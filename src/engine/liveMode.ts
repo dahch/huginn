@@ -3,6 +3,9 @@ import type { RunConfig } from "../config";
 import { createClient, createSession, prompt, abortSession } from "../server/client";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
 import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
+import { getAgentRuntime } from "./agent/registry.js";
+import type { AgentTarget } from "../agents/integrator.js";
+import { MemoryService } from "../muninn/service/memory-service.js";
 import { DecisionBroker } from "./decisionBroker";
 import { events, type LiveStage } from "./engineEvents";
 import type { DecisionChoice, DecisionRequest } from "./types";
@@ -11,8 +14,23 @@ import { appendAdrPrompt, remainingPlanPrompt, unwrapFences, updateSpecPrompt, v
 import { CycleEngine } from "./cycle";
 import { loadPlan } from "../plan/parser";
 import { commitDocs, readOptional, repoContext, resetHarnessState, stageDocsForReview, unstageDocs, writeDoc } from "./liveRepo";
+import { git } from "./diff.js";
 
 const LIVE_PROMPT_TIMEOUT_MS = 20 * 60 * 1000;
+
+export interface DiagnosticsInfo {
+  gitBranch: string;
+  gitClean: boolean;
+  worktreeSandbox: boolean;
+  runtimeName: string;
+  thinkerModel: string;
+  executorModel: string;
+  memoryStats: {
+    entitiesCount: number;
+    observationsCount: number;
+  };
+}
+
 
 /** Raised when the user aborts a live session (refine/draft/approve). */
 export class LiveAbortError extends Error {
@@ -26,6 +44,8 @@ export interface LiveEngineOptions {
   cfg: RunConfig;
   client?: OpencodeClient;
   runtime?: IAgentRuntime;
+  /** Optional factory used by `switchRuntime` to resolve a runtime for a target (tests inject stubs). */
+  runtimeFactory?: (target: AgentTarget) => IAgentRuntime;
   /** Initial idea. The TUI sends messages one at a time; headless passes the whole idea here. */
   idea?: string;
 }
@@ -95,7 +115,7 @@ function firstLine(text: string): string {
 
 export class LiveEngine {
   readonly client?: OpencodeClient;
-  readonly runtime: IAgentRuntime;
+  private _runtime: IAgentRuntime;
   private session?: IAgentSession;
   private cfg: RunConfig;
   private models: Models;
@@ -107,11 +127,14 @@ export class LiveEngine {
   private stage: LiveStage = "refine";
   private scope?: string;
   private idea?: string;
+  private runtimeFactory?: (target: AgentTarget) => IAgentRuntime;
+  private needsSystemPrompt = false;
 
   constructor(opts: LiveEngineOptions) {
     this.cfg = opts.cfg;
+    this.runtimeFactory = opts.runtimeFactory;
     if (opts.runtime) {
-      this.runtime = opts.runtime;
+      this._runtime = opts.runtime;
       if (opts.client) {
         this.client = opts.client;
       } else if ("client" in opts.runtime && (opts.runtime as unknown as { client?: OpencodeClient }).client) {
@@ -120,7 +143,7 @@ export class LiveEngine {
       // Non-OpenCode runtimes: leave client undefined — all prompts go through session
     } else {
       this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
-      this.runtime = new OpencodeRuntimeAdapter({
+      this._runtime = new OpencodeRuntimeAdapter({
         client: this.client,
         port: opts.cfg.port,
         projectPath: opts.cfg.projectPath,
@@ -128,6 +151,11 @@ export class LiveEngine {
     }
     this.models = resolveModels(opts.cfg.thinker, opts.cfg.executor);
     this.idea = opts.idea;
+  }
+
+  /** Public accessor for the active agent runtime (mutable via switchRuntime). */
+  get runtime(): IAgentRuntime {
+    return this._runtime;
   }
 
   get currentStage(): LiveStage {
@@ -162,6 +190,106 @@ export class LiveEngine {
     this.cfg.executor = newExecutor;
     return this.models;
   }
+
+  async switchRuntime(agentId: string): Promise<IAgentRuntime> {
+    const target = agentId as AgentTarget;
+    const newRuntime = this.runtimeFactory
+      ? this.runtimeFactory(target)
+      : getAgentRuntime(target, {
+          client: target === "opencode" ? this.client : undefined,
+          port: this.cfg.port,
+          projectPath: this.cfg.projectPath,
+        });
+
+    if (!(await newRuntime.isAvailable())) {
+      throw new Error(
+        `Agent runtime "${target}" is not available (binary not found or unreachable).`,
+      );
+    }
+
+    if (this.session) {
+      try {
+        await this.session.abort();
+      } catch {
+        // Safe fallback on session abort error
+      }
+    } else if (this.client && this.sessionId) {
+      try {
+        await abortSession(this.client, this.sessionId);
+      } catch {
+        // Safe fallback on client abort error
+      }
+    }
+
+    this._runtime = newRuntime;
+    this.session = undefined;
+    this.sessionId = undefined;
+    // The old session carried the architect/system prompt; re-seed it on the
+    // first prompt of the new runtime so the switched agent keeps its context.
+    this.needsSystemPrompt = true;
+
+    events.emit("liveChat", {
+      role: "system",
+      text: `Switched agent runtime to ${newRuntime.name} (${newRuntime.id})`,
+    });
+
+    return newRuntime;
+  }
+
+  async getDiagnostics(): Promise<DiagnosticsInfo> {
+    let gitBranch = "unknown";
+    let gitClean = true;
+    let worktreeSandbox = false;
+
+    try {
+      const branchRes = git(this.cfg.projectPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+      if (branchRes.code === 0 && branchRes.stdout) {
+        gitBranch = branchRes.stdout;
+      }
+      const statusRes = git(this.cfg.projectPath, ["status", "--porcelain"]);
+      if (statusRes.code === 0) {
+        gitClean = statusRes.stdout.trim().length === 0;
+      }
+      const gitDirRes = git(this.cfg.projectPath, ["rev-parse", "--git-dir"]);
+      if (
+        (gitDirRes.code === 0 && gitDirRes.stdout.includes("/worktrees/")) ||
+        this.cfg.projectPath.includes("/.huginn/worktrees/")
+      ) {
+        worktreeSandbox = true;
+      }
+    } catch {
+      // Safe fallback on git command failure
+    }
+
+    let entitiesCount = 0;
+    let observationsCount = 0;
+    try {
+      const service = new MemoryService({ projectRoot: this.cfg.projectPath });
+      try {
+        const stats = service.getStats(service.currentProject.id);
+        entitiesCount = stats.entities;
+        observationsCount = stats.observations;
+      } finally {
+        service.close();
+      }
+    } catch {
+      // Safe fallback if memory DB is uninitialized or unavailable
+    }
+
+    return {
+      gitBranch,
+      gitClean,
+      worktreeSandbox,
+      runtimeName: this.runtime.name,
+      thinkerModel: formatModel(this.models.thinker),
+      executorModel: formatModel(this.models.executor),
+      memoryStats: {
+        entitiesCount,
+        observationsCount,
+      },
+    };
+  }
+
 
   /** After handoff, decisions route to the running CycleEngine. */
   ask(req: DecisionRequest): Promise<DecisionChoice> {
@@ -203,6 +331,16 @@ export class LiveEngine {
     return "";
   }
 
+  /**
+   * Prefixes the architect system prompt onto the next prompt issued after a
+   * runtime switch, so the new runtime's session regains project context.
+   */
+  private takeReseedPrompt(text: string): string {
+    if (!this.needsSystemPrompt) return text;
+    this.needsSystemPrompt = false;
+    return `${refineSystemPrompt(this.cfg.projectPath)}\n\n${text}`;
+  }
+
   async start(): Promise<void> {
     if (this.sessionId && this.session) return;
     this.session = await this.runtime.createSession({
@@ -227,7 +365,9 @@ export class LiveEngine {
     await this.start();
     this.pushMessage("user", text);
     events.emit("liveChat", { role: "user", text });
-    const first = this.messages.filter((m) => m.role === "user").length === 1;
+    const reseed = this.needsSystemPrompt;
+    this.needsSystemPrompt = false;
+    const first = reseed || this.messages.filter((m) => m.role === "user").length === 1;
     const body = first ? `${refineSystemPrompt(this.cfg.projectPath)}\n\nUSER IDEA:\n${text}` : text;
     let replyText: string;
     if (this.session) {
@@ -278,9 +418,11 @@ export class LiveEngine {
       `- No preamble, no closing remarks, no commentary outside the block.`,
     ].join("\n");
 
+    const body = this.takeReseedPrompt(promptLines);
+
     let replyText: string;
     if (this.session) {
-      const res = await this.session.prompt(promptLines, {
+      const res = await this.session.prompt(body, {
         model: formatModel(this.models.thinker),
         timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
         directory: this.cfg.projectPath,
@@ -289,7 +431,7 @@ export class LiveEngine {
     } else {
       if (!this.client) throw new Error("No agent session or OpenCode client available for scope extraction");
       const res = await prompt(this.client, this.sessionId!, {
-        text: promptLines,
+        text: body,
         model: this.models.thinker,
         timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
       });
@@ -324,8 +466,9 @@ export class LiveEngine {
   private async promptModel(text: string, label: string): Promise<string> {
     this.throwIfAborted();
     events.emit("log", { level: "info", message: `${label} (${formatModel(this.models.thinker)})...` });
+    const body = this.takeReseedPrompt(text);
     if (this.session) {
-      const res = await this.session.prompt(text, {
+      const res = await this.session.prompt(body, {
         model: formatModel(this.models.thinker),
         timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
         directory: this.cfg.projectPath,
@@ -334,7 +477,7 @@ export class LiveEngine {
     }
     if (!this.client) throw new Error("No agent session or OpenCode client available for prompt");
     const res = await prompt(this.client, this.sessionId!, {
-      text,
+      text: body,
       model: this.models.thinker,
       timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
     });

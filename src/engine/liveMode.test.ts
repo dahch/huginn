@@ -361,4 +361,121 @@ describe("LiveEngine flow", () => {
       offs.forEach((off) => off());
     }
   });
+
+  describe("switchRuntime", () => {
+    function makeRuntime(
+      id: string,
+      name: string,
+      opts: { available?: boolean; bodies?: string[] } = {},
+    ) {
+      const bodies = opts.bodies ?? [];
+      return {
+        id,
+        name,
+        isAvailable: async () => opts.available ?? true,
+        getAvailableModels: async () => [],
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+        createSession: async () => ({
+          id: `session_${id}`,
+          prompt: async (text: string) => {
+            bodies.push(text);
+            return { messageId: "1", text: "ok" };
+          },
+          abort: async () => {},
+        }),
+      };
+    }
+
+    it("switches runtime adapter, aborts active session, and emits liveChat notification", async () => {
+      let aborted = false;
+      const mockSession = {
+        id: "mock_session_prev",
+        prompt: async () => ({ messageId: "1", text: "ok" }),
+        abort: async () => {
+          aborted = true;
+        },
+      };
+
+      const mockRuntime = {
+        id: "opencode" as const,
+        name: "Mock OpenCode",
+        isAvailable: async () => true,
+        getAvailableModels: async () => [],
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+        createSession: async () => mockSession,
+      };
+
+      const engine = new LiveEngine({
+        cfg: makeCfg(),
+        runtime: mockRuntime as any,
+        runtimeFactory: () => makeRuntime("claude", "Mock Claude") as any,
+      });
+      await engine.start();
+
+      const chatMessages: Array<{ role: string; text: string }> = [];
+      const off = events.on("liveChat", (msg) => {
+        chatMessages.push(msg);
+      });
+
+      try {
+        const newRuntime = await engine.switchRuntime("claude");
+        expect(aborted).toBe(true);
+        expect(newRuntime.id).toBe("claude");
+        expect(engine.runtime.id).toBe("claude");
+        expect(chatMessages.some((m) => m.role === "system" && m.text.includes("Switched agent runtime to"))).toBe(true);
+      } finally {
+        off();
+      }
+    });
+
+    it("fails closed on an unavailable runtime and keeps the active runtime", async () => {
+      const engine = new LiveEngine({
+        cfg: makeCfg(),
+        runtime: makeRuntime("opencode", "Mock OpenCode") as any,
+        runtimeFactory: () => makeRuntime("codex", "Mock Codex", { available: false }) as any,
+      });
+      await engine.start();
+
+      await expect(engine.switchRuntime("codex")).rejects.toThrow(/not available/);
+      expect(engine.runtime.id).toBe("opencode");
+    });
+
+    it("re-seeds the architect system prompt on the first prompt after a switch", async () => {
+      const bodies: string[] = [];
+      const engine = new LiveEngine({
+        cfg: makeCfg(),
+        runtime: makeRuntime("opencode", "Mock OpenCode", { bodies }) as any,
+        runtimeFactory: () => makeRuntime("claude", "Mock Claude", { bodies }) as any,
+      });
+
+      await engine.chat("first message");
+      expect(bodies[0]).toContain("You are the thinker/architect");
+
+      await engine.switchRuntime("claude");
+      await engine.chat("after switch");
+      expect(bodies[1]).toContain("You are the thinker/architect");
+    });
+  });
+
+  describe("getDiagnostics", () => {
+    it("reports git branch, clean status, runtime, and memory stats safely", async () => {
+      const engine = new LiveEngine({ cfg: makeCfg() });
+      const diag1 = await engine.getDiagnostics();
+
+      expect(typeof diag1.gitBranch).toBe("string");
+      expect(diag1.gitClean).toBe(true);
+      expect(diag1.worktreeSandbox).toBe(false);
+      expect(diag1.runtimeName).toBe(engine.runtime.name);
+      expect(typeof diag1.thinkerModel).toBe("string");
+      expect(typeof diag1.executorModel).toBe("string");
+      expect(diag1.memoryStats).toBeDefined();
+      expect(diag1.memoryStats.entitiesCount).toBe(0);
+      expect(diag1.memoryStats.observationsCount).toBe(0);
+
+      // Create an untracked file to make working tree dirty
+      writeFileSync(join(dir, "dirty.txt"), "untracked file");
+      const diag2 = await engine.getDiagnostics();
+      expect(diag2.gitClean).toBe(false);
+    });
+  });
 });
