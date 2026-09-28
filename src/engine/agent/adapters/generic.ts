@@ -1,10 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import type { AgentTarget } from "../../../agents/integrator.js";
 import { resolveMcpPaths } from "../../../agents/integrator.js";
-import { isExecutableBinary } from "../registry.js";
+import {
+  isReservedKey,
+  loadProjectMcpConfig,
+  parseMcpServerEntry,
+  sanitizeTerminalText,
+} from "../mcpConfig.js";
+import { isExecutableBinary } from "../binaryUtils.js";
 import type {
   CommandOptions,
   IAgentRuntime,
@@ -380,44 +386,81 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
   }
 
   async getMcpStatus(): Promise<McpStatusReport> {
+    const projectPath = this.options.projectPath ?? process.cwd();
+    const servers: McpServerStatus[] = [];
+    const seenServerIds = new Set<string>();
+
+    // 1. Project-level .huginn/mcp.json
+    try {
+      const projectConfig = loadProjectMcpConfig(projectPath);
+      if (projectConfig) {
+        const mcpServers = (projectConfig.mcpServers ?? projectConfig.mcp ?? projectConfig.servers) as
+          | Record<string, unknown>
+          | undefined;
+        if (mcpServers && typeof mcpServers === "object") {
+          for (const [name, val] of Object.entries(mcpServers)) {
+            if (isReservedKey(name)) continue;
+            const entry = parseMcpServerEntry(name, val);
+            servers.push(entry);
+            seenServerIds.add(name);
+          }
+        }
+      }
+    } catch (err) {
+      servers.push({
+        id: join(projectPath, ".huginn", "mcp.json"),
+        name: ".huginn/mcp.json",
+        status: "error",
+        transport: "file",
+        toolsCount: 0,
+        error: sanitizeTerminalText((err as Error).message),
+      });
+    }
+
+    // 2. Target agent configuration paths
     const paths = resolveMcpPaths(this.id, {
-      projectPath: this.options.projectPath ?? process.cwd(),
+      projectPath,
       homeDir: this.options.homeDir ?? process.env.HOME ?? "",
       env: this.options.env,
     });
 
-    const servers: McpServerStatus[] = [];
-
     for (const filePath of paths) {
       if (!existsSync(filePath)) continue;
       try {
+        const stat = statSync(filePath);
+        if (!stat.isFile() || stat.size > 1024 * 1024) continue;
         const content = readFileSync(filePath, "utf8");
         if (filePath.endsWith(".toml")) {
           const tableMatches = content.matchAll(/^\s*\[mcp_servers\.([^\]]+)\]/gm);
           for (const match of tableMatches) {
-            const name = match[1].trim();
-            servers.push({
-              id: name,
-              name,
-              status: "connected",
-              transport: "stdio",
-              toolsCount: 0,
-            });
+            const rawName = match[1].trim();
+            if (isReservedKey(rawName)) continue;
+            const name = sanitizeTerminalText(rawName);
+            if (!name) continue;
+            if (!seenServerIds.has(name)) {
+              servers.push({
+                id: name,
+                name,
+                status: "connected",
+                transport: "stdio",
+                toolsCount: 0,
+                tools: [],
+              });
+              seenServerIds.add(name);
+            }
           }
         } else {
-          const parsed = JSON.parse(content) as Record<string, unknown>;
+          const parsed = JSON.parse(content, (key, value) => {
+            if (isReservedKey(key)) return undefined;
+            return value;
+          }) as Record<string, unknown>;
           const mcpServers = (parsed.mcpServers ?? parsed.mcp) as Record<string, unknown> | undefined;
           if (mcpServers && typeof mcpServers === "object") {
             for (const [name, val] of Object.entries(mcpServers)) {
-              if (typeof val === "object" && val !== null) {
-                const s = val as Record<string, unknown>;
-                servers.push({
-                  id: name,
-                  name,
-                  status: "connected",
-                  transport: s.command ? "stdio" : s.transport ? String(s.transport) : "stdio",
-                  toolsCount: Array.isArray(s.tools) ? s.tools.length : 0,
-                });
+              if (isReservedKey(name)) continue;
+              if (typeof val === "object" && val !== null && !seenServerIds.has(name)) {
+                servers.push(parseMcpServerEntry(name, val));
+                seenServerIds.add(name);
               }
             }
           }
@@ -429,18 +472,20 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
           status: "error",
           transport: "file",
           toolsCount: 0,
-          error: (err as Error).message,
+          error: sanitizeTerminalText((err as Error).message),
         });
       }
     }
 
     const totalTools = servers.reduce((sum, s) => sum + s.toolsCount, 0);
     const healthy = servers.length > 0 && servers.every((s) => s.status === "connected");
+    const degraded = servers.some((s) => s.status === "error");
 
     return {
       servers,
       totalTools,
       healthy,
+      degraded,
     };
   }
 

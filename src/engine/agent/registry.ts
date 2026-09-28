@@ -45,16 +45,8 @@ export interface AgentResolutionSources {
   env?: Record<string, string | undefined>;
 }
 
-export function isExecutableBinary(filePath: string): boolean {
-  try {
-    const stat = statSync(filePath);
-    if (!stat.isFile()) return false;
-    accessSync(filePath, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { isExecutableBinary } from "./binaryUtils.js";
+export { isExecutableBinary };
 
 function findBinaryPath(candidates: string[], pathEnv: string): string | undefined {
   const dirs = pathEnv.split(delimiter);

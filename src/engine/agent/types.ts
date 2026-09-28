@@ -7,12 +7,19 @@ export interface ModelInfo {
   description?: string;
 }
 
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+}
+
 export interface McpServerStatus {
   id: string;
   name: string;
   status: "connected" | "disconnected" | "error";
   transport: string;
   toolsCount: number;
+  tools?: McpToolInfo[];
+  latencyMs?: number;
   error?: string;
 }
 
@@ -20,6 +27,8 @@ export interface McpStatusReport {
   servers: McpServerStatus[];
   totalTools: number;
   healthy: boolean;
+  degraded?: boolean;
+  error?: string;
 }
 
 export interface SessionOptions {

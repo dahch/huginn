@@ -1,6 +1,6 @@
 import { delimiter, join } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
-import { isExecutableBinary } from "../registry.js";
+import { isExecutableBinary } from "../binaryUtils.js";
 import type {
   CommandOptions,
   IAgentRuntime,
