@@ -213,6 +213,24 @@ describe("loadUserConfig", () => {
       warn.mockRestore();
     }
   });
+
+  it("accepts a known methodology profile and drops an unknown one (AC-36.2)", () => {
+    const { project, home } = makeEnv();
+    writeProjectConfig(project, { profile: "strict-tdd" });
+    expect(loadUserConfig(project, home)).toEqual({ profile: "strict-tdd" });
+
+    writeProjectConfig(project, { profile: "madness" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Dropped (so the run falls back to the default) with a warning naming the
+      // valid ids — never silently accepted.
+      expect(loadUserConfig(project, home)).toEqual({});
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("profile"));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("strict-tdd"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("saveUserConfig", () => {

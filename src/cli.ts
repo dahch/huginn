@@ -11,6 +11,13 @@ import {
   type RunConfig,
 } from "./config";
 import { MAIN_PHASES, type PhaseName } from "./engine/types";
+import {
+  DEFAULT_PROFILE,
+  isProfileName,
+  PROFILE_NAMES,
+  PROFILE_PHASES,
+  type ProfileName,
+} from "./engine/profiles";
 import { loadPlan } from "./plan/parser";
 import {
   loadState,
@@ -170,6 +177,7 @@ Optional:
   --spec <file>         default: <project>/spec.md
   --adr <file>          default: <project>/adr.md
   --force               (plan only) overwrite existing spec.md/adr.md/plan.md
+  --profile <id>        Methodology: ${PROFILE_NAMES.join(", ")} (default: huginn)
   --mode auto|supervised   auto=autonomous with retry budget; supervised=ask at every gate  (default: auto)
   --permissions auto|ask|deny  auto-approve tool permissions  (default: auto)
   --max-retries <n>     fix attempts per blocked gate before escalating  (default: 3)
@@ -522,6 +530,7 @@ export async function main(argv: string[]): Promise<void> {
     executor,
     agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
+    profile: resolveProfile(args["--profile"], layers.project.profile ?? layers.user.profile),
     permissions:
       args["--permissions"] === "ask"
         ? "ask"
@@ -590,7 +599,7 @@ export async function main(argv: string[]): Promise<void> {
     void maybePrintUpdateReminder();
     console.log(
       `[huginn] project=${projectPath}\n` +
-        `[huginn] agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}\n` +
+        `[huginn] agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} profile=${cfg.profile ?? DEFAULT_PROFILE} max-retries=${cfg.maxRetries}\n` +
         `[huginn] iterations=${plan.iterations.length}` +
         (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
     );
@@ -811,6 +820,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     executor,
     agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
+    profile: resolveProfile(args["--profile"], layers.project.profile ?? layers.user.profile),
     permissions:
       args["--permissions"] === "ask"
         ? "ask"
@@ -836,14 +846,14 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     void maybePrintUpdateReminder();
     console.log(
       `[huginn] live mode · project=${projectPath}\n` +
-        `[huginn] agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} max-retries=${cfg.maxRetries}` +
+        `[huginn] agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} profile=${cfg.profile ?? DEFAULT_PROFILE} max-retries=${cfg.maxRetries}` +
         (idea ? `\n[huginn] initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
     );
   } else {
     events.emit("log", {
       level: "info",
       message:
-        `live mode · project=${projectPath} agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode}` +
+        `live mode · project=${projectPath} agent=${cfg.agent} thinker=${thinker} executor=${executor} mode=${cfg.mode} profile=${cfg.profile ?? DEFAULT_PROFILE}` +
         (idea ? ` initial idea: ${idea.slice(0, 80)}${idea.length > 80 ? "…" : ""}` : ""),
     });
   }
@@ -1043,11 +1053,25 @@ function warnIfMissingTemplates(tui?: boolean): void {
 }
 
 function validatePhase(name: string): PhaseName {
-  if ((MAIN_PHASES as string[]).includes(name)) {
+  // Any profile's phases are accepted: the active one decides what actually runs
+  // (REQ-36), and `--only-phase` is a debugging aid across methodologies.
+  if ((PROFILE_PHASES as string[]).includes(name)) {
     return name as PhaseName;
   }
-  console.error(`Invalid --only-phase "${name}". Valid: ${MAIN_PHASES.join(", ")}`);
+  console.error(`Invalid --only-phase "${name}". Valid: ${PROFILE_PHASES.join(", ")}`);
   process.exit(1);
+}
+
+/** Resolve `--profile`, failing closed on an unknown id (AC-36.2/AC-36.6). */
+function resolveProfile(flag: unknown, fallback?: string): ProfileName {
+  const raw = typeof flag === "string" ? flag.trim().toLowerCase() : (fallback ?? DEFAULT_PROFILE);
+  if (!isProfileName(raw)) {
+    console.error(
+      `Invalid --profile "${String(flag)}". Valid: ${PROFILE_NAMES.join(", ")}`,
+    );
+    process.exit(1);
+  }
+  return raw;
 }
 
 /**

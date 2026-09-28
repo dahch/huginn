@@ -16,6 +16,7 @@ import { HelpModal } from "./HelpModal";
 import { SkillsModal } from "./SkillsModal";
 import { AgentPickerModal } from "./AgentPickerModal";
 import { findCommand, matchCommands, type SlashCommand } from "./commandRegistry.js";
+import { profileSpec } from "../engine/profiles.js";
 import {
   NEXT_STEP,
   busyFeedback,
@@ -705,6 +706,7 @@ function RefineView({
             statusRow("Working Tree:", cleanStr),
             statusRow("Worktree Sandbox:", sandboxStr),
             statusRow("Active Runtime:", safeRuntime),
+          statusRow("Methodology:", sanitizeTerminalText(profileSpec(cfg.profile).name).slice(0, STATUS_VALUE_WIDTH)),
             statusRow("Thinker Model:", safeThinker),
             statusRow("Executor Model:", safeExecutor),
             statusRow("Muninn Memory:", memStr),

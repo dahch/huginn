@@ -169,6 +169,50 @@ describe("CycleEngine run loop", () => {
     expect(engine.getState().currentIteration).toBe(2);
   });
 
+  it("runs a profile that does not start with SPEC_AUDIT instead of silently doing nothing (REV-001)", async () => {
+    // The resume cursor used to be keyed off `currentPhase`, which starts at
+    // SPEC_AUDIT every iteration — so a profile beginning elsewhere matched no
+    // step and ran zero phases while reporting success. `sandbox: false` is the
+    // path where that happened.
+    const client = makeClient(async () => ({
+      info: { id: "msg", error: undefined },
+      parts: [{ type: "text", text: '{"status":"pass","summary":"ok","actionItems":[]}' }],
+    }));
+
+    const engine = new CycleEngine({ cfg: makeCfg({ profile: "odd" }), client, plan: makePlan() });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    const phases = engine.getState().history.map((h) => h.phase);
+    // ODD is EXECUTE → TEST_MODULE → COMMIT_ALL: every step must have run.
+    expect(phases).toContain("EXECUTE");
+    expect(phases).toContain("TEST_MODULE");
+    expect(phases).toContain("COMMIT_ALL");
+    expect(phases).not.toContain("SPEC_AUDIT");
+  });
+
+  it("runs strict-tdd's tests before AND after EXECUTE (REV-002)", async () => {
+    const client = makeClient(async () => ({
+      info: { id: "msg", error: undefined },
+      parts: [{ type: "text", text: '{"status":"pass","summary":"ok","actionItems":[]}' }],
+    }));
+
+    const engine = new CycleEngine({
+      cfg: makeCfg({ profile: "strict-tdd" }),
+      client,
+      plan: makePlan(),
+    });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    const history = engine.getState().history;
+    const testRuns = history.filter((h) => h.phase === "TEST_MODULE");
+    // Tests first, then the gate re-runs them: the failing-first run must not
+    // have been "fixed" before EXECUTE, so both occurrences are recorded.
+    expect(testRuns.length).toBeGreaterThanOrEqual(2);
+    expect(history.map((h) => h.phase)).toContain("EXECUTE");
+  });
+
   it("fails closed instead of passing when EXECUTE returns an empty report", async () => {
     // `session.prompt` can resolve on a step boundary (reasoning-only turn)
     // with no text parts; that must never record a pass.

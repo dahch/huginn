@@ -20,6 +20,13 @@ import {
   saveUserConfig,
   type UserConfig,
 } from "../config.js";
+import {
+  DEFAULT_PROFILE,
+  isProfileName,
+  PROFILE_NAMES,
+  profileSpec,
+  type ProfileName,
+} from "../engine/profiles.js";
 
 export function printConfigUsage(): void {
   console.log(`huginn config — Persistent model configuration (thinker/executor)
@@ -93,6 +100,11 @@ export async function handleConfigCommand(
     console.log(
       `  executor = ${chalk.cyan(effective.executor)}  (source: ${described.executor.source})`,
     );
+    console.log(chalk.bold("[huginn] methodology"));
+    console.log(
+      `  profile  = ${chalk.cyan(layers.project.profile ?? layers.user.profile ?? DEFAULT_PROFILE)}` +
+        `  (${profileSpec(layers.project.profile ?? layers.user.profile).name})`,
+    );
     console.log(chalk.bold("[huginn] config files"));
     console.log(`  project: ${getProjectConfigPath(projectPath)}`);
     console.log(`  user:    ${getUserConfigPath(homeDir)}`);
@@ -117,8 +129,25 @@ export async function handleConfigCommand(
       }
       updates[key] = raw.trim();
     }
+    // Methodology profile (REQ-36 / AC-36.2): validated like every other enum.
+    const rawProfile = args["--profile"];
+    if (rawProfile !== undefined) {
+      provided = true;
+      const candidate = typeof rawProfile === "string" ? rawProfile.trim().toLowerCase() : "";
+      if (!isProfileName(candidate)) {
+        console.error(
+          chalk.red(`Error: --profile must be one of [${PROFILE_NAMES.join(", ")}].`),
+        );
+        printConfigUsage();
+        process.exitCode = 1;
+        return;
+      }
+      updates.profile = candidate as ProfileName;
+    }
     if (!provided) {
-      console.error(chalk.red("Error: at least one of --thinker or --executor is required."));
+      console.error(
+        chalk.red("Error: at least one of --thinker, --executor or --profile is required."),
+      );
       printConfigUsage();
       process.exitCode = 1;
       return;
@@ -136,6 +165,7 @@ export async function handleConfigCommand(
     );
     if (updates.thinker !== undefined) console.log(`  thinker  = ${updates.thinker}`);
     if (updates.executor !== undefined) console.log(`  executor = ${updates.executor}`);
+    if (updates.profile !== undefined) console.log(`  profile  = ${updates.profile}`);
     return;
   }
 

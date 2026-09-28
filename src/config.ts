@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PhaseName } from "./engine/types";
 import { AGENT_TARGETS, REMOVED_AGENT_TARGETS } from "./agents/integrator";
+import { DEFAULT_PROFILE, isProfileName, PROFILE_NAMES, type ProfileName } from "./engine/profiles";
 
 export interface RunConfig {
   projectPath: string;
@@ -24,6 +25,8 @@ export interface RunConfig {
   executor: string;
   agent?: string;
   mode: "auto" | "supervised";
+  /** Execution methodology (REQ-36 / ADR-35); undefined means the Huginn Cycle. */
+  profile?: ProfileName;
   permissions: "auto" | "ask" | "deny";
   maxRetries: number;
   fromIteration?: number;
@@ -47,6 +50,7 @@ export interface UserConfig {
   executor?: string;
   agent?: string;
   mode?: "auto" | "supervised";
+  profile?: ProfileName;
   [key: string]: unknown;
 }
 
@@ -215,6 +219,13 @@ function sanitizeConfig(value: unknown, path: string): UserConfig {
     } else if (key === "mode") {
       if (raw === "auto" || raw === "supervised") out.mode = raw;
       else console.warn(`[huginn] config ${path}: "mode" must be "auto" or "supervised"; ignoring`);
+    } else if (key === "profile") {
+      const candidate = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+      if (isProfileName(candidate)) out.profile = candidate;
+      else
+        console.warn(
+          `[huginn] config ${path}: "profile" must be one of [${PROFILE_NAMES.join(", ")}]; ignoring (using "${DEFAULT_PROFILE}")`,
+        );
     } else {
       out[key] = raw;
     }

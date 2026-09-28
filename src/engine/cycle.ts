@@ -18,6 +18,8 @@ import {
   type PhaseContext,
 } from "./phases";
 import { parseValidateStepVerdict, parseSpecAuditVerdict, judgePhase } from "./gate";
+import { profilePreamble, profileSpec, validateProfilePhases, type ProfileName } from "./profiles";
+import { buildIterationReceipt, treeHash, writeIterationReceipt } from "./receipts";
 import type { Verdict, PhaseName, PhaseResult, DecisionRequest, DecisionChoice } from "./types";
 import { events } from "./engineEvents";
 import { DecisionBroker } from "./decisionBroker";
@@ -52,16 +54,51 @@ interface PipelineStep {
   blocking: boolean;
 }
 
-const PIPELINE: PipelineStep[] = [
-  { phase: "SPEC_AUDIT", fn: specAudit, gate: "spec-audit", fixPhase: "FIX_SPEC", fixLabel: "spec audit", blocking: true },
-  { phase: "EXECUTE", fn: execute, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
-  { phase: "VALIDATE_STEP", fn: validateStep, gate: "validate-step", fixPhase: "FIX_VALIDATE", fixLabel: "validation gate", blocking: true },
-  { phase: "TEST_MODULE", fn: testModule, gate: "judge", fixPhase: "FIX_TEST", fixLabel: "test failures", blocking: true },
-  { phase: "SECURE_CHECK", fn: secureCheck, gate: "judge", fixPhase: "FIX_SECURITY", fixLabel: "security audit", blocking: true },
-  { phase: "REVIEW", fn: review, gate: "judge", fixPhase: "FIX_REVIEW", fixLabel: "code review", blocking: true },
-  { phase: "DOC_SYNC", fn: docSync, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
-  { phase: "COMMIT_ALL", fn: commitAll, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
-];
+/**
+ * The phase implementations, keyed by phase. A methodology profile (REQ-36 /
+ * ADR-35) is just an ordered selection of these, so a profile can reorder or
+ * subset the pipeline — and `strict-tdd` can run `TEST_MODULE` twice (tests
+ * first, then the gate) — without touching the engine.
+ */
+const STEP_BY_PHASE: Partial<Record<PhaseName, PipelineStep>> = {
+  SPEC_AUDIT: { phase: "SPEC_AUDIT", fn: specAudit, gate: "spec-audit", fixPhase: "FIX_SPEC", fixLabel: "spec audit", blocking: true },
+  EXECUTE: { phase: "EXECUTE", fn: execute, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
+  VALIDATE_STEP: { phase: "VALIDATE_STEP", fn: validateStep, gate: "validate-step", fixPhase: "FIX_VALIDATE", fixLabel: "validation gate", blocking: true },
+  TEST_MODULE: { phase: "TEST_MODULE", fn: testModule, gate: "judge", fixPhase: "FIX_TEST", fixLabel: "test failures", blocking: true },
+  SECURE_CHECK: { phase: "SECURE_CHECK", fn: secureCheck, gate: "judge", fixPhase: "FIX_SECURITY", fixLabel: "security audit", blocking: true },
+  REVIEW: { phase: "REVIEW", fn: review, gate: "judge", fixPhase: "FIX_REVIEW", fixLabel: "code review", blocking: true },
+  DOC_SYNC: { phase: "DOC_SYNC", fn: docSync, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
+  COMMIT_ALL: { phase: "COMMIT_ALL", fn: commitAll, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
+};
+
+/**
+ * Resolve a profile into runnable steps, failing closed (AC-36.6) if it names a
+ * phase the engine cannot run — a broken profile must never silently degrade to
+ * the default.
+ */
+function pipelineFor(profile: ProfileName | undefined): PipelineStep[] {
+  const spec = profileSpec(profile);
+  const guard = validateProfilePhases(
+    spec.id,
+    new Set(Object.keys(STEP_BY_PHASE) as PhaseName[]),
+  );
+  if (!guard.ok) {
+    throw new Error(
+      `profile "${spec.id}" needs phase(s) the engine cannot run: ${guard.missing.join(", ")}`,
+    );
+  }
+  const steps = spec.phases.map((phase) => ({ ...STEP_BY_PHASE[phase]! }));
+  if (spec.testFirst) {
+    // The pre-EXECUTE test run is expected to fail: judge it (so the failing
+    // verdict is recorded as evidence) but never block, and never "fix" — that
+    // would implement the code before EXECUTE and invert test-first.
+    const index = steps.findIndex((step) => step.phase === "TEST_MODULE");
+    if (index >= 0) {
+      steps[index] = { ...steps[index]!, blocking: false, fixPhase: null, fixLabel: "" };
+    }
+  }
+  return steps;
+}
 
 const PAUSE_POLL_MS = 200;
 const SUMMARY_MAX_LENGTH = 300;
@@ -90,6 +127,8 @@ export class CycleEngine {
   private models: Models;
   private decisions = new DecisionBroker();
   private paused = false;
+  /** Verdict of the most recently completed phase (for the iteration receipt). */
+  private lastVerdict?: Verdict;
   private abortRequested = false;
   private worktrees?: WorktreeManager;
   private sandboxEnabledCache?: boolean;
@@ -399,6 +438,7 @@ export class CycleEngine {
         planPath: this.sandboxDocPath(sandbox, this.cfg.planPath),
         modules: explicitModules,
         baseCommit,
+        profilePreamble: profilePreamble(this.cfg.profile),
         phaseTimeoutMs: this.cfg.phaseTimeoutMs,
       };
 
@@ -406,21 +446,41 @@ export class CycleEngine {
       // Capture it once; currentPhase advances as steps run. An ephemeral sandbox
       // cannot resume mid-iteration: a prior run's worktree was discarded at
       // startup (cleanupAll), so any earlier phase's changes are gone and must re-run.
-      const resumePhase =
-        !this.cfg.onlyPhase && !sandbox && this.state.currentIteration === iteration.index
-          ? this.state.currentPhase
-          : null;
-      let pastResume = resumePhase === null;
-
-      for (const step of PIPELINE) {
-        if (this.abortRequested) return;
-        if (this.cfg.onlyPhase && step.phase !== this.cfg.onlyPhase) continue;
-        if (!pastResume) {
-          if (step.phase === resumePhase) pastResume = true;
-          else continue;
+      const steps = pipelineFor(this.cfg.profile);
+      // Resume at the first step this iteration has not recorded yet. Keying the
+      // cursor off a phase *id* was wrong: `currentPhase` starts at SPEC_AUDIT every
+      // iteration, so a profile that does not begin with SPEC_AUDIT (odd/rdd/
+      // strict-tdd) matched no step and silently ran nothing (REV-001).
+      let resumeIndex = 0;
+      if (!this.cfg.onlyPhase && !sandbox && this.state.currentIteration === iteration.index) {
+        const recorded = this.state.history
+          .filter((h) => h.iteration === iteration.index)
+          .map((h) => h.phase);
+        resumeIndex = steps.length;
+        const seen = new Map<PhaseName, number>();
+        for (let i = 0; i < steps.length; i += 1) {
+          const phase = steps[i]!.phase;
+          const occurrence = (seen.get(phase) ?? 0) + 1;
+          seen.set(phase, occurrence);
+          if (occurrence > recorded.filter((p) => p === phase).length) {
+            resumeIndex = i;
+            break;
+          }
         }
+      }
+      // Frozen evidence for the profiles that require it (REQ-36 / AC-36.4).
+      const verdicts: Array<{ phase: PhaseName; verdict?: Verdict }> = [];
+      const preExecuteTree = profileSpec(this.cfg.profile).evidence === "snapshot"
+        ? treeHash(workPath)
+        : undefined;
+
+      for (const [stepIndex, step] of steps.entries()) {
+        if (this.abortRequested) return;
+        if (stepIndex < resumeIndex) continue;
+        if (this.cfg.onlyPhase && step.phase !== this.cfg.onlyPhase) continue;
 
         this.state.currentPhase = step.phase;
+        this.lastVerdict = undefined;
 
         // refresh modules once the iteration has produced changes
         if (step.phase === "VALIDATE_STEP" || step.phase === "TEST_MODULE") {
@@ -437,7 +497,30 @@ export class CycleEngine {
         }
 
         if (this.abortRequested) return;
+        verdicts.push({ phase: step.phase, verdict: this.lastVerdict ?? "skipped" });
         this.persist();
+      }
+
+      // Write the receipt *before* promotion so it pins the verified tree.
+      const receipt = buildIterationReceipt({
+        profile: this.cfg.profile,
+        iteration: iteration.index,
+        title: iteration.title,
+        projectPath: workPath,
+        // The real pre-iteration HEAD, not another read of the current one.
+        baseCommit: ctx.baseCommit,
+        verdicts,
+        preExecuteTree,
+      });
+      if (receipt) {
+        const path = writeIterationReceipt(this.cfg.projectPath, receipt);
+        if (path) {
+          events.emit("log", {
+            level: "info",
+            message: `[huginn] receipt written: ${relative(this.cfg.projectPath, path)}`,
+            timestamp: new Date().toISOString(),
+          });
+        }
       }
 
       // Success: integrate the sandbox into the primary branch.
@@ -608,6 +691,7 @@ export class CycleEngine {
         verdict = "pass";
       }
       result.verdict = verdict;
+      this.lastVerdict = verdict;
       const durationMs = new Date(result.finishedAt).getTime() - new Date(result.startedAt).getTime();
       this.record(result, iteration.index, step, curAttempt, durationMs);
       this.persist();

@@ -33,6 +33,8 @@ export interface PhaseContext {
   planPath: string;
   modules: string[];
   baseCommit?: string;
+  /** The active profile's methodology instruction for `EXECUTE` (REQ-36). */
+  profilePreamble?: string;
   phaseTimeoutMs: number;
   /**
    * Explicit SQLite database path for Muninn persistence. When sandboxing,
@@ -152,6 +154,8 @@ export async function execute(ctx: PhaseContext): Promise<PromptResult> {
   const text = [
     `Execute the following iteration of the plan. Follow it exactly.`,
     ``,
+    // The active profile's methodology instruction, when it has one (REQ-36).
+    ...(ctx.profilePreamble ? [ctx.profilePreamble.trimEnd(), ``] : []),
     `## Iteration ${ctx.iteration.index} — ${ctx.iteration.title}`,
     ``,
     ctx.iteration.prompt,
