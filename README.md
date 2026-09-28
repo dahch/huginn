@@ -147,7 +147,7 @@ and default — while `huginn init --help` prints the wizard's own usage.
 | `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`) |
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |
 
-`huginn setup` targets: `cursor`, `claude`, `opencode`, `windsurf`, `gemini`, `qwen`, `codex`, `agy`,
+`huginn setup` targets: `cursor`, `claude`, `opencode`, `windsurf`, `qwen`, `codex`, `agy`,
 `kimi`, `pi`, `commandcode`, `omp`, or `all` (default). `--list` prints the registry without writing
 anything; `--force` overwrites a conflicting existing `muninn` entry (otherwise it is left untouched
 and reported as skipped). Paths are overridable via `HUGINN_AGENT_<ID>_MCP_PATH` (colon-separated)
@@ -171,7 +171,7 @@ override the detected locations.
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--project <path>` | `cwd` | git repo being built; `run` requires `plan.md`, `spec.md`, `adr.md` |
-| `--agent <id>` | resolved from config | AI agent runtime (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `gemini`, `agy`) |
+| `--agent <id>` | resolved from config | AI agent runtime (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `agy`) |
 | `--thinker <m>` | resolved from config (see [Model and Agent configuration](#model-and-agent-configuration)) | model used to **fix** findings (auditor + reviewer + any blocker) |
 | `--executor <m>` | resolved from config | model used for everything else (execution, gates, docs, commits) |
 | `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents |
@@ -223,7 +223,7 @@ The project config file is a JSON object with documented keys:
 }
 ```
 
-- `agent` must be one of the registered agent targets (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `gemini`, `agy`).
+- `agent` must be one of the registered agent targets (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `agy`).
 - `thinker` / `executor` are model strings (`provider/model`); `mode` is `auto` or `supervised`.
 - Unknown keys are preserved verbatim, so third-party tooling can keep its own settings alongside.
 - The project file overrides the user file key-by-key; a missing file is treated as empty and a

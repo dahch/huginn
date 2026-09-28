@@ -1614,7 +1614,7 @@ unreachable config layer:
 agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`
 (`src/agents/integrator.ts`), so a new agent is a one-row addition (REQ-15).
 
-#### `AGENT_REGISTRY` (12 targets + `all`)
+#### `AGENT_REGISTRY` (11 targets + `all`)
 
 | id | label | MCP config path(s) | format | rules file |
 |---|---|---|---|---|
@@ -1622,7 +1622,6 @@ agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`
 | `claude` | Claude Code / Desktop | `<project>/.mcp.json`, `<home>/.claude.json`, `<home>/.claude/claude_desktop_config.json` | `mcpServers` | `CLAUDE.md` |
 | `opencode` | OpenCode | `<home>/.config/opencode/opencode.json` (honors `HUGINN_OPENCODE_CONFIG_DIR`) | `opencode` (`mcp` key) | `AGENTS.md` |
 | `windsurf` | Windsurf | `<home>/.codeium/windsurf/mcp_config.json` | `mcpServers` | `.windsurfrules` |
-| `gemini` | Gemini CLI | `<home>/.gemini/settings.json` | `mcpServers` | `GEMINI.md` |
 | `qwen` | Qwen Code | `<home>/.qwen/settings.json` | `mcpServers` | `QWEN.md` |
 | `codex` | OpenAI Codex CLI | `<home>/.codex/config.toml` | `toml` (`[mcp_servers.muninn]`) | `AGENTS.md` |
 | `agy` | Antigravity CLI (agy) | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` | `AGENTS.md` |
@@ -1890,7 +1889,7 @@ flowchart TD
 The runtime abstraction defines two foundational ports:
 
 1. **`IAgentRuntime`**:
-   - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `gemini`, `agy`).
+   - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `agy`).
    - `name: string` — human-readable agent name.
    - `isAvailable(): Promise<boolean>` — non-blocking probe verifying if the agent's executable binary exists on `PATH` or daemon is reachable.
    - `getAvailableModels(): Promise<ModelInfo[]>` — queries the models the runtime can actually use (never a fabricated catalog); returns `[]` when the runtime exposes no listing mechanism.
@@ -2573,7 +2572,7 @@ changed.
 | `commandcode` | `commandcode --list-models` (group headings, `id` + 2-space description rows; the trailing `Pass the full id…` / `Docs:` footer breaks the parse) | 82 |
 | `omp` | `omp models` (`<provider> (<count>)` sections + box-drawing table; header and border rows skipped) | 192 |
 | `agy` | `agy models` (`id<TAB>name` TSV; non-TSV preamble and duplicates dropped) | 14 |
-| `claude`, `qwen`, `gemini`, `kimi`, `pi`, `cursor`, `windsurf`, `codex` | none → `[]` **with a reason** | — |
+| `claude`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `codex` | none → `[]` **with a reason** | — |
 
 ```mermaid
 flowchart TD
