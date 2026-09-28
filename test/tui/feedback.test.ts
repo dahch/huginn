@@ -52,7 +52,7 @@ describe("feedback copy (REQ-31 / AC-31.1, AC-31.2)", () => {
   it("leads a failure with the component and the next step, and keeps the cause as detail", () => {
     const message = failureFeedback("Runtime switch failed", NEXT_STEP.runtimeSwitch, new Error("binary not found"));
     const [headline, cause] = message.split("\n");
-    expect(headline).toBe("⚠ Runtime switch failed — run `/agent` to list the runtimes, then `/agent <id>` to switch");
+    expect(headline).toBe("⚠ Runtime switch failed — run `/agent` to open the runtime picker, then choose an installed runtime");
     expect(cause).toBe("  cause: binary not found");
     // The hint is on the first line, the cause never is.
     expect(headline).not.toContain("binary not found");

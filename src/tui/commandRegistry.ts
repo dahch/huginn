@@ -41,7 +41,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     id: "/agent",
     aliases: ["/agent"],
     argHint: "[id]",
-    description: "List agent runtimes or switch to one by id (claude, opencode, codex, omp, …)",
+    description: "Open the runtime picker, or switch to a runtime by id (claude, opencode, agy, …)",
     category: "config",
     takesArgs: true,
   },

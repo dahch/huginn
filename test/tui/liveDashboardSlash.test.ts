@@ -490,7 +490,73 @@ describe("LiveDashboard Slash Commands", () => {
     expect(systemMessages.some((m) => m.includes('Invalid model format "not-a-model"'))).toBe(true);
   });
 
-  it("lists and switches agent runtimes via /agent and /agent <id>", async () => {
+  it("opens the interactive runtime picker on bare /agent (REQ-33)", async () => {
+    const stdout = createMockStdout();
+    let output = "";
+    stdout.on("data", (chunk: any) => {
+      output += chunk.toString();
+    });
+    const stdin = createMockStdin();
+    const live = createMockLive({ switchRuntime: vi.fn() });
+
+    const instance = render(
+      React.createElement(LiveApp, {
+        live,
+        cfg: mockCfg,
+      }),
+      { stdout, stdin, patchConsole: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+    await typeCommand(stdin, "/agent");
+    // This harness flushes Ink's frame on unmount, so read afterwards.
+    instance.unmount();
+
+    expect(output).toContain("SELECT AGENT RUNTIME");
+    expect(live.switchRuntime).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and keeps the picker open when a runtime cannot be switched (AC-33.2)", async () => {
+    const stdout = createMockStdout();
+    const stdin = createMockStdin();
+    const live = createMockLive({
+      switchRuntime: vi.fn().mockRejectedValue(new Error('Agent runtime "cursor" is not available')),
+    });
+
+    const systemMessages: string[] = [];
+    const off = events.on("liveChat", (e) => {
+      if (e.role === "system") systemMessages.push(e.text);
+    });
+
+    const instance = render(
+      React.createElement(LiveApp, {
+        live,
+        cfg: mockCfg,
+      }),
+      { stdout, stdin, patchConsole: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+    await typeCommand(stdin, "/agent");
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Enter attempts the switch; it rejects.
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 120));
+    // Enter again: if the modal had closed, this would submit an empty draft and
+    // change nothing — so a second switch attempt proves it stayed open (REV-301).
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 120));
+    instance.unmount();
+    off();
+
+    expect(live.switchRuntime).toHaveBeenCalledTimes(2);
+    expect(systemMessages.some((m) => m.includes("Runtime switch failed"))).toBe(true);
+    // The failure carries an actionable next step, never the raw cause alone.
+    expect(systemMessages.some((m) => m.includes("run `/agent`"))).toBe(true);
+  });
+
+  it("still switches runtime via /agent <id> and reports the result (REQ-33)", async () => {
     const stdout = createMockStdout();
     const stdin = createMockStdin();
     const live = createMockLive({
@@ -511,15 +577,13 @@ describe("LiveDashboard Slash Commands", () => {
     );
 
     await new Promise((r) => setTimeout(r, 60));
-    await typeCommand(stdin, "/agent");
-    expect(systemMessages.some((m) => m.includes("Available agent runtimes"))).toBe(true);
-
     await typeCommand(stdin, "/agent claude");
     instance.unmount();
     off();
 
     expect(live.switchRuntime).toHaveBeenCalledWith("claude");
-    expect(systemMessages.some((m) => m.includes("Failed to switch runtime"))).toBe(false);
+    expect(systemMessages.some((m) => m.includes("Runtime switched to"))).toBe(true);
+    expect(systemMessages.some((m) => m.includes("Runtime switch failed"))).toBe(false);
   });
 
   it("aborts session immediately with 'q' key when busy (input disabled)", async () => {

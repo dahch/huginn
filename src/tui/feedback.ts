@@ -36,7 +36,7 @@ export const NEXT_STEP = {
   modelSelection:
     "run `/model <id>` to choose a model, or `/model <thinker> [executor]` to set one directly",
   /** Runtime switch failure: `/agent`. */
-  runtimeSwitch: "run `/agent` to list the runtimes, then `/agent <id>` to switch",
+  runtimeSwitch: "run `/agent` to open the runtime picker, then choose an installed runtime",
   /** MCP / runtime diagnostic failure: `/mcp`. */
   mcp: "run `/mcp` to inspect the MCP servers and their tools",
   /** `/status` failure: retry, or inspect the runtime through `/mcp`. */

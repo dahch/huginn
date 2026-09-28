@@ -4,6 +4,7 @@ import type { CycleEngine } from "../engine/cycle";
 import { LiveAbortError, type LiveEngine } from "../engine/liveMode";
 import { saveUserConfig, saveGlobalUserConfig, getProjectConfigPath, getUserConfigPath, type RunConfig } from "../config";
 import { AGENT_TARGETS } from "../agents/integrator";
+import { isAgentTarget } from "../engine/agent/registry";
 import { events, type LiveStage } from "../engine/engineEvents";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
@@ -13,6 +14,7 @@ import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
 import { McpInspectorModal } from "./McpInspectorModal";
 import { HelpModal } from "./HelpModal";
 import { SkillsModal } from "./SkillsModal";
+import { AgentPickerModal } from "./AgentPickerModal";
 import { findCommand, matchCommands, type SlashCommand } from "./commandRegistry.js";
 import {
   NEXT_STEP,
@@ -228,6 +230,7 @@ function RefineView({
   const [mcpInspectorServerId, setMcpInspectorServerId] = useState<string | undefined>(undefined);
   const [showHelp, setShowHelp] = useState<boolean>(false);
   const [showSkills, setShowSkills] = useState<boolean>(false);
+  const [showAgentPicker, setShowAgentPicker] = useState<boolean>(false);
   const [currentRuntimeName, setCurrentRuntimeName] = useState<string>(live.runtime.name);
   const [availableSkills, setAvailableSkills] = useState<Skill[]>(() => loadSkills(cfg.projectPath));
   const [confirmQuit, setConfirmQuit] = useState(false);
@@ -573,6 +576,30 @@ function RefineView({
   };
 
   /**
+   * Switch the active runtime (REQ-33). Shared by `/agent <id>` and the picker so
+   * both report the same busy/✓/⚠ feedback and never crash the view on failure.
+   */
+  const switchAgent = async (id: string): Promise<boolean> => {
+    if (id === live.runtime.id) {
+      emitSystem(okFeedback(`Already using ${sanitizeTerminalText(live.runtime.name)}.`));
+      return true;
+    }
+    setBusy(true);
+    emitSystem(busyFeedback(`Switching runtime to "${sanitizeTerminalText(id)}"…`));
+    try {
+      const newRuntime = await live.switchRuntime(id);
+      setCurrentRuntimeName(newRuntime.name);
+      emitSystem(okFeedback(`Runtime switched to ${sanitizeTerminalText(newRuntime.name)}.`));
+      return true;
+    } catch (err) {
+      emitSystem(failureFeedback("Runtime switch failed", NEXT_STEP.runtimeSwitch, err));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
    * Dispatch the draft input. `override` lets the palette submit a command the
    * user accepted without retyping it; argument parsing stays per-command below.
    */
@@ -747,26 +774,12 @@ function RefineView({
       }
       case "/agent": {
         if (!args) {
-          const activeAgent = live.runtime.id;
-          const list = AGENT_TARGETS.map((t) => (t === activeAgent ? `${t} (active)` : t)).join(", ");
-          emitSystem(
-            okFeedback(`Available agent runtimes: ${list} — run /agent <id> to switch.`),
-          );
+          // AC-33.1: selectable, not memorised — the picker replaces the old list.
+          setShowAgentPicker(true);
           return;
         }
-        if ((AGENT_TARGETS as readonly string[]).includes(args)) {
-          setBusy(true);
-          emitSystem(busyFeedback(`Switching runtime to "${sanitizeTerminalText(args)}"…`));
-          try {
-            const newRuntime = await live.switchRuntime(args);
-            setCurrentRuntimeName(newRuntime.name);
-          } catch (err) {
-            emitSystem(
-              failureFeedback("Runtime switch failed", NEXT_STEP.runtimeSwitch, err),
-            );
-          } finally {
-            setBusy(false);
-          }
+        if (isAgentTarget(args)) {
+          await switchAgent(args);
         } else {
           emitSystem(
             warnFeedback(
@@ -849,9 +862,10 @@ function RefineView({
   else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
   else if (terminalSize.rows >= 25) maxLogsAllowed = 2;
   else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
-  // While the palette is open it owns the row budget: the log tail steps aside so
-  // the palette can never push the input row or the cards off-screen (AC-28.4).
-  if (suggestionHeight > 0) maxLogsAllowed = 0;
+  // While the palette or the agent picker is open it owns the row budget: the log
+  // tail steps aside so neither can push the input row or the frame off-screen
+  // (AC-28.4 / REV-303).
+  if (suggestionHeight > 0 || showAgentPicker) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
   const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
@@ -879,7 +893,7 @@ function RefineView({
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
 
   useInput((input, key) => {
-    if (showModelPicker || showMcpInspector || showHelp || showSkills) {
+    if (showModelPicker || showMcpInspector || showHelp || showSkills || showAgentPicker) {
       return;
     }
     if (decision) {
@@ -1062,6 +1076,18 @@ function RefineView({
           projectPath={cfg.projectPath}
           onClose={() => setShowHelp(false)}
         />
+      ) : showAgentPicker ? (
+        <AgentPickerModal
+          currentAgentId={live.runtime.id}
+          onSelect={(id) => {
+            void (async () => {
+              // Keep the picker open when the switch fails, so the user can pick a
+              // different runtime without re-typing /agent (plan Iteration 31).
+              if (await switchAgent(id)) setShowAgentPicker(false);
+            })();
+          }}
+          onCancel={() => setShowAgentPicker(false)}
+        />
       ) : (
         <>
           <ScrollableChatCard
@@ -1092,7 +1118,7 @@ function RefineView({
 
       {decision ? <DecisionModal req={decision} /> : null}
 
-      {!showModelPicker && !showMcpInspector && !showHelp && !showSkills && (
+      {!showModelPicker && !showMcpInspector && !showHelp && !showSkills && !showAgentPicker && (
         <>
           <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect" />
           {suggestionsOpen && (
