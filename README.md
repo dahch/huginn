@@ -328,6 +328,7 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
    intent-to-add staging so nothing review-only lingers in the index.
 
 **Live & Dashboard TUI Features**:
+- **Raven Brand Header (`RavenHeader`)**: Both dashboards render one shared ASCII **raven mark + `HUGINN` wordmark** (from `src/brand.ts`), so the TUI reads as Huginn the raven instead of an eagle emoji. The mark degrades to wordmark-only below 72 columns, to plain `HUGINN` text when even that does not fit or the terminal is too short, and the header also carries the live stage, the MCP badge, the active runtime, the project path and the active models.
 - **Fullscreen Alternate Screen Buffer**: Operates in an isolated alternate screen buffer (`\x1b[?1049h\x1b[H`) with multi-layered exit handlers (`SIGINT`, `SIGTERM`, unhandled exceptions, and `process.on("exit")`), guaranteeing clean restoration of your shell history and visible cursor.
 - **Responsive Viewport Scaling**: Dynamically measures rows and columns via `useTerminalSize()` and auto-adapts layout cards to fill 100% of the screen upon terminal resizing without line truncation.
 - **Console Log Drawer (Zero Stdout Pollution)**: Background server logs, provider warnings, and runtime notices are intercepted via `patchConsole()` and routed into an in-app log drawer (`LogsCard`) rather than dumping to stdout and tearing the alternate screen.
@@ -339,32 +340,35 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
     - `/models` or bare `/model`: opens the interactive 3-step modal selector directly over the dashboard without interrupting chat context.
     - `/model <thinker> [executor]`: instantly changes the active models inline for the session (e.g. `/model anthropic/claude-3-7-sonnet opencode/gpt-5.1-codex`).
   - **3-Step Selector Modal**:
-    1. **Step 1: Choose Thinker**: queries `runtime.getAvailableModels()`, showing provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.), model names, and IDs with live search filtering and custom fallback.
+    1. **Step 1: Choose Thinker**: queries the active runtime's own catalog (`runtime.getModelCatalog()`), showing provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.), model names, and IDs with live search filtering. Only models the runtime can actually run are offered — OpenCode offers the models of its **connected** providers only (falling back to the `opencode models` CLI), Command Code, `omp` and `agy` parse their own CLI listings, and a runtime with no listing mechanism reports an honest empty catalog with the reason instead of a fabricated one. The loading, discovery-error and "no models discovered" states are distinct, and the empty state accepts a free-text id — there is no fallback model list.
     2. **Step 2: Choose Executor**: selects the coding/execution model with the same interactive filter.
     3. **Step 3: Save Preferences**: choose multi-scope persistence:
        - `[1] Project Default`: writes atomically to `<project>/.huginn/config.json`.
        - `[2] Global Default`: writes atomically to `~/.huginn/config.json`.
        - `[3] Session Only`: updates in-memory active models for the current session without writing to disk.
-  - **Auto-Onboarding Preflight Check**: If thinker or executor models are defaulted and the active runtime's model catalog does not include those defaults, Huginn automatically opens the model selector on startup.
+  - **Native Model Forwarding**: the chosen model is passed to the runtime through the flag it documents (`--model`/`-m`, or the OpenCode SDK model ref), so selecting a model actually takes effect; `HUGINN_MODEL` is kept only as an extra environment hint for wrapper scripts.
+  - **Auto-Onboarding Preflight Check**: if thinker or executor came from the documented defaults and the runtime's catalog is non-empty while containing **neither** default, Huginn automatically opens the model selector on startup.
 - **Live MCP Monitor & Server Inspector (`McpInspectorModal`)**:
-  - **Live Header Status Badge**: Real-time indicator in the TUI header (`MCP: 🟢 <count> active (<tools> tools)` / `MCP: 🟡 degraded` / `MCP: 🟡 timeout`) with periodic 15-second health checks.
+  - **Live Header Status Badge**: Real-time indicator in the TUI header with periodic 15-second health checks. It only claims liveness it actually verified: `MCP: 🟢 <count> active (<tools> tools)` for servers a real probe reported reachable, `MCP: ⚪ <n> unverified` for servers merely declared in a config file (Huginn holds no MCP client for subprocess runtimes, so it never calls them connected), `MCP: 🟡 error — <reason>` or `MCP: 🟡 timeout` when a probe fails or exceeds the deadline, and `MCP: ⚪ 0 active` when nothing is registered.
   - **Render Loop Protection**: `fetchMcpStatusWithTimeout` enforces a strict 1500ms `Promise.race` timeout, guaranteeing third-party or unresponsive MCP servers never block or freeze the Ink render loop.
   - **Interactive Inspector (`/mcp`)**: Type `/mcp` in the live chat input to open an interactive two-pane inspector modal:
-    - *Left Pane (Servers)*: Lists connected MCP servers with connection state (`[connected]`, `[error]`), transport (`[stdio]`, `[sse]`), and roundtrip latency.
+    - *Left Pane (Servers)*: Lists the discovered MCP servers with their connection state (`[connected]` only after a real probe, `[unknown]` for config-discovered servers that were never probed, `[error]`, `[disconnected]`), transport (`[stdio]`, `[sse]`), and roundtrip latency; the inspector's header count marks those servers as `n/total unverified` instead of counting them as active.
     - *Right Pane (Tools)*: Inspects exposed tools for the selected server with descriptions and paginated windowing (10 visible tools with scroll overflow indicators).
     - *Navigation*: `[↑]`/`[↓]` or `[k]`/`[j]` to navigate, `[Tab]` or `[Enter]` to switch focus between servers and tools panes, `[Esc]` to return to chat.
     - *Terminal Injection Defense*: All server names, tool descriptions, and error strings are sanitized via `sanitizeTerminalText` (shared module `src/util/text.ts`) to strip ANSI escape sequences, C0 and C1 non-printable control characters.
-- **Rich Live Slash Commands**: The Live input bar intercepts any `/<…>` input before model dispatch, so typos are reported (``Unknown command "<cmd>". Type /help for the command reference.``) instead of being sent to the model as chat text. Available commands:
+- **Inline Command Palette**: typing `/` in an empty-or-partial input opens an autocomplete overlay directly beneath the input row — `↑`/`↓` (or `j`/`k` while the draft is exactly `/`) move the highlight, `Tab` accepts the highlighted command, `Enter` runs it, and `Esc` dismisses the overlay without aborting the session. Further typing filters by id/alias substring; accepting a command that takes arguments inserts its argument hint. These bindings take precedence over focus/scroll only while the overlay is open, and the palette is height-bounded (≤6 rows with `▲`/`▼` markers, shrinking on short terminals) so it can never push the frame off-screen.
+- **Rich Live Slash Commands**: a single command registry (`src/tui/commandRegistry.ts`) is the source of truth for dispatch, the palette and the `/help` cheat sheet (a drift-guard test keeps them in sync), so the UI can never advertise a command the dispatcher does not implement. The Live input bar intercepts any `/<…>` input before model dispatch, so typos are reported (``Unknown command "<cmd>" — type /help for the command reference.``) instead of being sent to the model as chat text. Available commands:
   - `/help`: opens the **cheat-sheet modal** (`HelpModal`) with every command, the navigation shortcuts, and the active agent/thinker/executor/project banner.
   - `/agent`: lists the registered agent runtimes (marking the active one). `/agent <id>` hot-switches the runtime in-session (fails closed if the target binary is unavailable).
   - `/models` or `/model`: opens the interactive model picker; `/model <thinker> [executor]` sets both models inline for the session.
   - `/mcp [id]`: opens the MCP inspector, optionally pre-selecting a server by id.
   - `/skills` (or bare `/skill`): opens the skills browser; `/skill <name>` executes a skill immediately.
-  - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, and Muninn entity/observation counts.
+  - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, and Muninn entity/observation counts (a failed Muninn database open reports the error instead of `0 entities, 0 observations`).
   - `/clear`: clears the conversation and stream viewports.
   - `/draft` (alias `/go`): runs scope extraction and document drafting.
   - `/quit` (alias `/abort`): exits the session after a two-step confirmation.
 - **Extensible Skills System (`/skills`, `/skill <name>`)**: Markdown skills in `<project>/.huginn/skills/` and `<project>/.opencode/skills/` (`.huginn` wins) are discovered automatically and browsable/executable in-app. Each skill pairs flat frontmatter metadata (`name`/`title`, `description`/`desc`, `triggers` as a YAML list, `[a, b]` or comma list) with a reusable prompt body; a file without frontmatter falls back to its basename + first paragraph. Three built-in skills (`audit`, `refactor`, `explain`) ship by default. See [Project skills](#project-skills-huginnskills).
+- **Consistent Action Feedback**: every action answers in the conversation with one of three prefixes — `✓` (done), `⚠` (problem, always naming the next step such as `/model <id>`, `/agent` or `/mcp`, with the raw cause on a `cause:` line) or `…` (running) — so no input is a silent no-op. An empty conversation shows raven-flavoured first-run hints for the palette, `/draft`, `/mcp`, `/status` and `/help`.
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
 `--choose-model` to open the model selector modal on launch,
@@ -522,7 +526,7 @@ The application core exposes `MemoryService` (`src/muninn/service/memory-service
 
 Muninn exposes its memory engine directly to AI coding agents (Claude Code, Cursor, OpenCode, Windsurf) through a standard Model Context Protocol (MCP) server:
 
-- **Transport**: JSON-RPC 2.0 communication over standard input/output (`stdio`) powered by `StdioServerTransport` from `@modelcontextprotocol/sdk`.
+- **Transport**: JSON-RPC 2.0 communication over standard input/output (`stdio`), using a bounded `StdioServerTransport` from `@modelcontextprotocol/sdk` (a 5 s write deadline plus output-stream error rejection, so a broken pipe fails the pending request instead of hanging on `'drain'`).
 - **Architecture**: Decoupled via the `IMemoryService` port interface (`src/muninn/service/index.ts`). The server accepts any compliant memory service instance or options to initialize its own.
 - **Declarative Tool Registry**: Defined via `TOOL_REGISTRY`, mapping tool names to strict Zod schemas and typed handlers.
 
@@ -634,6 +638,8 @@ huginn mcp run
 # Start stdio MCP server with custom database and workspace
 huginn mcp run --db /custom/muninn.db --project /path/to/project
 ```
+
+The server is stdout-silent and EPIPE-safe: it writes nothing to `stdout`, logs protocol and stdout failures to `stderr`, and shuts down cleanly when its parent closes `stdin` (EOF) or the transport closes — a dead parent can neither leave it running nor crash it mid-response.
 
 ## Environment variables
 

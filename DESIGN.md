@@ -41,23 +41,27 @@ src/
 ├── contracts/
 │   ├── compiler.ts         TypeScript Compiler API contract verification, pre-emit diagnostics, visual error snippets
 │   └── index.ts            re-exports verifyTypeScriptContracts, formatDiagnosticsReport, TypeValidator, types
-├── banner.ts               ASCII banner + path shortening
+├── banner.ts               ASCII banner + path shortening (prints the shared HUGINN wordmark)
+├── brand.ts                shared ASCII brand assets: HUGINN wordmark + raven mark, artWidth (REQ-29 / ADR-29)
 ├── format.ts               shared formatting: durations, verdict badges/icons/colors
 ├── headless.ts             stdout frontend; stdin decision answering; runLiveHeadless
 ├── update.ts               background npm version check (cache + semver compare + reminder)
 ├── engine/
 │   ├── agent/
-│   │   ├── types.ts            IAgentRuntime, IAgentSession, ModelInfo, McpStatusReport contracts
+│   │   ├── types.ts            IAgentRuntime, IAgentSession, ModelInfo, ModelCatalog, McpStatusReport contracts
 │   │   ├── registry.ts         Agent factory, PATH auto-detection, resolution precedence, isExecutableBinary
+│   │   ├── mcpStatus.ts        fetchMcpStatusWithTimeout (1.5 s race) + truthful formatMcpBadge (REQ-30)
 │   │   ├── index.ts            barrel export for runtime subsystem
 │   │   └── adapters/
-│   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK)
+│   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK); connected-provider discovery + `opencode models` fallback
 │   │       ├── claude.ts       ClaudeRuntimeAdapter (Claude Code CLI / stdio)
 │   │       ├── codex.ts        CodexRuntimeAdapter (OpenAI Codex CLI)
-│   │       ├── omp.ts          OmpRuntimeAdapter (Oh My Pi CLI)
-│   │       ├── commandcode.ts  CommandCodeRuntimeAdapter (Command Code CLI)
+│   │       ├── omp.ts          OmpRuntimeAdapter (Oh My Pi CLI) + `omp models` parser
+│   │       ├── agy.ts          `agy models` parser (id<TAB>name TSV)
+│   │       ├── commandcode.ts  CommandCodeRuntimeAdapter (Command Code CLI) + `--list-models` parser
 │   │       ├── qwen.ts         QwenRuntimeAdapter (Qwen Code CLI)
-│   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio)
+│   │       ├── modelList.ts    runModelListCommand: bounded, sanitized spawn used by every listing CLI (REQ-27)
+│   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio, native model flags)
 │   │       └── index.ts        re-exports all adapters
 │   ├── cycle.ts            CycleEngine: pipeline-as-data, retry/fix/escalate loop, state machine
 │   ├── phases.ts           the 8 phase functions + 3 fix functions; builds prompts/commands
@@ -107,12 +111,16 @@ src/
     ├── app.tsx             runTui and runLiveTui entry points
     ├── render.tsx          alternate screen setup, console patching, ink render bridges
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
+    ├── commandRegistry.ts  single slash-command registry (id, aliases, argHint, description) driving dispatch, the palette and /help (REQ-28 / ADR-28)
+    ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
+    ├── feedback.ts         the one feedback voice: ✓/⚠/… prefixes, next-step hints, empty-chat first-run hints (REQ-31)
+    ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
     ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
-    ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch)
+    ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette)
     ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp)
-    ├── HelpModal.tsx       live slash-command cheat sheet, shortcuts & active config (/help)
+    ├── HelpModal.tsx       live slash-command cheat sheet (generated from the registry), shortcuts & active config (/help)
     ├── SkillsModal.tsx     project/built-in skills browser & prompt-body preview (/skills)
-    └── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence
+    └── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence (honest discovery states)
 scripts/postinstall.ts       bun install hook → installer prompt
 templates/{agents,commands}/ opencode agent/command definitions bundled as markdown
 ```
@@ -1067,7 +1075,7 @@ export const SymbolSchema = z
 ### Server Lifecycle & Entrypoints
 
 - **`createMcpServer(serviceOrOptions?)`**: Instantiates `@modelcontextprotocol/sdk` `Server`, registers `ListToolsRequestSchema` and `CallToolRequestSchema` handlers, and binds the `IMemoryService` instance.
-- **`startMcpServer(options?)`**: Instantiates `StdioServerTransport`, creates the server, and establishes the stdio connection. Used by the CLI runner (`huginn mcp run`).
+- **`startMcpServer(options?)`**: Instantiates `BoundedStdioServerTransport` — a `StdioServerTransport` subclass whose `send()` races the SDK write against a 5 s deadline (`MCP_WRITE_TIMEOUT_MS`) and an output-stream error, so a broken pipe **rejects** the pending request instead of awaiting a `'drain'` that never arrives (REQ-30 / AC-30.3) — creates the server, and establishes the stdio connection. Used by the CLI runner (`huginn mcp run`).
 
 ## 16. Muninn Memory Engine — CLI Commands & Stdio Runner Architecture
 
@@ -1176,10 +1184,10 @@ flowchart TD
   - Accepts optional `--db <path>` and `--project <path>`.
   - Invokes `startMcpServer({ dbPath, projectRoot })`.
   - **Stdout Silence Guarantee**: Emits zero startup logs or banners to `stdout` to avoid corrupting MCP JSON-RPC frames.
-  - **Lifecycle Management**:
+  - **Lifecycle Management** (REQ-30 / AC-30.3):
     - Keeps the Node/Bun process alive via an unresolved `Promise<void>`.
-    - Monitors `transport.onclose` to detect client disconnections.
-    - Registers signal listeners for `SIGINT` and `SIGTERM`.
+    - Monitors `transport.onclose`, bridges `process.stdin` `'end'`/`'close'` to the same `done()` shutdown path — the SDK transport only observes `'data'`/`'error'`, so without this a parent disconnect is invisible and the server would run forever — and registers signal listeners for `SIGINT` and `SIGTERM`.
+    - Installs a `process.stdout` `'error'` handler that logs the EPIPE to `stderr` and turns it into a clean shutdown instead of an unhandled crash mid-response, a no-op `process.stderr` `'error'` handler, and a `server.onerror` logger for protocol failures.
     - On termination, safely shuts down `MemoryService` and closes `MuninnServer` in a `finally` block before exiting.
 
 ### TypeScript Contract Verification Command (`src/commands/check.ts`)
@@ -1817,7 +1825,7 @@ The `useTerminalSize()` hook dynamically measures and adapts to terminal dimensi
 - Reads `process.stdout.rows` and `process.stdout.columns` with safe fallbacks (`DEFAULT_ROWS = 24`, `DEFAULT_COLUMNS = 80`) when non-TTY or dimensions are undefined.
 - Listens to `process.stdout.on("resize")` and triggers React state updates on dimension changes.
 - Layout cards (`ScrollableChatCard`, `ScrollableStreamCard`, `PipelineCard`, `LogsCard`) dynamically calculate their height from available viewport `rows`:
-  - `HeaderCard` and `InputBar` / `FooterBar` occupy fixed overhead.
+  - `HeaderCard` (the raven header) and `InputBar` / `FooterBar` occupy fixed overhead. The header's row cost is no longer a constant: `useRavenHeaderPlan` / `ravenHeaderPlan` (`src/tui/RavenHeader.tsx`) derives it from the measured columns/rows, the viewport floor and the caller's context rows, resolving mark + wordmark → wordmark-only → plain text, so the header never spends rows the budget did not reserve (REQ-29 / AC-29.3).
   - Middle cards scale to occupy 100% of remaining vertical height without vertical overflow.
 
 ### 20.3 Zero Stdout Pollution & Hot Console Interception (`patchConsole`)
@@ -1951,9 +1959,9 @@ stateDiagram-v2
 
     state ThinkerStep {
         [*] --> FetchCatalog
-        FetchCatalog --> DisplayThinkerModels: runtime.getAvailableModels()
+        FetchCatalog --> DisplayThinkerModels: runtime.getModelCatalog() → catalog, else empty/error state
         DisplayThinkerModels --> FilterThinker: Key strokes (sanitize input)
-        FilterThinker --> SelectThinker: Enter (validate provider/model)
+        FilterThinker --> SelectThinker: Enter (catalog id, or free text)
     }
 
     ThinkerStep --> ExecutorStep: Thinker selected & validated
@@ -1991,8 +1999,8 @@ stateDiagram-v2
    - Prompts user to select the reasoning, architecture, and gate-fix model.
    - Live query string filters models by `id`, `name`, `provider`, or `description`.
    - Visual provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.) visually categorize models.
-   - Enter selects the highlighted model, or applies the typed custom model string (auto-prepending `${runtime.id}/` if no slash is provided).
-   - Validates that the chosen model adheres to the canonical `provider/model` syntax (`slashIdx > 0 && slashIdx < model.length - 1`); invalid formats display an inline error banner (`⚠ Custom models must be in provider/model format`).
+   - Enter selects the highlighted model (accepted verbatim), or applies the typed custom model string. The `provider/model` requirement is waived for a catalog selection and for runtimes whose own catalog exposes bare ids (`agy`, Command Code): bare text for a fully-qualified runtime is scoped as `${runtime.id}/<text>`, while a runtime that lists bare ids keeps the text verbatim so its CLI can resolve its own short name. With no catalog, no filter and no current value there is nothing to select, and the row reports `No models discovered from <runtime> — type a provider/model id and press Enter`.
+   - Validates the canonical `provider/model` syntax (`slashIdx > 0 && slashIdx < modelId.length - 1`) only when the choice is not a catalog/exempt id; invalid formats display an inline error banner (`⚠ Custom models must be in provider/model format`).
 2. **Step 2: Choose Executor (`step: "executor"`)**:
    - Prompts user to select the execution model for coding, test execution, gates, and commits.
    - Inherits the catalog and filtering mechanism from Step 1.
@@ -2184,17 +2192,18 @@ export async function fetchMcpStatusWithTimeout(
      error: `MCP status timed out after ${timeoutMs}ms`,
    }
    ```
-2. **Deterministic Cleanup**: Timer handles are cleared in a mandatory `finally` block to prevent timer leakages across repeated polls.
+2. **Deterministic Cleanup**: Timer handles are cleared in a mandatory `finally` block to prevent timer leakages across repeated polls, and the deadline timer is `.unref()`'d so a pending probe can never hold the process (or an Ink test runner) open.
 3. **Degraded State Normalization**: If any individual server reports `status === "error"` but the overall report does not explicitly flag `degraded`, `fetchMcpStatusWithTimeout` automatically sets `degraded: true`.
 4. **Periodic Polling Lifecycle**: Both `Dashboard` and `LiveDashboard` poll on mount and every 15 seconds via `setInterval`. Unmount callbacks clear intervals and set `active = false` flags, preventing state updates after component teardown.
 
 #### Status Badge Formatting (`formatMcpBadge`)
 
-`formatMcpBadge` maps report metrics to concise colored terminal badges:
-- **Connected (Green)**: `MCP: 🟢 <count> active (<tools> tools)` (e.g. `MCP: 🟢 3 active (18 tools)`)
-- **Degraded / Error (Yellow)**: `MCP: 🟡 degraded`
-- **Timeout (Yellow)**: `MCP: 🟡 timeout`
-- **Empty / Inactive (Gray)**: `MCP: ⚪ 0 active`
+`formatMcpBadge` maps report metrics to concise colored terminal badges. The states are deliberately distinguishable, and none of them claims liveness Huginn did not verify (REQ-30 / AC-30.1, AC-30.2):
+- **Verified connected (Green)**: `MCP: 🟢 <count> active (<tools> tools)` — only servers a **real probe** reported reachable (e.g. `MCP: 🟢 3 active (18 tools)`)
+- **Error (Yellow)**: `MCP: 🟡 error — <sanitized reason>` (or `MCP: 🟡 error` when no reason is carried) when the report is `degraded`, carries an `error`, or any server reports `status === "error"`
+- **Timeout (Yellow)**: `MCP: 🟡 timeout` when the failure *is* the deadline (`MCP status timed out after 1500ms`)
+- **Unverified (Gray)**: `MCP: ⚪ <n> unverified` — servers found in config (or carrying the explicit `unverified` flag) that were never probed; a config-only report is `healthy: false` even though nothing failed
+- **Empty / Inactive (Gray)**: `MCP: ⚪ 0 active` — nothing registered, or nothing reported
 
 ### 23.4 Interactive Two-Pane Inspector Modal (`McpInspectorModal.tsx`)
 
@@ -2215,7 +2224,7 @@ Mounted via the `/mcp` slash command in `LiveDashboard`, `McpInspectorModal` ren
 ```
 
 #### Dual-Pane Focus & Keyboard Navigation
-- **Left Pane (Servers)**: Displays registered servers, health status (`[connected]`, `[error]`, `[disconnected]`), transport protocol (`[stdio]`, `[sse]`), and round-trip latency (`latencyMs`).
+- **Left Pane (Servers)**: Displays registered servers, health status (`[connected]` only for a verified probe, `[unknown]` for a config-discovered server that was never probed, `[error]`, `[disconnected]`), transport protocol (`[stdio]`, `[sse]`), and round-trip latency (`latencyMs`). The pane header marks unverified servers as `n/total unverified` rather than counting them as active (AC-30.1).
 - **Right Pane (Tools)**: Displays tools exposed by the currently highlighted server, with tool names and descriptions.
 - **Focus Toggle**: `[Tab]` or `[Enter]` toggles `focusView` between `"servers"` and `"tools"`.
 - **Directional Navigation**: `[↑]`/`[↓]` and `[k]`/`[j]` navigate the active pane. When navigating the server list, the tool list automatically resets selection to the first tool.
@@ -2364,7 +2373,7 @@ Because skills are read from the repository, the loader treats discovery and rea
 
 ### 24.6 Live Slash Command Dispatcher
 
-`submit()` in `LiveDashboard.tsx` intercepts any input beginning with `/` before it can reach `LiveEngine.chat()`. The dispatcher is a fixed `if` chain; an unrecognized `/<...>` command is answered with a system message (`Unknown command "<cmd>". Type /help for the command reference.`) and **never forwarded to the model**.
+`submit()` in `LiveDashboard.tsx` intercepts any input beginning with `/` before it can reach `LiveEngine.chat()`. Command *identity* and aliasing are resolved through the single command registry (`src/tui/commandRegistry.ts`, ADR-28 / REQ-28): `findCommand()` requires a leading `/`, so plain prose that merely starts with a command word is never dispatched as one, and only the per-command argument parsing stays in the `switch` below. The registry is also what the inline `CommandSuggestions` palette and `HelpModal`'s cheat sheet render from, with a drift-guard test asserting the three can never disagree. An unrecognized `/<...>` command is answered with a system message (`Unknown command "<cmd>" — type /help for the command reference.`) and **never forwarded to the model**; a registry entry that has no handler replies with an explicit warning instead of a silent no-op.
 
 | Command | Behaviour |
 |---|---|
@@ -2381,7 +2390,9 @@ Because skills are read from the repository, the loader treats discovery and rea
 | `/draft` (alias `/go`) | Runs `live.draft()` and, on approval, `onApprove()`. |
 | `/quit` (alias `/abort`) | **Two-step confirmation**: the first invocation only asks to confirm; a second within the same session aborts. Any other command resets the pending confirmation. |
 
-`SkillsModal` and `HelpModal` follow the same TUI conventions as the other modals: a `stateRef` bridge for fresh `useInput` callbacks under React 19, centered list windowing (`VISIBLE_LIST_ITEMS = 8`, `VISIBLE_BODY_LINES = 8`), `Tab` pane focus, and `Esc`/`q` dismissal. `HelpModal` sanitizes and clamps every external prop at the component boundary.
+Each branch above answers with a sanitized acknowledgement from `feedback.ts` (`✓` result, `⚠` problem naming the next step with the raw cause on a `cause:` line, `…` while running), so no dispatched input is a silent no-op (REQ-31). While a bare `/…` draft has matches, the palette takes `↑`/`↓` (and `j`/`k`) / `Tab` / `Enter` / `Esc` *before* the dashboard's focus-toggle (`Tab`) and scroll-trap (`↑`/`↓`) handlers, and a draft with no matches does not count as open (REQ-28 / AC-28.3).
+
+`SkillsModal` and `HelpModal` follow the same TUI conventions as the other modals: a `stateRef` bridge for fresh `useInput` callbacks under React 19, centered list windowing (`VISIBLE_LIST_ITEMS = 8`, `VISIBLE_BODY_LINES = 8`), `Tab` pane focus, and `Esc`/`q` dismissal. `HelpModal` sanitizes and clamps every external prop at the component boundary, and its `SLASH_COMMANDS` array is now *derived* from the command registry instead of hand-maintained.
 
 ### 24.7 `LiveEngine` Runtime Switching & Diagnostics
 
@@ -2536,6 +2547,128 @@ Three small extractions keep the wizard from re-implementing existing behaviour:
 - **`isAgentTarget(value): value is AgentTarget`** (`src/engine/agent/registry.ts`) — the single
   `AGENT_TARGETS` allowlist check, now exported and reused by `resolveAgent`, the CLI and the wizard
   (replacing `resolveAgent`'s former private `isTarget` closure), so the membership test exists once.
+
+## 26. Phase 6 — Runtime Fidelity, Discoverability & Live Diagnostics
+
+Phase 6 fixes what a hand-driven session on a real machine proved broken: model discovery that either
+returned an unusable catalog or silently substituted a fabricated one, a TUI that never showed what
+could be typed, an eagle where the raven belonged, and an MCP badge that claimed liveness Huginn had
+never verified. The implementation lives in `src/engine/agent/adapters/` (plus `modelList.ts`),
+`src/engine/agent/mcpStatus.ts`, `src/tui/commandRegistry.ts`, `CommandSuggestions.tsx`,
+`RavenHeader.tsx` (with `src/brand.ts`), `feedback.ts`, `src/commands/memory.ts`,
+`src/muninn/mcp/server.ts`, `src/server/lifecycle.ts` and `src/engine/liveMode.ts`. Nothing in the
+engine's phase pipeline, the sandboxing model, the Muninn schema or the `provider/model` wire format
+changed.
+
+### 26.1 Truthful cross-runtime model discovery & native selection (REQ-27)
+
+`getAvailableModels()` is now a thin projection of the optional richer `getModelCatalog()`
+(`{ models, reason? }`), and **no** adapter invents a model any more — the previous
+`anthropic/claude-opus-4-5` / `opencode/gpt-5.1-codex` substitution and the generic
+`${id}/default` literal are gone. Discovery is per runtime:
+
+| runtime | listing mechanism | verified |
+|---|---|---|
+| `opencode` | `client.provider.list()` intersected with the response's **`connected`** provider ids; on throw/empty, the `opencode models` CLI | 581 of the 8 195-model catalog |
+| `commandcode` | `commandcode --list-models` (group headings, `id` + 2-space description rows; the trailing `Pass the full id…` / `Docs:` footer breaks the parse) | 82 |
+| `omp` | `omp models` (`<provider> (<count>)` sections + box-drawing table; header and border rows skipped) | 192 |
+| `agy` | `agy models` (`id<TAB>name` TSV; non-TSV preamble and duplicates dropped) | 14 |
+| `claude`, `qwen`, `gemini`, `kimi`, `pi`, `cursor`, `windsurf`, `codex` | none → `[]` **with a reason** | — |
+
+```mermaid
+flowchart TD
+    P["ModelPickerModal / cli.ts pre-flight"] --> C{"runtime.getModelCatalog()"}
+    C -- "catalog" --> R{"catalog non-empty?"}
+    C -- "throws" --> ERR["sanitized discovery error state + free-text id"]
+    R -- yes --> LIST["render catalog (6-row window + substring filter)"]
+    R -- no --> EMPTY["no models discovered + reason + free-text id"]
+    LIST --> SEL["selection (catalog id, or free text)"]
+    EMPTY --> SEL
+    ERR --> SEL
+    SEL --> FLAG["native channel: SDK model ref, or --model/-m via withModelArgs"]
+```
+
+- **Reasons are discriminating.** Every empty result comes from `runModelListCommand`
+  (`src/engine/agent/adapters/modelList.ts`), which never throws and never fabricates: a missing
+  binary (`could not run …`), a non-zero exit (`exited with code N: <first stderr line>`), a timeout
+  or empty output each produce their own sanitized `reason`, so "no listing mechanism", "the CLI
+  failed" and "nothing discovered" are distinguishable in the picker.
+- **Native forwarding.** `withModelArgs` appends the runtime's documented flag
+  (`--model`/`-m`) to argv and, when the base argv already carries that flag in either form
+  (`--model old`, `--model=old`), **replaces its value** rather than dropping the pair;
+  `HUGINN_MODEL` survives only as an extra env hint. opencode passes the model as an SDK model ref.
+- **Provider validation.** `validateModels` (`src/cli.ts`) reads `config.providers().providers`
+  (not `.all`), so the "provider is not in the configured provider list" warning fires only when a
+  provider is genuinely absent instead of on every opencode run.
+- **Honest picker (`ModelPickerModal`).** Distinct loading / empty / error states, no
+  `DEFAULT_FALLBACK_MODELS`; a catalog selection and a bare id on a runtime that lists bare ids are
+  accepted verbatim; filtering runs in a `useMemo` over a fixed 6-row window so a ~600–8 000-entry
+  catalog stays responsive.
+- **Verification.** Discovery is exercised against captured artifacts under `test/fixtures/`
+  (a real `GET /provider` payload, `opencode models` with 581 lines, `commandcode --list-models`
+  with 82 models, `omp models`, `agy models`) rather than hand-written mocks alone.
+
+### 26.2 Discoverable slash-command palette (REQ-28)
+
+`src/tui/commandRegistry.ts` exports the single `SLASH_COMMANDS` registry
+(`id`, `aliases`, `argHint`, `description`, `category`, `takesArgs`) plus `findCommand` /
+`matchCommands` / `commandUsage` / `describeCommand`. `submit()` resolves command *identity* through
+it (requiring a leading `/`, so a prompt whose first word happens to be a command is never
+dispatched), `CommandSuggestions` renders a bounded overlay from the same list, and `HelpModal`'s
+`SLASH_COMMANDS` cheat sheet is *derived* from it, so the three cannot drift. While a bare `/…`
+draft has matches, `↑`/`↓` (and `j`/`k`) move the highlight, `Tab` accepts, `Enter` submits and
+`Esc` dismisses the overlay — all taking precedence over the focus-toggle and scroll-trap handlers
+only while it is open — and the overlay's height (≤6 content rows, shrinking on short terminals)
+is part of the layout budget so the cards shrink instead of overflowing.
+
+### 26.3 Raven identity (`src/brand.ts` + `src/tui/RavenHeader.tsx`) (REQ-29)
+
+The eagle emoji is gone from the source. One dependency-free `src/brand.ts` holds the five-row
+`HUGINN` wordmark (also printed by the CLI banner) and the three-row ASCII raven mark; one
+`RavenHeader` component renders them for both `Dashboard` and `LiveDashboard` so the headers cannot
+diverge. `ravenHeaderPlan()` derives the variant and exact row cost from the measured
+columns/rows, a `reservedRows` viewport floor and the caller's context rows:
+mark + wordmark at ≥ 72 columns → wordmark only → plain `HUGINN` text (also when the terminal is
+too short to afford the art). The header additionally carries the live stage, the MCP badge, the
+runtime, the project path and the models, with every dynamic value sanitized and width-clamped
+(`headerValue`) so a header row can never wrap into an unbudgeted extra line. The CLI and the TUI
+therefore share one visual identity without sharing a rendering path.
+
+### 26.4 Honest MCP/Muninn liveness & hardened stdio lifecycle (REQ-30)
+
+- **No fabricated status.** `GenericSubprocessRuntimeAdapter` holds no MCP client, so a server it
+  merely *finds* in `.huginn/mcp.json` or an agent config file is reported as `unknown`
+  (`asUnverifiedServer`), and such a report is `healthy: false` with `unverified: true`; only
+  opencode's real `mcp.status()` probe can report `connected`/`error`.
+- **Errors propagate.** A throwing probe yields `degraded: true` plus the sanitized error (and the
+  opencode adapter's `catch` does the same), so the badge shows `MCP: 🟡 error` instead of an
+  ambiguous `⚪ 0 active`; a supervised daemon that died is reported as a recoverable error until it
+  recovers.
+- **Daemon supervision (`src/server/lifecycle.ts`).** After the initial health check the child is
+  watched: an unexpected exit is logged, `isHealthy()` flips to `false`, `onExit` fires, and at most
+  **one** best-effort restart is attempted with a backoff and its own health deadline before the
+  failure is declared permanent — so a dead daemon is neither silent nor permanent.
+- **Stdio lifecycle (`huginn mcp run`).** A `process.stdout` `'error'` handler turns an EPIPE into a
+  logged clean shutdown, a no-op `stderr` `'error'` handler absorbs the second broken end, stdin
+  `'end'`/`'close'` are bridged to the same `done()` used by `transport.onclose`, `server.onerror`
+  logs protocol failures, and `send()` is bounded (5 s) so a broken pipe fails the pending request
+  rather than hanging on `'drain'`.
+- **Muninn diagnostics.** `getDiagnostics()` distinguishes "unavailable" from "empty": a failed DB
+  open carries a sanitized `memoryStats.error` that `/status` prints instead of
+  `0 entities, 0 observations`, and best-effort indexing failures in `phases.ts` are logged when
+  `HUGINN_DEBUG` is set instead of being swallowed by a bare `catch {}`.
+
+### 26.5 Fluid feedback (REQ-31)
+
+`src/tui/feedback.ts` is the console's single voice: `okFeedback` (`✓`), `warnFeedback` (`⚠`),
+`busyFeedback` (`…`), `failureFeedback` (a `⚠ <component> — <next step>` headline whose hint always
+precedes a sanitized `cause:` line) and the `NEXT_STEP` hints (`/model <id>`, `/agent`, `/mcp`,
+diagnostics, session). Every `submit()` branch emits one of them — including the previously silent
+paths and the registry entry with no handler — so an action can no longer appear to do nothing, and
+an error names the failing component and what to do next instead of dumping a bare message. An
+empty chat viewport renders `EMPTY_CHAT_HINTS`, a short raven-flavoured list pointing at the palette,
+`/draft`, `/mcp`, `/status` and `/help`, sliced to the rows the card actually has so it can never
+push the frame past the terminal height.
 
 
 
