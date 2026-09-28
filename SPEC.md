@@ -492,7 +492,7 @@ The MCP surface must name the active agent's servers, attribute them to it, and 
 
 ### REQ-33: Interactive Runtime Picker
 Switching runtimes must be selectable, not memorised.
-- **AC-33.1**: `/agent` (no argument) opens an interactive picker listing every `AGENT_TARGETS` entry with availability (available / not installed), the active one marked, and its path where detected.
+- **AC-33.1**: `/agent` (no argument) opens an interactive picker listing every `AGENT_TARGETS` entry with an explicit availability marker (`✔` available / `— not installed`), the active one marked, and the highlighted entry's resolved binary path where detected. A failed switch leaves the picker open so another runtime can be chosen immediately.
 - **AC-33.2**: ↑/↓ (and `j`/`k`) navigate, Enter switches (fails closed with an actionable message when `isAvailable()` is false), Esc cancels.
 - **AC-33.3**: `/agent <id>` keeps working for power users, and the picker's selection path is covered by tests.
 
