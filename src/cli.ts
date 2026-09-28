@@ -41,7 +41,56 @@ import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
 import { handleCheckCommand } from "./commands/check";
 import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
+import { handleInitCommand, printInitUsage } from "./commands/init.js";
 
+/**
+ * Concise two-tier help (REQ-26 / AC-26.2): the Core commands and the flags a
+ * new developer actually needs, with a pointer to {@link usage} for the full
+ * reference. `huginn --help` prints this; `huginn --help --all` prints
+ * {@link usage}. The Core list is a *subset* of the full reference — the
+ * drift-guard test in `test/commands/init.test.ts` asserts every token listed
+ * here also exists in {@link usage}.
+ */
+export function usageCore(): string {
+  return `huginn — the raven that thinks, builds, and remembers.
+Orchestrator for the opencode spec→commit cycle.
+
+Usage:
+  huginn "<idea>"      live-first default: refine the idea, draft the docs, approve, build
+  huginn <command>     run an explicit command (see "Core commands")
+
+Core commands:
+  live     interactive refinement + autonomous execution in one dashboard
+  run      execute the build cycle against plan.md/spec.md/adr.md
+  init     guided onboarding: agent, models, Muninn MCP and .huginn/config.json
+  setup    register the Muninn MCP + rules with Cursor, Claude, OpenCode, Windsurf, …
+  doctor   diagnose the local environment, providers and Muninn database
+
+Examples:
+  huginn "add a checkout flow with Stripe"    live-first build from an idea
+  huginn init                                 configure this repository
+  huginn run --project . --thinker anthropic/claude-opus-4-5
+  huginn doctor                               check the local environment
+
+Common flags:
+  --project <path>     target repository                          (default: cwd)
+  --thinker <model>    model that plans/fixes findings            (default: ${DEFAULT_THINKER_MODEL})
+  --executor <model>   model used for everything else             (default: ${DEFAULT_EXECUTOR_MODEL})
+  --agent <target>     agent runtime: opencode, claude, codex, omp, …
+  --tui | --headless   interactive dashboard vs stdout logs       (default: tui if TTY)
+  --force              overwrite existing documents/files
+  --yes                accept defaults and never prompt (non-interactive / CI)
+
+More:
+  huginn --help --all  run this for advanced options: every command, flag and default
+`;
+}
+
+/**
+ * Full reference help: every subcommand, flag and default, plus the model
+ * resolution order. Kept byte-stable as the documented `--all` output and the
+ * long-form reference other tools and tests rely on.
+ */
 export function usage(): string {
   return `huginn — the raven that thinks, builds, and remembers.
 Orchestrator for the opencode spec→commit cycle.
@@ -49,6 +98,7 @@ Orchestrator for the opencode spec→commit cycle.
 Usage:
   huginn "<idea>" [flags]     live-first default: refine the idea, draft the docs, approve, build
   huginn run [flags]          explicit build-cycle execution (CI/batch)
+  huginn init [--yes] [--skip-setup] [flags]  guided onboarding wizard (agent, models, MCP, config)
   huginn plan --project <repo> --thinker <provider/model> "<idea>" [flags]
   huginn live [flags]         explicit live mode ["<idea>"]
   huginn install [--yes] [--force] [--only agents|commands]
@@ -71,6 +121,9 @@ Default (live-first):
 
 Commands:
   run     execute the build cycle against plan.md/spec.md/adr.md
+  init    guided onboarding wizard: detects the git repo, package manager and
+          agent CLIs, prompts for the default agent and models, registers the
+          Muninn MCP with \`setup\` and writes <project>/.huginn/config.json
   plan    use the thinker to draft spec.md, adr.md and plan.md from an idea
   live    interactive refinement + autonomous execution: chat-refine the idea
           (or extend an existing project), draft/update spec.md/adr.md/plan.md,
@@ -161,6 +214,8 @@ const BOOLEAN_FLAGS = new Set([
   "--no-sandbox",
   "--global",
   "--choose-model",
+  "--skip-setup",
+  "--all",
   "--help",
   "-h",
 ]);
@@ -173,6 +228,7 @@ const KNOWN_COMMANDS = new Set([
   "run",
   "plan",
   "live",
+  "init",
   "install",
   "memory",
   "mcp",
@@ -239,6 +295,79 @@ export function canonicalize(p: string): string {
   }
 }
 
+/**
+ * A repository is "greenfield" for huginn when it has never run a huginn
+ * command: the `.huginn/` directory is created by every stateful command
+ * (`init`, `config set`, `memory`, `live`), so its absence is the signal that
+ * the developer has not been onboarded yet (AC-26.1, requirement 3).
+ */
+export function isGreenfieldLaunch(projectPath: string): boolean {
+  return !existsSync(join(projectPath, ".huginn"));
+}
+
+/**
+ * Flags that request no work and no mode (target paths and the
+ * non-interactive switch), so a bare first-run launch may still carry them.
+ * Kept in sync with {@link BOOLEAN_FLAGS}: each entry is either a boolean
+ * switch declared there or a value-taking path flag.
+ */
+const BENIGN_BARE_FLAGS = new Set(["--project", "--home", "--opencode-config-dir", "--yes"]);
+
+/**
+ * Decide whether a bare live-first invocation should be replaced by the init
+ * wizard: only when there is no subcommand at all, no free-text idea
+ * positional, no work/mode flag (AC-26.1 scopes onboarding to a *bare* launch)
+ * and the target project has never run huginn. An explicit idea, an explicit
+ * flag such as `--headless`/`--resume`, or an already configured project keeps
+ * the documented live-first behavior.
+ */
+export function shouldLaunchInit(args: ParsedArgs, projectPath: string): boolean {
+  if (args._command !== undefined || args._positional !== undefined) return false;
+  if (args["--help"] || args["-h"]) return false;
+  for (const key of Object.keys(args)) {
+    if (key.startsWith("-") && !BENIGN_BARE_FLAGS.has(key)) return false;
+  }
+  return isGreenfieldLaunch(projectPath);
+}
+
+/** True only on a real interactive terminal and outside CI. */
+function isInteractiveTerminal(): boolean {
+  return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY) && !process.env.CI;
+}
+
+/**
+ * Greenfield launch ergonomics (iteration 24, bullet 3): instead of failing with
+ * "not a git repository" or dumping template warnings, an unconfigured
+ * repository gets the onboarding wizard (TTY) or a short pointer to
+ * `huginn init` (non-interactive). The pointer itself never exits non-zero —
+ * it is guidance; on a TTY the delegated wizard still reports a failed step
+ * (e.g. MCP registration) through `process.exitCode` (REV-201).
+ */
+export async function handleGreenfieldLaunch(
+  args: ParsedArgs,
+  projectPath: string,
+  deps: { interactive?: boolean } = {},
+): Promise<void> {
+  if (deps.interactive ?? isInteractiveTerminal()) {
+    // The wizard and the pointer below must name the same directory: forward the
+    // canonical path `main()` already resolved both as the `--project` flag (the
+    // wizard's first choice, so a raw/relative flag cannot win) and as the
+    // `projectPath` default used by a truly bare launch (REV-210).
+    await handleInitCommand(
+      { ...(args as Record<string, string | boolean | undefined>), "--project": projectPath },
+      { projectPath },
+    );
+    return;
+  }
+  console.log(
+    `[huginn] ${projectPath} has not been set up for huginn yet.\n` +
+      `  Run \`huginn init\` to detect your agent CLIs, choose the agent/models and ` +
+      `register the Muninn MCP.\n` +
+      `  Or pass an idea directly: huginn "<idea>".\n` +
+      `  Run \`huginn --help\` for the command overview.`,
+  );
+}
+
 async function getFreePort(): Promise<number> {
   const net = await import("node:net");
   return new Promise((resolvePort, reject) => {
@@ -258,11 +387,21 @@ export async function main(argv: string[]): Promise<void> {
   const command = args._command;
   if (command === "help" || args["--help"] || args["-h"]) {
     printBanner({});
-    console.log(usage());
+    if (command === "init") {
+      printInitUsage();
+    } else if (args["--all"]) {
+      console.log(usage());
+    } else {
+      console.log(usageCore());
+    }
     return;
   }
   if (command === "plan") {
     await runPlan(args);
+    return;
+  }
+  if (command === "init") {
+    await handleInitCommand(args as Record<string, string | boolean | undefined>);
     return;
   }
   if (command === "live") {
@@ -334,8 +473,17 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   // Live-first default (REQ-14.4): an unknown/absent subcommand — including a
-  // bare free-text idea such as `huginn "crear módulo"` — enters live mode.
+  // free-text idea such as `huginn "crear módulo"` — enters live mode. A bare
+  // invocation inside a repository that never ran huginn is the one exception:
+  // it onboards through `huginn init` instead of failing (AC-26.1).
   if (command === undefined || !KNOWN_COMMANDS.has(command)) {
+    const projectPath = canonicalize(
+      typeof args["--project"] === "string" ? args["--project"] : process.cwd(),
+    );
+    if (shouldLaunchInit(args, projectPath)) {
+      await handleGreenfieldLaunch(args, projectPath);
+      return;
+    }
     await runLive(args, command);
     return;
   }
