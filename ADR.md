@@ -691,4 +691,21 @@ avoids. They are ordered by how central the decision is to the design.
   - *Positive*: Complete observability into agent tools and MCP state; modular workflow extensibility through markdown skills; standard, discoverable CLI/TUI command interface; guaranteed responsive UI regardless of remote MCP latency.
   - *Negative*: Periodic MCP health probing requires non-blocking timeout handling so a sluggish third-party MCP server never freezes the UI.
 
+---
+
+## ADR-25: File-Based Skills Loader Security Boundary & Shared Terminal-Sanitization Module
+
+- **Date**: 2026-09-27
+- **Status**: Accepted
+- **Context**: ADR-24 introduced skills discovery and the Live slash-command set; this ADR records the security boundary and code organisation that actually shipped. Two forces shaped it. First, skills are plain markdown files read from the checked-out repository — i.e. from untrusted input — so a hostile repo could otherwise exfiltrate files via a symlinked `.opencode/skills` directory, read an unbounded or non-regular file, pollute `Object.prototype` through frontmatter keys, or emit ANSI/C1 escape sequences that hijack the terminal. Second, `sanitizeTerminalText` lived inside `src/engine/agent/mcpConfig.ts`, an MCP-subsystem module, which meant the new skills loader and the TUI modals would either import a subsystem-specific module or duplicate the primitive. The Live input bar also silently forwarded any unrecognised `/…` string to the model, so a mistyped command produced a confusing model reply instead of an error.
+- **Decision**:
+   1. **Skills as data (`src/engine/skills/`)**: discover `*.md` skills in `<project>/.huginn/skills/` then `<project>/.opencode/skills/` (first-seen id wins, so `.huginn` takes precedence), parse a deliberately flat YAML subset (`name`/`title`, `description`/`desc`, `triggers` as a dash list / `[a, b]` flow list / comma list, inline `#` comments stripped), fall back to basename + first paragraph when no frontmatter is present, and append three built-in skills (`audit`, `refactor`, `explain`) unless shadowed (`includeBuiltins`).
+   2. **Hardened loader boundary**: reject symlinked / non-directory scan roots (`lstatSync` + `realpathSync` containment under the project root), read files through an `O_NOFOLLOW` fd with a 1 MB cap (`readSkillFile`), skip prototype-pollution keys (`__proto__`, `constructor`, `prototype`), and run every parsed field through the shared sanitizer.
+   3. **Relocate the sanitizer**: move `sanitizeTerminalText` out of `src/engine/agent/mcpConfig.ts` into the neutral shared module `src/util/text.ts` and broaden the control-character class to include the C1 range (`\x7F–\x9F`, covering 8-bit CSI/DCS/OSC introducers). Every consumer (TUI, agent adapters, MCP monitor, skills loader) imports it from `src/util/text.js`.
+   4. **Always-on slash dispatcher**: the Live input bar intercepts `/<…>` before model dispatch; unknown commands are answered with a system message and never forwarded. `/quit` and `/abort` require a two-step confirmation.
+   5. **Engine support (`LiveEngine`)**: add `switchRuntime(agentId)` (fails closed when `isAvailable()` is false, aborts the old session, re-seeds the architect system prompt on the next prompt), `getDiagnostics()`, an injectable `runtimeFactory` option for tests, and expose `runtime` via a public getter over a private field.
+- **Consequences**:
+   - *Positive*: projects gain reusable, version-controlled prompt fragments with zero source edits; the single shared sanitizer removes copy-paste drift and now also neutralises C1 escape sequences; a hostile repository cannot escape the project tree, read unbounded files, or inject terminal escapes through skills; command typos surface an actionable error instead of reaching the model; runtime and model switching work in-session.
+   - *Negative*: the flat frontmatter parser intentionally does not support block scalars, nested keys or multi-line values (they degrade to plain text), so authors must keep metadata on one line; moving the sanitizer is a breaking import-path change for any out-of-tree consumer; the loader's containment checks reject a legitimate symlinked skill directory, which is the deliberate fail-closed trade-off.
+
 

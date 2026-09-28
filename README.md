@@ -312,7 +312,7 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
 - **Responsive Viewport Scaling**: Dynamically measures rows and columns via `useTerminalSize()` and auto-adapts layout cards to fill 100% of the screen upon terminal resizing without line truncation.
 - **Console Log Drawer (Zero Stdout Pollution)**: Background server logs, provider warnings, and runtime notices are intercepted via `patchConsole()` and routed into an in-app log drawer (`LogsCard`) rather than dumping to stdout and tearing the alternate screen.
 - **Stream Batching & Scroll Containment**: Real-time agent streaming (`phaseStream`) is throttled to 60ms flushes and capped with a 1,000-line ring buffer to prevent Ink rerender lag. Mouse and keyboard scrolling are trapped within the active card (`[PageUp]`/`[PageDown]` for 4 lines, `[↑]`/`[↓]` line-by-line) without leaking into the terminal scrollback history.
-- **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` or `/quit` aborts cleanly.
+- **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` aborts immediately, while `/quit` (alias `/abort`) aborts after a two-step confirmation.
 - **Interactive Model & Provider Selector (`ModelPickerModal`)**:
   - Launch with `--choose-model` flag: `huginn --choose-model` or `huginn live --choose-model`.
   - In-session slash commands:
@@ -333,7 +333,18 @@ What happens (stages shown in the dashboard: refine → draft → approve → ex
     - *Left Pane (Servers)*: Lists connected MCP servers with connection state (`[connected]`, `[error]`), transport (`[stdio]`, `[sse]`), and roundtrip latency.
     - *Right Pane (Tools)*: Inspects exposed tools for the selected server with descriptions and paginated windowing (10 visible tools with scroll overflow indicators).
     - *Navigation*: `[↑]`/`[↓]` or `[k]`/`[j]` to navigate, `[Tab]` or `[Enter]` to switch focus between servers and tools panes, `[Esc]` to return to chat.
-    - *Terminal Injection Defense*: All server names, tool descriptions, and error strings are sanitized via `sanitizeTerminalText` to strip ANSI escape sequences and non-printable control characters.
+    - *Terminal Injection Defense*: All server names, tool descriptions, and error strings are sanitized via `sanitizeTerminalText` (shared module `src/util/text.ts`) to strip ANSI escape sequences, C0 and C1 non-printable control characters.
+- **Rich Live Slash Commands**: The Live input bar intercepts any `/<…>` input before model dispatch, so typos are reported (``Unknown command "<cmd>". Type /help for the command reference.``) instead of being sent to the model as chat text. Available commands:
+  - `/help`: opens the **cheat-sheet modal** (`HelpModal`) with every command, the navigation shortcuts, and the active agent/thinker/executor/project banner.
+  - `/agent`: lists the registered agent runtimes (marking the active one). `/agent <id>` hot-switches the runtime in-session (fails closed if the target binary is unavailable).
+  - `/models` or `/model`: opens the interactive model picker; `/model <thinker> [executor]` sets both models inline for the session.
+  - `/mcp [id]`: opens the MCP inspector, optionally pre-selecting a server by id.
+  - `/skills` (or bare `/skill`): opens the skills browser; `/skill <name>` executes a skill immediately.
+  - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, and Muninn entity/observation counts.
+  - `/clear`: clears the conversation and stream viewports.
+  - `/draft` (alias `/go`): runs scope extraction and document drafting.
+  - `/quit` (alias `/abort`): exits the session after a two-step confirmation.
+- **Extensible Skills System (`/skills`, `/skill <name>`)**: Markdown skills in `<project>/.huginn/skills/` and `<project>/.opencode/skills/` (`.huginn` wins) are discovered automatically and browsable/executable in-app. Each skill pairs flat frontmatter metadata (`name`/`title`, `description`/`desc`, `triggers` as a YAML list, `[a, b]` or comma list) with a reusable prompt body; a file without frontmatter falls back to its basename + first paragraph. Three built-in skills (`audit`, `refactor`, `explain`) ship by default. See [Project skills](#project-skills-huginnskills).
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
 `--choose-model` to open the model selector modal on launch,
@@ -341,6 +352,33 @@ plus the run-mode flags `--mode`, `--permissions`, `--max-retries`, `--sandbox`/
 `--port`, `--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless mode the chat
 refinement is skipped (the CLI idea is used as-is) and approvals are answered on stdin;
 non-interactive stdin aborts with a hint to use the TUI.
+
+### Project skills (`.huginn/skills/`)
+
+Live mode discovers Markdown skills in two project-relative folders — `.huginn/skills/` first (so it
+shadows `.opencode/skills/`) — and falls back to the three built-in skills `audit`, `refactor` and
+`explain`. Browse everything with `/skills`, or run one directly with `/skill <name>`:
+
+```markdown
+---
+name: Release notes
+description: Draft release notes from the diff since the last tag.
+triggers: [release, changelog, notes]
+---
+
+Summarize the commits since the last git tag as user-facing release notes.
+Group them under Added / Changed / Fixed and link each entry to its PR.
+```
+
+- Frontmatter is a flat subset only: `name`/`title`, `description`/`desc`, and `triggers` (dash list,
+  `[a, b]` flow list, or comma list). Inline `#` comments are stripped; nested keys, block scalars and
+  multi-line values are treated as plain text.
+- A file **without** frontmatter still works: id/name come from the filename, the description from the
+  first paragraph, and the body from the rest (a leading `# Heading` is skipped).
+- `/skill <name>` resolves by id, name or trigger, then by substring.
+- Discovery is hardened for untrusted repos: symlinked skill directories are rejected (`lstat` +
+  `realpath` containment), files are opened with `O_NOFOLLOW` and capped at 1 MB, prototype-pollution
+  keys are skipped, and every field is run through `sanitizeTerminalText`.
 
 ## The cycle (per iteration of `plan.md`)
 

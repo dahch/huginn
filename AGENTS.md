@@ -200,6 +200,40 @@ doc-writer: update the docs that are stale
 reviewing: review src/ for architecture violations
 ```
 
+## 8. In-app Live console commands & project skills
+
+Distinct from §2 (the six opencode commands huginn *installs*), the `huginn` / `huginn live`
+console has its own slash-command surface. `submit()` in `src/tui/LiveDashboard.tsx` intercepts any
+`/<…>` input **before** it reaches `LiveEngine.chat()`; an unrecognised `/…` command is answered
+with a system message and never forwarded to the model.
+
+| Command | Behaviour | Backing code |
+|---|---|---|
+| `/help` | Opens the cheat-sheet modal (`HelpModal`) with commands, shortcuts and the active agent/model/project banner. | `src/tui/HelpModal.tsx` |
+| `/agent` | Lists registered runtimes (active one marked). | `src/agents/integrator.ts` (`AGENT_TARGETS`) |
+| `/agent <id>` | Hot-switches the runtime; fails closed if `isAvailable()` is false. | `LiveEngine.switchRuntime()` |
+| `/models`, `/model` | Opens `ModelPickerModal`. | `src/tui/ModelPickerModal.tsx` |
+| `/model <thinker> [executor]` | Validates `provider/model` and updates models for the session. | `LiveEngine.updateModels()` |
+| `/mcp [id]` | Opens the MCP inspector, optionally preselecting a server id. | `src/tui/McpInspectorModal.tsx` |
+| `/skills`, `/skill` | Opens the skills browser (`SkillsModal`). | `src/tui/SkillsModal.tsx` |
+| `/skill <name>` | Resolves a skill by id/name/trigger and runs its `body` as the prompt. | `findSkill()` |
+| `/status` | Renders branch, dirty state, worktree sandbox, runtime, models and Muninn counts. | `LiveEngine.getDiagnostics()` |
+| `/clear` | Clears chat + stream viewports. | — |
+| `/draft` / `/go` | Runs scope extraction and drafting. | `LiveEngine.draft()` |
+| `/quit` / `/abort` | Two-step confirmation, then aborts. | `LiveEngine.requestAbort()` |
+
+**Project skills** (`src/engine/skills/loader.ts`): `loadSkills()` discovers `*.md` skills in
+`<project>/.huginn/skills/` then `<project>/.opencode/skills/` (`.huginn` wins on id collision),
+parses a flat frontmatter subset (`name`/`title`, `description`/`desc`, `triggers`) plus a prompt
+`body`, falls back to basename + first paragraph without frontmatter, and appends the built-in
+`audit`, `refactor` and `explain` skills unless shadowed (`includeBuiltins`). The loader is
+security-hardened: symlinked scan roots are rejected (`lstat` + `realpath` containment), files are
+read through an `O_NOFOLLOW` fd capped at 1 MB, prototype-pollution keys are skipped, and every
+field is sanitized via the shared `sanitizeTerminalText` (`src/util/text.ts` — relocated out of
+`src/engine/agent/mcpConfig.ts`). A skill file is exactly what the README's
+[Project skills](README.md#project-skills-huginnskills) section shows: YAML frontmatter, then the
+prompt body.
+
 <!-- CODEGRAPH_START -->
 ## CodeGraph
 

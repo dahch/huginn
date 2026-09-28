@@ -363,17 +363,17 @@ Huginn must monitor and display the status of all connected Model Context Protoc
 
 ### REQ-25: Extensible Skills System & Live Slash Commands
 Huginn must support modular project skills and interactive slash commands in the live environment.
-- **AC-25.1 (Skill Discovery)**: Scans `.huginn/skills/*.md` and `.opencode/skills/*.md`. Each skill defines metadata (name, description, triggers) and reusable prompt instructions.
-- **AC-25.2 (Live Slash Commands)**: The Live input bar intercepts slash commands before model dispatch:
+- **AC-25.1 (Skill Discovery)**: Scans `.huginn/skills/*.md` and `.opencode/skills/*.md` (`.huginn` wins on id collision). Each skill defines metadata (name, description, triggers) and reusable prompt instructions; a file without frontmatter falls back to its basename and first paragraph, and three built-in skills (`audit`, `refactor`, `explain`) are appended when not shadowed (`includeBuiltins`). Discovery and reads are hardened against untrusted repositories: symlinked skill directories are rejected (`lstat` + `realpath` containment), files are read with `O_NOFOLLOW` and capped at 1 MB, prototype-pollution keys are skipped, and every parsed field is terminal-sanitized.
+- **AC-25.2 (Live Slash Commands)**: The Live input bar intercepts slash commands before model dispatch; an unknown `/…` command is rejected with a system message and never forwarded to the model:
   - `/help`: Displays modal with command reference, shortcuts, and active configuration.
-  - `/agent [id]`: Opens agent picker or switches to specified agent.
-  - `/models [model]`: Opens model picker or updates thinker/executor.
-  - `/mcp [id]`: Opens MCP server inspector.
-  - `/skills`: Lists available skills and previews their instructions.
-  - `/status`: Displays comprehensive status (git branch, worktree sandbox, runtime, memory stats).
+  - `/agent [id]`: Lists the registered runtimes (marking the active one), or hot-switches to the specified agent runtime (fails closed if it is unavailable).
+  - `/models [model]`: Opens the model picker (`/models` or `/model`), or sets thinker/executor inline (`/model <thinker> [executor]`).
+  - `/mcp [id]`: Opens MCP server inspector, optionally preselecting a server by id.
+  - `/skills`: Lists available skills and previews their instructions; `/skill <name>` executes a skill resolved by id, name or trigger.
+  - `/status`: Displays comprehensive status (git branch, clean/dirty tree, worktree sandbox, active runtime, thinker/executor models, Muninn entity/observation counts).
   - `/clear`: Clears conversation scrollback in TUI.
-  - `/draft`: Executes scope extraction and drafts `spec.md`, `adr.md`, `plan.md`.
-  - `/quit`: Gracefully exits with confirmation.
+  - `/draft`: Executes scope extraction and drafts `spec.md`, `adr.md`, `plan.md` (alias `/go`).
+  - `/quit`: Gracefully exits with a two-step confirmation (alias `/abort`).
 
 ### REQ-26: CLI Ergonomics, `huginn init` & Help Hierarchy
 The CLI must offer clear, structured commands and a frictionless initialization wizard.

@@ -366,7 +366,7 @@ modules: src/engine/skills/, src/tui/, src/engine/liveMode.ts
 
 Implement modular skills engine and full suite of interactive slash commands:
 1. Skills loader `src/engine/skills/loader.ts`:
-   - Discover skills in `.huginn/skills/*.md` and templates.
+   - Discover skills in `.huginn/skills/*.md` and `.opencode/skills/*.md`, plus built-in `audit`, `refactor` and `explain`.
    - Parse skill metadata (title, description, trigger) and body prompt.
 2. Rich slash commands dispatcher in `src/engine/liveMode.ts` and `src/tui/LiveDashboard.tsx`:
    - `/help`: Opens interactive cheat sheet with all commands and keybindings.
@@ -374,7 +374,7 @@ Implement modular skills engine and full suite of interactive slash commands:
    - `/models [m]`: Switch or view active models.
    - `/mcp [id]`: Inspect MCP servers and tools.
    - `/skills`: List and execute custom skills.
-   - `/status`: Show system diagnostics (branch, worktree sandbox, token usage, memory stats).
+   - `/status`: Show system diagnostics (branch, dirty state, worktree sandbox, runtime, models, memory stats).
    - `/clear`: Clear chat viewport history.
    - `/draft`: Trigger document drafting.
    - `/quit`: Confirm and exit cleanly.

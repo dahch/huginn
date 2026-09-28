@@ -70,6 +70,10 @@ src/
 │   ├── liveRepo.ts         live-mode git helpers: repo context, intent-to-add staging, docs commit
 │   ├── modelRouter.ts      "provider/model" → {providerID, modelID} + back
 │   ├── diff.ts             git helpers, inferModules, hasImplementationCode (greenfield detection)
+│   ├── skills/
+│   │   ├── loader.ts       skill discovery (.huginn/skills → .opencode/skills), flat-frontmatter parser, BUILTIN_SKILLS, containment + O_NOFOLLOW read
+│   │   ├── types.ts        Skill contract (id, name, description, triggers, body, filePath, builtin)
+│   │   └── index.ts        barrel export for the skills subsystem
 │   ├── engineEvents.ts     global typed event emitter
 │   ├── worktree.ts         git worktree sandbox manager (create/promote/discard/list/cleanup)
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
@@ -94,6 +98,8 @@ src/
 ├── state/
 │   ├── store.ts            .harness/ layout, atomic state persistence, progress markdown
 │   └── schema.ts           zod schema for HarnessState/HistoryEntry
+├── util/
+│   └── text.ts             sanitizeTerminalText (ANSI + C0/C1 control stripping) shared by TUI, agent adapters & skills (SEC-001)
 ├── plan/
 │   ├── parser.ts           plan.md → Iteration[]
 │   └── types.ts            Iteration type
@@ -102,7 +108,10 @@ src/
     ├── render.tsx          alternate screen setup, console patching, ink render bridges
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
     ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
-    ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen)
+    ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch)
+    ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp)
+    ├── HelpModal.tsx       live slash-command cheat sheet, shortcuts & active config (/help)
+    ├── SkillsModal.tsx     project/built-in skills browser & prompt-body preview (/skills)
     └── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence
 scripts/postinstall.ts       bun install hook → installer prompt
 templates/{agents,commands}/ opencode agent/command definitions bundled as markdown
@@ -2129,6 +2138,9 @@ flowchart TD
     subgraph "Multi-Source Config Resolution (mcpConfig.ts)"
         ProjectConfig[".huginn/mcp.json (SEC-002, SEC-003)"]
         AgentConfigs["resolveMcpPaths(agentId) (Cursor, Claude, OpenCode, Codex)"]
+    end
+
+    subgraph "Shared Sanitization (util/text.ts)"
         Sanitizer["sanitizeTerminalText() (SEC-001)"]
     end
 
@@ -2224,9 +2236,9 @@ When servers expose dozens of tools (e.g. AWS or database MCPs), rendering all i
 
 Server names, tool descriptions, and error payloads originate from external processes and untrusted configuration files. Unsanitized strings could emit ANSI escape sequences to hijack terminal cursors, manipulate alternate buffers, or poison logs (`SEC-001`).
 
-`sanitizeTerminalText` (`src/engine/agent/mcpConfig.ts`) sanitizes all displayed content:
+`sanitizeTerminalText` lives in the shared module `src/util/text.ts` — relocated out of `src/engine/agent/mcpConfig.ts` so the TUI (`LiveDashboard`, `HelpModal`, `SkillsModal`, `McpInspectorModal`), the agent adapters (`generic.ts`), the MCP monitor (`mcpConfig.ts`), and the skills loader all share one implementation. Every consumer imports it from `src/util/text.js`. It sanitizes all displayed content:
 - Strips ANSI escape sequences matching `[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]`.
-- Strips non-printable ASCII control characters `[\x00-\x08\x0B-\x1F\x7F]`.
+- Strips non-printable ASCII control characters **and the C1 range** `[\x00-\x08\x0B-\x1F\x7F-\x9F]` (the `\x7F–\x9F` addition covers 8-bit CSI/DCS/OSC introducers that the previous pattern left intact).
 - Preserves printable whitespace (`\n`, `\t`) and valid Unicode text.
 
 ### 23.7 Project-Level MCP Declaration & Configuration Resolution
@@ -2251,6 +2263,125 @@ In addition to target agent configuration files (e.g. `~/.config/opencode/openco
    - If `command` is present, transport defaults to `stdio`.
    - If `url` is present, transport defaults to `sse`.
    - Otherwise honors explicit `transport` string, sanitized against terminal injection.
+
+---
+
+## 24. Extensible Skills System & Rich Live Slash Commands
+
+Iteration 23 adds a file-based **skills subsystem** (`src/engine/skills/`) and turns the Live console input bar into a first-class command surface (`/help`, `/agent`, `/skills`, `/status`, …) backed by two new modals (`HelpModal`, `SkillsModal`).
+
+### 24.1 Motivation & Architectural Objectives
+
+1. **Project-specific prompting**: teams want reusable, version-controlled prompt fragments (audits, refactors, domain explainers) without editing huginn's source or the installed opencode templates.
+2. **Command discoverability**: before this iteration Live mode understood only `/draft`, `/go`, `/quit` and `/abort`; every other `/…` string was silently forwarded to the model as chat text, which produced confusing model replies to typos.
+3. **Untrusted input**: skill files and skill directories come from the checked-out repository, so discovery and parsing must be treated as an attack surface (symlink escape, oversized reads, terminal-escape injection, prototype pollution).
+
+### 24.2 Architecture Overview & Data Flow
+
+```mermaid
+flowchart TD
+    subgraph "Live TUI (LiveDashboard.tsx)"
+        Input["InputBar submit()"]
+        Dispatcher{"starts with '/'?"}
+        Help["HelpModal (/help)"]
+        Skills["SkillsModal (/skills, /skill)"]
+        Inspect["McpInspectorModal (/mcp [id])"]
+        Picker["ModelPickerModal (/models, /model)"]
+        Reject["system message: Unknown command"]
+    end
+
+    subgraph "Skills Subsystem (engine/skills/)"
+        Loader["loadSkills(projectPath, { includeBuiltins })"]
+        Parse["parseSkillContent()"]
+        Find["findSkill(skills, query)"]
+        Builtins["BUILTIN_SKILLS: audit, refactor, explain"]
+    end
+
+    subgraph "LiveEngine (engine/liveMode.ts)"
+        Chat["chat(prompt)"]
+        Switch["switchRuntime(agentId)"]
+        Diag["getDiagnostics()"]
+    end
+
+    Input --> Dispatcher
+    Dispatcher -- "/help" --> Help
+    Dispatcher -- "/skills, bare /skill" --> Skills
+    Dispatcher -- "/skill <name>" --> Find
+    Dispatcher -- "/mcp [id]" --> Inspect
+    Dispatcher -- "/models, /model" --> Picker
+    Dispatcher -- "/status" --> Diag
+    Dispatcher -- "/agent <id>" --> Switch
+    Dispatcher -- "unknown /…" --> Reject
+    Dispatcher -- "plain text" --> Chat
+    Skills --> Loader
+    Loader --> Parse
+    Loader --> Builtins
+    Loader --> Find
+    Find -- matched skill body --> Chat
+```
+
+### 24.3 Skill Discovery, Precedence & Built-ins
+
+`loadSkills(projectPath, options?)` (`src/engine/skills/loader.ts`) scans two project-relative directories, in order:
+
+1. `<project>/.huginn/skills/`
+2. `<project>/.opencode/skills/`
+
+- **Precedence**: directory order is authoritative — a skill whose lowercased `id` (the `.md` basename) was already seen in `.huginn/skills/` is skipped in `.opencode/skills/`, so `.huginn` wins. Only `*.md` entries are considered; directory listing is sorted for deterministic order.
+- **Built-in fallback**: with `includeBuiltins` (default `true`) three shipped skills — `audit`, `refactor`, `explain` (`BUILTIN_SKILLS`) — are appended for any id not shadowed by a project file, so a fresh repo always has usable skills. `includeBuiltins: false` yields project skills only.
+- **Lookup**: `findSkill(skills, query)` resolves by exact `id`, then exact `name`, then exact `trigger`, and finally a case-insensitive substring match, so `/skill audit` and `/skill security` both reach the `audit` skill.
+
+### 24.4 Frontmatter Parser & No-Frontmatter Fallback
+
+`parseSkillContent(filename, filePath, rawContent)` implements a deliberately small, flat subset of YAML — not a full YAML parser:
+
+- The `---`-delimited block is matched by `FRONTMATTER_REGEX`; only the flat `key: value` scalars are interpreted:
+  - `name` or `title` → `name`
+  - `description` or `desc` → `description`
+  - `triggers` (or `trigger`) → list, accepting a YAML dash list (`- item`, continuation lines while indented), a bracketed flow list (`[a, b]`), or a bare comma list.
+- **Inline `#` comments are stripped** from values, but only when the `#` is preceded by whitespace and outside quotes / brackets; values are then unquoted (`'…'` / `"…"`).
+- Block scalars, nested keys, multi-line values and merge keys are **not** parsed and degrade to plain text.
+- **No-frontmatter fallback**: `id` is the `.md` basename, `name` defaults to that basename, `description` defaults to the first paragraph (skipping a leading `# Heading`), `triggers` defaults to the lowercased `[basename]`, and `body` is the remaining paragraphs (or empty). A UTF-8 BOM is stripped before parsing.
+
+Every produced field — including `filePath`, `name`, `description`, `triggers` and `body` — is passed through `sanitizeTerminalText` (`src/util/text.ts`), so terminal-escape payloads in a hostile skill file cannot reach the renderer.
+
+### 24.5 Loader Security Hardening
+
+Because skills are read from the repository, the loader treats discovery and reads as untrusted:
+
+- **Scan-root containment**: `resolveContainedSkillDir` `lstat`s the candidate directory (rejecting symlinks and non-directories) and requires `realpathSync(candidate)` to equal `join(realpath(projectRoot), …segments)` **and** to stay under `realRoot + sep`. A hostile repo cannot point `.opencode/skills` at an arbitrary directory outside the project.
+- **`O_NOFOLLOW` fd read with a size cap**: `readSkillFile` opens with `O_RDONLY | O_NOFOLLOW` (no symlink following, no stat/read race), `fstat`s the fd, rejects non-regular files and files larger than `MAX_FILE_SIZE_BYTES` (1 MB), and reads only from that fd.
+- **Prototype-pollution key skip**: `__proto__`, `constructor` and `prototype` frontmatter keys are ignored during parsing (defence in depth alongside the same guard in the MCP config reader).
+- **Terminal-escape sanitization**: see § 23.6 — the single shared `sanitizeTerminalText` implementation applied to every field.
+
+### 24.6 Live Slash Command Dispatcher
+
+`submit()` in `LiveDashboard.tsx` intercepts any input beginning with `/` before it can reach `LiveEngine.chat()`. The dispatcher is a fixed `if` chain; an unrecognized `/<...>` command is answered with a system message (`Unknown command "<cmd>". Type /help for the command reference.`) and **never forwarded to the model**.
+
+| Command | Behaviour |
+|---|---|
+| `/help` | Mounts `HelpModal` — command cheat sheet, navigation shortcuts, and the active agent/thinker/executor/project banner. `Esc`, `q` or `Enter` closes. |
+| `/agent` | Emits a system message listing every registered runtime, marking the active one (no modal). |
+| `/agent <id>` | Hot-switches the runtime via `LiveEngine.switchRuntime(id)`; an unknown id is rejected with the available-target list. |
+| `/models`, `/model` | Mounts the interactive `ModelPickerModal`. |
+| `/model <thinker> [executor]` (also `/models …`) | Validates `provider/model` syntax for both values (executor defaults to the current one), rejects extra args or malformed values, then calls `LiveEngine.updateModels(...)` for the session. |
+| `/mcp`, `/mcp <id>` | Mounts `McpInspectorModal`, optionally pre-selecting a server by id (`text.slice(4).trim()`). |
+| `/skills`, bare `/skill` | Refreshes via `loadSkills(cfg.projectPath)` and mounts `SkillsModal`; `Enter` on a skill executes it (`live.chat(skill.body)`). |
+| `/skill <name>` | Resolves `findSkill(...)`; a match runs its `body` immediately, otherwise the browser hint message is shown. |
+| `/status` | Calls `LiveEngine.getDiagnostics()` and renders a bordered box (branch, clean/dirty, worktree sandbox, runtime, thinker/executor, Muninn entity/observation counts). |
+| `/clear` | Clears chat messages, stream buffer and both scroll offsets. |
+| `/draft` (alias `/go`) | Runs `live.draft()` and, on approval, `onApprove()`. |
+| `/quit` (alias `/abort`) | **Two-step confirmation**: the first invocation only asks to confirm; a second within the same session aborts. Any other command resets the pending confirmation. |
+
+`SkillsModal` and `HelpModal` follow the same TUI conventions as the other modals: a `stateRef` bridge for fresh `useInput` callbacks under React 19, centered list windowing (`VISIBLE_LIST_ITEMS = 8`, `VISIBLE_BODY_LINES = 8`), `Tab` pane focus, and `Esc`/`q` dismissal. `HelpModal` sanitizes and clamps every external prop at the component boundary.
+
+### 24.7 `LiveEngine` Runtime Switching & Diagnostics
+
+Two engine additions back the dispatcher (`src/engine/liveMode.ts`):
+
+- **`switchRuntime(agentId)`**: resolves the target runtime via the injected `runtimeFactory` (a new optional `LiveEngineOptions.runtimeFactory` field used by tests) or `getAgentRuntime(...)`, then **fails closed** — if `isAvailable()` is false it throws and the active runtime is left untouched. On success it aborts the previous `session` (or `sessionId` via `abortSession`), swaps the runtime, clears the session handle, and sets `needsSystemPrompt` so the architect/system prompt is re-seeded on the next `prompt` rather than lost with the disposed session. A `liveChat` system event announces the switch.
+- **`getDiagnostics()`**: returns `DiagnosticsInfo` assembled from best-effort git probes (`rev-parse --abbrev-ref HEAD`, `status --porcelain`, `--git-dir` worktree detection), the active `runtime.name`, the formatted thinker/executor models, and Muninn `getStats()` entity/observation counts — each wrapped in `try/catch` so a missing git repo or uninitialized memory DB degrades to defaults instead of throwing.
+- `runtime` is now a **private field behind a public getter** (`get runtime()`), mutated only by the constructor and `switchRuntime`.
 
 
 
