@@ -1885,7 +1885,8 @@ The runtime abstraction defines two foundational ports:
    - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `gemini`, `agy`).
    - `name: string` — human-readable agent name.
    - `isAvailable(): Promise<boolean>` — non-blocking probe verifying if the agent's executable binary exists on `PATH` or daemon is reachable.
-   - `getAvailableModels(): Promise<ModelInfo[]>` — queries available models for selection and validation.
+   - `getAvailableModels(): Promise<ModelInfo[]>` — queries the models the runtime can actually use (never a fabricated catalog); returns `[]` when the runtime exposes no listing mechanism.
+   - `getModelCatalog?(): Promise<ModelCatalog>` — richer discovery carrying a `reason` when the catalog is empty, so an empty result is never indistinguishable from a failure (REQ-27/AC-27.4).
    - `getMcpStatus(): Promise<McpStatusReport>` — inspects configured Model Context Protocol servers, transport types, and tool counts.
    - `createSession(options: SessionOptions): Promise<IAgentSession>` — creates an execution session bounded to the target directory.
    - `startDaemon?(): Promise<void>` / `stopDaemon?(): Promise<void>` — lifecycle hooks for runtimes requiring background daemons (e.g. OpenCode server).
@@ -2018,10 +2019,10 @@ Input characters are filtered through `sanitizeKeyInput()` to strip ANSI escape 
 
 ### 22.3 Provider Catalog Discovery & Fallback Resilience
 
-The modal decouples model enumeration through `runtime.getAvailableModels()`:
-- **Runtime Discovery**: Calls `runtime.getAvailableModels()`. When operating with OpenCode, this queries `client.provider.list()` and translates authenticated models into `ModelInfo` records (`id`, `name`, `provider`, `description`).
-- **Resilient Fallback**: If discovery throws or returns an empty list (e.g. offline agent or restricted CLI), the modal gracefully falls back to `DEFAULT_FALLBACK_MODELS` (covering Claude 3.7 Sonnet, Claude 3.5 Sonnet, Claude Opus 4.5, GPT-5.1 Codex, o3-mini, and Gemini 2.5 Pro).
-- **Custom Model Flexibility**: Users are never restricted to pre-discovered models; typing an arbitrary `provider/model` string and pressing `Enter` confirms the custom model directly.
+The modal decouples model enumeration through `runtime.getModelCatalog?()` / `runtime.getAvailableModels()`:
+- **Runtime Discovery**: Calls `runtime.getModelCatalog?.()` (falling back to `getAvailableModels()`). When operating with OpenCode, this queries `client.provider.list()` and keeps **only models from providers in the response's `connected` set** (581 on the reference machine, not the 8 195-model catalog), translating them into `ModelInfo` records (`id`, `name`, `provider`, `description`). Runtimes with a listing command use it (Command Code `--list-models`, `omp models`, `agy models`); when the SDK/CLI is unreachable it falls back to `opencode models`.
+- **Honest Empty/Error States (supersedes the old `DEFAULT_FALLBACK_MODELS` fallback)**: an empty or failed discovery shows a distinct empty state ("No models discovered from <runtime> — type a provider/model id and press Enter") plus the sanitized discovery `reason`; a thrown discovery error is surfaced verbatim. No hardcoded catalog is ever substituted.
+- **Custom Model Flexibility**: Users are never restricted to pre-discovered models; typing a model id and pressing `Enter` confirms it. The `provider/model` shape is required for free-text ids on fully-qualified runtimes, but a catalog selection — and a bare free-text id on a runtime that exposes bare ids (`agy`, Command Code) — is accepted verbatim.
 
 ### 22.4 Slash Commands & In-Session Switching
 
