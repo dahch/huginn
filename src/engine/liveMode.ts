@@ -6,6 +6,7 @@ import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
 import { getAgentRuntime } from "./agent/registry.js";
 import type { AgentTarget } from "../agents/integrator.js";
 import { MemoryService } from "../muninn/service/memory-service.js";
+import { resolveDatabasePath } from "../muninn/db/client.js";
 import { DecisionBroker } from "./decisionBroker";
 import { events, type LiveStage } from "./engineEvents";
 import type { DecisionChoice, DecisionRequest } from "./types";
@@ -15,6 +16,7 @@ import { CycleEngine } from "./cycle";
 import { loadPlan } from "../plan/parser";
 import { commitDocs, readOptional, repoContext, resetHarnessState, stageDocsForReview, unstageDocs, writeDoc } from "./liveRepo";
 import { git } from "./diff.js";
+import { sanitizeTerminalText } from "../util/text.js";
 
 const LIVE_PROMPT_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -28,6 +30,13 @@ export interface DiagnosticsInfo {
   memoryStats: {
     entitiesCount: number;
     observationsCount: number;
+    /**
+     * Present when the Muninn database could not be opened or queried
+     * (REQ-30 / AC-30.5). "Unavailable" must never be indistinguishable from
+     * "empty": with this set, the counts are meaningless and `/status` shows the
+     * sanitized reason instead of `0 entities, 0 observations`.
+     */
+    error?: string;
   };
 }
 
@@ -263,8 +272,15 @@ export class LiveEngine {
 
     let entitiesCount = 0;
     let observationsCount = 0;
+    let memoryError: string | undefined;
     try {
-      const service = new MemoryService({ projectRoot: this.cfg.projectPath });
+      // Same resolution as `CycleEngine` (the project's own database, not
+      // whatever `process.cwd()` happens to be), so `/status` can never read a
+      // different project's memory.
+      const service = new MemoryService({
+        projectRoot: this.cfg.projectPath,
+        dbPath: resolveDatabasePath(undefined, this.cfg.projectPath),
+      });
       try {
         const stats = service.getStats(service.currentProject.id);
         entitiesCount = stats.entities;
@@ -272,8 +288,10 @@ export class LiveEngine {
       } finally {
         service.close();
       }
-    } catch {
-      // Safe fallback if memory DB is uninitialized or unavailable
+    } catch (err) {
+      // AC-30.5: a failed DB open/query is *not* an empty database — report the
+      // (sanitized) reason so `/status` cannot claim "0 entities, 0 observations".
+      memoryError = sanitizeTerminalText(err instanceof Error ? err.message : String(err));
     }
 
     return {
@@ -286,6 +304,7 @@ export class LiveEngine {
       memoryStats: {
         entitiesCount,
         observationsCount,
+        ...(memoryError ? { error: memoryError } : {}),
       },
     };
   }

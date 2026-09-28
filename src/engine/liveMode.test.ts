@@ -477,5 +477,20 @@ describe("LiveEngine flow", () => {
       const diag2 = await engine.getDiagnostics();
       expect(diag2.gitClean).toBe(false);
     });
+
+    it("reports a Muninn DB failure instead of an empty database (AC-30.5)", async () => {
+      // Put a *file* where Muninn's `.huginn` directory would be, so opening the
+      // database fails — "unavailable" must not read as "0 entities".
+      writeFileSync(join(dir, ".huginn"), "not a directory");
+
+      const diag = await new LiveEngine({ cfg: makeCfg() }).getDiagnostics();
+
+      expect(diag.memoryStats.error).toBeDefined();
+      expect(diag.memoryStats.error).toBeTruthy();
+      // The counts stay zeroed but are explicitly meaningless: the error is the
+      // signal `/status` renders.
+      expect(diag.memoryStats.entitiesCount).toBe(0);
+      expect(diag.memoryStats.observationsCount).toBe(0);
+    });
   });
 });

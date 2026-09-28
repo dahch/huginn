@@ -369,8 +369,15 @@ export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
         memoryService.close?.();
       }
     }
-  } catch {
-    // Best-effort Muninn indexing: non-blocking
+  } catch (err) {
+    // Best-effort Muninn indexing: non-blocking, but never *silent* (AC-30.5) —
+    // HUGINN_DEBUG surfaces why the symbol graph was not updated.
+    if (process.env.HUGINN_DEBUG) {
+      console.error(
+        "[huginn] Muninn post-execution indexing failed (non-fatal):",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   return result;
