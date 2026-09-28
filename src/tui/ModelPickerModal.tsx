@@ -407,6 +407,8 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
             ⚠ Model discovery from {safeRuntimeName} failed: {discoveryError}
           </Text>
           <Text color="gray">Type a provider/model id and press Enter to continue.</Text>
+          {/* AC-31.2: free-text entry *or* the `/model <id>` shortcut, never a bare cause. */}
+          <Text color="gray">Or press Esc and retry /model &lt;id&gt; once the CLI can list models again.</Text>
           {renderHints()}
         </Box>
       ) : emptyCatalog ? (
@@ -418,6 +420,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
           {discoveryReason ? (
             <Text color="gray">Type a provider/model id and press Enter to continue.</Text>
           ) : null}
+          <Text color="gray">Or press Esc and retry /model &lt;id&gt; once the CLI can list models again.</Text>
           {renderHints()}
         </Box>
       ) : (

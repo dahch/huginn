@@ -1117,8 +1117,10 @@ describe("Live Mode Model Switching & Slash Commands", () => {
       m.text.includes('Invalid model format "invalid-thinker"'),
     );
     expect(invalidThinkerMsg).toBeDefined();
+    // REQ-31/AC-31.1: the rejection is prefixed and says what to type instead.
     expect(invalidThinkerMsg?.text).toBe(
-      'Invalid model format "invalid-thinker". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).',
+      '⚠ Invalid model format "invalid-thinker" — expected "provider/model" ' +
+        "(e.g. anthropic/claude-3-7-sonnet). Type /model to pick one from the list.",
     );
 
     const invalidExecMsg = emittedChatMessages.find((m) =>
@@ -1126,7 +1128,8 @@ describe("Live Mode Model Switching & Slash Commands", () => {
     );
     expect(invalidExecMsg).toBeDefined();
     expect(invalidExecMsg?.text).toBe(
-      'Invalid model format "invalid-executor". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).',
+      '⚠ Invalid model format "invalid-executor" — expected "provider/model" ' +
+        "(e.g. anthropic/claude-3-7-sonnet). Type /model to pick one from the list.",
     );
   });
 
@@ -1270,11 +1273,16 @@ describe("Iteration 21 Review Fixes (REV-001 through REV-005)", () => {
 
     instance.unmount();
 
-    // Verify error was emitted to liveChat
+    // Verify error was emitted to liveChat: the failing component, the file it
+    // tried to write and the retry path lead the message (AC-31.1/AC-31.2).
     const failedMsg = emittedChatMessages.find((m) =>
-      m.text.includes("Failed to update models: disk permission denied")
+      m.text.includes("Model settings were not saved")
     );
     expect(failedMsg).toBeDefined();
+    expect(failedMsg?.text).toContain("⚠ Model settings were not saved");
+    expect(failedMsg?.text).toContain("/tmp/fake-proj/.huginn/config.json");
+    expect(failedMsg?.text).toContain("retry /model");
+    expect(failedMsg?.text).toContain("cause: disk permission denied");
 
     // Verify live models were NOT mutated due to early persistence failure
     expect(live.getModels().thinker.modelID).toBe("claude-opus-4-5");
@@ -1331,7 +1339,7 @@ describe("Iteration 21 Review Fixes (REV-001 through REV-005)", () => {
     expect(cfg2.chooseModel).toBe(false);
   });
 
-  it("REV-005: /model catch block emits actual (err as Error).message", async () => {
+  it("REV-005 / AC-31.2: /model failures lead with the next step and keep the sanitized cause", async () => {
     const { LiveApp } = await import("../../src/tui/LiveDashboard");
     const stdout = new PassThrough();
     const stdin = createMockStdin();
@@ -1363,10 +1371,14 @@ describe("Iteration 21 Review Fixes (REV-001 through REV-005)", () => {
     instance.unmount();
 
     const errorMsg = emittedChatMessages.find((m) =>
-      m.text.includes("Custom update error: backend model registry unreachable")
+      m.text.includes("Failed to update models")
     );
     expect(errorMsg).toBeDefined();
-    expect(errorMsg?.text).toBe("Custom update error: backend model registry unreachable");
+    // The hint is what the user acts on, so it comes before the raw cause.
+    expect(errorMsg?.text).toContain("⚠ Failed to update models — run `/model <id>`");
+    expect(errorMsg?.text).toContain(
+      "cause: Custom update error: backend model registry unreachable",
+    );
   });
 });
 

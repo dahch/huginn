@@ -237,9 +237,13 @@ export class LiveEngine {
     // first prompt of the new runtime so the switched agent keeps its context.
     this.needsSystemPrompt = true;
 
+    // Visible acknowledgement of the switch, in the console's feedback voice
+    // (REQ-31 / AC-31.1: the `✓` prefix mirrors `src/tui/feedback.ts`). The
+    // engine owns this line so a headless switch is announced too; the TUI only
+    // adds a `… Switching…` line while the probe runs.
     events.emit("liveChat", {
       role: "system",
-      text: `Switched agent runtime to ${newRuntime.name} (${newRuntime.id})`,
+      text: `✓ Switched agent runtime to ${newRuntime.name} (${newRuntime.id}).`,
     });
 
     return newRuntime;

@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { IAgentRuntime, McpStatusReport, McpToolInfo } from "../engine/agent/types.js";
 import { fetchMcpStatusWithTimeout } from "../engine/agent/mcpStatus.js";
+import { events } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text.js";
+import { NEXT_STEP, warnFeedback } from "./feedback.js";
 
 const MAX_VISIBLE_TOOLS = 10;
 
@@ -64,12 +66,23 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
   }, [servers.length, selectedServerIndex]);
 
   // Preselect the server requested via `/mcp <id>` once the report is available.
+  // An id that matches nothing is *said*, not silently ignored (AC-31.1).
   useEffect(() => {
     if (!pendingServerId || !report) return;
     const idx = report.servers.findIndex(
       (s) => s.id === pendingServerId || s.name === pendingServerId,
     );
-    if (idx >= 0) setSelectedServerIndex(idx);
+    if (idx >= 0) {
+      setSelectedServerIndex(idx);
+    } else {
+      events.emit("liveChat", {
+        role: "system",
+        text: warnFeedback(
+          `No MCP server named "${sanitizeTerminalText(pendingServerId)}" — showing all ` +
+            `${report.servers.length} registered server(s). ${NEXT_STEP.mcp}`,
+        ),
+      });
+    }
     setPendingServerId(undefined);
   }, [report, pendingServerId]);
 
@@ -222,7 +235,11 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
             <Box flexDirection="column">
               <Text dimColor>No MCP servers registered</Text>
               {report?.error && (
-                <Text color="red">Error: {sanitizeTerminalText(report.error)}</Text>
+                <>
+                  <Text color="red">Error: {sanitizeTerminalText(report.error)}</Text>
+                  {/* AC-31.2: the failing component, then what to do about it. */}
+                  <Text dimColor>Press Esc, then run /mcp again to retry the probe.</Text>
+                </>
               )}
             </Box>
           ) : (

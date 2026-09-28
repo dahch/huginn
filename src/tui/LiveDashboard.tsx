@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import { LiveAbortError, type LiveEngine } from "../engine/liveMode";
-import { saveUserConfig, saveGlobalUserConfig, type RunConfig } from "../config";
+import { saveUserConfig, saveGlobalUserConfig, getProjectConfigPath, getUserConfigPath, type RunConfig } from "../config";
 import { AGENT_TARGETS } from "../agents/integrator";
 import { events, type LiveStage } from "../engine/engineEvents";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
@@ -14,6 +14,17 @@ import { McpInspectorModal } from "./McpInspectorModal";
 import { HelpModal } from "./HelpModal";
 import { SkillsModal } from "./SkillsModal";
 import { findCommand, matchCommands, type SlashCommand } from "./commandRegistry.js";
+import {
+  NEXT_STEP,
+  busyFeedback,
+  causeText,
+  configSaveStep,
+  emptyChatHints,
+  failureFeedback,
+  failureHeadline,
+  okFeedback,
+  warnFeedback,
+} from "./feedback.js";
 import {
   CommandSuggestions,
   MAX_SUGGESTION_ROWS,
@@ -45,6 +56,10 @@ const LIVE_HEADER_CONTEXT_ROWS = 2;
 const LIVE_VIEW_OUTER_INSET = 2;
 /** `minHeight` both scrollable cards keep so their title row is never clipped. */
 const CARD_MIN_ROWS = 4;
+/** Rows a card's rounded border spends (top + bottom). */
+const CARD_BORDER_ROWS = 2;
+/** The card's own title row, above the body. */
+const CARD_TITLE_ROWS = 1;
 const INPUT_HEIGHT = 2;
 const FOOTER_HEIGHT = 1;
 /** The palette's own rounded border (top + bottom). */
@@ -72,6 +87,16 @@ interface FormattedLine {
   id: string;
   type: "system" | "user_header" | "user_body" | "assistant_header" | "assistant_body" | "blank";
   text: string;
+}
+
+/**
+ * The console's feedback channel: every acknowledgement (busy line, result,
+ * failure) is a system message in the conversation, so nothing the user types
+ * can end in a silent no-op (AC-31.1). The wording itself comes from
+ * `feedback.ts`, which keeps the format consistent.
+ */
+function emitSystem(text: string): void {
+  events.emit("liveChat", { role: "system", text });
 }
 
 const STAGE_LABEL: Record<LiveStage, { label: string; color: string }> = {
@@ -470,18 +495,23 @@ function RefineView({
       exit();
       return;
     }
-    events.emit("log", { level: "error", message: (err as Error).message });
-    events.emit("done", { reason: "error", error: (err as Error).message });
+    // AC-31.1/AC-31.2: the failure gets one actionable line before the session
+    // tears down, naming the component and the next step, with the raw cause
+    // (sanitized) kept as supporting detail.
+    emitSystem(failureFeedback("Live session failed", NEXT_STEP.session, err));
+    events.emit("log", { level: "error", message: causeText(err) });
+    events.emit("done", { reason: "error", error: causeText(err) });
     exit();
   };
 
   const executeSkill = useCallback(
     async (skill: Skill): Promise<void> => {
       setShowSkills(false);
-      events.emit("liveChat", {
-        role: "system",
-        text: `Executing skill: ${sanitizeTerminalText(skill.name)} (${sanitizeTerminalText(skill.id)})`,
-      });
+      emitSystem(
+        busyFeedback(
+          `Executing skill: ${sanitizeTerminalText(skill.name)} (${sanitizeTerminalText(skill.id)})`,
+        ),
+      );
       clearStream();
       setBusy(true);
       try {
@@ -495,9 +525,12 @@ function RefineView({
     [live],
   );
 
-  const openSkills = (): void => {
-    setAvailableSkills(loadSkills(cfg.projectPath));
+  /** Reload the project skills and open the browser; returns what it loaded. */
+  const openSkills = (): Skill[] => {
+    const loaded = loadSkills(cfg.projectPath);
+    setAvailableSkills(loaded);
     setShowSkills(true);
+    return loaded;
   };
 
   const applyModels = (parts: string[]): void => {
@@ -508,32 +541,34 @@ function RefineView({
       return idx > 0 && idx < s.length - 1;
     };
     if (!isValidModel(newThinker)) {
-      events.emit("liveChat", {
-        role: "system",
-        text: `Invalid model format "${sanitizeTerminalText(newThinker)}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
-      });
+      emitSystem(
+        warnFeedback(
+          `Invalid model format "${sanitizeTerminalText(newThinker)}" — expected "provider/model" ` +
+            `(e.g. anthropic/claude-3-7-sonnet). Type /model to pick one from the list.`,
+        ),
+      );
       return;
     }
     if (!isValidModel(newExecutor)) {
-      events.emit("liveChat", {
-        role: "system",
-        text: `Invalid model format "${sanitizeTerminalText(newExecutor)}". Expected "provider/model" (e.g. anthropic/claude-3-7-sonnet).`,
-      });
+      emitSystem(
+        warnFeedback(
+          `Invalid model format "${sanitizeTerminalText(newExecutor)}" — expected "provider/model" ` +
+            `(e.g. anthropic/claude-3-7-sonnet). Type /model to pick one from the list.`,
+        ),
+      );
       return;
     }
     try {
       live.updateModels({ thinker: newThinker, executor: newExecutor });
       setCurrentThinker(newThinker);
       setCurrentExecutor(newExecutor);
-      events.emit("liveChat", {
-        role: "system",
-        text: `Active models updated: thinker = ${newThinker}, executor = ${newExecutor} (session only)`,
-      });
+      emitSystem(
+        okFeedback(
+          `Active models updated: thinker = ${newThinker}, executor = ${newExecutor} (session only)`,
+        ),
+      );
     } catch (err) {
-      events.emit("liveChat", {
-        role: "system",
-        text: sanitizeTerminalText(String((err as Error).message)),
-      });
+      emitSystem(failureFeedback("Failed to update models", NEXT_STEP.modelSelection, err));
     }
   };
 
@@ -553,10 +588,11 @@ function RefineView({
     const command = findCommand(text);
     if (!command) {
       if (text.startsWith("/")) {
-        events.emit("liveChat", {
-          role: "system",
-          text: `Unknown command "${sanitizeTerminalText(text)}". Type /help for the command reference.`,
-        });
+        emitSystem(
+          warnFeedback(
+            `Unknown command "${sanitizeTerminalText(text)}" — type /help for the command reference.`,
+          ),
+        );
         return;
       }
       clearStream();
@@ -576,22 +612,31 @@ function RefineView({
 
     switch (command.id) {
       case "/help": {
+        // The modal covers the chat card, so the acknowledgement also lands in
+        // the conversation for when it closes.
+        emitSystem(okFeedback("Cheat sheet open — Esc, q or Enter closes it."));
         setShowHelp(true);
         return;
       }
       case "/skills": {
         if (!args) {
-          openSkills();
+          const loaded = openSkills();
+          emitSystem(
+            okFeedback(
+              `Skill browser open — ${loaded.length} skill(s) available; Enter runs the highlighted one.`,
+            ),
+          );
           return;
         }
         const matched = findSkill(availableSkills, args);
         if (matched) {
           await executeSkill(matched);
         } else {
-          events.emit("liveChat", {
-            role: "system",
-            text: `Skill "${sanitizeTerminalText(args)}" not found. Type /skills to browse available skills.`,
-          });
+          emitSystem(
+            warnFeedback(
+              `Skill "${sanitizeTerminalText(args)}" not found — type /skills to browse the available skills.`,
+            ),
+          );
         }
         return;
       }
@@ -621,15 +666,9 @@ function RefineView({
             statusRow("Muninn Memory:", memStr),
             `╰${"─".repeat(STATUS_LINE_WIDTH - 2)}╯`,
           ].join("\n");
-          events.emit("liveChat", {
-            role: "system",
-            text: statusText,
-          });
+          emitSystem(statusText);
         } catch (err) {
-          events.emit("liveChat", {
-            role: "system",
-            text: `Failed to retrieve diagnostics: ${sanitizeTerminalText(String((err as Error).message))}`,
-          });
+          emitSystem(failureFeedback("Diagnostics failed", NEXT_STEP.diagnostics, err));
         }
         return;
       }
@@ -638,18 +677,22 @@ function RefineView({
         clearStream();
         setChatScroll(0);
         setStreamScroll(0);
-        events.emit("liveChat", {
-          role: "system",
-          text: "Conversation and stream viewport cleared.",
-        });
+        emitSystem(okFeedback("Conversation and stream viewport cleared."));
         return;
       }
       case "/draft": {
         clearStream();
         setBusy(true);
+        emitSystem(
+          busyFeedback("Drafting spec.md, adr.md and plan.md from the refined scope…"),
+        );
         try {
           const outcome = await live.draft();
           if (outcome === "approved") await onApprove();
+          else
+            emitSystem(
+              warnFeedback("Draft aborted — the documents were left unstaged; /draft retries."),
+            );
         } catch (err) {
           failSession(err);
         } finally {
@@ -660,13 +703,13 @@ function RefineView({
       case "/quit": {
         if (!confirmQuit) {
           setConfirmQuit(true);
-          events.emit("liveChat", {
-            role: "system",
-            text: "Type /quit or /abort again to confirm exit.",
-          });
+          emitSystem(
+            warnFeedback("Type /quit or /abort again to confirm exit — anything else cancels."),
+          );
           return;
         }
         setConfirmQuit(false);
+        emitSystem(okFeedback("Exiting the live session."));
         live.requestAbort();
         failSession(new LiveAbortError());
         return;
@@ -674,20 +717,30 @@ function RefineView({
       case "/model": {
         const parts = args.split(/\s+/).filter(Boolean);
         if (parts.length === 0) {
+          emitSystem(
+            okFeedback(
+              `Model picker open — discovering models from ${sanitizeTerminalText(currentRuntimeName)} (Esc cancels).`,
+            ),
+          );
           setShowModelPicker(true);
           return;
         }
         if (parts.length > 2) {
-          events.emit("liveChat", {
-            role: "system",
-            text: "Usage: /model <thinker> [executor] — too many arguments.",
-          });
+          emitSystem(
+            warnFeedback("Usage: /model <thinker> [executor] — too many arguments."),
+          );
           return;
         }
         applyModels(parts);
         return;
       }
       case "/mcp": {
+        emitSystem(
+          okFeedback(
+            `MCP inspector open — probing ${sanitizeTerminalText(currentRuntimeName)} ` +
+              `(Esc closes it; run /mcp again to re-inspect).`,
+          ),
+        );
         setMcpInspectorServerId(args || undefined);
         setShowMcpInspector(true);
         return;
@@ -696,36 +749,40 @@ function RefineView({
         if (!args) {
           const activeAgent = live.runtime.id;
           const list = AGENT_TARGETS.map((t) => (t === activeAgent ? `${t} (active)` : t)).join(", ");
-          events.emit("liveChat", {
-            role: "system",
-            text: `Available agent runtimes: ${list}`,
-          });
+          emitSystem(
+            okFeedback(`Available agent runtimes: ${list} — run /agent <id> to switch.`),
+          );
           return;
         }
         if ((AGENT_TARGETS as readonly string[]).includes(args)) {
+          setBusy(true);
+          emitSystem(busyFeedback(`Switching runtime to "${sanitizeTerminalText(args)}"…`));
           try {
             const newRuntime = await live.switchRuntime(args);
             setCurrentRuntimeName(newRuntime.name);
           } catch (err) {
-            events.emit("liveChat", {
-              role: "system",
-              text: `Failed to switch runtime: ${sanitizeTerminalText(String((err as Error).message))}`,
-            });
+            emitSystem(
+              failureFeedback("Runtime switch failed", NEXT_STEP.runtimeSwitch, err),
+            );
+          } finally {
+            setBusy(false);
           }
         } else {
-          events.emit("liveChat", {
-            role: "system",
-            text: `Unknown agent target "${sanitizeTerminalText(args)}". Available: ${AGENT_TARGETS.join(", ")}`,
-          });
+          emitSystem(
+            warnFeedback(
+              `Unknown agent target "${sanitizeTerminalText(args)}" — available: ${AGENT_TARGETS.join(", ")}`,
+            ),
+          );
         }
         return;
       }
       default: {
         // A registry entry without a handler is a programming error, not a silent no-op.
-        events.emit("liveChat", {
-          role: "system",
-          text: `Command "${command.id}" is registered but has no handler.`,
-        });
+        emitSystem(
+          warnFeedback(
+            `Command "${command.id}" is registered but has no handler — run /help for the commands that work.`,
+          ),
+        );
         return;
       }
     }
@@ -733,33 +790,50 @@ function RefineView({
 
   const handleModelSelect = useCallback(
     (result: ModelPickerResult) => {
+      // Persistence comes first so a failed write can never leave the session
+      // disagreeing with the config on disk (REV-002) — and, when it fails, the
+      // user is told exactly which file could not be written and how to retry
+      // (AC-31.2).
+      const targetPath =
+        result.saveScope === "project"
+          ? getProjectConfigPath(cfg.projectPath)
+          : result.saveScope === "global"
+            ? getUserConfigPath()
+            : "";
       try {
         if (result.saveScope === "project") {
           saveUserConfig(cfg.projectPath, { thinker: result.thinker, executor: result.executor });
         } else if (result.saveScope === "global") {
           saveGlobalUserConfig({ thinker: result.thinker, executor: result.executor });
         }
-        live.updateModels({ thinker: result.thinker, executor: result.executor });
-        setCurrentThinker(result.thinker);
-        setCurrentExecutor(result.executor);
-        const scopeMsg =
-          result.saveScope === "project"
-            ? "saved to project config (.huginn/config.json)"
-            : result.saveScope === "global"
-              ? "saved to global config (~/.huginn/config.json)"
-              : "session only";
-        events.emit("liveChat", {
-          role: "system",
-          text: `Active models updated: thinker = ${result.thinker}, executor = ${result.executor} (${scopeMsg})`,
-        });
-        setShowModelPicker(false);
       } catch (err) {
-        events.emit("liveChat", {
-          role: "system",
-          text: `Failed to update models: ${(err as Error).message}`,
-        });
-        throw err;
+        const hint = configSaveStep(targetPath);
+        emitSystem(failureFeedback("Model settings were not saved", hint, err));
+        // The modal stays open and shows its own ⚠ row with the same copy.
+        throw new Error(failureHeadline("Model settings were not saved", hint));
       }
+
+      try {
+        live.updateModels({ thinker: result.thinker, executor: result.executor });
+      } catch (err) {
+        emitSystem(failureFeedback("Failed to update models", NEXT_STEP.modelSelection, err));
+        throw new Error(failureHeadline("Failed to update models", NEXT_STEP.modelSelection));
+      }
+
+      setCurrentThinker(result.thinker);
+      setCurrentExecutor(result.executor);
+      const scopeMsg =
+        result.saveScope === "project"
+          ? "saved to project config (.huginn/config.json)"
+          : result.saveScope === "global"
+            ? "saved to global config (~/.huginn/config.json)"
+            : "session only";
+      emitSystem(
+        okFeedback(
+          `Active models updated: thinker = ${result.thinker}, executor = ${result.executor} (${scopeMsg})`,
+        ),
+      );
+      setShowModelPicker(false);
     },
     [live, cfg.projectPath],
   );
@@ -838,8 +912,16 @@ function RefineView({
         return;
       }
       if (key.return) {
-        // A bare `/` is not a command — ignore Enter instead of guessing a match.
-        if (draftInput === "/") return;
+        // A bare `/` is not a command — say so instead of guessing a match or
+        // silently swallowing the key (AC-31.1).
+        if (draftInput === "/") {
+          emitSystem(
+            warnFeedback(
+              '"/" is not a command yet — keep typing, or press Tab to accept the highlighted one.',
+            ),
+          );
+          return;
+        }
         if (findCommand(draftInput)) {
           // A complete command token: run it exactly as typed.
           void submit();
@@ -1166,6 +1248,14 @@ function ScrollableChatCard({
   spinner: string;
   height: number;
 }) {
+  // Body rows actually available inside the fixed-height card: the effective
+  // height (Yoga applies `minHeight` over `height`) minus the border and the
+  // title row. The first-run hints are sliced to it, so they can never push the
+  // frame past the terminal height on a short terminal (AC-31.3).
+  const bodyRows = Math.max(
+    0,
+    Math.max(height, CARD_MIN_ROWS) - CARD_BORDER_ROWS - CARD_TITLE_ROWS,
+  );
   return (
     <Box
       borderStyle="round"
@@ -1190,9 +1280,7 @@ function ScrollableChatCard({
         </Box>
       </Box>
       {lines.length === 0 ? (
-        <Box marginY={0} justifyContent="center">
-          <Text dimColor>Describe what you want to build or change. I'll help you refine the scope.</Text>
-        </Box>
+        <EmptyChatHints maxRows={bodyRows} />
       ) : (
         lines.map((l) => {
           if (l.type === "blank") {
@@ -1233,6 +1321,32 @@ function ScrollableChatCard({
           );
         })
       )}
+    </Box>
+  );
+}
+
+/**
+ * First-run guidance (AC-31.3): an empty conversation shows what the console can
+ * do — the palette, `/draft`, `/mcp`, `/status` — in the raven's voice instead
+ * of a single generic line. One row per hint, truncated rather than wrapped, and
+ * sliced to the rows the card actually has, so the block can never widen the
+ * frame or push it past the terminal height.
+ */
+function EmptyChatHints({ maxRows }: { maxRows: number }) {
+  const hints = emptyChatHints(maxRows);
+  if (hints.length === 0) return null;
+  return (
+    <Box flexDirection="column" overflow="hidden">
+      {hints.map((line, index) => (
+        <Text
+          key={line}
+          wrap="truncate"
+          dimColor={index > 0}
+          color={index === 0 ? "cyanBright" : undefined}
+        >
+          {line}
+        </Text>
+      ))}
     </Box>
   );
 }
