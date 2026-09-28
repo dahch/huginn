@@ -160,6 +160,22 @@ function withModelArgs(
   return [...result, ...appended];
 }
 
+/**
+ * Truthfulness guard for config-discovered servers (REQ-30 / AC-30.1).
+ *
+ * This adapter holds **no MCP client**: it can read `.huginn/mcp.json` and the
+ * agent's own config files, but it can never talk to the servers they declare.
+ * A declaration is therefore evidence of *configuration*, never of liveness, so
+ * anything that would be reported as `connected` becomes `unknown`; the badge
+ * then shows `⚪ n unverified` instead of the previously fabricated always-green
+ * `🟢 n active`. Explicit failure states declared in the file (or produced by an
+ * unreadable/invalid file) are kept: they are honest already.
+ */
+export function asUnverifiedServer(entry: McpServerStatus): McpServerStatus {
+  if (entry.status === "error" || entry.status === "disconnected") return entry;
+  return { ...entry, status: "unknown" };
+}
+
 function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
   if (!pid) return;
@@ -560,7 +576,7 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
         if (mcpServers && typeof mcpServers === "object") {
           for (const [name, val] of Object.entries(mcpServers)) {
             if (isReservedKey(name)) continue;
-            const entry = parseMcpServerEntry(name, val);
+            const entry = asUnverifiedServer(parseMcpServerEntry(name, val));
             servers.push(entry);
             seenServerIds.add(name);
           }
@@ -601,7 +617,8 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
               servers.push({
                 id: name,
                 name,
-                status: "connected",
+                // AC-30.1: a declaration in a config file is not a liveness proof.
+                status: "unknown",
                 transport: "stdio",
                 toolsCount: 0,
                 tools: [],
@@ -619,7 +636,7 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
             for (const [name, val] of Object.entries(mcpServers)) {
               if (isReservedKey(name)) continue;
               if (typeof val === "object" && val !== null && !seenServerIds.has(name)) {
-                servers.push(parseMcpServerEntry(name, val));
+                servers.push(asUnverifiedServer(parseMcpServerEntry(name, val)));
                 seenServerIds.add(name);
               }
             }
@@ -638,13 +655,17 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
     }
 
     const totalTools = servers.reduce((sum, s) => sum + s.toolsCount, 0);
+    // AC-30.1: an unverified (`unknown`) server is never healthy — only a real
+    // probe may claim that — so a config-only report is honest-but-not-green.
     const healthy = servers.length > 0 && servers.every((s) => s.status === "connected");
+    const unverified = servers.some((s) => s.status === "unknown");
     const degraded = servers.some((s) => s.status === "error");
 
     return {
       servers,
       totalTools,
       healthy,
+      unverified,
       degraded,
     };
   }

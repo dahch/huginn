@@ -147,7 +147,28 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
   });
 
   const activeCount = servers.filter((s) => s.status === "connected").length;
+  const unverifiedCount = servers.filter((s) => s.status === "unknown").length;
   const totalTools = report?.totalTools ?? servers.reduce((sum, s) => sum + s.toolsCount, 0);
+  // Header status (REQ-30): a config-discovered server is never "active" — the
+  // count is qualified as unverified instead of silently inflating liveness. An
+  // error keeps the count too (`2/3 active · error`) so a partial failure is
+  // still legible rather than collapsing to a bare "error".
+  const hasError = Boolean(report?.degraded || report?.error || servers.some((s) => s.status === "error"));
+  const statusSummary =
+    activeCount > 0
+      ? `${activeCount}/${servers.length} active${hasError ? " · error" : ""}`
+      : unverifiedCount > 0
+        ? `${unverifiedCount}/${servers.length} unverified${hasError ? " · error" : ""}`
+        : hasError
+          ? "error"
+          : `${activeCount}/${servers.length} active`;
+  const statusColor = hasError
+    ? "yellow"
+    : unverifiedCount > 0 && activeCount === 0
+      ? "gray"
+      : report?.healthy
+        ? "green"
+        : "white";
 
   return (
     <Box
@@ -166,8 +187,8 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
             🔌 MCP SERVER INSPECTOR
           </Text>
           <Text dimColor> · </Text>
-          <Text bold color={report?.healthy ? "green" : report?.degraded ? "yellow" : "white"}>
-            {activeCount}/{servers.length} active
+          <Text bold color={statusColor}>
+            {statusSummary}
           </Text>
           <Text dimColor> · </Text>
           <Text color="cyan">{totalTools} tools</Text>

@@ -5,6 +5,7 @@ import type {
   CommandOptions,
   IAgentRuntime,
   IAgentSession,
+  McpServerState,
   McpServerStatus,
   McpStatusReport,
   ModelCatalog,
@@ -21,6 +22,7 @@ import {
   runCommand as clientRunCommand,
 } from "../../../server/client.js";
 import { startServer, type ServerHandle } from "../../../server/lifecycle.js";
+import { events } from "../../engineEvents.js";
 import { resolveModel } from "../../modelRouter.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
 import { runModelListCommand } from "./modelList.js";
@@ -125,6 +127,8 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
 
   private _client?: OpencodeClient;
   private serverHandle?: ServerHandle;
+  /** Recovery state of the supervised daemon (AC-30.4); undefined while healthy. */
+  private daemonFailure?: string;
   private readonly options: OpencodeRuntimeOptions;
 
   constructor(options: OpencodeRuntimeOptions = {}) {
@@ -235,13 +239,20 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
   }
 
   async getMcpStatus(): Promise<McpStatusReport> {
+    // AC-30.4: a died/recovering daemon is a *known, recoverable* failure — say
+    // so instead of letting the probe fail into a neutral empty state.
+    const daemonError = this.daemonStatusError();
+    if (daemonError) {
+      return { servers: [], totalTools: 0, healthy: false, degraded: true, error: daemonError };
+    }
+
     try {
       const response = await this.client.mcp.status();
       const statusMap = (response as unknown as Record<string, { status?: string; error?: string }>) ?? {};
 
       const servers: McpServerStatus[] = [];
       for (const [id, s] of Object.entries(statusMap)) {
-        let status: "connected" | "disconnected" | "error" = "disconnected";
+        let status: McpServerState = "disconnected";
         if (s.status === "connected") status = "connected";
         else if (s.status === "failed") status = "error";
 
@@ -284,8 +295,38 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
     const projectPath = this.options.projectPath ?? process.cwd();
     const port = this.options.port ?? 0;
     const timeout = this.options.serverTimeoutMs ?? 60000;
-    this.serverHandle = await startServer(projectPath, port, timeout);
-    this._client = createClient(this.serverHandle.url);
+    const handle = await startServer(projectPath, port, timeout);
+    // AC-30.4: the daemon is supervised from here on. A mid-session exit is
+    // logged by `startServer`, surfaced to the TUI and carried by
+    // `getMcpStatus()` as a recoverable error until (or unless) it recovers.
+    handle.onExit = ({ code, recovered }) => {
+      this.daemonFailure = recovered
+        ? undefined
+        : `opencode server exited (code ${code}); recovery failed — restart it with /agent`;
+      if (this.daemonFailure) {
+        events.emit("log", { level: "warn", message: `[huginn] ${this.daemonFailure}` });
+      } else {
+        events.emit("log", {
+          level: "info",
+          message: `[huginn] opencode server exited (code ${code}) and was restarted`,
+        });
+      }
+    };
+    this.serverHandle = handle;
+    this._client = createClient(handle.url);
+  }
+
+  /**
+   * The recoverable reason the MCP surface is unreachable, when the supervised
+   * opencode daemon died and has not (yet) recovered (AC-30.4).
+   */
+  private daemonStatusError(): string | undefined {
+    const handle = this.serverHandle;
+    if (!handle) return undefined;
+    if (handle.isHealthy()) return undefined;
+    return sanitizeTerminalText(
+      this.daemonFailure ?? "opencode server is unresponsive after exiting; restarting (recoverable)",
+    );
   }
 
   get serverUrl(): string | undefined {

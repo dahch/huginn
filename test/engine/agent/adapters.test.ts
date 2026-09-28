@@ -429,7 +429,10 @@ describe("GenericSubprocessRuntimeAdapter & Session Execution", () => {
       const mcp = await adapter.getMcpStatus();
       expect(mcp.servers).toHaveLength(2);
       expect(mcp.servers.map((s) => s.id).sort()).toEqual(["github", "sqlite"]);
-      expect(mcp.healthy).toBe(true);
+      // AC-30.1: a TOML declaration is configuration, not liveness.
+      expect(mcp.servers.every((s) => s.status === "unknown")).toBe(true);
+      expect(mcp.healthy).toBe(false);
+      expect(mcp.unverified).toBe(true);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -464,9 +467,14 @@ describe("GenericSubprocessRuntimeAdapter & Session Execution", () => {
       const toolServer = mcp.servers.find((s) => s.id === "toolserver");
       expect(toolServer?.transport).toBe("stdio");
       expect(toolServer?.toolsCount).toBe(2);
+      // AC-30.1: discovered in a config file ⇒ unverified, never "connected".
+      expect(toolServer?.status).toBe("unknown");
       const remoteServer = mcp.servers.find((s) => s.id === "remoteserver");
       expect(remoteServer?.transport).toBe("sse");
-      expect(mcp.healthy).toBe(true);
+      expect(remoteServer?.status).toBe("unknown");
+      expect(mcp.healthy).toBe(false);
+      expect(mcp.unverified).toBe(true);
+      expect(mcp.degraded).toBe(false);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -695,6 +703,9 @@ describe("OpencodeRuntimeAdapter and OpencodeSession", () => {
     const mcp = await adapter.getMcpStatus();
     expect(mcp.healthy).toBe(false);
     expect(mcp.servers).toHaveLength(0);
+    // AC-30.2: a throwing probe must be distinguishable from "nothing configured".
+    expect(mcp.degraded).toBe(true);
+    expect(mcp.error).toBe("MCP offline");
   });
 
   it("manages daemon lifecycle gracefully", async () => {

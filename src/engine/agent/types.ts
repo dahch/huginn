@@ -25,10 +25,20 @@ export interface McpToolInfo {
   description?: string;
 }
 
+/**
+ * Lifecycle state of a single MCP server (REQ-30 / AC-30.1).
+ *
+ * `connected` means a **real probe** reported the server as reachable. Servers
+ * that were merely *discovered in a config file* are `unknown`: Huginn never
+ * holds an MCP client for subprocess runtimes, so claiming `connected` for them
+ * would be a fabrication (the previous always-green badge).
+ */
+export type McpServerState = "connected" | "disconnected" | "unknown" | "error";
+
 export interface McpServerStatus {
   id: string;
   name: string;
-  status: "connected" | "disconnected" | "error";
+  status: McpServerState;
   transport: string;
   toolsCount: number;
   tools?: McpToolInfo[];
@@ -39,8 +49,24 @@ export interface McpServerStatus {
 export interface McpStatusReport {
   servers: McpServerStatus[];
   totalTools: number;
+  /**
+   * True only when every reported server was *verified* reachable by a real
+   * probe (AC-30.1). A report whose servers were merely discovered in config
+   * files is `healthy: false` even though nothing failed.
+   */
   healthy: boolean;
+  /**
+   * True when at least one server was found in configuration but never probed
+   * (ADR-30.1) — the truthfulness signal behind `MCP: ⚪ n unverified`.
+   */
+  unverified?: boolean;
+  /** True when a probe (or a config entry) reported a real failure. */
   degraded?: boolean;
+  /**
+   * Sanitized failure reason. Set by the timeout helper and by runtimes whose
+   * probe threw, so the badge can render `MCP: 🟡 error` instead of an
+   * indistinguishable `⚪ 0 active` (AC-30.2).
+   */
   error?: string;
 }
 

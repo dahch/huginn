@@ -213,6 +213,92 @@ describe("McpInspectorModal Component (AC-24.2, ADR-24)", () => {
     expect(output).toContain("ECONNREFUSED 127.0.0.1:5432");
   });
 
+  it("never presents config-discovered servers as active: shows unverified (AC-30.1)", async () => {
+    const stdout = createMockStdout();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const unverifiedReport: McpStatusReport = {
+      servers: [
+        {
+          id: "custom_db",
+          name: "custom_db",
+          status: "unknown",
+          transport: "stdio",
+          toolsCount: 2,
+          tools: [
+            { name: "query", description: "Execute SQL query" },
+            { name: "schema", description: "Get database schema" },
+          ],
+        },
+        {
+          id: "github",
+          name: "github",
+          status: "connected",
+          transport: "stdio",
+          toolsCount: 1,
+          tools: [{ name: "create_pull_request", description: "Open a PR" }],
+        },
+      ],
+      totalTools: 3,
+      healthy: false,
+      unverified: true,
+    };
+
+    const instance = render(
+      React.createElement(McpInspectorModal, {
+        runtime: createMockRuntime(unverifiedReport),
+        onClose: vi.fn(),
+        initialReport: unverifiedReport,
+      }),
+      { stdout, stdin: createMockStdin(), patchConsole: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+    instance.unmount();
+
+    // The verified server is reported as active, the config-only one is not.
+    expect(output).toContain("1/2 active");
+    expect(output).toContain("[unknown]");
+    expect(output).toContain("[connected]");
+    expect(output).toContain("Tools for custom_db");
+  });
+
+  it("reports a config-only report as unverified in the header", async () => {
+    const stdout = createMockStdout();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const unverifiedOnly: McpStatusReport = {
+      servers: [
+        { id: "a", name: "a", status: "unknown", transport: "stdio", toolsCount: 0 },
+        { id: "b", name: "b", status: "unknown", transport: "sse", toolsCount: 0 },
+      ],
+      totalTools: 0,
+      healthy: false,
+      unverified: true,
+    };
+
+    const instance = render(
+      React.createElement(McpInspectorModal, {
+        runtime: createMockRuntime(unverifiedOnly),
+        onClose: vi.fn(),
+        initialReport: unverifiedOnly,
+      }),
+      { stdout, stdin: createMockStdin(), patchConsole: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+    instance.unmount();
+
+    expect(output).toContain("2/2 unverified");
+    expect(output).not.toContain("2/2 active");
+  });
+
   it("switches focus between servers and tools using Tab / Enter", async () => {
     const stdout = createMockStdout();
     let output = "";

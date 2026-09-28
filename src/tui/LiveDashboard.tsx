@@ -601,7 +601,12 @@ function RefineView({
           const safeBranch = sanitizeTerminalText(diag.gitBranch).slice(0, STATUS_VALUE_WIDTH);
           const sandboxStr = diag.worktreeSandbox ? "Yes (isolated worktree)" : "No (primary tree)";
           const cleanStr = diag.gitClean ? "Clean" : "Modified / dirty";
-          const memStr = `${diag.memoryStats.entitiesCount} entities, ${diag.memoryStats.observationsCount} observations`;
+          const memStats = diag.memoryStats;
+          // AC-30.5: an unavailable DB is not an empty one — say so (sanitized,
+          // and clamped to the row's value column) instead of "0 entities".
+          const memStr = memStats.error
+            ? `unavailable — ${sanitizeTerminalText(memStats.error)}`.slice(0, STATUS_VALUE_WIDTH)
+            : `${memStats.entitiesCount} entities, ${memStats.observationsCount} observations`;
           const safeRuntime = sanitizeTerminalText(diag.runtimeName).slice(0, STATUS_VALUE_WIDTH);
           const safeThinker = sanitizeTerminalText(diag.thinkerModel).slice(0, STATUS_VALUE_WIDTH);
           const safeExecutor = sanitizeTerminalText(diag.executorModel).slice(0, STATUS_VALUE_WIDTH);

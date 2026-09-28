@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IAgentRuntime, McpStatusReport } from "../../../src/engine/agent/types.js";
-import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../../../src/engine/agent/mcpStatus.js";
+import {
+  MCP_BADGE_REASON_WIDTH,
+  fetchMcpStatusWithTimeout,
+  formatMcpBadge,
+} from "../../../src/engine/agent/mcpStatus.js";
 import {
   isReservedKey,
   loadProjectMcpConfig,
@@ -182,7 +186,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
         degraded: true,
       }),
     ).toEqual({
-      text: "MCP: 🟡 degraded",
+      text: "MCP: 🟡 error",
       color: "yellow",
     });
 
@@ -208,7 +212,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
         healthy: false,
       }),
     ).toEqual({
-      text: "MCP: 🟡 degraded",
+      text: "MCP: 🟡 error",
       color: "yellow",
     });
 
@@ -245,6 +249,67 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       text: "MCP: ⚪ 0 active",
       color: "gray",
     });
+  });
+
+  it("renders the unverified and error-reason states distinctly (AC-30.1, AC-30.2)", () => {
+    // Config-discovered servers: grey "unverified", never green "active".
+    expect(
+      formatMcpBadge({
+        servers: [
+          { id: "a", name: "a", status: "unknown", transport: "stdio", toolsCount: 3 },
+          { id: "b", name: "b", status: "unknown", transport: "sse", toolsCount: 0 },
+        ],
+        totalTools: 3,
+        healthy: false,
+        unverified: true,
+      }),
+    ).toEqual({ text: "MCP: ⚪ 2 unverified", color: "gray" });
+
+    // A server marked unknown without an explicit flag is still unverified.
+    expect(
+      formatMcpBadge({
+        servers: [{ id: "a", name: "a", status: "unknown", transport: "stdio", toolsCount: 0 }],
+        totalTools: 0,
+        healthy: false,
+      }),
+    ).toEqual({ text: "MCP: ⚪ 1 unverified", color: "gray" });
+
+    // A verified probe still wins over unverified peers.
+    expect(
+      formatMcpBadge({
+        servers: [
+          { id: "a", name: "a", status: "connected", transport: "stdio", toolsCount: 4 },
+          { id: "b", name: "b", status: "unknown", transport: "stdio", toolsCount: 0 },
+        ],
+        totalTools: 4,
+        healthy: false,
+        unverified: true,
+      }),
+    ).toEqual({ text: "MCP: 🟢 1 active (4 tools)", color: "green" });
+
+    // Degraded reports carry the sanitized reason (clamped, single line).
+    expect(
+      formatMcpBadge({
+        servers: [],
+        totalTools: 0,
+        healthy: false,
+        degraded: true,
+        error: "\u001b[31mECONNREFUSED\u001b[0m 127.0.0.1:4096\nsecond line",
+      }),
+    ).toEqual({
+      text: "MCP: 🟡 error — ECONNREFUSED 127.0.0.1:4096 second line",
+      color: "yellow",
+    });
+
+    const longReason = formatMcpBadge({
+      servers: [],
+      totalTools: 0,
+      healthy: false,
+      error: "x".repeat(200),
+    });
+    expect(longReason.text.startsWith("MCP: 🟡 error — ")).toBe(true);
+    expect(longReason.text.length).toBeLessThanOrEqual("MCP: 🟡 error — ".length + MCP_BADGE_REASON_WIDTH);
+    expect(longReason.text).not.toContain("\u001b");
   });
 
   it("handles non-Error thrown values in fetchMcpStatusWithTimeout", async () => {
@@ -353,10 +418,14 @@ describe("Project-level .huginn/mcp.json parsing (AC-24.3)", () => {
       });
 
       const report = await adapter.getMcpStatus();
-      expect(report.healthy).toBe(true);
       const customDb = report.servers.find((s) => s.id === "custom_db");
       expect(customDb).toBeDefined();
-      expect(customDb?.status).toBe("connected");
+      // AC-30.1: Huginn holds no MCP client for a subprocess runtime, so a
+      // server found only in a config file is unverified — never "connected".
+      expect(customDb?.status).toBe("unknown");
+      expect(report.healthy).toBe(false);
+      expect(report.unverified).toBe(true);
+      expect(report.degraded).toBe(false);
       expect(customDb?.transport).toBe("stdio");
       expect(customDb?.toolsCount).toBe(2);
       expect(customDb?.latencyMs).toBe(12);
