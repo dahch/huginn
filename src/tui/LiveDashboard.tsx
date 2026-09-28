@@ -34,7 +34,7 @@ import {
 } from "./CommandSuggestions.js";
 import { loadSkills, findSkill, type Skill } from "../engine/skills/index.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
-import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
+import { fetchMcpStatusWithTimeout, formatMcpBadge, MCP_STATUS_POLL_TIMEOUT_MS } from "../engine/agent/mcpStatus.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import {
   RavenHeader,
@@ -304,7 +304,7 @@ function RefineView({
     let active = true;
     const pollMcp = async () => {
       try {
-        const report = await fetchMcpStatusWithTimeout(live.runtime, 1500);
+        const report = await fetchMcpStatusWithTimeout(live.runtime, MCP_STATUS_POLL_TIMEOUT_MS);
         if (active) {
           setMcpStatus(report);
         }
@@ -1027,6 +1027,7 @@ function RefineView({
         cfg={cfg}
         spinner={spinner}
         runtimeName={currentRuntimeName}
+        runtimeId={live.runtime.id}
         thinker={currentThinker}
         executor={currentExecutor}
         mcpStatus={mcpStatus}
@@ -1128,6 +1129,7 @@ function LiveHeader({
   cfg,
   spinner,
   runtimeName,
+  runtimeId,
   thinker,
   executor,
   mcpStatus,
@@ -1137,12 +1139,14 @@ function LiveHeader({
   cfg: RunConfig;
   spinner: string;
   runtimeName: string;
+  /** Active agent target, so the MCP badge attributes its numbers (AC-32.4). */
+  runtimeId: string;
   thinker: string;
   executor: string;
   mcpStatus?: McpStatusReport | null;
 }) {
   const s = STAGE_LABEL[stage];
-  const mcpBadge = formatMcpBadge(mcpStatus);
+  const mcpBadge = formatMcpBadge(mcpStatus, runtimeId);
   // Presence over decoration (AC-29.4): the raven brand is followed by the live
   // stage, a (truthful) MCP badge, the active runtime, the project path and the
   // active models. Every dynamic value is sanitized and clamped to the columns
@@ -1152,11 +1156,12 @@ function LiveHeader({
   const gap = 2;
   const sep = " · ";
   const stageBadge = `[${spinner} ${s.label}]`;
-  const mcpText = headerValue(mcpBadge.text, 30);
 
   // Row 1: right cell, left to right — MCP badge → runtime → project path. The
-  // 2-column slack absorbs badges drawing wider than their code-point length.
+  // badge attributes its source agent, so it gets a wider budget, clamped to the
+  // columns the right cell actually has (AC-29.3) before the rest is laid out.
   const rightBudget = Math.max(0, rowWidth - stageBadge.length - gap - 2);
+  const mcpText = headerValue(mcpBadge.text, Math.max(0, Math.min(40, rightBudget)));
   const runtimeLabel = `${sep}runtime: `;
   const runtimeBudget = Math.max(6, Math.min(24, Math.floor(rightBudget * 0.25)));
   const runtimeValue =

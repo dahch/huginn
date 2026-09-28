@@ -6,3 +6,4 @@ export * from "./omp.js";
 export * from "./agy.js";
 export * from "./commandcode.js";
 export * from "./qwen.js";
+export * from "./mcpList.js";

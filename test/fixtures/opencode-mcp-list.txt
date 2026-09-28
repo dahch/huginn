@@ -1,0 +1,13 @@
+┌  MCP Servers
+│
+●  ✓ playwright [90mconnected
+│      [90mnpx @playwright/mcp@latest
+│
+●  ✓ codegraph [90mconnected
+│      [90mcodegraph serve --mcp
+│
+●  ✓ engram [90mconnected
+│      [90m/opt/homebrew/bin/engram mcp --tools=agent
+│
+└  3 server(s)
+

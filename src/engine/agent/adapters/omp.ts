@@ -90,6 +90,10 @@ export function parseOmpModels(stdout: string): ModelInfo[] {
  * Oh My Pi CLI. `omp models` prints its catalog as provider sections with a
  * box-drawing table (AC-27.4); a selected model is forwarded via `--model`
  * (AC-27.5).
+ *
+ * `omp` exposes no MCP listing command (verified), so `listMcpServers()`
+ * honestly resolves `[]` (the base adapter's behaviour) and the MCP panel falls
+ * back to config-file discovery, labelled `unknown` (REQ-32 / AC-32.1).
  */
 export class OmpRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
   constructor(options: Partial<GenericSubprocessOptions> = {}) {

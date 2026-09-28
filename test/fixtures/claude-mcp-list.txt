@@ -1,0 +1,5 @@
+Checking MCP server health…
+
+plugin:engram:engram: engram mcp --tools=agent - ✔ Connected
+leann-server: leann_mcp  - ✔ Connected
+codegraph: codegraph serve --mcp - ✔ Connected

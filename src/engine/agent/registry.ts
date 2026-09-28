@@ -4,6 +4,7 @@ import type { OpencodeClient } from "@opencode-ai/sdk";
 import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
 import {
+  AGY_MCP_LIST_TIMEOUT_MS,
   ClaudeRuntimeAdapter,
   CodexRuntimeAdapter,
   CommandCodeRuntimeAdapter,
@@ -11,6 +12,7 @@ import {
   OmpRuntimeAdapter,
   OpencodeRuntimeAdapter,
   QwenRuntimeAdapter,
+  parseAgyMcpList,
   parseAgyModels,
 } from "./adapters/index.js";
 
@@ -209,6 +211,15 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
           command: "agy",
           args: ["models"],
           parse: parseAgyModels,
+        },
+        // REQ-32 / AC-32.1: `agy mcp list` prints its own name/type/status table
+        // (statuses are `enabled`/`disabled` — configuration words, never a probe
+        // result), so its rows are mapped honestly and are never called live.
+        mcpListCommand: {
+          command: "agy",
+          args: ["mcp", "list"],
+          parse: parseAgyMcpList,
+          timeoutMs: AGY_MCP_LIST_TIMEOUT_MS,
         },
         projectPath: options.projectPath,
         homeDir: options.homeDir,

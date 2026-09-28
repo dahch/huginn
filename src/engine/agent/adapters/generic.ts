@@ -11,11 +11,13 @@ import {
 } from "../mcpConfig.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
 import { isExecutableBinary } from "../binaryUtils.js";
+import { listMcpServersViaCommand, type McpListCommandSpec } from "./mcpList.js";
 import { runModelListCommand } from "./modelList.js";
 import type {
   CommandOptions,
   IAgentRuntime,
   IAgentSession,
+  McpServerListing,
   McpServerStatus,
   McpStatusReport,
   ModelCatalog,
@@ -46,6 +48,13 @@ export interface GenericSubprocessOptions {
     /** Bounded spawn deadline; defaults to the shared `MODEL_LIST_TIMEOUT_MS` (8 s). */
     timeoutMs?: number;
   };
+  /**
+   * Declarative MCP enumeration (REQ-32 / AC-32.1): argv + pure parser for a CLI
+   * that can list its own servers (`<cli> mcp list`). Routimes without one leave
+   * this unset, and `listMcpServers()` honestly resolves `[]` so the caller falls
+   * back to config-file discovery.
+   */
+  mcpListCommand?: McpListCommandSpec;
   /**
    * Native model flag for this runtime (AC-27.5), e.g. `(m) => ["-m", m]`.
    * Appended to argv when a model is selected; `HUGINN_MODEL` is kept as an
@@ -559,6 +568,22 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
 
   async getAvailableModels(): Promise<ModelInfo[]> {
     return (await this.getModelCatalog()).models;
+  }
+
+  /**
+   * Enumerates the servers *this agent* has, through the agent's own CLI
+   * (REQ-32 / AC-32.1).
+   *
+   * A runtime with a verified listing command (`mcpListCommand`) spawns it under
+   * a bounded deadline; one without (`omp`, `kimi`, `pi`, `cursor`, `windsurf`,
+   * `codex`) resolves `[]` — an explicit "I have no way to enumerate", which the
+   * status helper turns into config-file discovery rather than an empty truth.
+   * Never throws: a failed spawn is an empty listing, not a crash.
+   */
+  async listMcpServers(): Promise<McpServerListing[]> {
+    const spec = this.options.mcpListCommand;
+    if (!spec) return [];
+    return listMcpServersViaCommand(spec, { env: this.options.env });
   }
 
   async getMcpStatus(): Promise<McpStatusReport> {

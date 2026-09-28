@@ -1,4 +1,5 @@
 import { GenericSubprocessRuntimeAdapter, type GenericSubprocessOptions } from "./generic.js";
+import { COMMANDCODE_MCP_LIST_TIMEOUT_MS, parseCommandcodeMcpList } from "./mcpList.js";
 import type { ModelInfo } from "../types.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
 
@@ -80,10 +81,11 @@ const COMMANDCODE_LIST_TIMEOUT_MS = 10000;
 
 export class CommandCodeRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
   constructor(options: Partial<GenericSubprocessOptions> = {}) {
+    const command = options.command ?? "commandcode";
     super({
       id: "commandcode",
       name: "Command Code",
-      command: options.command ?? "commandcode",
+      command,
       // Verified non-interactive form: `-p`/`--print` (there is no `exec`
       // subcommand) and the prompt is read from stdin.
       args: options.args ?? ["-p"],
@@ -94,6 +96,15 @@ export class CommandCodeRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
         args: ["--list-models"],
         parse: parseCommandCodeModels,
         timeoutMs: COMMANDCODE_LIST_TIMEOUT_MS,
+      },
+      // REQ-32 / AC-32.1: `commandcode mcp list` names the servers its own
+      // config declares and reports scope/auth per row, so those details are
+      // surfaced instead of a bare count (AC-32.5).
+      mcpListCommand: options.mcpListCommand ?? {
+        command,
+        args: ["mcp", "list"],
+        parse: parseCommandcodeMcpList,
+        timeoutMs: COMMANDCODE_MCP_LIST_TIMEOUT_MS,
       },
       projectPath: options.projectPath,
       homeDir: options.homeDir,

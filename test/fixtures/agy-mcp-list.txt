@@ -1,0 +1,6 @@
+NAME                 TYPE   STATUS   COMMAND/URL
+codegraph            stdio  enabled  /Users/dahch/.local/bin/codegraph serve --mcp
+engram               stdio  enabled  /opt/homebrew/bin/engram mcp --tools=agent
+muninn               stdio  enabled  huginn mcp run --project /Users/dahch/Documents/Projects/huginn
+sequential-thinking  stdio  enabled  npx -y @modelcontextprotocol/server-sequential-thinking
+tabularis            stdio  enabled  /Applications/tabularis.app/Contents/MacOS/tabularis --mcp

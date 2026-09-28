@@ -35,6 +35,31 @@ export interface McpToolInfo {
  */
 export type McpServerState = "connected" | "disconnected" | "unknown" | "error";
 
+/**
+ * Lifecycle state a CLI *listing* reports for one server (REQ-32 / AC-32.2).
+ *
+ * Deliberately narrower than {@link McpServerState}: `enabled` means "configured
+ * in the agent's own config" (a listing word, never a probe result), and only
+ * `connected` may be described as live. `unknown` is the honest default for a
+ * status Huginn does not recognise.
+ */
+export type McpListingStatus = "connected" | "enabled" | "disabled" | "pending" | "unknown";
+
+/**
+ * One server as enumerated by the active agent's own CLI (REQ-32 / AC-32.1).
+ *
+ * This is the agent's *own* answer to "what do you have?" — the only source that
+ * can legitimately name servers Huginn cannot see (per-agent config files) and
+ * attribute them to that agent (AC-32.3).
+ */
+export interface McpServerListing {
+  name: string;
+  transport?: string;
+  status: McpListingStatus;
+  /** Whatever per-server detail the listing exposed (command, scope, auth, URL). */
+  detail?: string;
+}
+
 export interface McpServerStatus {
   id: string;
   name: string;
@@ -44,6 +69,12 @@ export interface McpServerStatus {
   tools?: McpToolInfo[];
   latencyMs?: number;
   error?: string;
+  /**
+   * Per-server detail quoted from the agent's own listing (`commandcode`'s
+   * scope/auth, `claude`/`qwen`'s command line, …) — shown verbatim so the panel
+   * can go deeper where the CLI does and say so where it cannot (AC-32.5).
+   */
+  detail?: string;
 }
 
 export interface McpStatusReport {
@@ -118,6 +149,15 @@ export interface IAgentRuntime {
    * failed" and "nothing discovered" instead of showing one generic empty state.
    */
   getModelCatalog?(): Promise<ModelCatalog>;
+  /**
+   * Optional enumeration of the servers *this agent* has configured (REQ-32 /
+   * AC-32.1): implemented by runtimes whose CLI can list them
+   * (`opencode`/`claude`/`qwen`/`agy`/`commandcode mcp list`). Runtimes without a
+   * listing command resolve `[]` and let the caller fall back to config-file
+   * discovery. Never throws and never fabricates: an empty array means "nothing
+   * was enumerated", not "you have no servers".
+   */
+  listMcpServers?(): Promise<McpServerListing[]>;
   getMcpStatus(): Promise<McpStatusReport>;
   createSession(options: SessionOptions): Promise<IAgentSession>;
   startDaemon?(): Promise<void>;

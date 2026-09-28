@@ -5,6 +5,7 @@ import type {
   CommandOptions,
   IAgentRuntime,
   IAgentSession,
+  McpServerListing,
   McpServerState,
   McpServerStatus,
   McpStatusReport,
@@ -25,6 +26,7 @@ import { startServer, type ServerHandle } from "../../../server/lifecycle.js";
 import { events } from "../../engineEvents.js";
 import { resolveModel } from "../../modelRouter.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
+import { listMcpServersViaCommand, parseOpencodeMcpList } from "./mcpList.js";
 import { runModelListCommand } from "./modelList.js";
 
 export interface OpencodeRuntimeOptions {
@@ -37,6 +39,10 @@ export interface OpencodeRuntimeOptions {
   modelsCommand?: string;
   /** Bounded spawn deadline for the CLI fallback; defaults to the shared `MODEL_LIST_TIMEOUT_MS` (8 s). */
   modelsTimeoutMs?: number;
+  /** Binary used for `opencode mcp list` (REQ-32 / AC-32.1); defaults to `opencode`. */
+  mcpListCommand?: string;
+  /** Bounded spawn deadline for the MCP listing; defaults to the shared `MCP_LIST_TIMEOUT_MS` (5 s). */
+  mcpListTimeoutMs?: number;
   /** PATH override used when spawning the fallback CLI (also used by tests). */
   env?: Record<string, string | undefined>;
 }
@@ -236,6 +242,27 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
         )}`,
       };
     }
+  }
+
+  /**
+   * Enumerates the servers configured for **this** opencode install through
+   * `opencode mcp list` (REQ-32 / AC-32.1).
+   *
+   * The listing is the agent's own answer and is what makes the panel
+   * attributable: names the SDK cannot know (per-agent config files, plugin
+   * servers) show up here, with opencode's own status word. It is a bounded
+   * spawn and never throws — an absent or failing CLI resolves `[]`, leaving the
+   * caller free to fall back to config discovery.
+   */
+  async listMcpServers(): Promise<McpServerListing[]> {
+    return listMcpServersViaCommand(
+      {
+        command: this.options.mcpListCommand ?? "opencode",
+        args: ["mcp", "list"],
+        parse: parseOpencodeMcpList,
+      },
+      { env: this.options.env, timeoutMs: this.options.mcpListTimeoutMs },
+    );
   }
 
   async getMcpStatus(): Promise<McpStatusReport> {

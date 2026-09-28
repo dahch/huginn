@@ -1,0 +1,2 @@
+Configured MCP servers:
+[32m✓[0m engram: /opt/homebrew/bin/engram mcp --tools=agent (stdio) - Connected

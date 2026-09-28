@@ -1,0 +1,8 @@
+
+MCP Servers
+
+  NAME    TYPE   SCOPE    AUTH  STATUS
+  muninn  stdio  user     -     enabled
+
+Total: 1 server
+

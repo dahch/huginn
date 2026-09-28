@@ -8,7 +8,11 @@ import { formatDurationSec, formatDurationTerse, verdictColor, verdictIcon } fro
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import type { McpStatusReport } from "../engine/agent/types.js";
-import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
+import {
+  MCP_STATUS_POLL_TIMEOUT_MS,
+  fetchMcpStatusWithTimeout,
+  formatMcpBadge,
+} from "../engine/agent/mcpStatus.js";
 import {
   RavenHeader,
   headerValue,
@@ -144,7 +148,7 @@ export function Dashboard({
     let active = true;
     const poll = async () => {
       try {
-        const report = await fetchMcpStatusWithTimeout(engine.runtime, 1500);
+        const report = await fetchMcpStatusWithTimeout(engine.runtime, MCP_STATUS_POLL_TIMEOUT_MS);
         if (active) setMcpStatus(report);
       } catch {
         if (active) {
@@ -402,6 +406,7 @@ export function Dashboard({
         spinner={spinner}
         cfg={cfg}
         mcpStatus={mcpStatus}
+        agentId={engine.runtime.id}
       />
 
       <Box flexDirection="row" height={middleHeight} marginTop={0}>
@@ -452,6 +457,7 @@ function HeaderCard({
   spinner,
   cfg,
   mcpStatus,
+  agentId,
 }: {
   plan: RavenHeaderPlan;
   iteration: number;
@@ -465,10 +471,12 @@ function HeaderCard({
   spinner: string;
   cfg: RunConfig;
   mcpStatus?: McpStatusReport | null;
+  /** Active agent target, so the MCP badge attributes its numbers (AC-32.4). */
+  agentId?: string;
 }) {
   const isFix = currentPhase.startsWith("FIX");
   const progressStr = renderProgressBar(iteration, Math.max(1, totalIterations));
-  const mcpBadge = formatMcpBadge(mcpStatus);
+  const mcpBadge = formatMcpBadge(mcpStatus, agentId);
   // The raven brand is followed by meaningful run context (AC-29.4). Every
   // dynamic value is sanitized and clamped to the columns actually left over,
   // and detail that no longer fits is dropped instead of wrapped, so each row
@@ -482,7 +490,9 @@ function HeaderCard({
   const elapsedLabel = `Elapsed: ${formatDurationSec(totalElapsed)}`;
   const usedStatus = statusLabel.length + 1 + modeLabel.length + safeMode.length + 3;
   const mcpRoom = rowWidth - usedStatus - elapsedLabel.length - gap - 2;
-  const mcpText = mcpRoom >= 10 ? headerValue(mcpBadge.text, Math.min(26, mcpRoom)) : "";
+  // The badge now carries its source agent (`· opencode`), so it gets a wider
+  // budget — still clamped to the room actually left on the row (AC-29.3).
+  const mcpText = mcpRoom >= 10 ? headerValue(mcpBadge.text, Math.min(40, mcpRoom)) : "";
 
   const iterLabel = `Iter ${iteration}/${totalIterations}: `;
   const titleRoom = rowWidth - iterLabel.length - progressStr.length - gap - 2;

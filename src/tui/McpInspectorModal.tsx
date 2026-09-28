@@ -1,12 +1,40 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { IAgentRuntime, McpStatusReport, McpToolInfo } from "../engine/agent/types.js";
-import { fetchMcpStatusWithTimeout } from "../engine/agent/mcpStatus.js";
+import {
+  MCP_STATUS_POLL_TIMEOUT_MS,
+  fetchMcpStatusWithTimeout,
+  mcpToolTotal,
+} from "../engine/agent/mcpStatus.js";
 import { events } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text.js";
 import { NEXT_STEP, warnFeedback } from "./feedback.js";
 
 const MAX_VISIBLE_TOOLS = 10;
+
+/** Columns the per-server detail may spend in the list column. */
+const SERVER_DETAIL_WIDTH = 24;
+
+/** The server that carries Huginn's own memory brain (ADR-20 / REQ-38). */
+const MUNINN_SERVER = "muninn";
+
+/**
+ * The exact command that registers Muninn for an agent (AC-32.3 / AC-38.2):
+ * named explicitly so a missing brain is one copy-paste away from existing.
+ */
+export function muninnSetupCommand(agentId: string): string {
+  const clean = sanitizeTerminalText(agentId).replace(/\s+/g, " ").trim() || "opencode";
+  return `huginn setup --agent ${clean}`;
+}
+
+/** Clamps a display string to `max` columns (single line, sanitized). */
+function clampText(value: string | undefined, max: number): string {
+  const clean = sanitizeTerminalText(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, Math.max(0, max - 1))}…`;
+}
 
 export interface McpInspectorModalProps {
   runtime: IAgentRuntime;
@@ -32,7 +60,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
     let active = true;
     void (async () => {
       try {
-        const res = await fetchMcpStatusWithTimeout(runtime, 1500);
+        const res = await fetchMcpStatusWithTimeout(runtime, MCP_STATUS_POLL_TIMEOUT_MS);
         if (active) {
           setReport(res);
         }
@@ -161,7 +189,12 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
 
   const activeCount = servers.filter((s) => s.status === "connected").length;
   const unverifiedCount = servers.filter((s) => s.status === "unknown").length;
-  const totalTools = report?.totalTools ?? servers.reduce((sum, s) => sum + s.toolsCount, 0);
+  const totalTools = mcpToolTotal(report);
+  const agentLabel = sanitizeTerminalText(runtime.name);
+  const agentId = sanitizeTerminalText(runtime.id ?? runtime.name);
+  // AC-32.3: whatever is listed belongs to the active agent, and Huginn only
+  // observes it — the panel says so instead of implying it owns the config.
+  const muninn = servers.find((s) => sanitizeTerminalText(s.name).toLowerCase().includes(MUNINN_SERVER));
   // Header status (REQ-30): a config-discovered server is never "active" — the
   // count is qualified as unverified instead of silently inflating liveness. An
   // error keeps the count too (`2/3 active · error`) so a partial failure is
@@ -208,8 +241,21 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         </Box>
         <Box>
           <Text dimColor>Runtime: </Text>
-          <Text color="yellow">{sanitizeTerminalText(runtime.name)}</Text>
+          <Text color="yellow">{agentLabel}</Text>
         </Box>
+      </Box>
+
+      {/* Attribution & expectation (AC-32.3) */}
+      <Box flexDirection="column" marginBottom={1}>
+        <Text dimColor wrap="truncate">
+          Servers come from <Text color="yellow">{agentLabel}</Text> — add or change them with the
+          agent&apos;s own config or CLI; Huginn only observes them.
+        </Text>
+        <Text color={muninn ? "green" : "yellow"} wrap="truncate">
+          {muninn
+            ? `✓ Muninn (the memory brain) is registered for ${agentLabel} as "${sanitizeTerminalText(muninn.name)}" — one project-scoped brain, shared by every agent.`
+            : `⚠ Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
+        </Text>
       </Box>
 
       {/* Main Split Body: Left Server List, Right Detail Panel */}
@@ -233,7 +279,9 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
             <Text color="yellow">Probing MCP servers...</Text>
           ) : servers.length === 0 ? (
             <Box flexDirection="column">
-              <Text dimColor>No MCP servers registered</Text>
+              {/* Attributed empty state (AC-32.3): "nothing found" is a statement
+                  about *this agent*, not about the project. */}
+              <Text dimColor>No MCP servers registered for {agentLabel}</Text>
               {report?.error && (
                 <>
                   <Text color="red">Error: {sanitizeTerminalText(report.error)}</Text>
@@ -251,6 +299,18 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                   : server.status === "error"
                     ? "red"
                     : "gray";
+              // `name · transport · status · detail` (AC-32.1/AC-32.5): the
+              // agent's own words first, then the detail it exposed. Latency is
+              // only shown when a probe actually measured it, so `undefined`
+              // can never reach the row (AC-32.4).
+              const trailing = [
+                typeof server.latencyMs === "number" && Number.isFinite(server.latencyMs)
+                  ? `${server.latencyMs}ms`
+                  : "",
+                clampText(server.detail, SERVER_DETAIL_WIDTH),
+              ]
+                .filter((part) => part.length > 0)
+                .join(" · ");
 
               return (
                 <Box key={server.id || idx} justifyContent="space-between" marginBottom={0}>
@@ -263,11 +323,9 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                     </Text>
                   </Box>
                   <Box>
-                    <Text color={statusColor}>[{sanitizeTerminalText(server.status)}] </Text>
                     <Text color="cyan">[{sanitizeTerminalText(server.transport)}]</Text>
-                    {typeof server.latencyMs === "number" && (
-                      <Text color="yellow"> {server.latencyMs}ms</Text>
-                    )}
+                    <Text color={statusColor}> · [{sanitizeTerminalText(server.status)}]</Text>
+                    {trailing ? <Text color="yellow"> · {trailing}</Text> : null}
                   </Box>
                 </Box>
               );
@@ -301,6 +359,24 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
               {currentServer.error && (
                 <Box marginBottom={1}>
                   <Text color="red">Error: {sanitizeTerminalText(currentServer.error)}</Text>
+                </Box>
+              )}
+
+              {currentServer.detail && (
+                <Box marginBottom={1}>
+                  <Text dimColor wrap="truncate">
+                    Detail: <Text color="cyan">{sanitizeTerminalText(currentServer.detail)}</Text>
+                  </Text>
+                </Box>
+              )}
+
+              {/* AC-32.5: where the agent reports no health, say so instead of
+                  implying the server is either up or down. */}
+              {currentServer.status === "unknown" && (
+                <Box marginBottom={1}>
+                  <Text dimColor wrap="truncate">
+                    Status not reported by {agentLabel} — configured, not probed.
+                  </Text>
                 </Box>
               )}
 
