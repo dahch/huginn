@@ -1,22 +1,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { sanitizeTerminalText } from "../../util/text.js";
 import type { McpServerStatus, McpToolInfo } from "./types.js";
 
 export const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 export function isReservedKey(key: string): boolean {
   return RESERVED_KEYS.has(key);
-}
-
-/**
- * Strips ANSI escape sequences and non-printable ASCII control characters
- * to prevent terminal injection, cursor hijacking, and log poisoning (SEC-001).
- */
-export function sanitizeTerminalText(input: string): string {
-  if (typeof input !== "string") return "";
-  return input
-    .replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "")
-    .replace(/[\x00-\x08\x0B-\x1F\x7F]/g, "");
 }
 
 export interface ProjectMcpServerConfig {

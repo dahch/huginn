@@ -9,8 +9,8 @@ import {
   isReservedKey,
   loadProjectMcpConfig,
   parseMcpServerEntry,
-  sanitizeTerminalText,
 } from "../../../src/engine/agent/mcpConfig.js";
+import { sanitizeTerminalText } from "../../../src/util/text.js";
 import { GenericSubprocessRuntimeAdapter } from "../../../src/engine/agent/adapters/generic.js";
 
 function createMockRuntime(opts: {

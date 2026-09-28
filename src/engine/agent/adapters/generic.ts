@@ -8,8 +8,8 @@ import {
   isReservedKey,
   loadProjectMcpConfig,
   parseMcpServerEntry,
-  sanitizeTerminalText,
 } from "../mcpConfig.js";
+import { sanitizeTerminalText } from "../../../util/text.js";
 import { isExecutableBinary } from "../binaryUtils.js";
 import type {
   CommandOptions,
