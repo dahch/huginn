@@ -1,6 +1,11 @@
 import React, { useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import { sanitizeTerminalText } from "../util/text.js";
+import {
+  SLASH_COMMANDS as COMMAND_REGISTRY,
+  commandUsage,
+  describeCommand,
+} from "./commandRegistry.js";
 
 export interface CommandCheatSheet {
   command: string;
@@ -12,22 +17,26 @@ export interface ShortcutItem {
   description: string;
 }
 
-export const SLASH_COMMANDS: CommandCheatSheet[] = [
-  { command: "/help", description: "Show this command cheat sheet" },
-  { command: "/agent [id]", description: "Switch or view active agent runtime (claude, opencode, codex, omp, etc.)" },
-  { command: "/models [t] [e]", description: "Switch or view active models (or open picker)" },
-  { command: "/mcp [id]", description: "Inspect connected MCP servers and tools" },
-  { command: "/skills", description: "Browse and preview project skills" },
-  { command: "/skill <name>", description: "Execute or inject a custom skill" },
-  { command: "/status", description: "Show system diagnostics (branch, sandbox, runtime, memory stats)" },
-  { command: "/clear", description: "Clear conversation and stream viewport" },
-  { command: "/draft or /go", description: "Trigger document drafting" },
-  { command: "/quit or /abort", description: "Exit live session" },
-];
+/**
+ * Generated from the command registry (ADR-28 / AC-28.1) so the cheat sheet can
+ * never advertise a command the dispatcher does not implement.
+ */
+export const SLASH_COMMANDS: CommandCheatSheet[] = COMMAND_REGISTRY.map((command) => ({
+  command: commandUsage(command),
+  description: describeCommand(command),
+}));
+
+/** Column width for the command cell, sized so usage + arg hint never wraps. */
+const COMMAND_COLUMN_WIDTH =
+  SLASH_COMMANDS.reduce((widest, entry) => Math.max(widest, entry.command.length), 0) + 3;
 
 export const NAVIGATION_SHORTCUTS: ShortcutItem[] = [
   { key: "Tab", description: "Cycle focus between Chat and Stream viewports" },
-  { key: "↑ / ↓ or j / k", description: "Scroll chat or stream viewport" },
+  {
+    key: "/ then ↑ / ↓",
+    description: "Filter the inline command palette (Tab accepts, Enter runs, Esc dismisses)",
+  },
+  { key: "↑ / ↓ or j / k", description: "Scroll viewport (or move the command palette while typing a /command)" },
   { key: "PageUp / PageDown", description: "Fast-scroll focused viewport (4 lines)" },
   { key: "Esc or q", description: "Close modal / cancel current view" },
   { key: "Enter", description: "Submit command or prompt" },
@@ -117,11 +126,15 @@ export const HelpModal = React.memo(function HelpModal({
           ⚡ Slash Commands:
         </Text>
         {SLASH_COMMANDS.map((cmd) => (
-          <Box key={cmd.command} marginY={0}>
-            <Text bold color="cyan">
-              {"  " + cmd.command.padEnd(20)}
-            </Text>
-            <Text color="white">— {cmd.description}</Text>
+          <Box key={cmd.command} marginY={0} flexDirection="row">
+            <Box width={COMMAND_COLUMN_WIDTH} flexShrink={0}>
+              <Text bold color="cyan" wrap="truncate">
+                {"  " + cmd.command}
+              </Text>
+            </Box>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text color="white">— {cmd.description}</Text>
+            </Box>
           </Box>
         ))}
       </Box>

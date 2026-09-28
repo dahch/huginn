@@ -13,6 +13,14 @@ import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
 import { McpInspectorModal } from "./McpInspectorModal";
 import { HelpModal } from "./HelpModal";
 import { SkillsModal } from "./SkillsModal";
+import { findCommand, matchCommands, type SlashCommand } from "./commandRegistry.js";
+import {
+  CommandSuggestions,
+  MAX_SUGGESTION_ROWS,
+  buildSuggestionRows,
+  suggestionOverlayHeight,
+  type SuggestionRow,
+} from "./CommandSuggestions.js";
 import { loadSkills, findSkill, type Skill } from "../engine/skills/index.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import { fetchMcpStatusWithTimeout, formatMcpBadge } from "../engine/agent/mcpStatus.js";
@@ -24,6 +32,12 @@ const STATUS_LABEL_WIDTH = 17;
 const STATUS_VALUE_WIDTH = 35;
 const STATUS_LINE_WIDTH = STATUS_LABEL_WIDTH + STATUS_VALUE_WIDTH + 4;
 const STATUS_TITLE = "System Diagnostics";
+
+/**
+ * Rows the command palette may not spend: header (4) + input (2) + footer (1) +
+ * the 8-row floor for the chat/stream cards + the palette border (2).
+ */
+const PALETTE_RESERVED_ROWS = 17;
 
 function statusRow(label: string, value: string): string {
   return `│ ${label.padEnd(STATUS_LABEL_WIDTH)} ${value.padEnd(STATUS_VALUE_WIDTH)}│`;
@@ -164,6 +178,8 @@ function RefineView({
   const [focusCard, setFocusCard] = useState<"chat" | "stream">("chat");
   const [chatScroll, setChatScroll] = useState(0);
   const [streamScroll, setStreamScroll] = useState(0);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const [logs, setLogs] = useState<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>(() => {
     return events.getRecentLogs().map((e) => ({
       level: e.level,
@@ -335,6 +351,48 @@ function RefineView({
 
   const inputEnabled = !busy && stage !== "draft" && !decision;
 
+  // ── Inline slash-command palette (REQ-28) ────────────────────────────────
+  // The overlay is live only for a bare `/…` token: the first space means the
+  // user is typing arguments, so the input reverts to plain text handling.
+  const suggestionQuery = draftInput.startsWith("/") && !/\s/.test(draftInput) ? draftInput : null;
+  const suggestionMatches = useMemo(
+    () => (suggestionQuery === null ? [] : matchCommands(suggestionQuery)),
+    [suggestionQuery],
+  );
+  // The overlay is "open" only while there is something to show, so an unmatched
+  // draft (e.g. `/nope`) does not silently swallow Tab/Esc (REQ-28/AC-28.3).
+  const suggestionsOpen =
+    suggestionQuery !== null &&
+    !suggestionsDismissed &&
+    inputEnabled &&
+    suggestionMatches.length > 0;
+  const suggestionRowCap = Math.max(
+    1,
+    Math.min(MAX_SUGGESTION_ROWS, terminalSize.rows - PALETTE_RESERVED_ROWS),
+  );
+  const suggestionRows = useMemo<SuggestionRow[]>(
+    () => (suggestionsOpen ? buildSuggestionRows(suggestionMatches, suggestionIndex, suggestionRowCap) : []),
+    [suggestionsOpen, suggestionMatches, suggestionIndex, suggestionRowCap],
+  );
+
+  // Every edit re-ranks the list, so re-open the palette and go back to the best match.
+  useEffect(() => {
+    setSuggestionIndex(0);
+    setSuggestionsDismissed(false);
+  }, [draftInput]);
+
+  const moveSuggestion = (delta: number): void => {
+    setSuggestionIndex((i) =>
+      Math.min(Math.max(i + delta, 0), Math.max(suggestionMatches.length - 1, 0)),
+    );
+  };
+
+  /** Insert the accepted command, leaving a trailing space when it takes arguments. */
+  const acceptSuggestion = (command: SlashCommand): void => {
+    setDraftInput(command.takesArgs ? `${command.id} ` : command.id);
+    setSuggestionIndex(0);
+  };
+
   // Seed the CLI-provided initial idea into the conversation (matches headless).
   useEffect(() => {
     const idea = (live.ideaText ?? "").trim();
@@ -445,89 +503,32 @@ function RefineView({
     }
   };
 
-  const submit = async (): Promise<void> => {
-    const text = draftInput.trim();
+  /**
+   * Dispatch the draft input. `override` lets the palette submit a command the
+   * user accepted without retyping it; argument parsing stays per-command below.
+   */
+  const submit = async (override?: string): Promise<void> => {
+    const text = (override ?? draftInput).trim();
     setDraftInput("");
     if (!text) return;
     if (text !== "/quit" && text !== "/abort" && confirmQuit) {
       setConfirmQuit(false);
     }
 
-    if (text === "/help") {
-      setShowHelp(true);
-      return;
-    }
-    if (text === "/skills" || text === "/skill") {
-      openSkills();
-      return;
-    }
-    if (text.startsWith("/skill ")) {
-      const query = text.slice(7).trim();
-      if (!query) {
-        openSkills();
+    // Command *identity* (id + aliases) is resolved through the registry (ADR-28).
+    const command = findCommand(text);
+    if (!command) {
+      if (text.startsWith("/")) {
+        events.emit("liveChat", {
+          role: "system",
+          text: `Unknown command "${sanitizeTerminalText(text)}". Type /help for the command reference.`,
+        });
         return;
       }
-      const matched = findSkill(availableSkills, query);
-      if (matched) {
-        await executeSkill(matched);
-      } else {
-        events.emit("liveChat", {
-          role: "system",
-          text: `Skill "${sanitizeTerminalText(query)}" not found. Type /skills to browse available skills.`,
-        });
-      }
-      return;
-    }
-    if (text === "/status") {
-      try {
-        const diag = await live.getDiagnostics();
-        const safeBranch = sanitizeTerminalText(diag.gitBranch).slice(0, STATUS_VALUE_WIDTH);
-        const sandboxStr = diag.worktreeSandbox ? "Yes (isolated worktree)" : "No (primary tree)";
-        const cleanStr = diag.gitClean ? "Clean" : "Modified / dirty";
-        const memStr = `${diag.memoryStats.entitiesCount} entities, ${diag.memoryStats.observationsCount} observations`;
-        const safeRuntime = sanitizeTerminalText(diag.runtimeName).slice(0, STATUS_VALUE_WIDTH);
-        const safeThinker = sanitizeTerminalText(diag.thinkerModel).slice(0, STATUS_VALUE_WIDTH);
-        const safeExecutor = sanitizeTerminalText(diag.executorModel).slice(0, STATUS_VALUE_WIDTH);
-        const statusText = [
-          `╭─ ${STATUS_TITLE} ${"─".repeat(STATUS_LINE_WIDTH - STATUS_TITLE.length - 5)}╮`,
-          statusRow("Git Branch:", safeBranch),
-          statusRow("Working Tree:", cleanStr),
-          statusRow("Worktree Sandbox:", sandboxStr),
-          statusRow("Active Runtime:", safeRuntime),
-          statusRow("Thinker Model:", safeThinker),
-          statusRow("Executor Model:", safeExecutor),
-          statusRow("Muninn Memory:", memStr),
-          `╰${"─".repeat(STATUS_LINE_WIDTH - 2)}╯`,
-        ].join("\n");
-        events.emit("liveChat", {
-          role: "system",
-          text: statusText,
-        });
-      } catch (err) {
-        events.emit("liveChat", {
-          role: "system",
-          text: `Failed to retrieve diagnostics: ${sanitizeTerminalText(String((err as Error).message))}`,
-        });
-      }
-      return;
-    }
-    if (text === "/clear") {
-      setMessages([]);
-      clearStream();
-      setChatScroll(0);
-      setStreamScroll(0);
-      events.emit("liveChat", {
-        role: "system",
-        text: "Conversation and stream viewport cleared.",
-      });
-      return;
-    }
-    if (text === "/draft" || text === "/go") {
       clearStream();
       setBusy(true);
       try {
-        const outcome = await live.draft();
-        if (outcome === "approved") await onApprove();
+        await live.chat(text);
       } catch (err) {
         failSession(err);
       } finally {
@@ -535,93 +536,159 @@ function RefineView({
       }
       return;
     }
-    if (text === "/quit" || text === "/abort") {
-      if (!confirmQuit) {
-        setConfirmQuit(true);
-        events.emit("liveChat", {
-          role: "system",
-          text: "Type /quit or /abort again to confirm exit.",
-        });
+
+    const token = text.split(/\s+/)[0] ?? "";
+    const args = text.slice(token.length).trim();
+
+    switch (command.id) {
+      case "/help": {
+        setShowHelp(true);
         return;
       }
-      setConfirmQuit(false);
-      live.requestAbort();
-      failSession(new LiveAbortError());
-      return;
-    }
-    if (text === "/models" || text === "/model") {
-      setShowModelPicker(true);
-      return;
-    }
-    if (text.startsWith("/model ") || text.startsWith("/models ")) {
-      const parts = text.replace(/^\/models?\s+/, "").trim().split(/\s+/).filter(Boolean);
-      if (parts.length === 0) {
-        events.emit("liveChat", {
-          role: "system",
-          text: "Usage: /model <thinker> [executor] (e.g. /model anthropic/claude-3-7-sonnet opencode/gpt-5.1-codex)",
-        });
+      case "/skills": {
+        if (!args) {
+          openSkills();
+          return;
+        }
+        const matched = findSkill(availableSkills, args);
+        if (matched) {
+          await executeSkill(matched);
+        } else {
+          events.emit("liveChat", {
+            role: "system",
+            text: `Skill "${sanitizeTerminalText(args)}" not found. Type /skills to browse available skills.`,
+          });
+        }
         return;
       }
-      if (parts.length > 2) {
-        events.emit("liveChat", {
-          role: "system",
-          text: "Usage: /model <thinker> [executor] — too many arguments.",
-        });
-        return;
-      }
-      applyModels(parts);
-      return;
-    }
-    if (text === "/mcp" || text.startsWith("/mcp ")) {
-      const serverId = text.slice(4).trim();
-      setMcpInspectorServerId(serverId || undefined);
-      setShowMcpInspector(true);
-      return;
-    }
-    if (text === "/agent") {
-      const activeAgent = live.runtime.id;
-      const list = AGENT_TARGETS.map((t) => (t === activeAgent ? `${t} (active)` : t)).join(", ");
-      events.emit("liveChat", {
-        role: "system",
-        text: `Available agent runtimes: ${list}`,
-      });
-      return;
-    }
-    if (text.startsWith("/agent ")) {
-      const target = text.slice(7).trim();
-      if ((AGENT_TARGETS as readonly string[]).includes(target)) {
+      case "/status": {
         try {
-          const newRuntime = await live.switchRuntime(target);
-          setCurrentRuntimeName(newRuntime.name);
+          const diag = await live.getDiagnostics();
+          const safeBranch = sanitizeTerminalText(diag.gitBranch).slice(0, STATUS_VALUE_WIDTH);
+          const sandboxStr = diag.worktreeSandbox ? "Yes (isolated worktree)" : "No (primary tree)";
+          const cleanStr = diag.gitClean ? "Clean" : "Modified / dirty";
+          const memStr = `${diag.memoryStats.entitiesCount} entities, ${diag.memoryStats.observationsCount} observations`;
+          const safeRuntime = sanitizeTerminalText(diag.runtimeName).slice(0, STATUS_VALUE_WIDTH);
+          const safeThinker = sanitizeTerminalText(diag.thinkerModel).slice(0, STATUS_VALUE_WIDTH);
+          const safeExecutor = sanitizeTerminalText(diag.executorModel).slice(0, STATUS_VALUE_WIDTH);
+          const statusText = [
+            `╭─ ${STATUS_TITLE} ${"─".repeat(STATUS_LINE_WIDTH - STATUS_TITLE.length - 5)}╮`,
+            statusRow("Git Branch:", safeBranch),
+            statusRow("Working Tree:", cleanStr),
+            statusRow("Worktree Sandbox:", sandboxStr),
+            statusRow("Active Runtime:", safeRuntime),
+            statusRow("Thinker Model:", safeThinker),
+            statusRow("Executor Model:", safeExecutor),
+            statusRow("Muninn Memory:", memStr),
+            `╰${"─".repeat(STATUS_LINE_WIDTH - 2)}╯`,
+          ].join("\n");
+          events.emit("liveChat", {
+            role: "system",
+            text: statusText,
+          });
         } catch (err) {
           events.emit("liveChat", {
             role: "system",
-            text: `Failed to switch runtime: ${sanitizeTerminalText(String((err as Error).message))}`,
+            text: `Failed to retrieve diagnostics: ${sanitizeTerminalText(String((err as Error).message))}`,
           });
         }
-      } else {
+        return;
+      }
+      case "/clear": {
+        setMessages([]);
+        clearStream();
+        setChatScroll(0);
+        setStreamScroll(0);
         events.emit("liveChat", {
           role: "system",
-          text: `Unknown agent target "${sanitizeTerminalText(target)}". Available: ${AGENT_TARGETS.join(", ")}`,
+          text: "Conversation and stream viewport cleared.",
         });
+        return;
       }
-      return;
-    }
-    if (text.startsWith("/")) {
-      events.emit("liveChat", {
-        role: "system",
-        text: `Unknown command "${sanitizeTerminalText(text)}". Type /help for the command reference.`,
-      });
-      return;
-    }
-    clearStream();
-    setBusy(true);
-    try {
-      await live.chat(text);
-    } catch (err) {
-      failSession(err);
-    } finally {
-      setBusy(false);
+      case "/draft": {
+        clearStream();
+        setBusy(true);
+        try {
+          const outcome = await live.draft();
+          if (outcome === "approved") await onApprove();
+        } catch (err) {
+          failSession(err);
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
+      case "/quit": {
+        if (!confirmQuit) {
+          setConfirmQuit(true);
+          events.emit("liveChat", {
+            role: "system",
+            text: "Type /quit or /abort again to confirm exit.",
+          });
+          return;
+        }
+        setConfirmQuit(false);
+        live.requestAbort();
+        failSession(new LiveAbortError());
+        return;
+      }
+      case "/model": {
+        const parts = args.split(/\s+/).filter(Boolean);
+        if (parts.length === 0) {
+          setShowModelPicker(true);
+          return;
+        }
+        if (parts.length > 2) {
+          events.emit("liveChat", {
+            role: "system",
+            text: "Usage: /model <thinker> [executor] — too many arguments.",
+          });
+          return;
+        }
+        applyModels(parts);
+        return;
+      }
+      case "/mcp": {
+        setMcpInspectorServerId(args || undefined);
+        setShowMcpInspector(true);
+        return;
+      }
+      case "/agent": {
+        if (!args) {
+          const activeAgent = live.runtime.id;
+          const list = AGENT_TARGETS.map((t) => (t === activeAgent ? `${t} (active)` : t)).join(", ");
+          events.emit("liveChat", {
+            role: "system",
+            text: `Available agent runtimes: ${list}`,
+          });
+          return;
+        }
+        if ((AGENT_TARGETS as readonly string[]).includes(args)) {
+          try {
+            const newRuntime = await live.switchRuntime(args);
+            setCurrentRuntimeName(newRuntime.name);
+          } catch (err) {
+            events.emit("liveChat", {
+              role: "system",
+              text: `Failed to switch runtime: ${sanitizeTerminalText(String((err as Error).message))}`,
+            });
+          }
+        } else {
+          events.emit("liveChat", {
+            role: "system",
+            text: `Unknown agent target "${sanitizeTerminalText(args)}". Available: ${AGENT_TARGETS.join(", ")}`,
+          });
+        }
+        return;
+      }
+      default: {
+        // A registry entry without a handler is a programming error, not a silent no-op.
+        events.emit("liveChat", {
+          role: "system",
+          text: `Command "${command.id}" is registered but has no handler.`,
+        });
+        return;
+      }
     }
   };
 
@@ -663,23 +730,36 @@ function RefineView({
   const inputHeight = 2;
   const footerHeight = 1;
   const decisionHeight = decision ? 6 : 0;
+  // The palette is height-bounded (≤6 content rows + border) and part of the budget.
+  const suggestionHeight = suggestionOverlayHeight(suggestionRows);
 
   let maxLogsAllowed = 0;
   if (terminalSize.rows >= 36) maxLogsAllowed = 4;
   else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
   else if (terminalSize.rows >= 25) maxLogsAllowed = 2;
   else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
+  // While the palette is open it owns the row budget: the log tail steps aside so
+  // the palette can never push the input row or the cards off-screen (AC-28.4).
+  if (suggestionHeight > 0) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
   const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
 
+  // Floor at 1 (not 8) so the frame still fits on very short terminals now that
+  // the palette also draws rows; the cards shrink with it (AC-28.4).
   const availableHeight = Math.max(
-    8,
-    terminalSize.rows - headerHeight - inputHeight - footerHeight - logsHeight - decisionHeight,
+    1,
+    terminalSize.rows -
+      headerHeight -
+      inputHeight -
+      footerHeight -
+      logsHeight -
+      decisionHeight -
+      suggestionHeight,
   );
 
-  const chatHeight = Math.max(4, Math.floor(availableHeight * 0.58));
-  const streamHeight = Math.max(4, availableHeight - chatHeight);
+  const chatHeight = Math.max(1, Math.floor(availableHeight * 0.58));
+  const streamHeight = Math.max(1, availableHeight - chatHeight);
 
   const visibleChatLinesCount = Math.max(1, chatHeight - 3);
   const visibleStreamLinesCount = Math.max(1, streamHeight - 3);
@@ -696,6 +776,50 @@ function RefineView({
       if (choice) live.resolveDecision(choice);
       return;
     }
+
+    // Command palette takes precedence over focus/scroll bindings — but only while open.
+    if (suggestionsOpen) {
+      const selected = suggestionMatches[Math.min(suggestionIndex, suggestionMatches.length - 1)];
+      // `j`/`k` navigate only on a bare slash: otherwise they are real filter input.
+      const bareSlash = draftInput === "/";
+      if (key.escape) {
+        setSuggestionsDismissed(true);
+        return;
+      }
+      if (key.upArrow || (bareSlash && input === "k")) {
+        moveSuggestion(-1);
+        return;
+      }
+      if (key.downArrow || (bareSlash && input === "j")) {
+        moveSuggestion(1);
+        return;
+      }
+      if (key.tab) {
+        // While the palette is open it owns Tab: accept the highlight, never
+        // fall through to the focus toggle (REQ-28/AC-28.3).
+        if (selected) acceptSuggestion(selected);
+        return;
+      }
+      if (key.return) {
+        // A bare `/` is not a command — ignore Enter instead of guessing a match.
+        if (draftInput === "/") return;
+        if (findCommand(draftInput)) {
+          // A complete command token: run it exactly as typed.
+          void submit();
+        } else if (selected && !selected.takesArgs) {
+          // Accept a partial no-arg command and submit it.
+          void submit(selected.id);
+        } else if (selected) {
+          // Argument-taking command: accept it and leave room for the arguments.
+          acceptSuggestion(selected);
+        } else {
+          // Nothing matched (e.g. `/nope`): submit so the unknown-command reply shows.
+          void submit();
+        }
+        return;
+      }
+    }
+
     if (key.escape) {
       live.requestAbort();
       failSession(new LiveAbortError());
@@ -849,9 +973,20 @@ function RefineView({
 
       {!showModelPicker && !showMcpInspector && !showHelp && !showSkills && (
         <>
-          <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  /draft when ready · /mcp to inspect · /quit to abort" />
+          <ChatInputRow value={draftInput} enabled={inputEnabled} placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect" />
+          {suggestionsOpen && (
+            <CommandSuggestions
+              matches={suggestionMatches}
+              selectedIndex={suggestionIndex}
+              maxRows={suggestionRowCap}
+            />
+          )}
           <Box justifyContent="space-between">
-            <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · /draft to draft · /mcp to inspect · /quit to abort</Text>
+            {suggestionsOpen ? (
+              <Text dimColor>[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss · type to filter</Text>
+            ) : (
+              <Text dimColor>[Tab] Toggle focus · [PageUp/Down, ↑/↓] Scroll · [Enter] Send · / to list commands</Text>
+            )}
             <Text dimColor>stage: {STAGE_LABEL[stage].label}</Text>
           </Box>
         </>

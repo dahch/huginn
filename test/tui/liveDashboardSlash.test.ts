@@ -107,8 +107,11 @@ describe("LiveDashboard Slash Commands", () => {
     await typeCommand(stdin, "/help");
     instance.unmount();
 
-    expect(output).toContain("HUGINN LIVE CHEAT SHEET");
-    expect(output).toContain("Slash Commands");
+    // Assert on cheat-sheet-only copy: this non-TTY harness concatenates Ink's
+    // incremental frames, so the modal's *border/title* row can be overwritten by
+    // neighbouring frames while its body rows survive intact.
+    expect(output).toContain("Show this command cheat sheet");
+    expect(output).toContain("Press Esc, q, or Enter to close cheat sheet");
   });
 
   it("opens SkillsModal when /skills or bare /skill is entered", async () => {
@@ -419,6 +422,36 @@ describe("LiveDashboard Slash Commands", () => {
 
     expect(live.chat).not.toHaveBeenCalled();
     expect(systemMessages.some((m) => m.includes('Unknown command "/nonexistent"'))).toBe(true);
+  });
+
+  it("routes plain prompts whose first word matches a command to the model, not the dispatcher (REV-001)", async () => {
+    const prompts = [
+      "clear the cache please",
+      "help me write a test for the parser",
+      "status of the build",
+      "go ahead and refactor the module",
+    ];
+
+    for (const prompt of prompts) {
+      const stdout = createMockStdout();
+      const stdin = createMockStdin();
+      const live = createMockLive();
+
+      const instance = render(React.createElement(LiveApp, { live, cfg: mockCfg }), {
+        stdout,
+        stdin,
+        patchConsole: false,
+      });
+
+      await new Promise((r) => setTimeout(r, 60));
+      await typeCommand(stdin, prompt);
+      instance.unmount();
+
+      const forwarded = (live.chat as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
+        (call) => call[0] === prompt,
+      );
+      expect(forwarded, `"${prompt}" must be forwarded to the model, not dispatched`).toBe(true);
+    }
   });
 
   it("does not forward a malformed /models command to the model", async () => {
