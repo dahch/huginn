@@ -456,7 +456,7 @@ treated like any other gate — fail closed to a human decision
 - **Interactive TUI & Markdown Rendering** (`src/tui/LiveDashboard.tsx`, `src/tui/markdown.tsx`):
   - Two parallel scrollable cards (`ScrollableChatCard` for human-thinker dialogue, `ScrollableStreamCard` for real-time thinking and reasoning tokens) rendered concurrently.
   - `[Tab]` toggles active card focus with visual border highlighting (`cyanBright` on the active panel).
-  - `[PageUp]` / `[PageDown]` scrolls the focused card by 4 lines at any time without losing in-flight input; arrow keys `[↑]` / `[↓]` scroll line-by-line when input is empty or stream is focused.
+  - `[PageUp]` / `[PageDown]` scrolls the focused card by 4 lines at any time without losing in-flight input; `[↑]` / `[↓]` recall previous composer submissions while the draft is empty, and scroll the focused agent-output card when it is shown and focused.
   - Native terminal Markdown token rendering via `MarkdownLine` formats inline bold, italic, code backticks, headers, bullet points, numbered lists, and code blocks natively in Ink.
   - Post-execution continuous loop: upon completing all plan iterations in `live` mode, a `post-cycle-live` decision modal prompts the user to either exit cleanly (`[c]` / `[a]`) or return to the live refinement loop (`[r]`) with state and thinker context preserved for the next set of tasks.
 
