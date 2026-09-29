@@ -32,11 +32,13 @@
  *   per-session caps alone allow a store several times over the cap, and a file
  *   the reader refuses would make the next save drop every session it can no
  *   longer see.
- * - **Sanitized** (SEC-4B-003): title, idea, every message text **and** the
- *   identity fields (`id`, `runtimeId`, `projectPath`) run through
- *   `sanitizeTerminalText` both on the way in and on the way out, so the store is
- *   never the weak link that lets a control sequence reach a terminal or a log;
- *   warnings are sanitized too.
+ * - **Sanitized** (SEC-4B-003, SEC-4C-001): title, idea, every message text
+ *   **and** every identity field (`id`, `runtimeId`, `projectPath`, `createdAt`,
+ *   `updatedAt`, `opencodeSessionId`) run through `sanitizeTerminalText` both on
+ *   the way in and on the way out, so the store is never the weak link that lets
+ *   a control sequence reach a terminal or a log (the runtime session id is also
+ *   sent back to the opencode server by the 4C reattach probe); warnings are
+ *   sanitized too.
  * - **Fail open on read**: a missing, unreadable, oversized or malformed file
  *   never throws — it yields `[]` / `undefined` and a warning on the engine log
  *   channel, so a corrupted file is visible instead of silently swallowed.
@@ -95,10 +97,10 @@ export interface LiveSession {
    */
   stage?: LiveStage;
   /**
-   * The runtime's own session id (opencode), kept so a later phase can reattach
-   * to the same server-side conversation. Only meaningful for a runtime whose
-   * session survives between prompts — it is dropped when the runtime does not
-   * (REV-4B-001).
+   * The runtime's own session id (opencode), kept so a resumed run can reattach
+   * to the same server-side conversation (Phase 4C). Only meaningful for a
+   * runtime whose session survives between prompts — it is dropped when the
+   * runtime does not (REV-4B-001).
    */
   opencodeSessionId?: string;
   messages: LiveSessionMessage[];
@@ -188,11 +190,7 @@ function sanitizeMessage(message: LiveSessionMessage): LiveSessionMessage {
   return { role: message.role, text: capMessageText(sanitizeTerminalText(message.text)) };
 }
 
-/**
- * Best-effort parse of one stored session. Returns `undefined` only for a record
- * that cannot be used at all (no id); missing optional fields are defaulted so a
- * partially damaged file still yields the sessions that are intact.
- */
+/** One stored message, sanitized and bounded — `undefined` when its shape is unusable. */
 function normalizeMessage(raw: unknown): LiveSessionMessage | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const { role, text } = raw as { role?: unknown; text?: unknown };
@@ -201,6 +199,14 @@ function normalizeMessage(raw: unknown): LiveSessionMessage | undefined {
   return sanitizeMessage({ role: role as LiveSessionMessage["role"], text });
 }
 
+/**
+ * Best-effort parse of one stored session record. Returns `undefined` only for a
+ * record that cannot be used at all (no id); missing optional fields are
+ * defaulted so a partially damaged file still yields the sessions that are intact.
+ * Every field that survives is sanitized before it is handed out — including the
+ * timestamps and the runtime session id (SEC-4C-001), which the 4C reattach path
+ * sends back to the opencode server and names in a log line.
+ */
 function normalizeSession(raw: unknown): LiveSession | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const s = raw as Record<string, unknown>;
@@ -220,8 +226,8 @@ function normalizeSession(raw: unknown): LiveSession | undefined {
 
   const session: LiveSession = {
     id,
-    createdAt: typeof s.createdAt === "string" ? s.createdAt : now,
-    updatedAt: typeof s.updatedAt === "string" ? s.updatedAt : now,
+    createdAt: typeof s.createdAt === "string" ? sanitizeTerminalText(s.createdAt) : now,
+    updatedAt: typeof s.updatedAt === "string" ? sanitizeTerminalText(s.updatedAt) : now,
     runtimeId: typeof s.runtimeId === "string" ? sanitizeTerminalText(s.runtimeId) : "unknown",
     projectPath: typeof s.projectPath === "string" ? sanitizeTerminalText(s.projectPath) : "",
     messages,
@@ -231,7 +237,14 @@ function normalizeSession(raw: unknown): LiveSession | undefined {
   if (typeof s.title === "string") session.title = sanitizeTerminalText(s.title);
   if (typeof s.idea === "string") session.idea = sanitizeTerminalText(s.idea);
   if (typeof s.stage === "string" && STAGES.has(s.stage as LiveStage)) session.stage = s.stage as LiveStage;
-  if (typeof s.opencodeSessionId === "string") session.opencodeSessionId = s.opencodeSessionId;
+  // SEC-4C-001: this one is a boundary too — it is sent back to the opencode
+  // server by the 4C reattach probe and echoed into a log line, so it is
+  // sanitized here like every other identity field. An id left empty by
+  // sanitization names nothing: it is dropped rather than kept as "".
+  if (typeof s.opencodeSessionId === "string") {
+    const opencodeSessionId = sanitizeTerminalText(s.opencodeSessionId);
+    if (opencodeSessionId.trim() !== "") session.opencodeSessionId = opencodeSessionId;
+  }
   return session;
 }
 
@@ -355,7 +368,7 @@ export function loadLiveSessions(projectPath: string): LiveSession[] {
   return sessions;
 }
 
-/** Sessions ranked newest-first — what `--list-sessions` (Phase 4C) will show. */
+/** Sessions ranked newest-first — the order `--list-sessions` prints them in. */
 export function listLiveSessions(projectPath: string): LiveSession[] {
   return byRecency(loadLiveSessions(projectPath));
 }

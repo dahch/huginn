@@ -43,6 +43,8 @@ import { handleCheckCommand } from "./commands/check";
 import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
 import { handleInitCommand, printInitUsage } from "./commands/init.js";
 import { handleInstallCommand } from "./commands/install";
+import { latestLiveSession, listLiveSessions, type LiveSession } from "./state/liveSession";
+import { sanitizeTerminalText } from "./util/text";
 
 /**
  * Concise two-tier help (REQ-26 / AC-26.2): the Core commands and the flags a
@@ -79,6 +81,9 @@ Common flags:
   --executor <model>   model used for everything else             (default: ${DEFAULT_EXECUTOR_MODEL})
   --agent <target>     agent runtime: opencode, claude, codex, omp, …
   --tui | --headless   interactive dashboard vs stdout logs       (default: tui if TTY)
+  --continue, -c       resume the latest live session             (live mode)
+  --session <id>       resume the live session with this id       (live mode)
+  --list-sessions, -sl list the persisted live sessions and exit  (live mode)
   --force              overwrite existing documents/files
   --yes                accept defaults and never prompt (non-interactive / CI)
   --no-git-init        fail instead of initializing a missing git repository
@@ -190,6 +195,9 @@ Optional:
   --resume              resume from saved state; errors if no saved state exists
   --force-restart       discard saved state and start over
   --ignore-plan-changes resume even if plan.md/spec.md/adr.md changed
+  --continue, -c        (live) resume the latest live session of this project
+  --session <id>        (live) resume the live session with this id
+  --list-sessions, -sl  (live) list the persisted live sessions and exit 0
   --tui | --headless    interactive dashboard vs stdout logs  (default: tui if TTY)
   --port <n>            port for the opencode server  (default: free port)
   --server-timeout <ms> server startup timeout  (default: 60000)
@@ -210,6 +218,13 @@ const BOOLEAN_FLAGS = new Set([
   "--yes",
   "--force",
   "--resume",
+  // Phase 4C: live-session flags. They must be declared here so the parser never
+  // treats the next argv entry as their value — `huginn live -c "keep going"`
+  // would otherwise swallow the idea into `-c`.
+  "--continue",
+  "-c",
+  "--list-sessions",
+  "-sl",
   "--force-restart",
   "--ignore-plan-changes",
   "--tui",
@@ -407,6 +422,11 @@ export function isGreenfieldLaunch(projectPath: string): boolean {
  * non-interactive switch), so a bare first-run launch may still carry them.
  * Kept in sync with {@link BOOLEAN_FLAGS}: each entry is either a boolean
  * switch declared there or a value-taking path flag.
+ *
+ * Deliberately *not* listed: the Phase 4C live-session flags
+ * (`--continue`/`-c`, `--session`, `--list-sessions`/`-sl`). They ask for live
+ * work — or at least for a report about it — so a bare launch carrying one must
+ * reach `runLive` instead of being replaced by the onboarding wizard.
  */
 const BENIGN_BARE_FLAGS = new Set(["--project", "--home", "--opencode-config-dir", "--yes"]);
 
@@ -851,6 +871,120 @@ async function runPlan(args: ParsedArgs): Promise<void> {
   await runPlanMode({ projectPath, idea, thinker, specPath, adrPath, planPath, port, serverTimeoutMs });
 }
 
+/**
+ * Phase 4C — `--list-sessions` / `-sl`: prints the persisted live sessions of a
+ * project (id, `updatedAt`, `runtimeId`, message count, title), newest first.
+ *
+ * Read-only on purpose: the caller returns right after this, before permissions,
+ * git, the runtime or the TUI are touched, so listing can never initialize a
+ * repository, spawn an agent or start a cycle. Every field comes from the store,
+ * which sanitizes its own contents on read; the id and runtime name are
+ * sanitized again here because this output *is* a terminal sink (SEC-4B-003b),
+ * and so is the project path this report names (SEC-4C-002) — it arrives from
+ * `--project` and may carry escapes.
+ *
+ * The store fails open (a corrupt file reads as *no* sessions), so its warnings
+ * are drained from the engine log channel and printed to stderr: a damaged
+ * `sessions.json` must not be indistinguishable from "this project never ran
+ * live". Warnings never change the exit code — the listing is informational.
+ */
+export function printLiveSessions(projectPath: string): void {
+  const warnings: string[] = [];
+  const off = events.on("log", (entry) => {
+    if (entry.level !== "info") warnings.push(entry.message);
+  });
+  let sessions: LiveSession[];
+  try {
+    sessions = listLiveSessions(projectPath);
+  } finally {
+    off();
+  }
+  // No subscriber is attached at this point in a CLI run (the TUI/headless log
+  // listeners only exist once the engine is running), so the only lines here are
+  // the store's own, already-sanitized complaints.
+  for (const warning of warnings) console.error(chalk.dim(`[huginn] ${warning}`));
+
+  // SEC-4C-002: the path is echoed twice below, so it is sanitized once here.
+  const shown = sanitizeTerminalText(projectPath);
+
+  if (sessions.length === 0) {
+    console.log(chalk.dim(`[huginn] no live sessions for ${shown}`));
+    return;
+  }
+
+  const rows = sessions.map((session) => ({
+    id: sanitizeTerminalText(session.id),
+    updatedAt: sanitizeTerminalText(session.updatedAt),
+    runtimeId: sanitizeTerminalText(session.runtimeId),
+    messages: session.messages.length,
+    title: session.title?.trim() ? sanitizeTerminalText(session.title) : undefined,
+  }));
+  const idWidth = Math.max(...rows.map((row) => row.id.length));
+  const runtimeWidth = Math.max(...rows.map((row) => row.runtimeId.length));
+
+  console.log(
+    chalk.bold(`[huginn] live sessions for ${shown}`) + chalk.dim(` — ${rows.length}`),
+  );
+  for (const row of rows) {
+    console.log(
+      `  ${chalk.cyan(row.id.padEnd(idWidth))}  ${chalk.dim(row.updatedAt)}  ` +
+        `${chalk.dim(row.runtimeId.padEnd(runtimeWidth))}  ` +
+        `${chalk.dim(`${String(row.messages).padStart(3)} msg`)}  ` +
+        `${row.title ?? chalk.dim("(untitled)")}`,
+    );
+  }
+}
+
+/**
+ * Phase 4C — resolves the live session a `live` run resumes, from the flags
+ * alone. `undefined` means "start a new session", which stays the **default**: a
+ * plain `huginn live` must never silently adopt an old conversation (4B).
+ *
+ * `--session <id>` is the strongest request and wins over `--continue`/`-c`,
+ * which picks the project's most recently updated session; `--continue` with
+ * nothing to continue says so and starts a fresh session instead of failing.
+ *
+ * Returns the id **sanitized** (SEC-4B-003b): it is the value handed to the
+ * engine, whose stored ids and log line are sanitized too, so a hand-typed escape
+ * sequence can be neither echoed raw nor carried into the resume path. The
+ * project path is sanitized before it is named here (SEC-4C-002) for the same
+ * reason.
+ */
+export function resolveResume(args: ParsedArgs, projectPath: string): { id: string } | undefined {
+  const explicit = resolveSessionFlag(args["--session"]);
+  if (explicit) return { id: sanitizeTerminalText(explicit) };
+  if (!flagEnabled(args["--continue"]) && !flagEnabled(args["-c"])) return undefined;
+
+  const latest = latestLiveSession(projectPath);
+  if (!latest) {
+    console.log(
+      chalk.dim(
+        `[huginn] no live session to continue in ${sanitizeTerminalText(projectPath)}; starting a new one`,
+      ),
+    );
+    return undefined;
+  }
+  return { id: sanitizeTerminalText(latest.id) };
+}
+
+/**
+ * Reads the id of `--session <id>`, failing closed on a handle-less flag
+ * (REV-2C-004 style): a bare `--session` — which the parser would otherwise hand
+ * over as `true` — is a typo, and silently resuming *nothing* would look like
+ * the flag had been honoured.
+ */
+function resolveSessionFlag(flag: ParsedArgs[string]): string | undefined {
+  if (flag === undefined) return undefined;
+  const id = typeof flag === "string" ? flag.trim() : "";
+  if (!id) {
+    console.error(
+      "[huginn] --session requires a session id (see `huginn live --list-sessions`).",
+    );
+    process.exit(1);
+  }
+  return id;
+}
+
 async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   if (args["--help"] || args["-h"]) {
     printBanner({});
@@ -860,6 +994,24 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   const projectPath = canonicalize(
     typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
+
+  // Phase 4C: `--list-sessions` is a report, not a run — it reads the store and
+  // returns before permissions, git, the agent runtime or the TUI are touched, so
+  // it always exits 0 and never starts the dashboard or the cycle.
+  if (flagEnabled(args["--list-sessions"]) || flagEnabled(args["-sl"])) {
+    printLiveSessions(projectPath);
+    return;
+  }
+
+  // Phase 4C: which persisted live session this run adopts, if any. Resolved
+  // here — before the banner, the repository check and the runtime — so the
+  // *malformed* handle (`--session` with no id) fails before anything is started,
+  // and a `--continue` with nothing to continue says so first. An id that is
+  // merely *unknown* cannot fail here: it is only discovered later, inside
+  // `LiveEngine.resumeSession` (from `start()`/`draft()`), which warns and opens a
+  // new session. No flag means a new session (4B default).
+  const resume = resolveResume(args, projectPath);
+
   const permissions = resolvePermissions(args["--permissions"]);
   const layers = loadConfigLayers(projectPath);
   const modelSources = describeModelSources({
@@ -986,7 +1138,14 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     }
   }
 
-  const live = new LiveEngine({ cfg, idea: idea || undefined, runtime });
+  const live = new LiveEngine({
+    cfg,
+    idea: idea || undefined,
+    runtime,
+    // Phase 4C: resume is explicit — `--session <id>` / `--continue` adopt a
+    // stored session; without either flag a brand-new session starts (4B).
+    ...(resume ? { resume } : {}),
+  });
   if (runtime.id === "opencode" && live.client) {
     await validateModels(live.client, cfg);
   }

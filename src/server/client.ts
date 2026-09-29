@@ -108,12 +108,43 @@ export async function createSession(
 }
 
 export async function sessionExists(client: OpencodeClient, sessionId: string): Promise<boolean> {
+  return (await probeSession(client, sessionId)) === "exists";
+}
+
+/** How a session lookup ended — see {@link probeSession}. */
+export type SessionProbe = "exists" | "gone" | "failed";
+
+/**
+ * Three-valued version of {@link sessionExists} (REV-4C-003): a caller that has
+ * to *report* what happened must be able to tell "that session is gone" from
+ * "the lookup itself did not answer". Both non-`exists` outcomes are handled the
+ * same way (never adopt a session that was not confirmed), so this only changes
+ * the wording, not the behavior.
+ *
+ * `throwOnError: true` (see {@link createClient}) makes a non-2xx response an
+ * `Error` carrying the HTTP status under `cause.status` (the SDK's
+ * `wrapClientError`), so a 404 is recognized from the status rather than guessed
+ * from prose. The message fallback keeps a plainly-worded "not found" error (an
+ * injected client, a wrapped error) classified as `gone`; anything else —
+ * including a status that is neither 404 nor absent — is a failed probe.
+ */
+export async function probeSession(client: OpencodeClient, sessionId: string): Promise<SessionProbe> {
   try {
     await client.session.get({ path: { id: sessionId } });
-    return true;
-  } catch {
-    return false;
+    return "exists";
+  } catch (err) {
+    return isMissingSessionError(err) ? "gone" : "failed";
   }
+}
+
+function isMissingSessionError(err: unknown): boolean {
+  const status =
+    (err as { status?: unknown } | null)?.status ??
+    (err as { cause?: { status?: unknown } } | null)?.cause?.status ??
+    (err as { response?: { status?: unknown } } | null)?.response?.status;
+  if (status !== undefined) return status === 404;
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /\b404\b|not[\s_-]?found/i.test(message);
 }
 
 export async function respondPermission(

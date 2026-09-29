@@ -1,8 +1,8 @@
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { RunConfig } from "../config";
-import { createClient, createSession, prompt, abortSession } from "../server/client";
+import { createClient, prompt, abortSession, probeSession } from "../server/client";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
-import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
+import { OpencodeRuntimeAdapter, OpencodeSession } from "./agent/adapters/opencode.js";
 import { getAgentRuntime, subprocessPermissionMessage } from "./agent/registry.js";
 import type { AgentTarget } from "../agents/integrator.js";
 import { MemoryService } from "../muninn/service/memory-service.js";
@@ -188,10 +188,12 @@ export interface LiveEngineOptions {
   /** Initial idea. The TUI sends messages one at a time; headless passes the whole idea here. */
   idea?: string;
   /**
-   * Phase 4B/4C hook: adopt an already persisted live session instead of
-   * starting a new one. **Not** wired to the CLI flags yet — the default (no
-   * `resume`) always starts a fresh session, so a restart never silently
-   * resurrects an old conversation.
+   * Phase 4B/4C: adopt an already persisted live session instead of starting a
+   * new one. The CLI resolves it from `--session <id>` (wins) or `--continue`
+   * (the project's latest session); with neither flag this stays `undefined`, so
+   * a plain `huginn live` never silently resurrects an old conversation.
+   *
+   * An unknown/stale id fails open: a warning and a brand-new session.
    */
   resume?: { id?: string };
 }
@@ -297,6 +299,17 @@ export class LiveEngine {
   private needsSystemPrompt = false;
   /** True once a stored session was adopted by {@link resumeSession} (REV-4B-002). */
   private resumed = false;
+  /**
+   * Phase 4C — true once {@link reattachOpencodeSession} bound this engine to the
+   * *stored* server-side session of a resumed conversation (REV-4C-001).
+   *
+   * That session already holds every prior turn, so the first prompt seeds the
+   * architect prompt **without** replaying {@link transcriptSection} — sending the
+   * transcript would make the model read the whole conversation twice. Cleared as
+   * soon as a *new* session is opened (`start`'s fallback, `switchRuntime`), where
+   * the replay is exactly what keeps the conversation alive (4A/REV-008).
+   */
+  private reattached = false;
   /** Memoized architect prompt for this session (REV-002); see {@link getSystemPrompt}. */
   private systemPromptCache?: string;
   /**
@@ -339,9 +352,9 @@ export class LiveEngine {
       ...(opts.idea ? { idea: opts.idea } : {}),
       messages: [],
     };
-    // Phase 4B default: a *new* session per engine. Resuming is explicit
-    // (Phase 4C wires `-c/--session` to this hook); a run that never asked to
-    // resume must never inherit an old transcript.
+    // Phase 4B default: a *new* session per engine. Resuming is explicit (the
+    // CLI wires `-c/--session` to this hook); a run that never asked to resume
+    // must never inherit an old transcript.
     if (opts.resume?.id) this.resumeSession(opts.resume.id);
   }
 
@@ -387,8 +400,8 @@ export class LiveEngine {
   }
 
   /**
-   * Id of the **persisted live session** (Phase 4B) — the handle a later phase
-   * will accept on `-c/--session`. The agent's own session id is
+   * Id of the **persisted live session** (Phase 4B) — the handle `-c/--session`
+   * accepts (Phase 4C). The agent's own session id is
    * {@link getOpencodeSessionId}.
    */
   getSessionId(): string {
@@ -401,9 +414,9 @@ export class LiveEngine {
   }
 
   /**
-   * The runtime's own session id (opencode), persisted so a later phase can
-   * reattach to the same server-side conversation. `undefined` until a session
-   * exists, and never set for a runtime that does not keep history across
+   * The runtime's own session id (opencode), persisted so a resumed run can
+   * reattach to the same server-side conversation (Phase 4C). `undefined` until a
+   * session exists, and never set for a runtime that does not keep history across
    * prompts (a one-shot subprocess session id is meaningless after the turn).
    */
   getOpencodeSessionId(): string | undefined {
@@ -414,10 +427,10 @@ export class LiveEngine {
    * Adopts a previously persisted live session: its id, creation time, idea,
    * title, stage, runtime session id and conversation become this engine's state.
    *
-   * Phase 4C hook — the CLI flags that reach it (`-c` / `--session`) are not
-   * implemented yet; the default path always starts a new session. Returns
-   * `false` (and keeps the freshly minted session) when the id is unknown, so a
-   * stale handle fails open instead of losing the new session.
+   * Reached from the CLI flags `-c/--continue` and `--session <id>` (Phase 4C) —
+   * with neither flag no resume happens, so the default path always starts a new
+   * session. Returns `false` (and keeps the freshly minted session) when the id
+   * is unknown, so a stale handle fails open instead of losing the new session.
    *
    * SEC-4B-003b: the handle arrives from a CLI flag or a hand-edited store, so it
    * is sanitized before it is echoed into a log line — an id carrying OSC/CSI
@@ -439,9 +452,12 @@ export class LiveEngine {
     // back at `refine`.
     if (stored.stage) this.stage = stored.stage;
     this.resumed = true;
-    // A resumed conversation must not be replayed as if it were brand new: the
-    // runtime session is gone, so a history-less runtime needs the transcript
-    // and an opencode session needs re-seeding on its next prompt.
+    // A resumed conversation must not be replayed as if it were brand new: this
+    // engine holds no runtime session yet, so a history-less runtime needs the
+    // transcript and an opencode session needs re-seeding on its next prompt.
+    // Whether that seed *also* replays the transcript depends on the reattach
+    // probe (`this.reattached`, REV-4C-001): a stored session that is still there
+    // already holds the conversation.
     this.needsSystemPrompt = true;
     this.invalidateSystemPrompt();
     events.emit("log", {
@@ -473,8 +489,8 @@ export class LiveEngine {
     }
     // Only a runtime whose session survives between prompts has a resumable id.
     // REV-4B-001: on a switch to a history-less runtime the stored id is *deleted*
-    // — keeping it would let a later phase reattach to a server-side session that
-    // does not describe this conversation any more.
+    // — keeping it would let a resumed run reattach to a server-side session
+    // that does not describe this conversation any more.
     if (this.sessionId && this.keepsSessionHistory()) {
       record.opencodeSessionId = this.sessionId;
     } else {
@@ -547,6 +563,10 @@ export class LiveEngine {
     this._runtime = newRuntime;
     this.session = undefined;
     this.sessionId = undefined;
+    // REV-4C-001: the runtime that was reattached to (if any) is not the one being
+    // talked to now, and the session about to be opened is empty — so the
+    // transcript must be replayed again, exactly as after any other switch.
+    this.reattached = false;
     // The previous session carried the conversation; the new one starts empty.
     // Phase 4A: a history-less runtime (`claude`, `codex`, …) gets the whole
     // transcript on its next prompt, and a history-carrying one (`opencode`)
@@ -729,9 +749,11 @@ export class LiveEngine {
    *
    * - **Server-side history** (`opencode`): the lean body this engine always
    *   sent. The session replays the conversation itself, so only the first turn
-   *   of a session (the first user turn — or the first prompt after
-   *   `switchRuntime`, whose session starts empty) seeds the architect prompt and
-   *   the prior transcript; later prompts carry just the text.
+   *   of a session seeds the architect prompt; the prior transcript travels with
+   *   it **only when that session starts empty** — a brand-new one, or the one
+   *   `switchRuntime` opened (REV-008). A session *reattached* from a stored id
+   *   already holds the conversation and gets the seed alone (REV-4C-001). Later
+   *   prompts carry just the text.
    * - **History-less** (every subprocess CLI): a self-contained body —
    *   architect system prompt + a bounded transcript of the conversation +
    *   the current text — because each prompt is a brand-new process with no
@@ -756,11 +778,20 @@ export class LiveEngine {
     this.needsSystemPrompt = false;
     const ideaIntro = kind === "chat" && this.userTurnCount() === 0;
     // Seed on the first turn of a session — the initial user turn, or the first
-    // prompt after `switchRuntime`. The new session is empty, so the architect
-    // prompt *and* the replayed transcript travel together: without the transcript
-    // a stateless→opencode switch would lose the conversation, since opencode
-    // remembers only what this session was actually sent.
-    if (reseed || ideaIntro) return this.composePromptBody(text, { ideaIntro });
+    // prompt after `switchRuntime`/a reattach. What rides along depends on what
+    // that session already knows:
+    // - a **new** session is empty, so the architect prompt *and* the replayed
+    //   transcript travel together: without the transcript a stateless→opencode
+    //   switch would lose the conversation, since opencode remembers only what
+    //   this session was actually sent (REV-008).
+    // - a **reattached** session already holds the conversation server-side, so
+    //   only the architect prompt is seeded (REV-4C-001): replaying the
+    //   transcript would show the model every turn twice. The seed itself still
+    //   travels, because the docs it embeds may have changed since that session
+    //   was opened.
+    if (reseed || ideaIntro) {
+      return this.composePromptBody(text, { ideaIntro, replayTranscript: !this.reattached });
+    }
     return text;
   }
 
@@ -780,14 +811,24 @@ export class LiveEngine {
   }
 
   /**
-   * Assembles the architect prompt, the replayed transcript (when there is one)
-   * and the current turn — the current turn last, and *outside* the transcript
-   * block (SEC-4A-002).
+   * Assembles the architect prompt, the replayed transcript (when there is one to
+   * replay) and the current turn — the current turn last, and *outside* the
+   * transcript block (SEC-4A-002).
+   *
+   * `replayTranscript: false` (REV-4C-001) drops the conversation and keeps only
+   * the architect prompt: a session reattached from a stored id is already holding
+   * every prior turn, and sending the transcript on top of that would make the
+   * model read the conversation twice.
    */
-  private composePromptBody(text: string, options: { ideaIntro?: boolean } = {}): string {
+  private composePromptBody(
+    text: string,
+    options: { ideaIntro?: boolean; replayTranscript?: boolean } = {},
+  ): string {
     const sections = [this.getSystemPrompt()];
-    const transcript = this.transcriptSection(this.messages);
-    if (transcript) sections.push(transcript);
+    if (options.replayTranscript ?? true) {
+      const transcript = this.transcriptSection(this.messages);
+      if (transcript) sections.push(transcript);
+    }
     sections.push(options.ideaIntro ? `USER IDEA:\n${text}` : text);
     return sections.join("\n\n");
   }
@@ -803,13 +844,90 @@ export class LiveEngine {
     return `${TRANSCRIPT_SECTION_HEADER}\n\n${wrapUntrustedTranscript(body, transcriptNonce())}`;
   }
 
+  /**
+   * Phase 4C — reattaches a resumed conversation to its **own opencode session**,
+   * when that session still exists on the server this engine is talking to.
+   *
+   * 4B persists the runtime's session id alongside the transcript, but that id
+   * only means something while the server that owns it is still the one serving
+   * this process: `opencode serve` is started per run, so after a restart the id
+   * is usually gone. Two behavioral outcomes, no third:
+   *
+   * - **It exists** → adopt it (`sessionExists`): the engine keeps the *whole*
+   *   server-side conversation, not just the bounded transcript replayed to a
+   *   history-less runtime. No new session is created. The architect prompt is
+   *   still seeded once on the next prompt (`resumeSession` sets
+   *   {@link needsSystemPrompt}) — a stored id can name a session whose first
+   *   turn never happened, and the docs it embeds may have changed since — but the
+   *   transcript is **not** replayed on top of a conversation the session already
+   *   holds (REV-4C-001, via {@link reattached}).
+   * - **It is gone** (or there is no client to ask) → fall back to the 4A/4B
+   *   behavior: a brand-new session, announced with the stale handle sanitized —
+   *   a silently discarded reattach would look like the conversation was lost.
+   *
+   * REV-4C-003: a *failed* lookup is reported as a failed lookup, not as a dead
+   * session (`probeSession` keeps the two apart). The fail-open path is the same
+   * for both — a session that was not confirmed is never adopted.
+   *
+   * Only a runtime whose session is held server-side can be reattached: for a
+   * one-shot subprocess CLI the stored id is meaningless (4A), and a hand-edited
+   * store could carry one anyway.
+   *
+   * The stored id is sanitized before it is used (SEC-4B-003b): it is sent to the
+   * server and echoed into a log line.
+   *
+   * Returns `true` when the engine is now bound to the stored session.
+   */
+  private async reattachOpencodeSession(): Promise<boolean> {
+    const stored = this.liveSession.opencodeSessionId;
+    if (!stored) return false;
+    if (this.runtime.id !== "opencode" || !this.client || !this.keepsSessionHistory()) return false;
+    const storedId = sanitizeTerminalText(stored);
+
+    const probe = await probeSession(this.client, storedId);
+    if (probe !== "exists") {
+      events.emit("log", {
+        level: "warn",
+        message:
+          probe === "gone"
+            ? `the opencode session ${storedId} of the resumed live session no longer exists ` +
+              `on the server; starting a new agent session`
+            : `could not confirm the opencode session ${storedId} of the resumed live session ` +
+              `(the server did not answer the lookup); starting a new agent session`,
+      });
+      return false;
+    }
+
+    // An `IAgentSession` bound to an *existing* server-side id. The runtime
+    // interface only knows how to create one, and only opencode can be attached
+    // to — so the concrete adapter session stands in, over the same client.
+    this.sessionId = storedId;
+    this.session = new OpencodeSession(storedId, this.client, this.cfg.projectPath);
+    // REV-4C-001: this session already owns the conversation, so the seed on the
+    // next prompt must not replay it (see `reattached`).
+    this.reattached = true;
+    events.emit("log", {
+      level: "info",
+      message: `reattached to opencode session ${storedId}`,
+    });
+    return true;
+  }
+
   async start(): Promise<void> {
     if (this.sessionId && this.session) return;
-    this.session = await this.runtime.createSession({
-      title: `huginn live: ${this.cfg.projectPath}`,
-      directory: this.cfg.projectPath,
-    });
-    this.sessionId = this.session.id;
+    // Phase 4C: a resumed conversation is reattached to its own server-side
+    // session when that session still exists, instead of opening an empty one.
+    if (!(await this.reattachOpencodeSession())) {
+      this.session = await this.runtime.createSession({
+        title: `huginn live: ${this.cfg.projectPath}`,
+        directory: this.cfg.projectPath,
+      });
+      this.sessionId = this.session.id;
+      // A brand-new session is empty, so the conversation has to be replayed into
+      // it (4A/REV-008): whatever a *previous* reattach had suppressed no longer
+      // applies to this session.
+      this.reattached = false;
+    }
     // REV-4B-002: only a *fresh* session starts refining. A resumed one keeps the
     // stage it was stored at (opening the agent session must not rewind it to
     // `refine`), and the restored stage is re-announced to the UI.
@@ -818,8 +936,8 @@ export class LiveEngine {
     } else {
       this.setStage("refine");
     }
-    // Phase 4B: persist the runtime session id as soon as it exists, so a later
-    // phase can reattach to the same opencode session (requirement 4C).
+    // Phase 4B: persist the runtime session id as soon as it exists, so a resumed
+    // run can reattach to the same opencode session (Phase 4C).
     this.persistLiveSession();
     events.emit("liveChat", {
       role: "system",

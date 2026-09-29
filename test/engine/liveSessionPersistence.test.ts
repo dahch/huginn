@@ -23,6 +23,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { LiveEngine } from "../../src/engine/liveMode";
+import { OpencodeRuntimeAdapter } from "../../src/engine/agent/adapters/opencode.js";
+import { parseArgs, resolveResume } from "../../src/cli.js";
 import { events } from "../../src/engine/engineEvents";
 import { git } from "../../src/engine/diff";
 import { repoContext, resetHarnessState } from "../../src/engine/liveRepo";
@@ -117,6 +119,62 @@ function autoResolve(engine: LiveEngine, choice: DecisionChoice): () => void {
   return events.on("decision", () => {
     setTimeout(() => engine.resolveDecision(choice), 0);
   });
+}
+
+/**
+ * An error shaped like the one the SDK's `throwOnError` wrapper produces
+ * (`wrapClientError`): the HTTP status travels under `cause.status`, not in the
+ * message. REV-4C-003 relies on exactly that to tell "gone" from "probe failed".
+ */
+function missingSessionError(id: string): Error {
+  return new Error(`GET /session/${id} → 404 Not Found`, {
+    cause: { body: { name: "NotFound" }, status: 404 },
+  });
+}
+
+/**
+ * Phase 4C client stub: answers `session.get` only for the ids in `known` (so a
+ * reattach can be made to succeed or fail), records every session the engine
+ * *created*, every id a prompt was sent to, and every prompt **body** —
+ * REV-4C-001 is about what the reattached session is (not) sent.
+ *
+ * `lookupError` overrides how an unknown id fails, which is how a *failed* probe
+ * (server not answering) is told apart from a session that is really gone.
+ */
+function dialClient(opts: {
+  known?: string[];
+  newSessionId?: string;
+  reply?: string;
+  lookupError?: Error;
+}): { client: OpencodeClient; created: string[]; prompts: string[]; bodies: string[] } {
+  const known = new Set(opts.known ?? []);
+  const created: string[] = [];
+  const prompts: string[] = [];
+  const bodies: string[] = [];
+  const client = {
+    session: {
+      create: async () => {
+        const id = opts.newSessionId ?? "ses_new";
+        created.push(id);
+        return { id };
+      },
+      get: async (o: { path: { id: string } }) => {
+        if (!known.has(o.path.id)) throw opts.lookupError ?? missingSessionError(o.path.id);
+        return { id: o.path.id };
+      },
+      abort: async () => {},
+      prompt: async (o: {
+        path: { id: string };
+        body?: { parts?: Array<{ type?: string; text?: string }> };
+      }) => {
+        prompts.push(o.path.id);
+        bodies.push(o.body?.parts?.[0]?.text ?? "");
+        return { info: { id: "msg", error: undefined }, parts: [{ type: "text", text: opts.reply ?? "ok" }] };
+      },
+      command: async () => ({ info: { id: "msg", error: undefined }, parts: [{ type: "text", text: "" }] }),
+    },
+  } as unknown as OpencodeClient;
+  return { client, created, prompts, bodies };
 }
 
 function warnings(): { messages: string[]; off: () => void } {
@@ -538,6 +596,280 @@ describe("LiveEngine live-session persistence (Phase 4B)", () => {
       expect(stored.stage).toBe("execute");
     } finally {
       offs.forEach((off) => off());
+    }
+  });
+});
+
+/**
+ * Phase 4C — what happens to a *resumed* session's **runtime-side** session.
+ *
+ * A history-less runtime (`claude`, `codex`, …) needs nothing: 4A replays the
+ * transcript on the next prompt, and that is already covered above. opencode
+ * does: 4B persisted its server-side session id, and 4C has to decide whether
+ * that conversation can be picked up where it was left (`probeSession`) or
+ * whether a brand-new server session has to be opened — never silently.
+ *
+ * The two branches also differ in what the next prompt carries (REV-4C-001): a
+ * *reattached* session already holds the conversation, so only the architect
+ * prompt is seeded, while the *fallback* opens an empty session that still needs
+ * the 4A replay. Both are asserted on the prompt bodies the client stub records.
+ */
+describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
+  /** A stored session of `dir` whose server-side id is `serverId`. */
+  async function seedWithServerSession(serverId: string): Promise<string> {
+    const first = new LiveEngine({
+      cfg: makeCfg(),
+      runtime: stubRuntime("first reply", { sessionId: serverId }),
+    });
+    await first.chat("first turn");
+    expect(latestLiveSession(dir)!.opencodeSessionId).toBe(serverId);
+    return first.getSessionId();
+  }
+
+  it("reattaches to the stored opencode session instead of creating a new one", async () => {
+    const liveId = await seedWithServerSession("ses_stored");
+    const dial = dialClient({ known: ["ses_stored"] });
+    const resumed = new LiveEngine({
+      cfg: makeCfg(),
+      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+      resume: { id: liveId },
+    });
+
+    await resumed.start();
+
+    // no server-side session was created, and the stored one is what is talked to
+    expect(dial.created).toEqual([]);
+    expect(resumed.getOpencodeSessionId()).toBe("ses_stored");
+    expect(resumed.getTranscript()).toHaveLength(2);
+
+    await resumed.chat("second turn");
+    expect(dial.prompts).toEqual(["ses_stored"]);
+    // the reattached engine keeps writing the same session, and the same record
+    expect(latestLiveSession(dir)!.id).toBe(liveId);
+    expect(latestLiveSession(dir)!.opencodeSessionId).toBe("ses_stored");
+  });
+
+  it("does not replay the transcript into the first prompt of a reattached session (REV-4C-001)", async () => {
+    const liveId = await seedWithServerSession("ses_stored");
+    const dial = dialClient({ known: ["ses_stored"] });
+    const resumed = new LiveEngine({
+      cfg: makeCfg(),
+      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+      resume: { id: liveId },
+    });
+
+    await resumed.start();
+    await resumed.chat("second turn");
+
+    const first = dial.bodies[0];
+    // The architect prompt is still seeded — a stored session can be older than
+    // the docs it embeds, and those changes have to reach the model…
+    expect(first).toContain("You are the thinker/architect");
+    // …but the conversation is **not** replayed on top of a session that already
+    // holds it: the model would read every turn twice.
+    expect(first).not.toContain("CONVERSATION SO FAR");
+    expect(first).not.toContain("UNTRUSTED TRANSCRIPT");
+    expect(first).not.toContain("USER: first turn");
+    expect(first.endsWith("second turn")).toBe(true);
+    // and the turn is the only place the new text appears
+    expect(first.split("second turn").length - 1).toBe(1);
+  });
+
+  it("replays the conversation again once a switch opens an empty session (REV-4C-001)", async () => {
+    const liveId = await seedWithServerSession("ses_stored");
+    const dial = dialClient({ known: ["ses_stored"], reply: "after switch" });
+    const resumed = new LiveEngine({
+      cfg: makeCfg(),
+      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+      resume: { id: liveId },
+    });
+
+    await resumed.start();
+    await resumed.chat("second turn");
+    expect(dial.bodies[0]).not.toContain("CONVERSATION SO FAR");
+
+    // The switch replaces the reattached session with a brand-new, empty one, so
+    // the suppression no longer applies — the transcript is what carries the
+    // conversation over (4A/REV-008).
+    await resumed.switchRuntime("opencode");
+    await resumed.chat("third turn");
+
+    expect(dial.created).toEqual(["ses_new"]);
+    const afterSwitch = dial.bodies[1];
+    expect(afterSwitch).toContain("You are the thinker/architect");
+    expect(afterSwitch).toContain("CONVERSATION SO FAR");
+    expect(afterSwitch).toContain("USER: first turn");
+    expect(afterSwitch.endsWith("third turn")).toBe(true);
+  });
+
+  it("opens a new opencode session — loudly — when the stored one is gone", async () => {
+    const liveId = await seedWithServerSession("ses_gone");
+    const dial = dialClient({ known: [], newSessionId: "ses_replacement", reply: "second reply" });
+    const { messages, off } = warnings();
+    try {
+      const resumed = new LiveEngine({
+        cfg: makeCfg(),
+        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        resume: { id: liveId },
+      });
+
+      await resumed.start();
+
+      // the stale handle is reported, not swallowed...
+      expect(messages.some((m) => m.includes("ses_gone") && m.includes("no longer exists"))).toBe(true);
+      // ...and the turn goes to the replacement session
+      expect(dial.created).toEqual(["ses_replacement"]);
+      await resumed.chat("second turn");
+      expect(dial.prompts).toEqual(["ses_replacement"]);
+      // the persisted record now points at the session that exists
+      expect(resumed.getOpencodeSessionId()).toBe("ses_replacement");
+      expect(latestLiveSession(dir)!.opencodeSessionId).toBe("ses_replacement");
+      // the resumed conversation is still there, so nothing was lost by the fallback
+      expect(resumed.getTranscript().map((m) => m.text)).toContain("first turn");
+      // …and it is replayed *into* the replacement session, which starts empty:
+      // the 4A behavior is what survives on the fallback branch (REV-4C-001).
+      expect(dial.bodies[0]).toContain("You are the thinker/architect");
+      expect(dial.bodies[0]).toContain("CONVERSATION SO FAR");
+      expect(dial.bodies[0]).toContain("USER: first turn");
+    } finally {
+      off();
+    }
+  });
+
+  it("reports a failed lookup as a failed lookup, not as a dead session (REV-4C-003)", async () => {
+    const liveId = await seedWithServerSession("ses_stored");
+    // The server does not answer the probe at all — no 404, no status: that is not
+    // the same fact as "the session no longer exists", and must not be reported as it.
+    const dial = dialClient({
+      known: [],
+      newSessionId: "ses_replacement",
+      lookupError: new Error("opencode server GET /session/ses_stored → network error (no response)"),
+    });
+    const { messages, off } = warnings();
+    try {
+      const resumed = new LiveEngine({
+        cfg: makeCfg(),
+        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        resume: { id: liveId },
+      });
+
+      await resumed.start();
+
+      expect(messages.some((m) => m.includes("could not confirm") && m.includes("ses_stored"))).toBe(true);
+      expect(messages.some((m) => m.includes("no longer exists"))).toBe(false);
+      // the fail-open path is unchanged: a session that was never confirmed is
+      // never adopted, so a new one is opened
+      expect(dial.created).toEqual(["ses_replacement"]);
+      await resumed.chat("second turn");
+      expect(dial.prompts).toEqual(["ses_replacement"]);
+    } finally {
+      off();
+    }
+  });
+
+  it("never looks up a stored id for a runtime that does not keep history", async () => {
+    const liveId = await seedWithServerSession("ses_stored");
+    // Even with a stored server-side id and a client to ask, a stateless runtime
+    // gets the 4A transcript treatment: its session is created fresh, per turn.
+    const dial = dialClient({ known: ["ses_stored"] });
+    const stateless = stubRuntime("stateless reply", {
+      id: "claude",
+      sessionHistory: false,
+      sessionId: "one-shot-1",
+    });
+    const engine = new LiveEngine({
+      cfg: makeCfg(),
+      runtime: stateless,
+      client: dial.client,
+      resume: { id: liveId },
+    });
+
+    await engine.start();
+    await engine.chat("second turn");
+
+    // no reattach probe, no opencode session created, no prompt over the client
+    expect(dial.created).toEqual([]);
+    expect(dial.prompts).toEqual([]);
+    expect(engine.getOpencodeSessionId()).toBeUndefined();
+    // …and the now-meaningless id is dropped from the record (REV-4B-001)
+    expect(latestLiveSession(dir)!.opencodeSessionId).toBeUndefined();
+  });
+
+  it("stays inert for a brand-new session: no flags means no reattach", async () => {
+    const dial = dialClient({ known: ["ses_stored"] });
+    const engine = new LiveEngine({
+      cfg: makeCfg(),
+      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+    });
+
+    await engine.start();
+
+    // a fresh session is created — nothing stored may be adopted by accident
+    expect(dial.created).toEqual(["ses_new"]);
+    await engine.chat("hello");
+    expect(dial.prompts).toEqual(["ses_new"]);
+  });
+
+  it("fails open on a CLI handle that no longer exists, and never echoes it raw", async () => {
+    await seedWithServerSession("ses_stored");
+    const dial = dialClient({ known: ["ses_stored"], newSessionId: "ses_after_missing" });
+    const { messages, off } = warnings();
+    try {
+      // what `runLive` passes to the engine for `--session <id>`
+      const resume = resolveResume(parseArgs(["live", "--session", "hand-edited-miss"]), dir);
+      expect(resume).toEqual({ id: "hand-edited-miss" });
+
+      const engine = new LiveEngine({
+        cfg: makeCfg(),
+        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        ...(resume ? { resume } : {}),
+      });
+
+      expect(engine.getLiveSessionId()).not.toBe("hand-edited-miss");
+      expect(engine.getTranscript()).toEqual([]);
+      expect(messages.some((m) => m.includes("hand-edited-miss") && m.includes("not found"))).toBe(true);
+
+      // a new server session, not the stored one (the handle identified nothing)
+      await engine.start();
+      expect(dial.created).toEqual(["ses_after_missing"]);
+      expect(dial.prompts).toEqual([]);
+    } finally {
+      off();
+    }
+  });
+
+  it("sanitizes a hand-edited server-side id before the lookup and the log (SEC-4B-003b)", async () => {
+    const liveId = await seedWithServerSession("ses_stored");
+    // `saveLiveSession` writes the field as it is handed over, so the raw escape
+    // really does land in the file; the *read* path is what cleans it (SEC-4C-001),
+    // and the reattach sanitizes again before the id is used or logged.
+    saveLiveSession(dir, {
+      ...latestLiveSession(dir)!,
+      id: liveId,
+      opencodeSessionId: "ses\u001b]0;pwned\u0007",
+    });
+
+    const dial = dialClient({ known: [] });
+    const { messages, off } = warnings();
+    try {
+      // the store is the first line of defense: nothing raw is handed out
+      expect(loadLiveSessions(dir)[0]?.opencodeSessionId).toBe("ses]0;pwned");
+
+      const resumed = new LiveEngine({
+        cfg: makeCfg(),
+        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        resume: { id: liveId },
+      });
+
+      await resumed.start();
+
+      expect(messages.some((m) => m.includes("no longer exists"))).toBe(true);
+      for (const message of messages) {
+        expect(message).not.toContain("\u001b");
+        expect(message).not.toContain("\u0007");
+      }
+    } finally {
+      off();
     }
   });
 });

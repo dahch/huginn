@@ -695,8 +695,11 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
         sessions: [
           {
             id: hostileId,
+            createdAt: "2025\u001b[31m-01-01T00:00:00.000Z",
+            updatedAt: "2025-01-01T00:00:00.000Z\u0007",
             runtimeId: "opencode\u001b[31m",
             projectPath: "/tmp/\u202Ehidden",
+            opencodeSessionId: "ses\u001b]0;pwned\u0007",
             messages: [{ role: "user", text: "hi" }],
           },
           // an id left empty by sanitization identifies nothing: the record goes
@@ -713,7 +716,17 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
       expect(stored.id).toBe("hijack]0;pwned");
       expect(stored.runtimeId).toBe("opencode");
       expect(stored.projectPath).toBe("/tmp/hidden");
-      for (const field of [stored.id, stored.runtimeId, stored.projectPath]) {
+      expect(stored.createdAt).toBe("2025-01-01T00:00:00.000Z");
+      expect(stored.updatedAt).toBe("2025-01-01T00:00:00.000Z");
+      expect(stored.opencodeSessionId).toBe("ses]0;pwned");
+      for (const field of [
+        stored.id,
+        stored.runtimeId,
+        stored.projectPath,
+        stored.createdAt,
+        stored.updatedAt,
+        stored.opencodeSessionId ?? "",
+      ]) {
         expect(field).not.toContain("\u001b");
         expect(field).not.toContain("\u0007");
         expect(field).not.toContain("\u202E");
@@ -723,6 +736,22 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
     } finally {
       off();
     }
+  });
+
+  it("drops a server-side id that sanitization empties (SEC-4C-001)", () => {
+    // An id made only of control characters names nothing: it is omitted rather
+    // than kept as "", so the 4C reattach never probes an empty handle.
+    mkdirSync(liveDir(dir), { recursive: true });
+    writeFileSync(
+      liveSessionsPath(dir),
+      JSON.stringify({
+        version: 1,
+        sessions: [{ id: "s", opencodeSessionId: "\u001b[2J\u0007", messages: [] }],
+      }),
+    );
+
+    const [stored] = loadLiveSessions(dir);
+    expect(stored.opencodeSessionId).toBeUndefined();
   });
 
   it("sanitizes the warnings it emits (a path can carry escapes)", () => {
