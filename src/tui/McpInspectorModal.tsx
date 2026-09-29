@@ -9,6 +9,7 @@ import {
 import { events } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text.js";
 import { NEXT_STEP, warnFeedback } from "./feedback.js";
+import { THEME } from "./theme.js";
 
 const MAX_VISIBLE_TOOLS = 10;
 
@@ -208,19 +209,19 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         : hasError
           ? "error"
           : `${activeCount}/${servers.length} active`;
-  const statusColor = hasError
-    ? "yellow"
+  const statusColor: string | undefined = hasError
+    ? THEME.warn
     : unverifiedCount > 0 && activeCount === 0
-      ? "gray"
+      ? THEME.muted
       : report?.healthy
-        ? "green"
-        : "white";
+        ? THEME.ok
+        : THEME.text;
 
   return (
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor="magenta"
+      borderColor={THEME.thinker}
       paddingX={1}
       paddingY={1}
       width="100%"
@@ -229,29 +230,29 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
       {/* Header */}
       <Box justifyContent="space-between" marginBottom={1}>
         <Box>
-          <Text bold color="magenta">
+          <Text bold color={THEME.thinker}>
             🔌 MCP SERVER INSPECTOR
           </Text>
-          <Text dimColor> · </Text>
+          <Text color={THEME.muted}> · </Text>
           <Text bold color={statusColor}>
             {statusSummary}
           </Text>
-          <Text dimColor> · </Text>
-          <Text color="cyan">{totalTools} tools</Text>
+          <Text color={THEME.muted}> · </Text>
+          <Text color={THEME.accent}>{totalTools} tools</Text>
         </Box>
         <Box>
-          <Text dimColor>Runtime: </Text>
-          <Text color="yellow">{agentLabel}</Text>
+          <Text color={THEME.muted}>Runtime: </Text>
+          <Text color={THEME.warn}>{agentLabel}</Text>
         </Box>
       </Box>
 
       {/* Attribution & expectation (AC-32.3) */}
       <Box flexDirection="column" marginBottom={1}>
-        <Text dimColor wrap="truncate">
-          Servers come from <Text color="yellow">{agentLabel}</Text> — add or change them with the
+        <Text color={THEME.muted} wrap="truncate">
+          Servers come from <Text color={THEME.warn}>{agentLabel}</Text> — add or change them with the
           agent&apos;s own config or CLI; Huginn only observes them.
         </Text>
-        <Text color={muninn ? "green" : "yellow"} wrap="truncate">
+        <Text color={muninn ? THEME.ok : THEME.warn} wrap="truncate">
           {muninn
             ? `✓ Muninn (the memory brain) is registered for ${agentLabel} as "${sanitizeTerminalText(muninn.name)}" — one project-scoped brain, shared by every agent.`
             : `⚠ Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
@@ -265,40 +266,40 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
           flexDirection="column"
           width="50%"
           borderStyle="single"
-          borderColor={focusView === "servers" ? "cyan" : "gray"}
+          borderColor={focusView === "servers" ? THEME.accent : THEME.border}
           paddingX={1}
           marginRight={1}
         >
           <Box marginBottom={1}>
-            <Text bold color={focusView === "servers" ? "cyan" : "white"}>
+            <Text bold color={focusView === "servers" ? THEME.accent : THEME.text}>
               Servers ({servers.length})
             </Text>
           </Box>
 
           {loading ? (
-            <Text color="yellow">Probing MCP servers...</Text>
+            <Text color={THEME.warn}>Probing MCP servers...</Text>
           ) : servers.length === 0 ? (
             <Box flexDirection="column">
               {/* Attributed empty state (AC-32.3): "nothing found" is a statement
                   about *this agent*, not about the project. */}
-              <Text dimColor>No MCP servers registered for {agentLabel}</Text>
+              <Text color={THEME.muted}>No MCP servers registered for {agentLabel}</Text>
               {report?.error && (
                 <>
-                  <Text color="red">Error: {sanitizeTerminalText(report.error)}</Text>
+                  <Text color={THEME.danger}>Error: {sanitizeTerminalText(report.error)}</Text>
                   {/* AC-31.2: the failing component, then what to do about it. */}
-                  <Text dimColor>Press Esc, then run /mcp again to retry the probe.</Text>
+                  <Text color={THEME.muted}>Press Esc, then run /mcp again to retry the probe.</Text>
                 </>
               )}
             </Box>
           ) : (
             servers.map((server, idx) => {
               const isSelected = idx === selectedServerIndex;
-              const statusColor =
+              const serverStatusColor =
                 server.status === "connected"
-                  ? "green"
+                  ? THEME.ok
                   : server.status === "error"
-                    ? "red"
-                    : "gray";
+                    ? THEME.danger
+                    : THEME.muted;
               // `name · transport · status · detail` (AC-32.1/AC-32.5): the
               // agent's own words first, then the detail it exposed. Latency is
               // only shown when a probe actually measured it, so `undefined`
@@ -315,17 +316,17 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
               return (
                 <Box key={server.id || idx} justifyContent="space-between" marginBottom={0}>
                   <Box>
-                    <Text color={isSelected ? "cyan" : "dim"}>
+                    <Text color={isSelected ? THEME.accent : THEME.muted}>
                       {isSelected ? "▶ " : "  "}
                     </Text>
-                    <Text bold={isSelected} color={isSelected ? "white" : undefined}>
+                    <Text bold={isSelected} color={THEME.text}>
                       {sanitizeTerminalText(server.name)}
                     </Text>
                   </Box>
                   <Box>
-                    <Text color="cyan">[{sanitizeTerminalText(server.transport)}]</Text>
-                    <Text color={statusColor}> · [{sanitizeTerminalText(server.status)}]</Text>
-                    {trailing ? <Text color="yellow"> · {trailing}</Text> : null}
+                    <Text color={THEME.accent}>[{sanitizeTerminalText(server.transport)}]</Text>
+                    <Text color={serverStatusColor}> · [{sanitizeTerminalText(server.status)}]</Text>
+                    {trailing ? <Text color={THEME.warn}> · {trailing}</Text> : null}
                   </Box>
                 </Box>
               );
@@ -338,34 +339,34 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
           flexDirection="column"
           width="50%"
           borderStyle="single"
-          borderColor={focusView === "tools" ? "cyan" : "gray"}
+          borderColor={focusView === "tools" ? THEME.accent : THEME.border}
           paddingX={1}
         >
           <Box marginBottom={1} justifyContent="space-between">
-            <Text bold color={focusView === "tools" ? "cyan" : "white"}>
+            <Text bold color={focusView === "tools" ? THEME.accent : THEME.text}>
               {currentServer ? `Tools for ${sanitizeTerminalText(currentServer.name)}` : "Server Detail"}
             </Text>
             {currentServer && (
-              <Text dimColor>
+              <Text color={THEME.muted}>
                 {currentTools.length} tool{currentTools.length === 1 ? "" : "s"}
               </Text>
             )}
           </Box>
 
           {!currentServer ? (
-            <Text dimColor>Select a server to view tools</Text>
+            <Text color={THEME.muted}>Select a server to view tools</Text>
           ) : (
             <Box flexDirection="column">
               {currentServer.error && (
                 <Box marginBottom={1}>
-                  <Text color="red">Error: {sanitizeTerminalText(currentServer.error)}</Text>
+                  <Text color={THEME.danger}>Error: {sanitizeTerminalText(currentServer.error)}</Text>
                 </Box>
               )}
 
               {currentServer.detail && (
                 <Box marginBottom={1}>
-                  <Text dimColor wrap="truncate">
-                    Detail: <Text color="cyan">{sanitizeTerminalText(currentServer.detail)}</Text>
+                  <Text color={THEME.muted} wrap="truncate">
+                    Detail: <Text color={THEME.accent}>{sanitizeTerminalText(currentServer.detail)}</Text>
                   </Text>
                 </Box>
               )}
@@ -374,19 +375,19 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                   implying the server is either up or down. */}
               {currentServer.status === "unknown" && (
                 <Box marginBottom={1}>
-                  <Text dimColor wrap="truncate">
+                  <Text color={THEME.muted} wrap="truncate">
                     Status not reported by {agentLabel} — configured, not probed.
                   </Text>
                 </Box>
               )}
 
               {currentTools.length === 0 ? (
-                <Text dimColor>No exposed tools reported</Text>
+                <Text color={THEME.muted}>No exposed tools reported</Text>
               ) : (
                 <Box flexDirection="column">
                   {moreAbove > 0 && (
                     <Box marginBottom={0}>
-                      <Text dimColor>  ▲ ... {moreAbove} more above</Text>
+                      <Text color={THEME.muted}>  ▲ ... {moreAbove} more above</Text>
                     </Box>
                   )}
                   {visibleTools.map((tool, vIdx) => {
@@ -395,16 +396,16 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                     return (
                       <Box key={tool.name ? `${tool.name}-${actualIndex}` : actualIndex} flexDirection="column" marginBottom={1}>
                         <Box>
-                          <Text color={isToolSelected ? "cyanBright" : "dim"}>
+                          <Text color={isToolSelected ? THEME.accentStrong : THEME.muted}>
                             {isToolSelected ? "▶ " : "  "}
                           </Text>
-                          <Text bold color="cyanBright">
+                          <Text bold color={THEME.accentStrong}>
                             {sanitizeTerminalText(tool.name)}
                           </Text>
                         </Box>
                         {tool.description && (
                           <Box paddingLeft={4}>
-                            <Text dimColor>{sanitizeTerminalText(tool.description)}</Text>
+                            <Text color={THEME.muted}>{sanitizeTerminalText(tool.description)}</Text>
                           </Box>
                         )}
                       </Box>
@@ -412,7 +413,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                   })}
                   {moreBelow > 0 && (
                     <Box marginTop={0}>
-                      <Text dimColor>  ▼ ... and {moreBelow} more</Text>
+                      <Text color={THEME.muted}>  ▼ ... and {moreBelow} more</Text>
                     </Box>
                   )}
                 </Box>
@@ -424,11 +425,11 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
 
       {/* Footer Navigation */}
       <Box marginTop={1} justifyContent="space-between">
-        <Text dimColor>
+        <Text color={THEME.muted}>
           [↑/↓ or k/j] Navigate · [Tab/Enter] View Tools · [Esc] Close
         </Text>
-        <Text dimColor>
-          Focus: <Text color="cyan">{focusView}</Text>
+        <Text color={THEME.muted}>
+          Focus: <Text color={THEME.accent}>{focusView}</Text>
         </Text>
       </Box>
     </Box>

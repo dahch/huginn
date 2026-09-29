@@ -253,6 +253,23 @@ export async function fetchMcpStatusWithTimeout(
 }
 
 /**
+ * Semantic severity of an MCP badge. It is deliberately *not* a colour: the TUI
+ * maps it to a theme token (`mcpStatusToken`), so `NO_COLOR` and the palette stay
+ * in the presentation layer (REV-7A-003).
+ *
+ * - `healthy`  — at least one server verified by a real probe
+ * - `degraded` — a probe threw, a server failed, or the poll timed out
+ * - `unknown`  — servers known but not probed, or nothing configured at all
+ */
+export type McpBadgeStatus = "healthy" | "degraded" | "unknown";
+
+/** A header badge: its text plus the semantic severity the TUI colours by. */
+export interface McpBadge {
+  text: string;
+  status: McpBadgeStatus;
+}
+
+/**
  * Maps a status report to a concise, *truthful*, **attributed** header badge
  * (REQ-30 / REQ-32).
  *
@@ -267,13 +284,7 @@ export async function fetchMcpStatusWithTimeout(
  * The agent suffix is omitted when the caller has no name to attribute with, so
  * the signature stays backward compatible.
  */
-export function formatMcpBadge(
-  report?: McpStatusReport | null,
-  agentName?: string,
-): {
-  text: string;
-  color: "green" | "yellow" | "gray";
-} {
+export function formatMcpBadge(report?: McpStatusReport | null, agentName?: string): McpBadge {
   const agent = attribution(agentName);
   const servers = serversOf(report);
 
@@ -282,12 +293,12 @@ export function formatMcpBadge(
     const lower = (report?.error ?? "").toLowerCase();
     const isTimeout = lower.includes("timed out") || lower.includes("timeout");
     if (isTimeout) {
-      return { text: `MCP: 🟡 timeout${agent}`, color: "yellow" };
+      return { text: `MCP: 🟡 timeout${agent}`, status: "degraded" };
     }
     const reason = report?.error ? badgeReason(report.error) : "";
     return {
       text: reason ? `MCP: 🟡 error — ${reason}${agent}` : `MCP: 🟡 error${agent}`,
-      color: "yellow",
+      status: "degraded",
     };
   }
 
@@ -297,17 +308,17 @@ export function formatMcpBadge(
     // a CLI listing usually cannot), and never render `(0 tools)` noise.
     const totalTools = Math.max(0, Math.floor(report?.totalTools ?? 0));
     const tools = totalTools > 0 ? ` (${totalTools} tools)` : "";
-    return { text: `MCP: 🟢 ${active.length} connected${tools}${agent}`, color: "green" };
+    return { text: `MCP: 🟢 ${active.length} connected${tools}${agent}`, status: "healthy" };
   }
 
   if (servers.length > 0) {
     // Every remaining server is known-but-not-live (`enabled`/`disabled`/
     // `pending`/`unknown`), so the count is qualified as configured: this is the
     // branch AC-32.2 exists for — a listing word must never read as health.
-    return { text: `MCP: ⚪ ${servers.length} configured${agent}`, color: "gray" };
+    return { text: `MCP: ⚪ ${servers.length} configured${agent}`, status: "unknown" };
   }
 
-  return { text: `MCP: ⚪ none${agent}`, color: "gray" };
+  return { text: `MCP: ⚪ none${agent}`, status: "unknown" };
 }
 
 /** ` · <agent>`, sanitized and single-lined; empty when there is nothing to attribute. */

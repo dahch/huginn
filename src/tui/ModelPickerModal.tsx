@@ -3,6 +3,7 @@ import { Box, Text, useInput } from "ink";
 import type { IAgentRuntime, ModelInfo } from "../engine/agent/types.js";
 import { discoverModelCatalog } from "../engine/agent/modelCatalog.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { THEME } from "./theme.js";
 
 export interface ModelPickerResult {
   thinker: string;
@@ -326,7 +327,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
 
   const renderHints = () =>
     exampleHints.length > 0 ? (
-      <Text color="gray" wrap="truncate-end">
+      <Text color={THEME.muted} wrap="truncate-end">
         e.g. {exampleHints.join("  ·  ")}
       </Text>
     ) : null;
@@ -335,40 +336,40 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor="cyan"
+      borderColor={THEME.accent}
       paddingX={1}
       paddingY={0}
       width="100%"
     >
       <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color="cyan">
+        <Text bold color={THEME.accent}>
           {step === "thinker"
             ? "🤖 MODEL SELECTOR · Step 1/3: Choose Thinker (Architect & Fixes)"
             : step === "executor"
               ? "⚡ MODEL SELECTOR · Step 2/3: Choose Executor (Coder & Gates)"
               : "💾 PERSISTENCE · Step 3/3: Save Model Preferences"}
         </Text>
-        <Text color="gray">Runtime: {safeRuntimeName} (Esc to cancel)</Text>
+        <Text color={THEME.muted}>Runtime: {safeRuntimeName} (Esc to cancel)</Text>
       </Box>
 
       {step !== "saveScope" && (
         <Box marginY={0}>
-          <Text bold color="gray">
+          <Text bold color={THEME.muted}>
             Search:{" "}
           </Text>
-          <Text color="white">{filter}</Text>
-          <Text color="cyan">▎</Text>
+          <Text color={THEME.text}>{filter}</Text>
+          <Text color={THEME.accent}>▎</Text>
           {filter ? (
-            <Text color="gray"> ({filteredModels.length} matches)</Text>
+            <Text color={THEME.muted}> ({filteredModels.length} matches)</Text>
           ) : (
-            <Text color="gray"> (type to filter or type custom provider/model)</Text>
+            <Text color={THEME.muted}> (type to filter or type custom provider/model)</Text>
           )}
         </Box>
       )}
 
       {errorMsg ? (
         <Box marginY={0}>
-          <Text bold color="red">
+          <Text bold color={THEME.danger}>
             ⚠ {sanitizeTerminalText(errorMsg)}
           </Text>
         </Box>
@@ -376,60 +377,60 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
 
       {loading ? (
         <Box paddingY={1}>
-          <Text color="yellow">Discovering available models from {safeRuntimeName}...</Text>
+          <Text color={THEME.warn}>Discovering available models from {safeRuntimeName}...</Text>
         </Box>
       ) : step === "saveScope" ? (
         <Box flexDirection="column" marginY={1}>
           <Box marginBottom={1}>
             <Text>
-              Selected: <Text bold color="cyan">{sanitizeTerminalText(selectedThinker)}</Text> (Thinker) ·{" "}
-              <Text bold color="green">{sanitizeTerminalText(selectedExecutor)}</Text> (Executor)
+              Selected: <Text bold color={THEME.thinker}>{sanitizeTerminalText(selectedThinker)}</Text> (Thinker) ·{" "}
+              <Text bold color={THEME.executor}>{sanitizeTerminalText(selectedExecutor)}</Text> (Executor)
             </Text>
           </Box>
-          <Text bold color="yellow">
+          <Text bold color={THEME.warn}>
             Where would you like to save these model settings as default?
           </Text>
           {PERSISTENCE_OPTIONS.map((opt, idx) => {
             const isSelected = idx === persistenceIndex;
             return (
               <Box key={opt.id} marginY={0}>
-                <Text bold color={isSelected ? "cyan" : "gray"}>
+                <Text bold color={isSelected ? THEME.accent : THEME.muted}>
                   {isSelected ? " › " : "   "}
                   [{idx + 1}] {opt.label.padEnd(18)}
                 </Text>
-                <Text color={isSelected ? "white" : "gray"}>— {opt.detail}</Text>
+                <Text color={isSelected ? THEME.text : THEME.muted}>— {opt.detail}</Text>
               </Box>
             );
           })}
         </Box>
       ) : discoveryError ? (
         <Box flexDirection="column" paddingY={1}>
-          <Text bold color="red">
+          <Text bold color={THEME.danger}>
             ⚠ Model discovery from {safeRuntimeName} failed: {discoveryError}
           </Text>
-          <Text color="gray">Type a provider/model id and press Enter to continue.</Text>
+          <Text color={THEME.muted}>Type a provider/model id and press Enter to continue.</Text>
           {/* AC-31.2: free-text entry *or* the `/model <id>` shortcut, never a bare cause. */}
-          <Text color="gray">Or press Esc and retry /model &lt;id&gt; once the CLI can list models again.</Text>
+          <Text color={THEME.muted}>Or press Esc and retry /model &lt;id&gt; once the CLI can list models again.</Text>
           {renderHints()}
         </Box>
       ) : emptyCatalog ? (
         <Box flexDirection="column" paddingY={1}>
-          <Text color="yellow">
+          <Text color={THEME.warn}>
             No models discovered from {safeRuntimeName} —{" "}
             {discoveryReason ?? "type a provider/model id and press Enter"}
           </Text>
           {discoveryReason ? (
-            <Text color="gray">Type a provider/model id and press Enter to continue.</Text>
+            <Text color={THEME.muted}>Type a provider/model id and press Enter to continue.</Text>
           ) : null}
-          <Text color="gray">Or press Esc and retry /model &lt;id&gt; once the CLI can list models again.</Text>
+          <Text color={THEME.muted}>Or press Esc and retry /model &lt;id&gt; once the CLI can list models again.</Text>
           {renderHints()}
         </Box>
       ) : (
         <Box flexDirection="column" marginY={0}>
           {filteredModels.length === 0 ? (
             <Box paddingY={1} flexDirection="column">
-              <Text color="yellow">No models matching "{sanitizeTerminalText(filter)}"</Text>
-              <Text color="gray">
+              <Text color={THEME.warn}>No models matching "{sanitizeTerminalText(filter)}"</Text>
+              <Text color={THEME.muted}>
                 Press Enter to use custom model string "{sanitizeTerminalText(filter.trim())}"
               </Text>
             </Box>
@@ -443,21 +444,21 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
               return (
                 <Box key={m.id} justifyContent="space-between">
                   <Box>
-                    <Text bold color={isSelected ? "cyan" : "gray"}>
+                    <Text bold color={isSelected ? THEME.accent : THEME.muted}>
                       {isSelected ? " › " : "   "}
                     </Text>
-                    <Text bold color={isSelected ? "magenta" : "gray"}>
+                    <Text bold color={isSelected ? THEME.thinker : THEME.muted}>
                       {providerBadge.padEnd(12)}{" "}
                     </Text>
-                    <Text bold color={isSelected ? "white" : "white"}>
+                    <Text bold color={isSelected ? THEME.text : THEME.muted}>
                       {modelName.padEnd(24)}{" "}
                     </Text>
-                    <Text color={isSelected ? "cyan" : "gray"}>
+                    <Text color={isSelected ? THEME.accent : THEME.muted}>
                       ({modelId})
                     </Text>
                   </Box>
                   {m.description && (
-                    <Text color="gray" wrap="truncate-end">
+                    <Text color={THEME.muted} wrap="truncate-end">
                       {sanitizeTerminalText(m.description).slice(0, 32)}
                     </Text>
                   )}
@@ -467,7 +468,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
           )}
           {filteredModels.length > VISIBLE_ITEMS && (
             <Box justifyContent="center" marginTop={0}>
-              <Text color="gray" dimColor>
+              <Text color={THEME.muted}>
                 showing {scrollOffset + 1}-{Math.min(filteredModels.length, scrollOffset + VISIBLE_ITEMS)} of {filteredModels.length} (use ↑/↓ to scroll)
               </Text>
             </Box>
@@ -481,17 +482,17 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
         borderBottom={false}
         borderLeft={false}
         borderRight={false}
-        borderColor="gray"
+        borderColor={THEME.border}
         paddingTop={0}
         marginTop={0}
         justifyContent="space-between"
       >
-        <Text color="gray">
+        <Text color={THEME.muted}>
           {step === "saveScope"
             ? "↑/↓: navigate · 1/2/3: direct pick · Enter: confirm · Esc: cancel"
             : "↑/↓: navigate · Enter: select · Type: filter/custom · Esc: cancel"}
         </Text>
-        <Text color="gray">
+        <Text color={THEME.muted}>
           Current: T: {sanitizeTerminalText(selectedThinker) || "—"} · E: {sanitizeTerminalText(selectedExecutor) || "—"}
         </Text>
       </Box>

@@ -124,7 +124,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
   it("formats header badges correctly for active, degraded, timeout, and empty states", () => {
     expect(formatMcpBadge(null)).toEqual({
         text: "MCP: ⚪ none",
-      color: "gray",
+      status: "unknown",
     });
 
     expect(
@@ -135,7 +135,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
         text: "MCP: ⚪ none",
-      color: "gray",
+      status: "unknown",
     });
 
     expect(
@@ -154,7 +154,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
       text: "MCP: 🟢 1 connected (8 tools)",
-      color: "green",
+      status: "healthy",
     });
 
     expect(
@@ -167,7 +167,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
       text: "MCP: 🟡 timeout",
-      color: "yellow",
+      status: "degraded",
     });
 
     expect(
@@ -187,13 +187,13 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
       text: "MCP: 🟡 error",
-      color: "yellow",
+      status: "degraded",
     });
 
     // undefined report
     expect(formatMcpBadge(undefined)).toEqual({
         text: "MCP: ⚪ none",
-      color: "gray",
+      status: "unknown",
     });
 
     // healthy: false with server error but degraded is undefined/false and no error message
@@ -213,7 +213,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
       text: "MCP: 🟡 error",
-      color: "yellow",
+      status: "degraded",
     });
 
     // report with "timeout" in error
@@ -227,7 +227,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
       text: "MCP: 🟡 timeout",
-      color: "yellow",
+      status: "degraded",
     });
 
     // known but not live (disconnected): reported as *configured*, never as health
@@ -247,8 +247,31 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
       text: "MCP: ⚪ 1 configured",
-      color: "gray",
+      status: "unknown",
     });
+  });
+
+  it("reports severity instead of colour, so presentation stays in the TUI (REV-7A-003)", () => {
+    const degraded = formatMcpBadge({
+      servers: [],
+      totalTools: 0,
+      healthy: false,
+      degraded: true,
+      error: "MCP status timed out after 1500ms",
+    });
+    // Exactly `{ text, status }`: no `color` field may leak out of the engine.
+    expect(Object.keys(degraded).sort()).toEqual(["status", "text"]);
+    expect(degraded).not.toHaveProperty("color");
+    expect(degraded.status).toBe("degraded");
+
+    const healthy = formatMcpBadge({
+      servers: [{ id: "m", name: "m", status: "connected", transport: "stdio", toolsCount: 1 }],
+      totalTools: 1,
+      healthy: true,
+    });
+    expect(healthy.status).toBe("healthy");
+
+    expect(formatMcpBadge({ servers: [], totalTools: 0, healthy: false }).status).toBe("unknown");
   });
 
   it("renders the unverified and error-reason states distinctly (AC-30.1, AC-30.2)", () => {
@@ -263,7 +286,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
         healthy: false,
         unverified: true,
       }),
-    ).toEqual({ text: "MCP: ⚪ 2 configured", color: "gray" });
+    ).toEqual({ text: "MCP: ⚪ 2 configured", status: "unknown" });
 
     // A server marked unknown without an explicit flag is still unverified.
     expect(
@@ -272,7 +295,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
         totalTools: 0,
         healthy: false,
       }),
-    ).toEqual({ text: "MCP: ⚪ 1 configured", color: "gray" });
+    ).toEqual({ text: "MCP: ⚪ 1 configured", status: "unknown" });
 
     // A verified probe still wins over unverified peers.
     expect(
@@ -285,7 +308,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
         healthy: false,
         unverified: true,
       }),
-    ).toEqual({ text: "MCP: 🟢 1 connected (4 tools)", color: "green" });
+    ).toEqual({ text: "MCP: 🟢 1 connected (4 tools)", status: "healthy" });
 
     // Degraded reports carry the sanitized reason (clamped, single line).
     expect(
@@ -298,7 +321,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
       }),
     ).toEqual({
       text: "MCP: 🟡 error — ECONNREFUSED 127.0.0.1:4096 second line",
-      color: "yellow",
+      status: "degraded",
     });
 
     const longReason = formatMcpBadge({

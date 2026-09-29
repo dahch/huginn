@@ -10,6 +10,7 @@ import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
+import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
 import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
 import { McpInspectorModal } from "./McpInspectorModal";
 import { HelpModal } from "./HelpModal";
@@ -184,11 +185,16 @@ function emitSystem(text: string): void {
   events.emit("liveChat", { role: "system", text });
 }
 
-const STAGE_LABEL: Record<LiveStage, { label: string; color: string }> = {
-  refine: { label: "REFINE", color: "cyan" },
-  draft: { label: "DRAFT", color: "yellow" },
-  approve: { label: "APPROVE", color: "magenta" },
-  execute: { label: "EXECUTE", color: "green" },
+/**
+ * Stage badge colour per stage, as a theme token rather than a literal chalk
+ * name, so the accent moves with the palette (Phase 7A / REQ-12). The token is
+ * resolved through `THEME` at render time.
+ */
+const STAGE_LABEL: Record<LiveStage, { label: string; token: ThemeToken }> = {
+  refine: { label: "REFINE", token: "accent" },
+  draft: { label: "DRAFT", token: "warn" },
+  approve: { label: "APPROVE", token: "thinker" },
+  execute: { label: "EXECUTE", token: "executor" },
 };
 
 export function LiveApp({
@@ -1522,13 +1528,13 @@ function RefineView({
           <Box justifyContent="space-between" height={FOOTER_HEIGHT} overflow="hidden" flexDirection="row">
             <Box flexShrink={1} overflow="hidden">
               {suggestionsOpen ? (
-                <Text dimColor wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
+                <Text color={THEME.muted} wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
               ) : (
-                <Text dimColor wrap="truncate">[Tab] Focus · [PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands</Text>
+                <Text color={THEME.muted} wrap="truncate">[Tab] Focus · [PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands</Text>
               )}
             </Box>
             <Box flexShrink={0}>
-              <Text dimColor wrap="truncate">stage: {STAGE_LABEL[stage].label}</Text>
+              <Text color={THEME.muted} wrap="truncate">stage: {STAGE_LABEL[stage].label}</Text>
             </Box>
           </Box>
         </>
@@ -1601,25 +1607,25 @@ function LiveHeader({
       suffix="LIVE"
       rows={[
         [
-          <Text key="stage" bold color={s.color} wrap="truncate">
+          <Text key="stage" bold color={THEME[s.token]} wrap="truncate">
             {stageBadge}
           </Text>,
           <>
-            <Text key="mcp" color={mcpBadge.color} wrap="truncate">
+            <Text key="mcp" color={mcpStatusToken(mcpBadge.status)} wrap="truncate">
               {mcpText}
             </Text>
             {runtimeValue ? (
               <>
-                <Text key="runtime-label" dimColor wrap="truncate">
+                <Text key="runtime-label" color={THEME.muted} wrap="truncate">
                   {runtimeLabel}
                 </Text>
-                <Text key="runtime" color="yellow" wrap="truncate">
+                <Text key="runtime" color={THEME.warn} wrap="truncate">
                   {runtimeValue}
                 </Text>
               </>
             ) : null}
             {projectValue ? (
-              <Text key="project" dimColor wrap="truncate">
+              <Text key="project" color={THEME.muted} wrap="truncate">
                 {`${sep}${projectValue}`}
               </Text>
             ) : null}
@@ -1627,16 +1633,16 @@ function LiveHeader({
         ],
         [
           <>
-            <Text dimColor>thinker: </Text>
-            <Text color="magenta" wrap="truncate">
+            <Text color={THEME.muted}>thinker: </Text>
+            <Text color={THEME.thinker} wrap="truncate">
               {safeThinker}
             </Text>
           </>,
           ...(safeExecutor
             ? [
                 <>
-                  <Text dimColor>executor: </Text>
-                  <Text color="green" wrap="truncate">
+                  <Text color={THEME.muted}>executor: </Text>
+                  <Text color={THEME.executor} wrap="truncate">
                     {safeExecutor}
                   </Text>
                 </>,
@@ -1678,24 +1684,24 @@ function ScrollableChatCard({
   return (
     <Box
       borderStyle="round"
-      borderColor={isFocused ? "cyanBright" : "gray"}
+      borderColor={isFocused ? THEME.borderFocus : THEME.border}
       flexDirection="column"
       paddingX={1}
       height={height}
       minHeight={CARD_MIN_ROWS}
     >
       <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={isFocused ? "cyanBright" : "cyan"}>
+        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent}>
           Conversation {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
         </Text>
         <Box>
           {maxScroll > 0 && (
-            <Text dimColor>
+            <Text color={THEME.muted}>
               {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
               ({totalLines} lines){" "}
             </Text>
           )}
-          {busy && <Text color="yellow">{spinner} thinking...</Text>}
+          {busy && <Text color={THEME.warn}>{spinner} thinking...</Text>}
         </Box>
       </Box>
       {lines.length === 0 ? (
@@ -1708,13 +1714,13 @@ function ScrollableChatCard({
           if (l.type === "system") {
             return (
               <Box key={l.id}>
-                <MarkdownLine text={l.text} defaultColor="gray" wrap="wrap" />
+                <MarkdownLine text={l.text} defaultColor={THEME.system} wrap="wrap" />
               </Box>
             );
           }
           if (l.type === "user_header") {
             return (
-              <Text key={l.id} bold color="greenBright">
+              <Text key={l.id} bold color={THEME.ok}>
                 {l.text}
               </Text>
             );
@@ -1722,20 +1728,20 @@ function ScrollableChatCard({
           if (l.type === "user_body") {
             return (
               <Box key={l.id} paddingLeft={2}>
-                <MarkdownLine text={l.text} defaultColor="white" wrap="wrap" />
+                <MarkdownLine text={l.text} defaultColor={THEME.text} wrap="wrap" />
               </Box>
             );
           }
           if (l.type === "assistant_header") {
             return (
-              <Text key={l.id} bold color="cyanBright">
+              <Text key={l.id} bold color={THEME.accentStrong}>
                 {l.text}
               </Text>
             );
           }
           return (
             <Box key={l.id} paddingLeft={2}>
-              <MarkdownLine text={l.text} defaultColor="white" wrap="wrap" />
+              <MarkdownLine text={l.text} defaultColor={THEME.text} wrap="wrap" />
             </Box>
           );
         })
@@ -1760,8 +1766,7 @@ function EmptyChatHints({ maxRows }: { maxRows: number }) {
         <Text
           key={line}
           wrap="truncate"
-          dimColor={index > 0}
-          color={index === 0 ? "cyanBright" : undefined}
+          color={index === 0 ? THEME.accentStrong : THEME.muted}
         >
           {line}
         </Text>
@@ -1792,31 +1797,31 @@ function ScrollableStreamCard({
   return (
     <Box
       borderStyle="round"
-      borderColor={isFocused ? "cyanBright" : "gray"}
+      borderColor={isFocused ? THEME.borderFocus : THEME.border}
       flexDirection="column"
       paddingX={1}
       height={height}
       minHeight={CARD_MIN_ROWS}
     >
       <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={isFocused ? "cyanBright" : "cyan"}>
+        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent}>
           THINKING & LIVE AGENT STREAM {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
         </Text>
         <Box>
-          {chars > 0 && <Text dimColor>{(chars / 1024).toFixed(1)} KB </Text>}
-          {busy && <Text color="yellow">{spinner} streaming </Text>}
+          {chars > 0 && <Text color={THEME.muted}>{(chars / 1024).toFixed(1)} KB </Text>}
+          {busy && <Text color={THEME.warn}>{spinner} streaming </Text>}
         </Box>
       </Box>
       {lines.length === 0 ? (
         <Box justifyContent="center" marginY={0}>
-          <Text dimColor>Real-time thinking and agent output will stream here while the model runs.</Text>
+          <Text color={THEME.muted}>Real-time thinking and agent output will stream here while the model runs.</Text>
         </Box>
       ) : (
         lines.map((l, i) => (
           <MarkdownLine
             key={i}
             text={l}
-            defaultColor={l.startsWith("⚡") ? "yellow" : l.startsWith("✓") ? "green" : "gray"}
+            defaultColor={l.startsWith("⚡") ? THEME.warn : l.startsWith("✓") ? THEME.ok : THEME.muted}
             wrap="truncate"
           />
         ))
@@ -1862,7 +1867,7 @@ function ChatInputRow({
   /** Content rows the box shows (the composer's budget); the rest scroll. */
   visibleRows: number;
 }) {
-  const accent = enabled ? "green" : "gray";
+  const accent: string | undefined = enabled ? THEME.executor : THEME.border;
   const contentRows = Math.max(1, visibleRows);
   const scroll = composerScroll(cursorRow, rows.length, contentRows);
   const window = rows.slice(scroll, scroll + contentRows);
@@ -1899,7 +1904,7 @@ function ChatInputRow({
         ) : (
           <Box flexDirection="row" height={1}>
             <Text bold color={accent}>{enabled ? "❯ " : "· "}</Text>
-            <Text dimColor wrap="truncate">
+            <Text color={THEME.muted} wrap="truncate">
               {placeholder}
             </Text>
           </Box>
@@ -1907,7 +1912,7 @@ function ChatInputRow({
       </Box>
       {historyHint.length > 0 && (
         <Box flexShrink={0}>
-          <Text dimColor>{" "}{historyHint}</Text>
+          <Text color={THEME.muted}>{" "}{historyHint}</Text>
         </Box>
       )}
     </Box>
@@ -1932,11 +1937,11 @@ function CursorLine({
   width: number;
   /** Caret column on this row, or `null` when the caret is elsewhere. */
   cursor: number | null;
-  color: string;
+  color: string | undefined;
 }) {
   if (cursor === null || width <= 0) {
     return (
-      <Text color="white" wrap="truncate">
+      <Text color={THEME.text} wrap="truncate">
         {line.slice(0, Math.max(0, width))}
       </Text>
     );
@@ -1946,7 +1951,7 @@ function CursorLine({
   // budget nor hide what it sits next to (see `cursorLineParts`).
   const { before, caret, tail } = cursorLineParts(line, cursor, width);
   return (
-    <Text color="white" wrap="truncate">
+    <Text color={THEME.text} wrap="truncate">
       {before}
       <Text inverse color={color}>{caret}</Text>
       {tail}

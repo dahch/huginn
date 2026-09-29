@@ -6,6 +6,7 @@ import {
   commandUsage,
   describeCommand,
 } from "./commandRegistry.js";
+import { THEME } from "./theme.js";
 
 export interface CommandCheatSheet {
   command: string;
@@ -78,17 +79,17 @@ export const HelpModal = React.memo(function HelpModal({
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor="cyan"
+      borderColor={THEME.accent}
       paddingX={1}
       paddingY={0}
       width="100%"
     >
       {/* Banner */}
       <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color="cyan">
+        <Text bold color={THEME.accent}>
           📖 HUGINN LIVE CHEAT SHEET
         </Text>
-        <Text color="gray">Esc or q to close</Text>
+        <Text color={THEME.muted}>Esc or q to close</Text>
       </Box>
 
       {/* Active Config Banner */}
@@ -98,42 +99,42 @@ export const HelpModal = React.memo(function HelpModal({
         borderBottom={true}
         borderLeft={false}
         borderRight={false}
-        borderColor="gray"
+        borderColor={THEME.border}
         paddingY={0}
         marginY={0}
         flexDirection="column"
       >
         <Box justifyContent="space-between">
           <Text>
-            <Text bold color="gray">Agent: </Text>
-            <Text bold color="green">{safeRuntimeName} </Text>
-            <Text bold color="gray">· Thinker: </Text>
-            <Text bold color="magenta">{safeThinker} </Text>
-            <Text bold color="gray">· Executor: </Text>
-            <Text bold color="yellow">{safeExecutor}</Text>
+            <Text bold color={THEME.muted}>Agent: </Text>
+            <Text bold color={THEME.ok}>{safeRuntimeName} </Text>
+            <Text bold color={THEME.muted}>· Thinker: </Text>
+            <Text bold color={THEME.thinker}>{safeThinker} </Text>
+            <Text bold color={THEME.muted}>· Executor: </Text>
+            <Text bold color={THEME.warn}>{safeExecutor}</Text>
           </Text>
         </Box>
         <Box>
-          <Text color="gray" wrap="truncate-end">
-            Project: <Text color="white">{safeProject}</Text>
+          <Text color={THEME.muted} wrap="truncate-end">
+            Project: <Text color={THEME.text}>{safeProject}</Text>
           </Text>
         </Box>
       </Box>
 
       {/* Slash Commands */}
       <Box flexDirection="column" marginTop={0}>
-        <Text bold color="cyan">
+        <Text bold color={THEME.accent}>
           ⚡ Slash Commands:
         </Text>
         {SLASH_COMMANDS.map((cmd) => (
           <Box key={cmd.command} marginY={0} flexDirection="row">
             <Box width={COMMAND_COLUMN_WIDTH} flexShrink={0}>
-              <Text bold color="cyan" wrap="truncate">
+              <Text bold color={THEME.accent} wrap="truncate">
                 {"  " + cmd.command}
               </Text>
             </Box>
             <Box flexGrow={1} flexShrink={1}>
-              <Text color="white">— {cmd.description}</Text>
+              <Text color={THEME.text}>— {cmd.description}</Text>
             </Box>
           </Box>
         ))}
@@ -141,15 +142,15 @@ export const HelpModal = React.memo(function HelpModal({
 
       {/* Navigation Shortcuts */}
       <Box flexDirection="column" marginTop={1}>
-        <Text bold color="yellow">
+        <Text bold color={THEME.warn}>
           ⌨ Navigation & Shortcuts:
         </Text>
         {NAVIGATION_SHORTCUTS.map((s) => (
           <Box key={s.key} marginY={0}>
-            <Text bold color="yellow">
+            <Text bold color={THEME.warn}>
               {"  " + s.key.padEnd(20)}
             </Text>
-            <Text color="gray">— {s.description}</Text>
+            <Text color={THEME.muted}>— {s.description}</Text>
           </Box>
         ))}
       </Box>
@@ -161,12 +162,12 @@ export const HelpModal = React.memo(function HelpModal({
         borderBottom={false}
         borderLeft={false}
         borderRight={false}
-        borderColor="gray"
+        borderColor={THEME.border}
         paddingTop={0}
         marginTop={1}
         justifyContent="space-between"
       >
-        <Text color="gray">
+        <Text color={THEME.muted}>
           Press Esc, q, or Enter to close cheat sheet
         </Text>
       </Box>

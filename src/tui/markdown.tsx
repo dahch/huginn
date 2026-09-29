@@ -1,11 +1,18 @@
 import type React from "react";
 import { Text } from "ink";
+import { THEME } from "./theme.js";
 
 /**
  * Parses inline markdown tokens (`code`, **bold**, __bold__, *italic*, _italic_)
- * into styled Ink <Text> elements.
+ * into styled Ink <Text> elements. `defaultColor` is the body colour the caller
+ * has chosen — usually `THEME.text` (`undefined`, i.e. the terminal's own
+ * foreground) — so plain text is never forced to a colour that could vanish on
+ * the wrong background (Phase 7A / REQ-12).
  */
-export function renderInlineSpans(text: string, defaultColor: string = "white"): React.ReactNode[] {
+export function renderInlineSpans(
+  text: string,
+  defaultColor: string | undefined = THEME.text,
+): React.ReactNode[] {
   const tokens: React.ReactNode[] = [];
   const regex = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
   let lastIndex = 0;
@@ -22,7 +29,7 @@ export function renderInlineSpans(text: string, defaultColor: string = "white"):
     const raw = match[0];
     if (raw.startsWith("`") && raw.endsWith("`") && raw.length >= 2) {
       tokens.push(
-        <Text key={`c-${match.index}`} color="yellowBright">
+        <Text key={`c-${match.index}`} color={THEME.accentStrong}>
           {raw.slice(1, -1)}
         </Text>,
       );
@@ -31,7 +38,7 @@ export function renderInlineSpans(text: string, defaultColor: string = "white"):
       raw.length >= 4
     ) {
       tokens.push(
-        <Text key={`b-${match.index}`} bold color={defaultColor === "gray" ? "white" : defaultColor}>
+        <Text key={`b-${match.index}`} bold color={defaultColor}>
           {raw.slice(2, -2)}
         </Text>,
       );
@@ -61,22 +68,24 @@ export function renderInlineSpans(text: string, defaultColor: string = "white"):
 
 /**
  * Formats a single line of markdown with heading, bullet, list, quote, code fence,
- * and inline styles for Ink terminal rendering.
+ * and inline styles for Ink terminal rendering. All colours come from the theme
+ * (Phase 7A / REQ-12) so a heading or a code span keeps its contrast on both
+ * light and dark terminals.
  */
 export function MarkdownLine({
   text,
-  defaultColor = "white",
+  defaultColor = THEME.text,
   wrap = "wrap",
 }: {
   text: string;
-  defaultColor?: string;
+  defaultColor?: string | undefined;
   wrap?: "wrap" | "truncate" | "truncate-start" | "truncate-middle" | "truncate-end";
 }) {
   // Code fence
   if (/^```/.test(text)) {
     const lang = text.slice(3).trim();
     return (
-      <Text dimColor wrap={wrap}>
+      <Text dimColor={THEME.colorEnabled} wrap={wrap}>
         ─── {lang ? `[${lang}]` : "code"} ──────────────────────────────
       </Text>
     );
@@ -86,8 +95,8 @@ export function MarkdownLine({
   const h1 = text.match(/^#\s+(.+)$/);
   if (h1 && h1[1]) {
     return (
-      <Text bold color="cyanBright" wrap={wrap}>
-        # {renderInlineSpans(h1[1], "cyanBright")}
+      <Text bold color={THEME.accentStrong} wrap={wrap}>
+        # {renderInlineSpans(h1[1], THEME.accentStrong)}
       </Text>
     );
   }
@@ -96,8 +105,8 @@ export function MarkdownLine({
   const h2 = text.match(/^##\s+(.+)$/);
   if (h2 && h2[1]) {
     return (
-      <Text bold color="magentaBright" wrap={wrap}>
-        ## {renderInlineSpans(h2[1], "magentaBright")}
+      <Text bold color={THEME.thinker} wrap={wrap}>
+        ## {renderInlineSpans(h2[1], THEME.thinker)}
       </Text>
     );
   }
@@ -106,8 +115,8 @@ export function MarkdownLine({
   const h3 = text.match(/^###+\s+(.+)$/);
   if (h3 && h3[1]) {
     return (
-      <Text bold color="blueBright" wrap={wrap}>
-        ### {renderInlineSpans(h3[1], "blueBright")}
+      <Text bold color={THEME.info} wrap={wrap}>
+        ### {renderInlineSpans(h3[1], THEME.info)}
       </Text>
     );
   }
@@ -118,7 +127,7 @@ export function MarkdownLine({
     return (
       <Text color={defaultColor} wrap={wrap}>
         {bullet[1]}
-        <Text color="cyanBright">• </Text>
+        <Text color={THEME.accentStrong}>• </Text>
         {renderInlineSpans(bullet[3], defaultColor)}
       </Text>
     );
@@ -130,7 +139,7 @@ export function MarkdownLine({
     return (
       <Text color={defaultColor} wrap={wrap}>
         {numList[1]}
-        <Text bold color="yellowBright">
+        <Text bold color={THEME.warn}>
           {numList[2]}{" "}
         </Text>
         {renderInlineSpans(numList[3], defaultColor)}
@@ -142,16 +151,20 @@ export function MarkdownLine({
   const quote = text.match(/^>\s*(.+)$/);
   if (quote && quote[1]) {
     return (
-      <Text color="gray" wrap={wrap}>
-        <Text color="cyan">│ </Text>
-        {renderInlineSpans(quote[1], "gray")}
+      <Text color={THEME.muted} wrap={wrap}>
+        <Text color={THEME.accent}>│ </Text>
+        {renderInlineSpans(quote[1], THEME.muted)}
       </Text>
     );
   }
 
   // Horizontal rule (---, ***, ___)
   if (/^(\*\*\*|---|___)$/.test(text.trim())) {
-    return <Text dimColor wrap={wrap}>────────────────────────────────────────</Text>;
+    return (
+      <Text dimColor={THEME.colorEnabled} wrap={wrap}>
+        ────────────────────────────────────────
+      </Text>
+    );
   }
 
   // Plain text with inline markdown

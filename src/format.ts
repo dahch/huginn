@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import type { Verdict } from "./engine/types";
+import type { ThemeToken } from "./tui/theme";
 
 /** Human-readable duration, e.g. `0s`, `3.2s`, `12m 3s` (headless summaries). */
 export function formatDuration(ms?: number): string {
@@ -28,16 +29,21 @@ export function formatDurationTerse(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function verdictColor(v: Verdict): string {
+/**
+ * The semantic theme token for a verdict — verdicts describe *state*, not colour
+ * (REV-7A-003). The TUI resolves the token (`THEME[verdictToken(v)]`) so the
+ * palette, and `NO_COLOR`, stay in one place.
+ */
+export function verdictToken(v: Verdict): ThemeToken {
   switch (v) {
     case "pass":
-      return "green";
+      return "ok";
     case "warning":
-      return "yellow";
+      return "warn";
     case "blocked":
-      return "red";
+      return "danger";
     case "skipped":
-      return "gray";
+      return "muted";
   }
 }
 

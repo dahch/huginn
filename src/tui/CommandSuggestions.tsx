@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { commandUsage, type SlashCommand } from "./commandRegistry.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { THEME } from "./theme.js";
 
 /** Content rows (excluding the border) the overlay may occupy. */
 export const MAX_SUGGESTION_ROWS = 6;
@@ -80,12 +81,12 @@ export const CommandSuggestions = React.memo(function CommandSuggestions({
   if (rows.length === 0) return null;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={THEME.border} paddingX={1}>
       {rows.map((row) => {
         if (row.kind === "up") {
           return (
             <Box key="suggestion-up" height={1}>
-              <Text dimColor wrap="truncate">
+              <Text color={THEME.muted} wrap="truncate">
                 ▲ {row.hidden} more above
               </Text>
             </Box>
@@ -94,7 +95,7 @@ export const CommandSuggestions = React.memo(function CommandSuggestions({
         if (row.kind === "down") {
           return (
             <Box key="suggestion-down" height={1}>
-              <Text dimColor wrap="truncate">
+              <Text color={THEME.muted} wrap="truncate">
                 ▼ {row.hidden} more below
               </Text>
             </Box>
@@ -105,11 +106,11 @@ export const CommandSuggestions = React.memo(function CommandSuggestions({
             <Text
               wrap="truncate"
               bold={row.selected}
-              color={row.selected ? "cyanBright" : "cyan"}
+              color={row.selected ? THEME.accentStrong : THEME.accent}
             >
               {row.selected ? "▸ " : "  "}
               {sanitizeTerminalText(commandUsage(row.command))}
-              <Text color="gray" bold={false}>
+              <Text color={THEME.muted} bold={false}>
                 {" — "}
                 {sanitizeTerminalText(row.command.description)}
               </Text>

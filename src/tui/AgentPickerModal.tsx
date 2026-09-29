@@ -3,6 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../agents/integrator.js";
 import { detectAvailableAgents } from "../engine/agent/registry.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { THEME } from "./theme.js";
 
 /** Rows the list window may occupy before it scrolls (REQ-33 / AC-33.1). */
 export const VISIBLE_AGENT_ROWS = 6;
@@ -130,19 +131,19 @@ export function AgentPickerModal({
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width="100%">
+    <Box flexDirection="column" borderStyle="round" borderColor={THEME.accent} paddingX={1} width="100%">
       <Box justifyContent="space-between" marginBottom={1}>
-        <Text bold color="cyan">
+        <Text bold color={THEME.accent}>
           🐦 SELECT AGENT RUNTIME
         </Text>
-        <Text color="gray">↑/↓ move · Enter switch · Esc cancel</Text>
+        <Text color={THEME.muted}>↑/↓ move · Enter switch · Esc cancel</Text>
       </Box>
 
       {loading ? (
-        <Text color="yellow">Detecting installed agent CLIs…</Text>
+        <Text color={THEME.warn}>Detecting installed agent CLIs…</Text>
       ) : (
         <Box flexDirection="column">
-          {window.offset > 0 && <Text dimColor>▲ {window.offset} more above</Text>}
+          {window.offset > 0 && <Text color={THEME.muted}>▲ {window.offset} more above</Text>}
           {window.visible.map((row, index) => {
             const absolute = window.offset + index;
             const selected = absolute === selectedIndex;
@@ -150,20 +151,20 @@ export function AgentPickerModal({
             return (
               <Box key={row.id} flexDirection="column">
                 <Text wrap="truncate">
-                  <Text color={selected ? "cyanBright" : "cyan"} bold={selected}>
+                  <Text color={selected ? THEME.accentStrong : THEME.accent} bold={selected}>
                     {selected ? "▸ " : "  "}
                     {sanitizeTerminalText(row.label)}
                   </Text>
-                  <Text dimColor> ({sanitizeTerminalText(row.id)})</Text>
-                  {isActive && <Text color="green"> ● active</Text>}
+                  <Text color={THEME.muted}> ({sanitizeTerminalText(row.id)})</Text>
+                  {isActive && <Text color={THEME.executor}> ● active</Text>}
                   {row.available ? (
-                    <Text color="green"> ✔</Text>
+                    <Text color={THEME.ok}> ✔</Text>
                   ) : (
-                    <Text color="yellow"> — not installed</Text>
+                    <Text color={THEME.warn}> — not installed</Text>
                   )}
                 </Text>
                 {selected && row.path && (
-                  <Text dimColor wrap="truncate">
+                  <Text color={THEME.muted} wrap="truncate">
                     {"      "}
                     {sanitizeTerminalText(row.path)}
                   </Text>
@@ -172,13 +173,13 @@ export function AgentPickerModal({
             );
           })}
           {window.offset + window.visible.length < rows.length && (
-            <Text dimColor>▼ {rows.length - window.offset - window.visible.length} more below</Text>
+            <Text color={THEME.muted}>▼ {rows.length - window.offset - window.visible.length} more below</Text>
           )}
         </Box>
       )}
 
       <Box marginTop={1}>
-        <Text dimColor wrap="truncate">
+        <Text color={THEME.muted} wrap="truncate">
           Switching changes which agent runs your prompts; Muninn memory is project-scoped and unaffected.
         </Text>
       </Box>

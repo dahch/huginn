@@ -4,9 +4,10 @@ import type { CycleEngine } from "../engine/cycle";
 import type { RunConfig } from "../config";
 import { events } from "../engine/engineEvents";
 import type { PhaseResult, DecisionRequest, Verdict } from "../engine/types";
-import { formatDurationSec, formatDurationTerse, verdictColor, verdictIcon } from "../format";
+import { formatDurationSec, formatDurationTerse, verdictIcon, verdictToken } from "../format";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
+import { THEME, mcpStatusToken } from "./theme.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
   MCP_STATUS_POLL_TIMEOUT_MS,
@@ -521,33 +522,33 @@ function HeaderCard({
   const rows: React.ReactNode[][] = [
     [
       <>
-        <Text bold color={paused ? "yellow" : "green"} wrap="truncate">
+        <Text bold color={paused ? THEME.warn : THEME.ok} wrap="truncate">
           {`${statusLabel} `}
         </Text>
-        <Text dimColor>mode: </Text>
-        <Text bold color="white" wrap="truncate">
+        <Text color={THEME.muted}>mode: </Text>
+        <Text bold color={THEME.text} wrap="truncate">
           {safeMode}
         </Text>
         {mcpText ? (
-          <Text key="mcp" color={mcpBadge.color} wrap="truncate">
+          <Text key="mcp" color={mcpStatusToken(mcpBadge.status)} wrap="truncate">
             {` · ${mcpText}`}
           </Text>
         ) : null}
       </>,
-      <Text key="elapsed" bold color="white" wrap="truncate">
+      <Text key="elapsed" bold color={THEME.text} wrap="truncate">
         {elapsedLabel}
       </Text>,
     ],
     [
       <>
-        <Text bold color="white">{iterLabel}</Text>
-        <Text color="cyanBright" wrap="truncate">
+        <Text bold color={THEME.text}>{iterLabel}</Text>
+        <Text color={THEME.accentStrong} wrap="truncate">
           {titleValue || "(initializing...)"}
         </Text>
       </>,
       ...(progressValue
         ? [
-            <Text key="progress" color="cyan" wrap="truncate">
+            <Text key="progress" color={THEME.accent} wrap="truncate">
               {progressValue}
             </Text>,
           ]
@@ -557,29 +558,29 @@ function HeaderCard({
 
   if (modules.length > 0) {
     rows.push([
-      <Text key="modules" dimColor wrap="truncate">
-        modules: <Text color="yellow">{modulesLine}</Text>
+      <Text key="modules" color={THEME.muted} wrap="truncate">
+        modules: <Text color={THEME.warn}>{modulesLine}</Text>
       </Text>,
     ]);
   }
 
   rows.push([
     <>
-      <Text dimColor>{phaseLabel}</Text>
-      <Text bold color={isFix ? "magenta" : "blueBright"} wrap="truncate">
+      <Text color={THEME.muted}>{phaseLabel}</Text>
+      <Text bold color={isFix ? THEME.thinker : THEME.info} wrap="truncate">
         {safePhase}
       </Text>
-      <Text dimColor>{durationLabel}</Text>
+      <Text color={THEME.muted}>{durationLabel}</Text>
     </>,
     ...(safeThinker
       ? [
           <>
-            <Text dimColor>thinker: </Text>
-            <Text color="magenta" wrap="truncate">
+            <Text color={THEME.muted}>thinker: </Text>
+            <Text color={THEME.thinker} wrap="truncate">
               {safeThinker}
             </Text>
             {safeExecutor ? (
-              <Text key="executor" color="blueBright" wrap="truncate">
+              <Text key="executor" color={THEME.info} wrap="truncate">
                 {` · executor: ${safeExecutor}`}
               </Text>
             ) : null}
@@ -637,29 +638,29 @@ function PipelineCard({
   return (
     <Box
       borderStyle="round"
-      borderColor="gray"
+      borderColor={THEME.border}
       flexDirection="column"
       paddingX={1}
       height={height}
       minHeight={6}
     >
-      <Text bold color="cyan">PIPELINE PHASES</Text>
+      <Text bold color={THEME.accent}>PIPELINE PHASES</Text>
       {itemsToRender.map((name) => {
         const st = phases[name];
         const isCurrent = name === currentPhase;
         const isFix = name.startsWith("FIX");
 
         let icon = "⏳";
-        let color: string = "gray";
+        let color: string | undefined = THEME.muted;
         let badge = "";
 
         if (isCurrent) {
           icon = spinner;
-          color = isFix ? "magenta" : "cyanBright";
+          color = isFix ? THEME.thinker : THEME.accentStrong;
           badge = `(${formatDurationSec(phaseElapsed)})`;
         } else if (st?.verdict) {
           icon = verdictIcon(st.verdict);
-          color = verdictColor(st.verdict);
+          color = THEME[verdictToken(st.verdict)];
           badge =
             st.verdict === "pass"
               ? st.durationMs
@@ -680,7 +681,7 @@ function PipelineCard({
               {indent}
               <Text bold={isCurrent}>{name.padEnd(14)}</Text>
             </Text>
-            <Text dimColor={!isCurrent} color={color}>
+            <Text dimColor={THEME.colorEnabled && !isCurrent} color={color}>
               {st?.attempt && st.attempt > 1 ? `[att ${st.attempt}] ` : ""}
               {badge}
             </Text>
@@ -714,29 +715,29 @@ export function StreamCard({
   return (
     <Box
       borderStyle="round"
-      borderColor={verbose ? "cyan" : "gray"}
+      borderColor={verbose ? THEME.accent : THEME.border}
       flexDirection="column"
       paddingX={1}
       height={height}
       minHeight={6}
     >
       <Box justifyContent="space-between">
-        <Text bold color="cyan">
-          {spinner} LIVE AGENT OUTPUT {verbose ? <Text color="green">[VERBOSE]</Text> : null}
+        <Text bold color={THEME.accent}>
+          {spinner} LIVE AGENT OUTPUT {verbose ? <Text color={THEME.ok}>[VERBOSE]</Text> : null}
         </Text>
         <Box>
           {maxScroll > 0 && (
-            <Text dimColor>
+            <Text color={THEME.muted}>
               {scrollOffset > 0 ? `▲ +${scrollOffset} ` : "▼ bottom "}
               {totalLines ? `(${totalLines} lines) ` : ""}
             </Text>
           )}
-          <Text dimColor>{chars > 0 ? `${(chars / 1024).toFixed(1)} KB` : ""}</Text>
+          <Text color={THEME.muted}>{chars > 0 ? `${(chars / 1024).toFixed(1)} KB` : ""}</Text>
         </Box>
       </Box>
       {displayLines.length === 0 ? (
         <Box marginTop={1} justifyContent="center">
-          <Text dimColor>(waiting for agent stream / tool executions...)</Text>
+          <Text color={THEME.muted}>(waiting for agent stream / tool executions...)</Text>
         </Box>
       ) : (
         displayLines.map((line, i) => {
@@ -744,13 +745,13 @@ export function StreamCard({
           const isTool = trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
           const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
           const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
-          const color = isTool
-            ? "cyanBright"
+          const color: string | undefined = isTool
+            ? THEME.accentStrong
             : isCmd
-              ? "yellow"
+              ? THEME.warn
               : isThought
-                ? "magentaBright"
-                : "white";
+                ? THEME.thinker
+                : THEME.text;
 
           return (
             <MarkdownLine key={i} text={line || " "} defaultColor={color} wrap="truncate" />
@@ -768,17 +769,17 @@ export function LogsCard({
 }) {
   if (logs.length === 0) return null;
   return (
-    <Box borderStyle="round" borderColor="gray" flexDirection="column" paddingX={1} marginTop={0}>
-      <Text bold color="cyan">SYSTEM LOGS</Text>
+    <Box borderStyle="round" borderColor={THEME.border} flexDirection="column" paddingX={1} marginTop={0}>
+      <Text bold color={THEME.accent}>SYSTEM LOGS</Text>
       {logs.map((l, i) => {
-        const levelColor = l.level === "error" ? "red" : l.level === "warn" ? "yellow" : "cyan";
+        const levelColor = l.level === "error" ? THEME.danger : l.level === "warn" ? THEME.warn : THEME.accent;
         return (
           <Box key={i}>
-            <Text dimColor>[{l.timestamp}] </Text>
+            <Text color={THEME.muted}>[{l.timestamp}] </Text>
             <Text bold color={levelColor}>
               {l.level.toUpperCase().padEnd(5)} │{" "}
             </Text>
-            <Text wrap="truncate" color="white">
+            <Text wrap="truncate" color={THEME.text}>
               {l.message}
             </Text>
           </Box>
@@ -790,11 +791,11 @@ export function LogsCard({
 
 function ReportPill({ report }: { report: PhaseResult }) {
   const v = report.verdict;
-  const color = v ? verdictColor(v) : "red";
+  const color = v ? THEME[verdictToken(v)] : THEME.danger;
   const mark = v ? verdictIcon(v) : "🔴";
   return (
     <Box marginTop={0} paddingX={1}>
-      <Text dimColor>Last result: </Text>
+      <Text color={THEME.muted}>Last result: </Text>
       <Text color={color}>
         {mark} <Text bold>{report.phase}</Text> · verdict: <Text bold>{report.verdict ?? "n/a"}</Text> · model: {report.model}
       </Text>
@@ -820,47 +821,47 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
   const keys =
     req.kind === "approve-draft" ? (
       <>
-        <Text bold color="cyan">[r] </Text>
+        <Text bold color={THEME.accent}>[r] </Text>
         <Text>Re-draft with latest chat   </Text>
-        <Text bold color="green">[c] </Text>
+        <Text bold color={THEME.ok}>[c] </Text>
         <Text>OK — commit & execute   </Text>
-        <Text bold color="red">[a] </Text>
+        <Text bold color={THEME.danger}>[a] </Text>
         <Text>Abort</Text>
       </>
     ) : req.kind === "scope-extraction" ? (
       <>
-        <Text bold color="cyan">[r] </Text>
+        <Text bold color={THEME.accent}>[r] </Text>
         <Text>Retry extraction   </Text>
-        <Text bold color="yellow">[c] </Text>
+        <Text bold color={THEME.warn}>[c] </Text>
         <Text>Use my last message   </Text>
-        <Text bold color="red">[a] </Text>
+        <Text bold color={THEME.danger}>[a] </Text>
         <Text>Abort</Text>
       </>
     ) : req.kind === "draft-format" ? (
       <>
-        <Text bold color="cyan">[r] </Text>
+        <Text bold color={THEME.accent}>[r] </Text>
         <Text>Retry with contract   </Text>
-        <Text bold color="yellow">[c] </Text>
+        <Text bold color={THEME.warn}>[c] </Text>
         <Text>Accept as-is   </Text>
-        <Text bold color="red">[a] </Text>
+        <Text bold color={THEME.danger}>[a] </Text>
         <Text>Abort</Text>
       </>
     ) : req.kind === "post-cycle-live" ? (
       <>
-        <Text bold color="green">[c] </Text>
+        <Text bold color={THEME.ok}>[c] </Text>
         <Text>Exit / Finish   </Text>
-        <Text bold color="cyan">[r] </Text>
+        <Text bold color={THEME.accent}>[r] </Text>
         <Text>Return to Live mode   </Text>
-        <Text bold color="red">[a] </Text>
+        <Text bold color={THEME.danger}>[a] </Text>
         <Text>Exit</Text>
       </>
     ) : isPerm ? (
       <>
-        <Text bold color="cyan">[a] </Text>
+        <Text bold color={THEME.accent}>[a] </Text>
         <Text>Allow Always   </Text>
-        <Text bold color="cyan">[o] </Text>
+        <Text bold color={THEME.accent}>[o] </Text>
         <Text>Allow Once   </Text>
-        <Text bold color="red">[d] </Text>
+        <Text bold color={THEME.danger}>[d] </Text>
         <Text>Deny</Text>
       </>
     ) : isQuestion ? (
@@ -868,44 +869,44 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
         {/* Real options (AC-37.3): a digit picks that answer verbatim instead of
             only "accept the recommended one". Only the first question is
             selectable, so it is the only one whose options are numbered. */}
-        <Text color="white">
+        <Text color={THEME.text}>
           {req.questionItems?.[0] ? req.questionItems[0].question : req.message}
         </Text>
         {(req.questionItems?.[0]?.options ?? []).map((option, optionIndex) => (
           <Box key={`opt-${optionIndex}`}>
-            <Text bold color="green">{`  [${optionIndex + 1}] `}</Text>
+            <Text bold color={THEME.ok}>{`  [${optionIndex + 1}] `}</Text>
             <Text>{option.label}</Text>
-            {option.description ? <Text dimColor> — {option.description}</Text> : null}
+            {option.description ? <Text color={THEME.muted}> — {option.description}</Text> : null}
           </Box>
         ))}
         {req.questionItems && req.questionItems.length > 1 ? (
-          <Text dimColor>
+          <Text color={THEME.muted}>
             + {req.questionItems.length - 1} more question(s) — answer the first, the rest follow.
           </Text>
         ) : null}
         <Text>
-          <Text bold color="green">[1-9/Enter] </Text>
+          <Text bold color={THEME.ok}>[1-9/Enter] </Text>
           <Text>Pick an option   </Text>
-          <Text bold color="red">[d] </Text>
+          <Text bold color={THEME.danger}>[d] </Text>
           <Text>Reject / skip question</Text>
         </Text>
       </>
     ) : (
       <>
-        <Text bold color="cyan">[r] </Text>
+        <Text bold color={THEME.accent}>[r] </Text>
         <Text>Retry with Thinker   </Text>
-        <Text bold color="yellow">[c] </Text>
+        <Text bold color={THEME.warn}>[c] </Text>
         <Text>Force Continue   </Text>
-        <Text bold color="red">[a] </Text>
+        <Text bold color={THEME.danger}>[a] </Text>
         <Text>Abort Run</Text>
       </>
     );
   return (
-    <Box marginTop={0} borderStyle="double" borderColor="yellow" paddingX={1} flexDirection="column">
-      <Text bold color="yellow">
+    <Box marginTop={0} borderStyle="double" borderColor={THEME.warn} paddingX={1} flexDirection="column">
+      <Text bold color={THEME.warn}>
         {title}
       </Text>
-      <Text color="white" bold>
+      <Text color={THEME.text} bold>
         {req.message}
       </Text>
       {/* A column, not a <Text>: Ink does not render a <Box> subtree inside a
@@ -926,10 +927,10 @@ function FooterBar({
 }) {
   return (
     <Box marginTop={0} justifyContent="space-between">
-      <Text dimColor>
-        [Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color="green">(ON)</Text> : <Text dimColor>(OFF)</Text>}   [PageUp/Down, ↑/↓] Scroll
+      <Text color={THEME.muted}>
+        [Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color={THEME.ok}>(ON)</Text> : <Text color={THEME.muted}>(OFF)</Text>}   [PageUp/Down, ↑/↓] Scroll
       </Text>
-      {hasDecision && <Text bold color="yellow">Interactive decision input active</Text>}
+      {hasDecision && <Text bold color={THEME.warn}>Interactive decision input active</Text>}
     </Box>
   );
 }

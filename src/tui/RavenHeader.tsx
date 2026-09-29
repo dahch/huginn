@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import { HUGINN_WORDMARK, RAVEN_MARK, artWidth } from "../brand.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { useTerminalSize, type TerminalSize } from "./useTerminalSize.js";
+import { THEME } from "./theme.js";
 
 /**
  * Shared TUI brand header (REQ-29 / ADR-29).
@@ -206,17 +207,17 @@ export function RavenHeader({ plan, suffix = "", rows }: RavenHeaderProps): Reac
   return (
     // flexShrink={0}: the header's row cost is exactly what the caller budgeted
     // for, so a crowded frame must shrink the flexible cards, never the brand.
-    <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} flexShrink={0}>
+    <Box borderStyle="round" borderColor={THEME.brand} flexDirection="column" paddingX={1} flexShrink={0}>
       {artRows.length > 0 ? (
         <Box flexDirection="column">
           {artRows.map((row, index) => (
             <Box key={`art-${index}`} height={1} flexDirection="row">
               {row.mark.length > 0 && (
-                <Text bold color="cyanBright" wrap="truncate">
+                <Text bold color={THEME.accentStrong} wrap="truncate">
                   {row.mark}
                 </Text>
               )}
-              <Text bold color="cyan" wrap="truncate">
+              <Text bold color={THEME.brand} wrap="truncate">
                 {row.wordmark}
               </Text>
             </Box>
@@ -225,7 +226,7 @@ export function RavenHeader({ plan, suffix = "", rows }: RavenHeaderProps): Reac
       ) : (
         // Narrow/short terminal: plain brand text, no art (AC-29.1 fallback).
         <Box height={HEADER_TEXT_BRAND_ROWS} overflow="hidden">
-          <Text bold color="cyan" wrap="truncate">
+          <Text bold color={THEME.brand} wrap="truncate">
             {brand}
           </Text>
         </Box>
