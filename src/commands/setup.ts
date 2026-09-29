@@ -196,7 +196,9 @@ export async function handleSetupCommand(
   }
 
   if (status) {
-    printProvisioningMatrix(await buildProvisioningRows({ projectPath, homeDir, opencodeConfigDir }));
+    printProvisioningMatrix(
+      await buildProvisioningRows({ projectPath, homeDir, opencodeConfigDir, detected: await detect() }),
+    );
     return undefined;
   }
 

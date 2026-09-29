@@ -460,19 +460,24 @@ describe("handleSetupCommand", () => {
       lines.push(args.join(" "));
     });
     try {
-      await handleSetupCommand({
-        "--status": true,
-        "--project": env.project,
-        "--home": env.home,
-        "--opencode-config-dir": env.opencodeConfigDir,
-      });
+      await handleSetupCommand(
+        {
+          "--status": true,
+          "--project": env.project,
+          "--home": env.home,
+          "--opencode-config-dir": env.opencodeConfigDir,
+        },
+        // Inject detection: the fix line only names *installed* gaps, so the
+        // assertion must not depend on which agent CLIs the runner has (CI has none).
+        { detect: async () => AGENT_TARGETS.map((id) => ({ id, available: id === "claude" })) },
+      );
       const output = lines.join("\n");
       expect(output).toContain("Muninn provisioning");
       // Every supported target is listed with its registration state...
       for (const id of AGENT_TARGETS) expect(output).toContain(id);
       expect(output).toContain("not registered");
       // ...and the fix names the gaps, not a vague "run huginn setup".
-      expect(output).toMatch(/fix: huginn setup --agent /);
+      expect(output).toContain("fix: huginn setup --agent claude");
     } finally {
       logSpy.mockRestore();
     }
