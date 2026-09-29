@@ -3,8 +3,9 @@ import { dirname } from "node:path";
 import { events } from "./engineEvents";
 import { clearStaleHarness } from "../state/store";
 import { git } from "./diff";
+import { sanitizeTerminalText } from "../util/text";
 
-const IGNORED_DIRS = new Set([".harness", ".git", "node_modules", "dist", "build"]);
+const IGNORED_DIRS = new Set([".harness", ".huginn", ".git", "node_modules", "dist", "build"]);
 
 /**
  * Caps on the git-derived context embedded in prompts (REV-002). The architect
@@ -23,13 +24,18 @@ function capContext(text: string, max: number): string {
 
 /**
  * Best-effort file read. Returns "" on any failure and logs a warning instead
- * of silently treating an unreadable file as absent.
+ * of silently treating an unreadable file as absent. The warning is sanitized
+ * (SEC-4B-003): both the path and the error text can carry terminal escapes —
+ * a path is user data, and an `EACCES`/`ELOOP` message quotes it back.
  */
 export function readOptional(path: string): string {
   try {
     return existsSync(path) ? readFileSync(path, "utf8") : "";
   } catch (err) {
-    events.emit("log", { level: "warn", message: `could not read ${path}: ${(err as Error).message}` });
+    events.emit("log", {
+      level: "warn",
+      message: sanitizeTerminalText(`could not read ${path}: ${(err as Error).message}`),
+    });
     return "";
   }
 }
@@ -97,7 +103,9 @@ export function commitDocs(projectPath: string, docs: string[], subject: string)
   const commit = git(projectPath, ["commit", "-m", `docs(scope): ${subject}`]);
   if (commit.code !== 0) {
     const err = commit.stderr || commit.stdout || "unknown";
-    events.emit("log", { level: "warn", message: `docs commit failed: ${err}` });
+    // SEC-4B-003: git's stderr is repo-controlled output (a hook can print
+    // anything), so it is sanitized before it reaches a log line.
+    events.emit("log", { level: "warn", message: sanitizeTerminalText(`docs commit failed: ${err}`) });
     return null;
   }
   return staged.split("\n").filter(Boolean);

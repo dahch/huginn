@@ -19,6 +19,7 @@ import { loadPlan } from "../plan/parser";
 import { commitDocs, readOptional, repoContext, resetHarnessState, stageDocsForReview, unstageDocs, writeDoc } from "./liveRepo";
 import { git } from "./diff.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { getLiveSession, newLiveSessionId, saveLiveSession, type LiveSession } from "../state/liveSession";
 
 /** How long an unanswered clarifying question waits before the turn aborts (AC-37.4). */
 const QUESTION_TIMEOUT_MS = 10 * 60_000;
@@ -186,6 +187,13 @@ export interface LiveEngineOptions {
   runtimeFactory?: (target: AgentTarget) => IAgentRuntime;
   /** Initial idea. The TUI sends messages one at a time; headless passes the whole idea here. */
   idea?: string;
+  /**
+   * Phase 4B/4C hook: adopt an already persisted live session instead of
+   * starting a new one. **Not** wired to the CLI flags yet — the default (no
+   * `resume`) always starts a fresh session, so a restart never silently
+   * resurrects an old conversation.
+   */
+  resume?: { id?: string };
 }
 
 /**
@@ -287,8 +295,17 @@ export class LiveEngine {
   private idea?: string;
   private runtimeFactory?: (target: AgentTarget) => IAgentRuntime;
   private needsSystemPrompt = false;
+  /** True once a stored session was adopted by {@link resumeSession} (REV-4B-002). */
+  private resumed = false;
   /** Memoized architect prompt for this session (REV-002); see {@link getSystemPrompt}. */
   private systemPromptCache?: string;
+  /**
+   * Phase 4B — the persisted record of this live session. `id` is minted on
+   * construction (or adopted by {@link resumeSession}); every relevant mutation
+   * mirrors the in-memory conversation onto it and writes it to
+   * `<project>/.huginn/live/sessions.json`, so the context survives a restart.
+   */
+  private liveSession: LiveSession;
 
   constructor(opts: LiveEngineOptions) {
     this.cfg = opts.cfg;
@@ -311,6 +328,21 @@ export class LiveEngine {
     }
     this.models = resolveModels(opts.cfg.thinker, opts.cfg.executor);
     this.idea = opts.idea;
+
+    const now = new Date().toISOString();
+    this.liveSession = {
+      id: newLiveSessionId(),
+      createdAt: now,
+      updatedAt: now,
+      runtimeId: this._runtime.id,
+      projectPath: opts.cfg.projectPath,
+      ...(opts.idea ? { idea: opts.idea } : {}),
+      messages: [],
+    };
+    // Phase 4B default: a *new* session per engine. Resuming is explicit
+    // (Phase 4C wires `-c/--session` to this hook); a run that never asked to
+    // resume must never inherit an old transcript.
+    if (opts.resume?.id) this.resumeSession(opts.resume.id);
   }
 
   /** Public accessor for the active agent runtime (mutable via switchRuntime). */
@@ -340,6 +372,126 @@ export class LiveEngine {
 
   getConfig(): RunConfig {
     return this.cfg;
+  }
+
+  /**
+   * The live conversation as recorded so far (Phase 4B), oldest first — a
+   * defensive copy, so a caller cannot mutate the engine's history.
+   *
+   * An in-memory window on purpose: the transcript replayed to a history-less
+   * runtime and the persisted record are both bounded, and this is what the UI
+   * renders. The *durable* copy is `<project>/.huginn/live/sessions.json`.
+   */
+  getTranscript(): TranscriptTurn[] {
+    return this.messages.map((m) => ({ role: m.role, text: m.text }));
+  }
+
+  /**
+   * Id of the **persisted live session** (Phase 4B) — the handle a later phase
+   * will accept on `-c/--session`. The agent's own session id is
+   * {@link getOpencodeSessionId}.
+   */
+  getSessionId(): string {
+    return this.liveSession.id;
+  }
+
+  /** Explicit alias of {@link getSessionId}, for callers that spell it out. */
+  getLiveSessionId(): string {
+    return this.liveSession.id;
+  }
+
+  /**
+   * The runtime's own session id (opencode), persisted so a later phase can
+   * reattach to the same server-side conversation. `undefined` until a session
+   * exists, and never set for a runtime that does not keep history across
+   * prompts (a one-shot subprocess session id is meaningless after the turn).
+   */
+  getOpencodeSessionId(): string | undefined {
+    return this.liveSession.opencodeSessionId;
+  }
+
+  /**
+   * Adopts a previously persisted live session: its id, creation time, idea,
+   * title, stage, runtime session id and conversation become this engine's state.
+   *
+   * Phase 4C hook — the CLI flags that reach it (`-c` / `--session`) are not
+   * implemented yet; the default path always starts a new session. Returns
+   * `false` (and keeps the freshly minted session) when the id is unknown, so a
+   * stale handle fails open instead of losing the new session.
+   *
+   * SEC-4B-003b: the handle arrives from a CLI flag or a hand-edited store, so it
+   * is sanitized before it is echoed into a log line — an id carrying OSC/CSI
+   * escapes must not inject control sequences into the engine's log.
+   */
+  resumeSession(id: string): boolean {
+    const stored = getLiveSession(this.cfg.projectPath, id);
+    if (!stored) {
+      events.emit("log", {
+        level: "warn",
+        message: `live session ${sanitizeTerminalText(id)} not found in ${this.cfg.projectPath}; starting a new session`,
+      });
+      return false;
+    }
+    this.liveSession = { ...stored, messages: stored.messages.map((m) => ({ role: m.role, text: m.text })) };
+    this.messages = stored.messages.map((m) => ({ role: m.role, text: m.text }));
+    if (!this.idea && stored.idea) this.idea = stored.idea;
+    // REV-4B-002: a session that stopped at the approval gate resumes there, not
+    // back at `refine`.
+    if (stored.stage) this.stage = stored.stage;
+    this.resumed = true;
+    // A resumed conversation must not be replayed as if it were brand new: the
+    // runtime session is gone, so a history-less runtime needs the transcript
+    // and an opencode session needs re-seeding on its next prompt.
+    this.needsSystemPrompt = true;
+    this.invalidateSystemPrompt();
+    events.emit("log", {
+      level: "info",
+      message: `resumed live session ${sanitizeTerminalText(id)} (${this.messages.length} message(s))`,
+    });
+    return true;
+  }
+
+  /**
+   * Mirrors the in-memory conversation onto the persisted record and writes it
+   * to `<project>/.huginn/live/sessions.json` (Phase 4B).
+   *
+   * Best-effort by design: a read-only project or a full disk must not break a
+   * live turn, but the failure is logged rather than swallowed.
+   */
+  private persistLiveSession(): void {
+    const record = this.liveSession;
+    record.runtimeId = this.runtime.id;
+    record.projectPath = this.cfg.projectPath;
+    // REV-4B-002: the stage rides along, so a resumed session knows where the
+    // conversation got to instead of claiming to be refining again.
+    record.stage = this.stage;
+    record.messages = this.messages.map((m) => ({ role: m.role, text: m.text }));
+    if (this.idea && !record.idea) record.idea = this.idea;
+    if (!record.title) {
+      const firstUser = this.messages.find((m) => m.role === "user");
+      if (firstUser) record.title = firstLine(firstUser.text);
+    }
+    // Only a runtime whose session survives between prompts has a resumable id.
+    // REV-4B-001: on a switch to a history-less runtime the stored id is *deleted*
+    // — keeping it would let a later phase reattach to a server-side session that
+    // does not describe this conversation any more.
+    if (this.sessionId && this.keepsSessionHistory()) {
+      record.opencodeSessionId = this.sessionId;
+    } else {
+      delete record.opencodeSessionId;
+    }
+    try {
+      saveLiveSession(this.cfg.projectPath, record);
+    } catch (err) {
+      events.emit("log", {
+        level: "warn",
+        // SEC-4B-003b: the id is a stored/hand-made value, so it is sanitized
+        // before it reaches a log line, like every other field of the record.
+        message: `could not persist live session ${sanitizeTerminalText(record.id)}: ${sanitizeTerminalText(
+          err instanceof Error ? err.message : String(err),
+        )}`,
+      });
+    }
   }
 
   updateModels(models: { thinker?: string; executor?: string }): Models {
@@ -404,6 +556,10 @@ export class LiveEngine {
     // dropped so it is rebuilt against the current docs and repo state.
     this.invalidateSystemPrompt();
     this.needsSystemPrompt = true;
+
+    // Phase 4B: the persisted session records which runtime the conversation
+    // belongs to, so a restarted process knows what it was talking to.
+    this.persistLiveSession();
 
     // Visible acknowledgement of the switch, in the console's feedback voice
     // (REQ-31 / AC-31.1: the `✓` prefix mirrors `src/tui/feedback.ts`). The
@@ -512,12 +668,19 @@ export class LiveEngine {
 
   private setStage(stage: LiveStage, message?: string): void {
     this.stage = stage;
+    // Phase 4B: a stage change is worth a checkpoint — `draft`/`execute` mean
+    // new docs on disk (and, on handoff, that the harness state was reset), so
+    // the persisted session must reflect where the conversation got to.
+    this.persistLiveSession();
     events.emit("liveStage", { stage, message });
   }
 
   private pushMessage(role: "user" | "assistant" | "system", text: string): void {
     this.messages.push({ role, text });
     if (this.messages.length > 100) this.messages.shift();
+    // Phase 4B: persist every turn, so a crash/restart loses at most the turn
+    // that was in flight.
+    this.persistLiveSession();
   }
 
   private lastUserMessage(): string {
@@ -647,7 +810,17 @@ export class LiveEngine {
       directory: this.cfg.projectPath,
     });
     this.sessionId = this.session.id;
-    this.setStage("refine");
+    // REV-4B-002: only a *fresh* session starts refining. A resumed one keeps the
+    // stage it was stored at (opening the agent session must not rewind it to
+    // `refine`), and the restored stage is re-announced to the UI.
+    if (this.resumed) {
+      events.emit("liveStage", { stage: this.stage });
+    } else {
+      this.setStage("refine");
+    }
+    // Phase 4B: persist the runtime session id as soon as it exists, so a later
+    // phase can reattach to the same opencode session (requirement 4C).
+    this.persistLiveSession();
     events.emit("liveChat", {
       role: "system",
       text:
@@ -993,7 +1166,13 @@ export class LiveEngine {
     } else {
       events.emit("log", { level: "info", message: "docs unchanged — nothing to commit" });
     }
+    // Wipes `.harness` **only** (the cycle state). The live session lives in
+    // `<project>/.huginn/live/`, which this must never touch: the handoff is not
+    // the end of the live conversation, and 4C resumes it from there.
     resetHarnessState(this.cfg.projectPath);
+    // A checkpoint after the reset confirms the persisted session outlives the
+    // handoff (and records the stage as `execute`).
+    this.persistLiveSession();
     const plan = loadPlan(this.cfg.planPath);
     const engine = new CycleEngine({
       cfg: this.cfg,
