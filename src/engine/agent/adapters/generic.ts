@@ -744,8 +744,8 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
    * (REQ-32 / AC-32.1).
    *
    * A runtime with a verified listing command (`mcpListCommand`) spawns it under
-   * a bounded deadline; one without (`omp`, `kimi`, `pi`, `cursor`,
-   * `codex`) resolves `[]` — an explicit "I have no way to enumerate", which the
+   * a bounded deadline; one without (`omp`, `kimi`, `pi`, `cursor`, `codex`,
+   * `mcode`) resolves `[]` — an explicit "I have no way to enumerate", which the
    * status helper turns into config-file discovery rather than an empty truth.
    * Never throws: a failed spawn is an empty listing, not a crash.
    */

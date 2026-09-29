@@ -223,6 +223,12 @@ describe("Phase 2C · every subprocess runtime carries its auto-approval flag", 
     { target: "pi", baseArgs: [], flags: ["--approve"] },
     { target: "cursor", baseArgs: [], flags: ["-f"] },
     { target: "agy", baseArgs: [], flags: ["--dangerously-skip-permissions"] },
+    // Phase 3B. `mcode exec --input -` takes the prompt on stdin and
+    // `--permission full` auto-approves every tool; `mimo run` (no positional
+    // message) takes it on stdin too and `--yolo` is the only auto-approval
+    // switch its `run` subcommand accepts.
+    { target: "mcode", baseArgs: ["exec", "--input", "-"], flags: ["--permission", "full"] },
+    { target: "mimo", baseArgs: ["run"], flags: ["--yolo"] },
   ];
 
   for (const { target, baseArgs, flags } of runtimes) {

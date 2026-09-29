@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   ClaudeRuntimeAdapter,
   CommandCodeRuntimeAdapter,
+  MimoRuntimeAdapter,
   OmpRuntimeAdapter,
   OpencodeRuntimeAdapter,
   QwenRuntimeAdapter,
@@ -137,6 +138,43 @@ describe("runtimes enumerate their own MCP servers (REQ-32 / AC-32.1)", () => {
     }
   });
 
+  it("mimo (Phase 3B) runs `mimo mcp list`, whose box list is opencode's own format", async () => {
+    // MiMo Code is an opencode-derived CLI and prints the exact same box list,
+    // so the *shared* parser is what consumes it. Re-verified against a fresh
+    // capture (test/fixtures/mimo-mcp-list.txt) rather than assumed from the
+    // lineage: the status cell also carries the config the server came from
+    // (`connected claude:~/.claude.json`), which must not become the status.
+    const { path: cliPath, cleanup } = installFakeCli("mimo", "mimo-mcp-list.txt");
+    try {
+      const runtime = getAgentRuntime("mimo", { env: { PATH: cliPath } });
+      const listings = await runtime.listMcpServers?.();
+
+      expect(listings).toEqual([
+        {
+          name: "leann-server",
+          transport: "stdio",
+          status: "connected",
+          detail: "leann_mcp",
+        },
+        {
+          name: "codegraph",
+          transport: "stdio",
+          status: "connected",
+          detail: "codegraph serve --mcp",
+        },
+        {
+          name: "muninn",
+          transport: "stdio",
+          status: "connected",
+          detail: "huginn mcp run --project /home/dev/projects/huginn",
+        },
+      ]);
+      expect(JSON.stringify(listings)).not.toContain("\u001b");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("devin (registry construction) runs `devin mcp list`, keeping enabled/disabled and transport", async () => {
     const { path: cliPath, cleanup } = installFakeCli("devin", "devin-mcp-list.txt");
     try {
@@ -218,6 +256,8 @@ describe("runtimes enumerate their own MCP servers (REQ-32 / AC-32.1)", () => {
         new ClaudeRuntimeAdapter({ env: { PATH: empty } }),
         new QwenRuntimeAdapter({ env: { PATH: empty } }),
         new CommandCodeRuntimeAdapter({ env: { PATH: empty } }),
+        // Phase 3B: `mimo mcp list` is wired but the binary is absent here.
+        new MimoRuntimeAdapter({ env: { PATH: empty } }),
         getAgentRuntime("agy", { env: { PATH: empty } }),
       ];
       for (const runtime of runtimes) {
@@ -236,7 +276,10 @@ describe("runtimes enumerate their own MCP servers (REQ-32 / AC-32.1)", () => {
       const omp = new OmpRuntimeAdapter({ env: { PATH: cliPath } });
       expect(await omp.listMcpServers()).toEqual([]);
 
-      for (const target of ["kimi", "pi", "cursor", "codex"] as const) {
+      // `mcode` is the same: the CLI has no `mcp` command at all, so its absence
+      // is reported as "nothing enumerated" rather than a fabricated listing —
+      // even when a fake binary echoes opencode's output.
+      for (const target of ["kimi", "pi", "cursor", "codex", "mcode"] as const) {
         const runtime = getAgentRuntime(target, { env: { PATH: cliPath } });
         expect(await runtime.listMcpServers?.(), target).toEqual([]);
       }

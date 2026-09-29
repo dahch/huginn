@@ -28,7 +28,9 @@ export type AgentTarget =
   | "kimi"
   | "pi"
   | "commandcode"
-  | "omp";
+  | "omp"
+  | "mcode"
+  | "mimo";
 
 export type McpFormat = "mcpServers" | "opencode" | "toml";
 
@@ -203,6 +205,47 @@ export const AGENT_REGISTRY: Record<AgentTarget, AgentSpec> = {
     label: "Oh My Pi",
     format: "mcpServers",
     mcpPaths: ["{home}/.omp/mcp.json", "{project}/.omp/mcp.json"],
+    rulesFile: "AGENTS.md",
+  },
+  mcode: {
+    id: "mcode",
+    label: "MiniMax Code",
+    format: "mcpServers",
+    // Phase 3B, deduced from the shipped CLI (`~/.minimax-code/…/@minimax-ai/
+    // code` 0.5.8) and its README: `mcode` has **no** `mcp` command and reads
+    // project-level MCP servers from `<workspace>/.mcp.json` only — the same
+    // `mcpServers` container Claude Code uses, loaded for the interactive TUI,
+    // `exec` and ACP alike ("Runtime 自动加载会话主工作目录的 .mcp.json"). Its
+    // own loader also accepts the bare map form, and resolves `command`/`args`
+    // as a stdio server, which is exactly what huginn writes. There is no
+    // user-level MCP file: the runtime data dir is `~/.minimax` (config.yaml,
+    // auth, caches) and declares no `mcp` key.
+    mcpPaths: ["{project}/.mcp.json"],
+    // `mcode init [directory]` "analyzes a repository and creates or improves
+    // `AGENTS.md`" (README), and the runtime reads that root file as project
+    // memory — so the Muninn block goes there.
+    rulesFile: "AGENTS.md",
+  },
+  mimo: {
+    id: "mimo",
+    label: "MiMo Code",
+    format: "opencode",
+    // Phase 3B, deduced from the shipped CLI (`mimo` 0.1.15) and verified live:
+    // the global config dir is `~/.config/mimocode/` (XDG), whose files the CLI
+    // merges in precedence order `config.json`, `mimocode.json`,
+    // `mimocode.jsonc` (later wins) — and `mimocode.json` is the file
+    // `mimo mcp add` writes for the global scope when none exists, mirroring
+    // opencode's `opencode.json`. Its MCP container is `mcp` with
+    // `{"type":"local","command":[…]}` entries, i.e. opencode's own format.
+    // Writing the plain-JSON `mimocode.json` (rather than the `.jsonc` seed) also
+    // keeps huginn's strict-JSON reader — and its "malformed JSON" fail-closed
+    // path — out of a file that legitimately allows comments.
+    // (`mimo mcp list` merges these configs with Claude Code's `~/.claude.json`,
+    // which is why its server sources read `opencode:<config dir>` and
+    // `claude:~/.claude.json`; huginn never writes the latter.)
+    mcpPaths: ["{home}/.config/mimocode/mimocode.json"],
+    // MiMo Code discovers project instructions by walking up from the cwd for
+    // `AGENTS.md` (then `CLAUDE.md`, `CONTEXT.md`), exactly like opencode.
     rulesFile: "AGENTS.md",
   },
 };

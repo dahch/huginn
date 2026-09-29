@@ -7,4 +7,6 @@ export * from "./agy.js";
 export * from "./devin.js";
 export * from "./commandcode.js";
 export * from "./qwen.js";
+export * from "./mcode.js";
+export * from "./mimo.js";
 export * from "./mcpList.js";

@@ -72,7 +72,7 @@ afterAll(() => {
 });
 
 describe("AGENT_REGISTRY", () => {
-  it("contains exactly the eleven documented targets (gemini removed — REQ-35.3)", () => {
+  it("contains exactly the thirteen documented targets (gemini removed — REQ-35.3)", () => {
     expect(AGENT_TARGETS).toEqual([
       "cursor",
       "claude",
@@ -85,12 +85,35 @@ describe("AGENT_REGISTRY", () => {
       "pi",
       "commandcode",
       "omp",
+      "mcode",
+      "mimo",
     ]);
     expect(listRegistry().map((s) => s.id)).toEqual(AGENT_TARGETS);
     expect(AGENT_REGISTRY.codex.format).toBe("toml");
     expect(AGENT_REGISTRY.opencode.format).toBe("opencode");
     expect(AGENT_REGISTRY.cursor.mcpPaths).toHaveLength(2);
     expect(AGENT_REGISTRY.claude.mcpPaths).toHaveLength(3);
+  });
+
+  it("registers the Phase 3B targets where their CLI really reads them", () => {
+    // `mcode` has no `mcp` command and loads MCP servers from the project's
+    // `.mcp.json` only (the `mcpServers` container); its rules file is the
+    // `AGENTS.md` its own `init` command generates.
+    expect(AGENT_REGISTRY.mcode).toMatchObject({
+      label: "MiniMax Code",
+      format: "mcpServers",
+      mcpPaths: ["{project}/.mcp.json"],
+      rulesFile: "AGENTS.md",
+    });
+    // `mimo` is opencode-shaped: the global config dir is `~/.config/mimocode`,
+    // the container is `mcp` (`{ type: "local", command: [...] }` entries) and
+    // project instructions are discovered by walking up for `AGENTS.md`.
+    expect(AGENT_REGISTRY.mimo).toMatchObject({
+      label: "MiMo Code",
+      format: "opencode",
+      mcpPaths: ["{home}/.config/mimocode/mimocode.json"],
+      rulesFile: "AGENTS.md",
+    });
   });
 });
 
@@ -103,6 +126,11 @@ describe("resolveMcpPaths", () => {
     ]);
     expect(resolveMcpPaths("opencode", baseOpts(env))).toEqual([
       join(env.opencodeConfigDir, "opencode.json"),
+    ]);
+    // Phase 3B: mcode is project-scoped, mimo global-scoped (XDG config dir).
+    expect(resolveMcpPaths("mcode", baseOpts(env))).toEqual([join(env.project, ".mcp.json")]);
+    expect(resolveMcpPaths("mimo", baseOpts(env))).toEqual([
+      join(env.home, ".config", "mimocode", "mimocode.json"),
     ]);
   });
 
@@ -167,6 +195,35 @@ describe("registerMcpForTarget", () => {
       command: ["huginn", "mcp", "run", "--project", env.project],
       enabled: true,
     });
+  });
+
+  it("writes the Phase 3B shapes exactly, where each CLI reads them", () => {
+    const env = makeEnv();
+
+    // mcode: the project `.mcp.json` `mcpServers` map (stdio via `command`).
+    registerMcpForTarget("mcode", baseOpts(env));
+    const mcode = JSON.parse(readFileSync(join(env.project, ".mcp.json"), "utf8"));
+    expect(mcode.mcpServers.muninn).toEqual({
+      command: "huginn",
+      args: ["mcp", "run", "--project", env.project],
+    });
+
+    // mimo: the global `mimocode.json` with opencode's `mcp` container.
+    registerMcpForTarget("mimo", baseOpts(env));
+    const mimo = JSON.parse(
+      readFileSync(join(env.home, ".config", "mimocode", "mimocode.json"), "utf8"),
+    );
+    expect(mimo.mcp.muninn).toEqual({
+      type: "local",
+      command: ["huginn", "mcp", "run", "--project", env.project],
+      enabled: true,
+    });
+
+    // Both read project instructions from the root `AGENTS.md`.
+    expect(injectRulesForTarget("mcode", baseOpts(env)).path).toBe(
+      join(env.project, "AGENTS.md"),
+    );
+    expect(injectRulesForTarget("mimo", baseOpts(env)).path).toBe(join(env.project, "AGENTS.md"));
   });
 
   it("writes every path of a multi-path target", () => {

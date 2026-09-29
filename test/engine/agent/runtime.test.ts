@@ -157,10 +157,20 @@ describe("Agent Registry & Factory", () => {
     const agy = getAgentRuntime("agy");
     expect(agy.id).toBe("agy");
     expect(agy.name).toBe("Antigravity CLI (agy)");
+
+    const mcode = getAgentRuntime("mcode");
+    expect(mcode.id).toBe("mcode");
+    expect(mcode.name).toBe("MiniMax Code");
+
+    const mimo = getAgentRuntime("mimo");
+    expect(mimo.id).toBe("mimo");
+    expect(mimo.name).toBe("MiMo Code");
   });
 
   it("never fabricates a model catalog for runtimes without a listing command (REQ-27)", async () => {
-    for (const target of ["kimi", "pi", "cursor", "claude", "qwen", "codex"] as const) {
+    // `mcode` is in this list on purpose: it ships no model-listing command, so
+    // its catalog is an honest `[]` (with a reason) rather than a made-up list.
+    for (const target of ["kimi", "pi", "cursor", "claude", "qwen", "codex", "mcode"] as const) {
       const runtime = getAgentRuntime(target, { env: { PATH: "/dev/null" } });
       // AC-27.4: no `${id}/default` placeholder, no static list — honest [].
       expect(await runtime.getAvailableModels()).toEqual([]);
@@ -248,6 +258,92 @@ describe("Agent Registry & Factory", () => {
     }
   });
 
+  it("wires the real `mimo models` listing command (AC-27.4)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-mimo-wiring-"));
+    try {
+      const mimoBin = join(tempDir, "mimo");
+      // Rows copied verbatim from the captured `mimo models` fixture (the argv
+      // is asserted too: only `models`, never `models --verbose`).
+      writeFileSync(
+        mimoBin,
+        "#!/bin/sh\n" +
+          '[ "$1" = "models" ] || exit 9\n' +
+          "cat <<'HUGINN_EOF'\n" +
+          "deepseek/deepseek-flash — window 1M, compacts at 900K\n" +
+          "xiaomi/mimo-v2.6-pro — window 1.05M, compacts at 944K\n" +
+          "HUGINN_EOF\n",
+      );
+      chmodSync(mimoBin, 0o755);
+
+      const runtime = getAgentRuntime("mimo", {
+        // Keep the real PATH behind the temp dir so the fake `mimo` can still
+        // resolve `cat`.
+        env: { PATH: `${tempDir}:${process.env.PATH ?? ""}` },
+      });
+      expect(await runtime.getAvailableModels()).toEqual([
+        {
+          id: "deepseek/deepseek-flash",
+          name: "deepseek-flash",
+          provider: "deepseek",
+          description: "window 1M, compacts at 900K",
+        },
+        {
+          id: "xiaomi/mimo-v2.6-pro",
+          name: "mimo-v2.6-pro",
+          provider: "xiaomi",
+          description: "window 1.05M, compacts at 944K",
+        },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds the verified `mcode exec` argv with the prompt on stdin, never on the argv", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-mcode-argv-"));
+    try {
+      const capture = join(tempDir, "stdin.txt");
+      const mcodeBin = join(tempDir, "mcode");
+      writeFileSync(
+        mcodeBin,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\"\ncat > \"$HUGINN_STDIN_CAPTURE\"\nexit 0\n",
+      );
+      chmodSync(mcodeBin, 0o755);
+
+      const runtime = getAgentRuntime("mcode", {
+        // Keep the real PATH behind the temp dir so the fake `mcode` can still
+        // resolve `cat`.
+        env: { PATH: `${tempDir}:${process.env.PATH ?? ""}`, HUGINN_STDIN_CAPTURE: capture },
+        permissions: "auto",
+      });
+      expect(runtime.id).toBe("mcode");
+      const session = await runtime.createSession({ title: "mcode" });
+      // A real huginn prompt embeds the spec/ADR/plan and is far larger than any
+      // sane argv, so it must travel over stdin (SEC-002).
+      const prompt = `fix the failing test ${"x".repeat(8192)}`;
+      const result = await session.prompt(prompt, { model: "minimax/MiniMax-M3" });
+      const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
+
+      // Verified live: `mcode exec` does NOT read a bare stdin pipe ("A prompt,
+      // --input -, or at least one --file is required"), but `--input -` makes
+      // it read the prompt from stdin; `--permission full` then auto-approves.
+      expect(argv).toEqual([
+        "exec",
+        "--input",
+        "-",
+        "--model",
+        "minimax/MiniMax-M3",
+        "--permission",
+        "full",
+      ]);
+      expect(argv).not.toContain(prompt);
+      // The CLI read back exactly what huginn wrote to stdin.
+      expect(readFileSync(capture, "utf8")).toBe(prompt);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("builds the verified `devin --print` argv with the prompt in a temp file, not on the argv", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "huginn-devin-argv-"));
     try {
@@ -307,7 +403,7 @@ describe("Agent Registry & Factory", () => {
     }
   });
 
-  // Spawns five short-lived processes; the default 5s budget is tight under the
+  // Spawns seven short-lived processes; the default 5s budget is tight under the
   // parallel full-suite run, so this one gets its own (REV-3302/O2).
   it(
     "exposes the runtime's native model flag for the runtimes without a listing command (AC-27.5)",
@@ -320,6 +416,10 @@ describe("Agent Registry & Factory", () => {
           ["kimi", ["-m", "moonshot/kimi-k2.5"]],
           ["pi", ["-m", "moonshot/kimi-k2.5"]],
           ["cursor", ["--model", "moonshot/kimi-k2.5"]],
+          // Phase 3B: the non-interactive base argv comes first (`exec --input -`
+          // / `run`), then the native model flag.
+          ["mcode", ["exec", "--input", "-", "--model", "moonshot/kimi-k2.5"]],
+          ["mimo", ["run", "--model", "moonshot/kimi-k2.5"]],
         ];
 
         for (const [target, expected] of cases) {
@@ -333,8 +433,9 @@ describe("Agent Registry & Factory", () => {
           const session = await runtime.createSession({ title: target });
           const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
           const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
-          // The model flag comes first; the runtime's auto-approval flag(s)
-          // (Phase 2C) are appended after it — see permissions.test.ts.
+          // The runtime's base argv and native model flag come first; its
+          // auto-approval flag(s) (Phase 2C) are appended after them — see
+          // permissions.test.ts.
           expect(argv).toEqual([...expected, ...(SUBPROCESS_PERMISSION_ARGS[target] ?? [])]);
         }
 
@@ -527,6 +628,11 @@ describe("Agent Subsystem Barrel Exports", () => {
     expect(AgentSubsystem.OmpRuntimeAdapter).toBeDefined();
     expect(AgentSubsystem.CommandCodeRuntimeAdapter).toBeDefined();
     expect(AgentSubsystem.QwenRuntimeAdapter).toBeDefined();
+    expect(AgentSubsystem.McodeRuntimeAdapter).toBeDefined();
+    expect(AgentSubsystem.MimoRuntimeAdapter).toBeDefined();
+    expect(AgentSubsystem.MCODE_PERMISSION_ARGS).toBeDefined();
+    expect(AgentSubsystem.MIMO_PERMISSION_ARGS).toBeDefined();
+    expect(AgentSubsystem.parseMimoModels).toBeDefined();
   });
 });
 

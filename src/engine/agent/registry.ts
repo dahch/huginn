@@ -17,6 +17,10 @@ import {
   DEVIN_PERMISSION_ARGS,
   DevinRuntimeAdapter,
   GenericSubprocessRuntimeAdapter,
+  MCODE_PERMISSION_ARGS,
+  MIMO_PERMISSION_ARGS,
+  McodeRuntimeAdapter,
+  MimoRuntimeAdapter,
   OmpRuntimeAdapter,
   OpencodeRuntimeAdapter,
   QwenRuntimeAdapter,
@@ -36,6 +40,11 @@ export const AGENT_BINARIES: Record<AgentTarget, string[]> = {
   cursor: ["cursor"],
   devin: ["devin"],
   agy: ["agy"],
+  // Phase 3B: both CLIs install a single `mcode`/`mimo` binary shim (the
+  // MiniMax Code launcher under `~/.minimax-code/bin` and the MiMo Code
+  // executable under `~/.mimocode/bin`), so there is no secondary name to try.
+  mcode: ["mcode"],
+  mimo: ["mimo"],
 };
 
 export interface RuntimeOptions {
@@ -112,6 +121,13 @@ export const SUBPROCESS_PERMISSION_ARGS: Partial<Record<AgentTarget, string[]>> 
   // adapter can never diverge from the table.
   devin: DEVIN_PERMISSION_ARGS,
   agy: ["--dangerously-skip-permissions"],
+  // Phase 3B: `mcode exec --permission full` (verified live — the `smart`
+  // default still decides per action, `full` auto-approves) and `mimo run
+  // --yolo` (the `run` subcommand's own auto-approval switch; its *global*
+  // `--trust`/`--never-ask` are rejected by `run`). Same array instances as the
+  // adapters, so the table cannot drift.
+  mcode: MCODE_PERMISSION_ARGS,
+  mimo: MIMO_PERMISSION_ARGS,
 };
 
 export interface AgentResolutionSources {
@@ -294,6 +310,16 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
     // superseded by `agy`.)
     case "devin":
       return new DevinRuntimeAdapter(options);
+    // Phase 3B. `mcode` is a commandcode-style single-shot CLI: `exec
+    // --input -` + `--permission full`, with **no** model listing (`mcode
+    // provider list` enumerates providers only, each with an empty `models`
+    // array) and no `mcp` command at all — both are honestly absent rather than
+    // fabricated. `mimo` is the opencode-style one: `run` reads the prompt from
+    // stdin, plus `mimo models` / `mimo mcp list`.
+    case "mcode":
+      return new McodeRuntimeAdapter(options);
+    case "mimo":
+      return new MimoRuntimeAdapter(options);
     case "agy":
       return new GenericSubprocessRuntimeAdapter({
         id: "agy",

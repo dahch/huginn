@@ -17,6 +17,8 @@ so the parsers under test are verified against the actual formats they must hand
 | `commandcode-mcp-list.txt` | `commandcode mcp list` | Blank line, `MCP Servers`, a `NAME TYPE SCOPE AUTH STATUS` table, then `Total: N server(s)`. 1 server; scope is surfaced as `detail`. Parser: `parseCommandcodeMcpList`. |
 | `devin-models.txt` | `devin models list` | `Available models (N families)` preamble, then one `<Family Label> (<family-uid>)` section per family (some followed by an indented `aliases: …` note) and indented variant rows `<model_uid>` + 2+ spaces + `<label>` with an optional trailing `[cost / context]` annotation, plus a free-text footer. 763 lines; parses to **644** models across **54** families. Parser: `parseDevinModels` (AC-27.4). |
 | `devin-mcp-list.txt` | `devin mcp list` | `Configured MCP servers:` heading, then per server a glyph-led row (`• <name>` enabled, `✗ <name>  (disabled)`) followed by an indented `Command: …` (stdio) or `URL: …` (http) detail. 6 servers; the status is the CLI's own enabled/disabled configuration word, never a liveness probe. Parser: `parseDevinMcpList` (AC-32.1). |
+| `mimo-models.txt` | `mimo models` | MiMo Code 0.1.15. 9 lines, one `<provider>/<model> — <description>` per model (`deepseek/deepseek-flash — window 1M, compacts at 900K`); the separator is a U+2014 EM DASH. Parses to **9** models across 3 providers (`deepseek`, `mimo`, `xiaomi`). The wired command is the CLI's default (`mimo models`); its `--verbose` variant interleaves a multi-line JSON document per model (550 lines) and is covered by a synthetic case in `test/engine/agent/mimoModels.test.ts`, because every row line stays identical and no JSON line carries an EM DASH. Parser: `parseMimoModels` (AC-27.4). |
+| `mimo-mcp-list.txt` | `mimo mcp list` | MiMo Code 0.1.15. **Byte-identical in shape to `opencode-mcp-list.txt`** (MiMo Code is opencode-derived): the `┌ MCP Servers` / `●  ✓ <name> <ESC>[90mconnected …` rows with an indented command line and a `└  N server(s)` footer. 3 servers. One difference worth noting: the status cell also names the config the server came from (`claude:~/.claude.json`, `opencode:<config dir>`), which must not be mistaken for the status. Consumed by the shared `parseOpencodeMcpList` (AC-32.1). |
 
 ## Redaction of `opencode-provider-list.json`
 
@@ -40,8 +42,15 @@ future re-capture cannot silently reintroduce a live key. If you re-capture this
 fixture, re-run that test before committing.
 
 Regenerating: run the equivalent commands against installed `opencode`/
-`commandcode`/`omp`/`agy`/`devin` CLIs. See `plan.md` Iteration 25 for the exact API
-(`client.provider.list()` against a `opencode serve` daemon).
+`commandcode`/`omp`/`agy`/`devin`/`mimo` CLIs. See `plan.md` Iteration 25 for the
+exact API (`client.provider.list()` against a `opencode serve` daemon).
+
+The two Phase 3B listings were captured from MiMo Code 0.1.15 with the installed
+binary addressed by absolute path (`~/.mimocode/bin/mimo models`,
+`~/.mimocode/bin/mimo mcp list`), so no shell banner contaminates the capture.
+The `mcode` CLI (MiniMax Code 0.5.8) contributes **no** fixture: it exposes no
+model-listing command and has no `mcp` command at all, so both discovery paths
+are honestly empty and there is nothing to verify a parser against.
 
 ## Path redaction of the MCP fixtures
 
