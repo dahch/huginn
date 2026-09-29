@@ -244,3 +244,13 @@ In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the re
 
 If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
 <!-- CODEGRAPH_END -->
+
+<!-- huginn:muninn-rules:start -->
+## Muninn memory directives
+
+This project is indexed by Muninn. Before designing any change, call
+`muninn_context` and `muninn_inspect_symbol` to load the relevant symbols and
+dependency paths. Before emitting any final code, call `muninn_verify_contract`.
+
+Do not emit final code that has not been contract-verified.
+<!-- huginn:muninn-rules:end -->
