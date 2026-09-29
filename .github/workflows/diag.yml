@@ -1,7 +1,8 @@
 name: diag
 
 # TEMPORARY diagnostic workflow — not triggered by push, only manually.
-# Purpose: pinpoint which statement in the "writes the receipt" test hangs in CI.
+# Purpose: find a portable path that makes mkdirSync(recursive) fail FAST on
+# Linux, to replace the `/proc/...` fixture that hangs Node on procfs.
 
 on:
   workflow_dispatch:
@@ -9,68 +10,44 @@ on:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - name: Install
-        run: bun install --frozen-lockfile
-
-      - name: Marker test (generated at runtime, never committed)
+      - name: Probe portable unwritable paths
         run: |
           set +e
-          cat > test/engine/zz-diag.test.ts <<'TS'
-          import { test } from "vitest";
-          import { mkdtempSync, writeFileSync } from "node:fs";
-          import { tmpdir } from "node:os";
-          import { join } from "node:path";
-          import { writeIterationReceipt, type IterationReceipt } from "../../src/engine/receipts.js";
-
-          const receipt = {
-            profile: "rdd",
-            evidence: "receipt",
-            iteration: 2,
-            title: "x",
-            verdicts: [],
-            createdAt: new Date().toISOString(),
-          } as IterationReceipt;
-
-          test("markers", () => {
-            console.log("M1 start");
-            const dir = mkdtempSync(join(tmpdir(), "huginn-diag-"));
-            console.log("M2 mkdtemp ok", dir);
-            const p = writeIterationReceipt(dir, receipt);
-            console.log("M3 wrote tempdir ->", p);
-            const blocker = join(dir, "blocker");
-            writeFileSync(blocker, "");
-            console.log("M4 blocker file written");
-            const underFile = writeIterationReceipt(join(blocker, "nested"), receipt);
-            console.log("M5 mkdir under a file ->", underFile);
-            console.log("M6 about to mkdir /proc/definitely-not-writable");
-            const proc = writeIterationReceipt("/proc/definitely-not-writable", receipt);
-            console.log("M7 /proc ->", proc);
-          });
-          TS
-          timeout 60 npx vitest run test/engine/zz-diag.test.ts --reporter=verbose --no-file-parallelism
-          echo "EXIT=$?"
-          rm -f test/engine/zz-diag.test.ts
-
-      - name: Bare mkdirSync probe on /proc (node, no vitest)
-        run: |
-          set +e
-          timeout 30 node -e '
-            const { mkdirSync } = require("node:fs");
-            console.log("P1 mkdir /proc/definitely-not-writable");
-            try { mkdirSync("/proc/definitely-not-writable", { recursive: true, mode: 0o700 }); } catch (e) { console.log("P2 threw", e.code); }
-            console.log("P3 mkdir /proc/definitely-not-writable/.huginn/receipts");
-            try { mkdirSync("/proc/definitely-not-writable/.huginn/receipts", { recursive: true, mode: 0o700 }); } catch (e) { console.log("P4 threw", e.code); }
-          '
-          echo "EXIT=$?"
+          cat > /tmp/probe.cjs <<'JS'
+          const { mkdirSync, mkdtempSync, writeFileSync } = require("node:fs");
+          const { tmpdir } = require("node:os");
+          const { join } = require("node:path");
+          const dir = mkdtempSync(join(tmpdir(), "probe-"));
+          const name = process.env.PROBE;
+          const t = Date.now();
+          try {
+            if (name === "under-file") {
+              const blocker = join(dir, "blocker");
+              writeFileSync(blocker, "");
+              mkdirSync(join(blocker, "nested", ".huginn", "receipts"), { recursive: true, mode: 0o700 });
+            } else if (name === "dev-null-child") {
+              mkdirSync("/dev/null/x/y", { recursive: true, mode: 0o700 });
+            } else if (name === "readonly-dir") {
+              const ro = join(dir, "ro");
+              mkdirSync(ro, { mode: 0o500 });
+              mkdirSync(join(ro, "x", "y"), { recursive: true, mode: 0o700 });
+            } else if (name === "proc") {
+              mkdirSync("/proc/definitely-not-writable", { recursive: true, mode: 0o700 });
+            }
+            console.log("RESULT", name, "OK", Date.now() - t, "ms");
+          } catch (e) {
+            console.log("RESULT", name, "THREW", e.code, Date.now() - t, "ms");
+          }
+          JS
+          for p in under-file dev-null-child readonly-dir proc; do
+            PROBE=$p timeout 15 node /tmp/probe.cjs
+            echo "EXIT[$p]=$?"
+          done
