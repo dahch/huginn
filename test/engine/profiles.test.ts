@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -167,6 +167,12 @@ describe("frozen iteration evidence (AC-36.4)", () => {
     expect(JSON.parse(readFileSync(path!, "utf8")).profile).toBe("rdd");
 
     // A path that cannot be created is a silent no-op, never a failed iteration.
-    expect(writeIterationReceipt("/proc/definitely-not-writable", receipt)).toBeUndefined();
+    // A regular file used as a path component makes `mkdir` fail with ENOTDIR
+    // instantly on every platform. Do NOT use a `/proc/...` path here: Node's
+    // recursive `mkdirSync` spins forever on procfs (which answers EPERM),
+    // hanging the whole run on Linux runners.
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "");
+    expect(writeIterationReceipt(join(blocker, "nested"), receipt)).toBeUndefined();
   });
 });
