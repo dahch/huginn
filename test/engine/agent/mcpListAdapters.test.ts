@@ -279,7 +279,7 @@ describe("runtimes enumerate their own MCP servers (REQ-32 / AC-32.1)", () => {
       // `mcode` is the same: the CLI has no `mcp` command at all, so its absence
       // is reported as "nothing enumerated" rather than a fabricated listing —
       // even when a fake binary echoes opencode's output.
-      for (const target of ["kimi", "pi", "cursor", "codex", "mcode"] as const) {
+      for (const target of ["kimi", "pi", "cursor", "mcode"] as const) {
         const runtime = getAgentRuntime(target, { env: { PATH: cliPath } });
         expect(await runtime.listMcpServers?.(), target).toEqual([]);
       }

@@ -103,6 +103,12 @@ export interface GenericSubprocessOptions {
   permissions?: PermissionMode;
   defaultTimeoutMs?: number;
   promptViaStdin?: boolean;
+  /**
+   * Byte budget for the argv prompt channel ({@link promptValueFlag} or the
+   * positional fallback). Measured in **UTF-8 bytes** (SEC-302), matching the
+   * kernel's own `MAX_ARG_STRLEN` — not the JavaScript string's UTF-16 `length`.
+   * Defaults to {@link DEFAULT_MAX_PROMPT_ARG_LENGTH}.
+   */
   maxPromptArgLength?: number;
   /**
    * The CLI's own "read the prompt from a file" flag (REV-3A-001), e.g.
@@ -122,6 +128,43 @@ export interface GenericSubprocessOptions {
    * prompt settles: on `close`, `error`, timeout and abort.
    */
   promptFileFlag?: string;
+  /**
+   * The CLI's own flag that takes the prompt **as its value** (Phase 3C), e.g.
+   * `--prompt=` for kimi (`kimi --prompt=<text>`).
+   *
+   * Only meaningful when {@link promptViaStdin} is `false` and
+   * {@link promptFileFlag} is unset — i.e. the CLI offers *neither* a stdin
+   * channel nor a prompt-file flag, which is exactly kimi's case: its prompt
+   * mode is `-p, --prompt <prompt>` (verified: a bare `kimi -p` fails with
+   * "option '-p, --prompt <prompt>' argument missing", `kimi -p -` sends the
+   * literal text `-`, and no `--prompt-file` exists).
+   *
+   * Two argv shapes (SEC-304):
+   * - a flag that **ends with `=`** produces a single inline token
+   *   (`--prompt=<text>`). node:util `parseArgs` — the parser kimi uses (its
+   *   errors read `Option '-p' argument is ambiguous`, it is *not* Commander) —
+   *   resolves `--prompt=<text>` for **any** text, including one that begins
+   *   with `-`. Prefer this shape.
+   * - any other flag produces two tokens (`[...baseArgs, flag, text]`), the shape
+   *   every `--flag value` parser accepts, but one `parseArgs` rejects as
+   *   ambiguous ("Option '-p' argument is ambiguous") when the value begins with
+   *   `-`; a runtime wired this way must keep its prompt from starting with a
+   *   dash. No `--` end-of-options delimiter is ever inserted here: the text
+   *   *is* the flag's value, so an embedded `--` would simply become part of the
+   *   prompt (`parseArgs` does not treat `--` as a separator mid-value).
+   *
+   * This is the documented last resort (SEC-002): the prompt travels on the
+   * argv, where any local user can read it from `ps`, and each argument is
+   * bounded by the kernel's `MAX_ARG_STRLEN` (~128 KB on Linux, 256 KB on
+   * macOS) — hence {@link maxPromptArgLength}, measured in **UTF-8 bytes**
+   * (SEC-302: the kernel limits by bytes, so a non-ASCII prompt can exceed the
+   * budget while its UTF-16 `length` looks small), whose default positional cap
+   * (4096) is far too small for a huginn prompt that embeds the spec/ADR/plan.
+   * A runtime that can use {@link promptViaStdin} or {@link promptFileFlag}
+   * must prefer it; this flag exists only so a CLI with no other channel can be
+   * driven at all.
+   */
+  promptValueFlag?: string;
 }
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB bound against memory DoS (SEC-003)
@@ -281,6 +324,20 @@ export function effectivePermissionArgs(
 }
 
 /**
+ * Builds the argv tokens that carry the prompt as the **value** of the CLI's own
+ * flag (SEC-304).
+ *
+ * A flag ending in `=` is emitted as a single inline token (`--prompt=<text>`):
+ * node:util `parseArgs` (kimi's parser — not Commander) resolves that shape even
+ * when the text begins with `-`, whereas the two-token form (`-p <text>`) is
+ * reported as ambiguous for such a value. Any other flag keeps the two-token
+ * shape. Exported for the argv unit tests.
+ */
+export function buildPromptValueArgs(flag: string, text: string): string[] {
+  return flag.endsWith("=") ? [`${flag}${text}`] : [flag, text];
+}
+
+/**
  * Truthfulness guard for config-discovered servers (REQ-30 / AC-30.1).
  *
  * This adapter holds **no MCP client**: it can read `.huginn/mcp.json` and the
@@ -365,9 +422,14 @@ export class GenericSubprocessSession implements IAgentSession {
 
     // SEC-002: Do NOT pass full prompt text as an argv positional command line argument.
     // Prefer streaming prompt text safely via child.stdin.write(text); child.stdin.end().
-    // If promptViaStdin is explicitly set to false, check length and use '--' end-of-options delimiter.
+    // If promptViaStdin is explicitly set to false, hand the prompt over through
+    // the CLI's own channel: a prompt *file* when the CLI has one
+    // (`promptFileFlag`), otherwise a flag *value* (`promptValueFlag`, the last
+    // resort — see `GenericSubprocessOptions`), and only failing both as a
+    // positional after a `--` end-of-options delimiter.
     const useStdin = this.runtimeOptions.promptViaStdin !== false;
     const promptFileFlag = this.runtimeOptions.promptFileFlag;
+    const promptValueFlag = this.runtimeOptions.promptValueFlag;
     let childArgs: string[];
     // REV-3A-001: the directory holding the temp prompt file (when
     // `promptFileFlag` is wired) is owned by this prompt and removed as soon as
@@ -396,12 +458,26 @@ export class GenericSubprocessSession implements IAgentSession {
         childArgs = [...baseArgs, promptFileFlag, promptFile];
       } else {
         const maxLen = this.runtimeOptions.maxPromptArgLength ?? DEFAULT_MAX_PROMPT_ARG_LENGTH;
-        if (text.length > maxLen) {
-          throw new Error(`Prompt length (${text.length}) exceeds maximum command line argument limit (${maxLen})`);
+        // SEC-302: the kernel's `MAX_ARG_STRLEN` bounds the argument in *bytes*,
+        // not UTF-16 code units, so a multi-byte prompt must be measured with
+        // `Buffer.byteLength` — `text.length` would under-count it (and would
+        // let an over-limit non-ASCII prompt through to the spawn).
+        const promptBytes = Buffer.byteLength(text, "utf8");
+        if (promptBytes > maxLen) {
+          throw new Error(
+            `Prompt length (${promptBytes} bytes) exceeds maximum command line argument limit (${maxLen})`,
+          );
         }
-        childArgs = baseArgs.includes("--")
-          ? [...baseArgs, text]
-          : [...baseArgs, "--", text];
+        childArgs = promptValueFlag
+          ? // Phase 3C/SEC-304: the CLI takes the prompt as the *value* of its own
+            // flag (kimi). A flag ending in `=` yields one unambiguous
+            // `--prompt=<text>` token; otherwise the two-token `-p <text>` shape
+            // (see `buildPromptValueArgs`). No `--` delimiter here: the text *is*
+            // the flag's value, so it would just become part of the prompt.
+            [...baseArgs, ...buildPromptValueArgs(promptValueFlag, text)]
+          : baseArgs.includes("--")
+            ? [...baseArgs, text]
+            : [...baseArgs, "--", text];
       }
     } catch (err) {
       this.isPrompting = false;

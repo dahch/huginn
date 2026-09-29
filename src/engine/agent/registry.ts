@@ -17,12 +17,16 @@ import {
   DEVIN_PERMISSION_ARGS,
   DevinRuntimeAdapter,
   GenericSubprocessRuntimeAdapter,
+  KIMI_PERMISSION_ARGS,
+  KimiRuntimeAdapter,
   MCODE_PERMISSION_ARGS,
   MIMO_PERMISSION_ARGS,
   McodeRuntimeAdapter,
   MimoRuntimeAdapter,
   OmpRuntimeAdapter,
   OpencodeRuntimeAdapter,
+  PI_PERMISSION_ARGS,
+  PiRuntimeAdapter,
   QwenRuntimeAdapter,
   parseAgyMcpList,
   parseAgyModels,
@@ -96,10 +100,11 @@ export function subprocessPermissionMessage(
 /**
  * Auto-approval flag of every subprocess runtime (Phase 2C), used by the
  * runtimes whose adapter is constructed inline here. The class-based adapters
- * (`claude`, `codex`, `omp`, `commandcode`, `qwen`, `devin`) carry the same
- * value as an exported constant next to their runtime — `devin` reuses
- * {@link DEVIN_PERMISSION_ARGS} directly so the documented table and the
- * adapter cannot drift (REV-3A-004).
+ * (`claude`, `codex`, `omp`, `commandcode`, `qwen`, `devin`, `kimi`, `pi`)
+ * carry the same value as an exported constant next to their runtime —
+ * `devin`/`kimi`/`pi` reuse {@link DEVIN_PERMISSION_ARGS} /
+ * {@link KIMI_PERMISSION_ARGS} / {@link PI_PERMISSION_ARGS} directly so the
+ * documented table and the adapter cannot drift (REV-3A-004).
  *
  * These are the CLIs' **own** switches, not a huginn protocol: they are what
  * keeps the cycle from stalling when a CLI would otherwise wait for an approval
@@ -112,8 +117,13 @@ export const SUBPROCESS_PERMISSION_ARGS: Partial<Record<AgentTarget, string[]>> 
   qwen: ["-y"],
   omp: ["--auto-approve"],
   commandcode: ["--yolo"],
-  kimi: ["--auto"],
-  pi: ["--approve"],
+  // Phase 3C: kimi's prompt mode (`-p <prompt>`) *rejects* every permission
+  // switch ("Cannot combine --prompt with --auto" / `--yolo` / `--plan`) and
+  // forces the session's permission mode to `auto` (Never Ask) itself, so the
+  // correct flag list is empty — the previous `["--auto"]` made every prompt
+  // fail. Same array instance as the adapter, so the table cannot drift.
+  kimi: KIMI_PERMISSION_ARGS,
+  pi: PI_PERMISSION_ARGS,
   cursor: ["-f"],
   // Phase 3A: `devin --permission-mode dangerous` auto-approves every tool
   // (verified with `devin --help`) and replaces the old `windsurf` target. The
@@ -267,47 +277,22 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
     case "qwen":
       return new QwenRuntimeAdapter(options);
     case "kimi":
-      return new GenericSubprocessRuntimeAdapter({
-        id: "kimi",
-        name: "Kimi Code CLI",
-        command: "kimi",
-        // REV-003/S1: `kimi` is not installed on the reference machine, so this
-        // flag is unverified-but-conventional (kimi-code follows the `-m`
-        // convention of its siblings); `RuntimeOptions.modelArgs` overrides it.
-        modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
-        // Phase 2C: `--auto` is the never-ask switch; `-y` still prompts on
-        // actions kimi considers risky, which would stall a closed stdin.
-        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS.kimi,
-        permissions: options.permissions,
-        projectPath: options.projectPath,
-        homeDir: options.homeDir,
-        env: options.env,
-      });
+      // Phase 3C: `KimiRuntimeAdapter` owns kimi's real non-interactive shape
+      // (`-p <prompt>` as a flag *value*, no stdin/`--prompt-file` channel), its
+      // empty permission-flag list and `kimi provider list --json` discovery.
+      return new KimiRuntimeAdapter(options);
     case "pi":
-      return new GenericSubprocessRuntimeAdapter({
-        id: "pi",
-        name: "Pi coding agent",
-        command: "pi",
-        // REV-003/S1: not installed on the reference machine — unverified but
-        // conventional (`-m`), and overridable via `RuntimeOptions.modelArgs`.
-        modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
-        // Phase 2C: `--approve` is pi's documented "trust project-local files"
-        // switch — dubious as a blanket auto-approval and unverified on the
-        // reference machine, so it is announced as assumed (REV-2C-002).
-        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS.pi,
-        permissionArgsVerified: false,
-        permissions: options.permissions,
-        projectPath: options.projectPath,
-        homeDir: options.homeDir,
-        env: options.env,
-      });
-    // REQ-27 / REQ-35.3: `kimi`, `pi` and `cursor` expose no listing command
-    // (verified by probing `--help` where installed), so discovery is honestly
-    // empty (`[]` — the `${id}/default` placeholder is gone) and the picker
-    // offers free-text ids. `agy` (`agy models`) and `devin` (`devin models
-    // list`) *do* list and are wired in their own adapters below. (`gemini` was
-    // removed entirely: its non-interactive form needs `-p <arg>` and it is
-    // superseded by `agy`.)
+      // Phase 3C: `PiRuntimeAdapter` owns pi's print mode (`-p` + prompt on
+      // stdin), its verified `--model` flag, `pi --list-models` discovery and
+      // the assumed (`--approve`) project-trust flag.
+      return new PiRuntimeAdapter(options);
+    // REQ-27 / REQ-35.3: `cursor` exposes no listing command (verified by
+    // probing `--help` where installed), so discovery is honestly empty (`[]` —
+    // the `${id}/default` placeholder is gone) and the picker offers free-text
+    // ids. `agy` (`agy models`), `devin` (`devin models list`), `pi`
+    // (`pi --list-models`) and `kimi` (`kimi provider list --json`) *do* list and
+    // are wired in their own adapters. (`gemini` was removed entirely: its
+    // non-interactive form needs `-p <arg>` and it is superseded by `agy`.)
     case "devin":
       return new DevinRuntimeAdapter(options);
     // Phase 3B. `mcode` is a commandcode-style single-shot CLI: `exec

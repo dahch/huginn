@@ -19,6 +19,30 @@ so the parsers under test are verified against the actual formats they must hand
 | `devin-mcp-list.txt` | `devin mcp list` | `Configured MCP servers:` heading, then per server a glyph-led row (`• <name>` enabled, `✗ <name>  (disabled)`) followed by an indented `Command: …` (stdio) or `URL: …` (http) detail. 6 servers; the status is the CLI's own enabled/disabled configuration word, never a liveness probe. Parser: `parseDevinMcpList` (AC-32.1). |
 | `mimo-models.txt` | `mimo models` | MiMo Code 0.1.15. 9 lines, one `<provider>/<model> — <description>` per model (`deepseek/deepseek-flash — window 1M, compacts at 900K`); the separator is a U+2014 EM DASH. Parses to **9** models across 3 providers (`deepseek`, `mimo`, `xiaomi`). The wired command is the CLI's default (`mimo models`); its `--verbose` variant interleaves a multi-line JSON document per model (550 lines) and is covered by a synthetic case in `test/engine/agent/mimoModels.test.ts`, because every row line stays identical and no JSON line carries an EM DASH. Parser: `parseMimoModels` (AC-27.4). |
 | `mimo-mcp-list.txt` | `mimo mcp list` | MiMo Code 0.1.15. **Byte-identical in shape to `opencode-mcp-list.txt`** (MiMo Code is opencode-derived): the `┌ MCP Servers` / `●  ✓ <name> <ESC>[90mconnected …` rows with an indented command line and a `└  N server(s)` footer. 3 servers. One difference worth noting: the status cell also names the config the server came from (`claude:~/.claude.json`, `opencode:<config dir>`), which must not be mistaken for the status. Consumed by the shared `parseOpencodeMcpList` (AC-32.1). |
+| `kimi-provider-list.json` | `kimi provider list --json` | Kimi Code 2.1.1, captured 2026-09-29. Two-key JSON document `{ providers: { <id>: { type, baseUrl, apiKeyEnv, … } }, models: { <alias>: { provider, model, maxContextSize, …, displayName } } }`. Only the `models` map is read (`id` = alias, `name` = `displayName`); parses to **4** models. The sibling `providers` map survives in the fixture but is ignored by the parser; its `baseUrl`s were redacted to `.example` hostnames and its `apiKeyEnv` values are environment-variable **names** (`DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`), not secrets. Parser: `parseKimiModels` (AC-27.4). Captured 2026-09-29. |
+| `pi-models.txt` | `pi --list-models` | Pi coding agent `@earendil-works/pi-coding-agent` 0.87.1, captured 2026-09-29. 3 lines: the aligned header `provider  model  context  max-out  thinking  images` plus two model rows. Parses to **2** models. Parser: `parsePiModels` (AC-27.4). |
+| `codex-mcp-list.json` | `codex mcp list --json` | OpenAI `codex-cli` 0.158.0, captured 2026-09-29. One-element JSON array: a `stdio` server (`muninn`) with the absolute project path redacted to `/home/dev/projects/huginn`. `enabled` is Codex's own configuration word; nothing is a liveness probe. 1 server. Parser: `parseCodexMcpList` (AC-32.1). |
+
+## Provenance and redaction of the Phase 3C fixtures (`kimi` / `pi` / `codex`)
+
+All three were captured on **2026-09-29** from the installed CLIs (Kimi Code
+2.1.1, pi 0.87.1, codex-cli 0.158.0). Redactions applied at capture time:
+
+- `kimi-provider-list.json` — `kimi provider list --json`. Only the `models` map
+  is consumed (the parser ignores the sibling `providers` map), so the document
+  is left as captured apart from two neutralisations: every `baseUrl` host was
+  rewritten to a `.example` domain, and no provider carries an inline key. The
+  surviving `apiKeyEnv` values are environment-variable **names**
+  (`DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`) — hints about where to *look* for a
+  credential, never the credential itself.
+- `pi-models.txt` — `pi --list-models`, verbatim (the table holds no
+  machine-specific data).
+- `codex-mcp-list.json` — `codex mcp list --json`; the absolute project path in
+  the `stdio` server's args was rewritten to `/home/dev/projects/huginn` (see
+  "Path redaction of the MCP fixtures" below). The row shape is untouched.
+
+`test/fixtures/fixtureHygiene.test.ts` scans all three on every `vitest` run, so a
+re-capture cannot silently reintroduce a live key.
 
 ## Redaction of `opencode-provider-list.json`
 

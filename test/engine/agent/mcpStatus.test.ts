@@ -549,6 +549,18 @@ describe("Project-level .huginn/mcp.json parsing (AC-24.3)", () => {
       expect(sanitizeTerminalText(raw)).toBe("Line 1\nLine 2\tTabbedEnd");
     });
 
+    it("drops bidi and zero-width controls, keeping legitimate emoji/accents (SEC-307)", () => {
+      // U+200B–U+200F (zero-width + bidi marks), U+202A–U+202E (embedding /
+      // override) and U+2066–U+2069 (isolates) are invisible but can reorder or
+      // hide text in a terminal/log, so they are removed.
+      const spoofed = `a\u200Bb\u200Cc\u200Dd\u200Ee\u200Ff\u202Ag\u202Eh\u2066i\u2069j`;
+      expect(sanitizeTerminalText(spoofed)).toBe("abcdefghij");
+
+      // Legitimate non-ASCII (accents, plain emoji, CJK) survives untouched.
+      expect(sanitizeTerminalText("café 🎉 漢字")).toBe("café 🎉 漢字");
+      expect(sanitizeTerminalText("naïve — résumé")).toBe("naïve — résumé");
+    });
+
     it("handles non-string inputs safely", () => {
       expect(sanitizeTerminalText(undefined as any)).toBe("");
       expect(sanitizeTerminalText(null as any)).toBe("");

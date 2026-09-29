@@ -1,0 +1,23 @@
+[
+  {
+    "name": "muninn",
+    "enabled": true,
+    "disabled_reason": null,
+    "transport": {
+      "type": "stdio",
+      "command": "huginn",
+      "args": [
+        "mcp",
+        "run",
+        "--project",
+        "/home/dev/projects/huginn"
+      ],
+      "env": null,
+      "env_vars": [],
+      "cwd": null
+    },
+    "startup_timeout_sec": null,
+    "tool_timeout_sec": null,
+    "auth_status": "unsupported"
+  }
+]

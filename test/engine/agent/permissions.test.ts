@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { AgentTarget } from "../../../src/agents/integrator.js";
 import {
+  buildPromptValueArgs,
   GenericSubprocessRuntimeAdapter,
   withPermissionArgs,
 } from "../../../src/engine/agent/adapters/generic.js";
@@ -79,20 +80,35 @@ describe("Phase 2C · withPermissionArgs", () => {
   });
 });
 
+describe("Phase 3C · buildPromptValueArgs (SEC-304)", () => {
+  it("emits one inline token for a flag ending in `=`", () => {
+    expect(buildPromptValueArgs("--prompt=", "hello")).toEqual(["--prompt=hello"]);
+    // A value that begins with `-` is still unambiguous inline.
+    expect(buildPromptValueArgs("--prompt=", "-x --y")).toEqual(["--prompt=-x --y"]);
+    // An empty value is a valid (if odd) inline token.
+    expect(buildPromptValueArgs("--prompt=", "")).toEqual(["--prompt="]);
+  });
+
+  it("keeps the two-token shape for any other flag", () => {
+    expect(buildPromptValueArgs("-p", "hello")).toEqual(["-p", "hello"]);
+    expect(buildPromptValueArgs("--prompt", "hello")).toEqual(["--prompt", "hello"]);
+  });
+});
+
 describe("Phase 2C · GenericSubprocessSession runs auto-approved", () => {
   it("appends the runtime's auto-approval flag to argv (default mode)", async () => {
-    const dir = installFakeCli("kimi");
+    const dir = installFakeCli("qwen");
     const adapter = new GenericSubprocessRuntimeAdapter({
-      id: "kimi",
-      name: "Kimi Code CLI",
-      command: "kimi",
+      id: "qwen",
+      name: "Qwen Code",
+      command: "qwen",
       args: ["prompt"],
-      permissionArgs: SUBPROCESS_PERMISSION_ARGS.kimi,
+      permissionArgs: SUBPROCESS_PERMISSION_ARGS.qwen,
       env: { PATH: dir },
     });
 
     const session = await adapter.createSession({ title: "auto-approved" });
-    expect(await argvOf(session)).toEqual(["prompt", "--auto"]);
+    expect(await argvOf(session)).toEqual(["prompt", "-y"]);
   });
 
   it("does not duplicate a flag the base argv already carries", async () => {
@@ -113,13 +129,13 @@ describe("Phase 2C · GenericSubprocessSession runs auto-approved", () => {
   });
 
   it("leaves the flags out when auto-approval is explicitly disabled", async () => {
-    const dir = installFakeCli("kimi");
+    const dir = installFakeCli("commandcode");
     const adapter = new GenericSubprocessRuntimeAdapter({
-      id: "kimi",
-      name: "Kimi Code CLI",
-      command: "kimi",
+      id: "commandcode",
+      name: "Command Code",
+      command: "commandcode",
       args: ["prompt"],
-      permissionArgs: ["--auto"],
+      permissionArgs: ["--yolo"],
       autoApprovePermissions: false,
       env: { PATH: dir },
     });
@@ -213,14 +229,16 @@ describe("Phase 2C · GenericSubprocessSession runs auto-approved", () => {
 describe("Phase 2C · every subprocess runtime carries its auto-approval flag", () => {
   // The flag each CLI documents for running without permission prompts
   // (re-verified via `<cli> --help`; see `SUBPROCESS_PERMISSION_ARGS`).
+  // `kimi` is deliberately absent: its prompt mode rejects every permission
+  // switch and is Never Ask by itself, so its argv is asserted in its own case
+  // below (Phase 3C).
   const runtimes: Array<{ target: AgentTarget; baseArgs: string[]; flags: string[] }> = [
     { target: "claude", baseArgs: ["-p"], flags: ["--dangerously-skip-permissions"] },
     { target: "codex", baseArgs: ["exec"], flags: ["--dangerously-bypass-approvals-and-sandbox"] },
     { target: "qwen", baseArgs: ["prompt"], flags: ["-y"] },
     { target: "omp", baseArgs: ["prompt"], flags: ["--auto-approve"] },
     { target: "commandcode", baseArgs: ["-p"], flags: ["--yolo"] },
-    { target: "kimi", baseArgs: [], flags: ["--auto"] },
-    { target: "pi", baseArgs: [], flags: ["--approve"] },
+    { target: "pi", baseArgs: ["-p"], flags: ["--approve"] },
     { target: "cursor", baseArgs: [], flags: ["-f"] },
     { target: "agy", baseArgs: [], flags: ["--dangerously-skip-permissions"] },
     // Phase 3B. `mcode exec --input -` takes the prompt on stdin and
@@ -248,6 +266,24 @@ describe("Phase 2C · every subprocess runtime carries its auto-approval flag", 
       20_000,
     );
   }
+
+  it(
+    "spawns `kimi` with no permission flag at all — prompt mode rejects `--auto` and `-y` (Phase 3C)",
+    async () => {
+      // Kimi's prompt mode errors out on "Cannot combine --prompt with --auto"
+      // (and `--yolo`/`--plan`), so the previous `["--auto"]` wiring made every
+      // prompt fail. In prompt mode it runs to completion without ever asking,
+      // hence no flag. The prompt rides inline on `--prompt=` (SEC-304).
+      const dir = installFakeCli("kimi");
+      const runtime = getAgentRuntime("kimi", { env: { PATH: dir }, permissions: "auto" });
+      expect(runtime.id).toBe("kimi");
+      expect(SUBPROCESS_PERMISSION_ARGS.kimi).toEqual([]);
+
+      const session = await runtime.createSession({ title: "kimi" });
+      expect(await argvOf(session)).toEqual(["--prompt=go"]);
+    },
+    20_000,
+  );
 
   it(
     "spawns `devin` with its verified `--permission-mode dangerous` and the print-mode argv",
@@ -291,7 +327,8 @@ describe("Phase 2C · every subprocess runtime carries its auto-approval flag", 
         permissionArgs: ["--trust-all"],
       });
       const session = await runtime.createSession({ title: "override" });
-      expect(await argvOf(session)).toEqual(["--trust-all"]);
+      // Phase 3C: pi's base argv is its print flag; the prompt travels on stdin.
+      expect(await argvOf(session)).toEqual(["-p", "--trust-all"]);
     },
     20_000,
   );

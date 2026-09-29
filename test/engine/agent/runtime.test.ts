@@ -408,52 +408,59 @@ describe("Agent Registry & Factory", () => {
   it(
     "exposes the runtime's native model flag for the runtimes without a listing command (AC-27.5)",
     async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "huginn-native-model-flag-"));
       // REV-003/S1: `kimi`/`pi`/`cursor` used to have no `modelArgs` at all, so
       // `HUGINN_MODEL` was their only (unread) model channel.
-      const tempDir = mkdtempSync(join(tmpdir(), "huginn-modelargs-"));
-      try {
-        const cases: Array<[AgentTarget, string[]]> = [
-          ["kimi", ["-m", "moonshot/kimi-k2.5"]],
-          ["pi", ["-m", "moonshot/kimi-k2.5"]],
-          ["cursor", ["--model", "moonshot/kimi-k2.5"]],
-          // Phase 3B: the non-interactive base argv comes first (`exec --input -`
-          // / `run`), then the native model flag.
-          ["mcode", ["exec", "--input", "-", "--model", "moonshot/kimi-k2.5"]],
-          ["mimo", ["run", "--model", "moonshot/kimi-k2.5"]],
-        ];
+      //
+      // Phase 3C verified the flags against each CLI's own parser: kimi takes
+      // `-m` (and needs the prompt as the prompt flag's value, so it appears on
+      // the argv — as the unambiguous `--prompt=<text>` token, SEC-304); pi takes
+      // ONLY `--model` — `-m` was parsed as a *message* — with the prompt on
+      // stdin; `cursor` keeps the conventional `--model`.
+      const cases: Array<[AgentTarget, string[]]> = [
+        ["kimi", ["-m", "moonshot/kimi-k2.5", "--prompt=go"]],
+        ["pi", ["-p", "--model", "moonshot/kimi-k2.5"]],
+        ["cursor", ["--model", "moonshot/kimi-k2.5"]],
+        // Phase 3B: the non-interactive base argv comes first (`exec --input -`
+        // / `run`), then the native model flag.
+        ["mcode", ["exec", "--input", "-", "--model", "moonshot/kimi-k2.5"]],
+        ["mimo", ["run", "--model", "moonshot/kimi-k2.5"]],
+      ];
 
-        for (const [target, expected] of cases) {
-          const fake = join(tempDir, target);
-          writeFileSync(fake, '#!/bin/sh\nprintf \'%s\\n\' "$@"\n');
-          chmodSync(fake, 0o755);
+      for (const [target, expected] of cases) {
+        const fake = join(tempDir, target);
+        writeFileSync(fake, '#!/bin/sh\nprintf \'%s\\n\' "$@"\n');
+        chmodSync(fake, 0o755);
 
-          const runtime = getAgentRuntime(target, { env: { PATH: tempDir } });
-          expect(runtime.id).toBe(target);
+        const runtime = getAgentRuntime(target, { env: { PATH: tempDir } });
+        expect(runtime.id).toBe(target);
 
-          const session = await runtime.createSession({ title: target });
-          const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
-          const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
-          // The runtime's base argv and native model flag come first; its
-          // auto-approval flag(s) (Phase 2C) are appended after them — see
-          // permissions.test.ts.
-          expect(argv).toEqual([...expected, ...(SUBPROCESS_PERMISSION_ARGS[target] ?? [])]);
-        }
-
-        // The flag stays overridable through `RuntimeOptions`.
-        const overridden = getAgentRuntime("kimi", {
-          env: { PATH: tempDir },
-          modelArgs: (model) => ["--kimi-model", model],
-        });
-        const session = await overridden.createSession({ title: "override" });
+        const session = await runtime.createSession({ title: target });
         const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
-        expect(result.text.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual([
-          "--kimi-model",
-          "moonshot/kimi-k2.5",
-          ...(SUBPROCESS_PERMISSION_ARGS.kimi ?? []),
-        ]);
-      } finally {
-        rmSync(tempDir, { recursive: true, force: true });
+        const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
+        // The runtime's base argv and native model flag come first; its
+        // auto-approval flag(s) (Phase 2C) are appended after them — see
+        // permissions.test.ts.
+        expect(argv).toEqual([...expected, ...(SUBPROCESS_PERMISSION_ARGS[target] ?? [])]);
       }
+
+      // The flag stays overridable through `RuntimeOptions`.
+      const overridden = getAgentRuntime("kimi", {
+        env: { PATH: tempDir },
+        modelArgs: (model) => ["--kimi-model", model],
+      });
+      const session = await overridden.createSession({ title: "override" });
+      const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
+      expect(result.text.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual([
+        "--kimi-model",
+        "moonshot/kimi-k2.5",
+        // Phase 3C: the prompt rides on the prompt flag's value (`--prompt=<text>`);
+        // kimi wires no permission flag.
+        "--prompt=go",
+        ...(SUBPROCESS_PERMISSION_ARGS.kimi ?? []),
+      ]);
+
+      rmSync(tempDir, { recursive: true, force: true });
     },
     20_000,
   );

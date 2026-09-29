@@ -1,0 +1,49 @@
+{
+  "providers": {
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.example/v1",
+      "defaultModel": "deepseek-chat",
+      "type": "openai",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
+    },
+    "moonshot": {
+      "baseUrl": "https://api.moonshot.example/anthropic",
+      "type": "anthropic",
+      "apiKeyEnv": "MOONSHOT_API_KEY"
+    },
+    "openrouter": {
+      "baseUrl": "https://openrouter.example/api/v1",
+      "type": "openai_responses"
+    }
+  },
+  "models": {
+    "deepseek-chat": {
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "maxContextSize": 131072,
+      "maxOutputSize": 8192,
+      "displayName": "DeepSeek Chat"
+    },
+    "deepseek-reasoner": {
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "maxContextSize": 65536
+    },
+    "kimi-k2.5-high": {
+      "provider": "moonshot",
+      "model": "kimi-k2.5",
+      "maxContextSize": 262144,
+      "capabilities": [
+        "tool_use",
+        "thinking"
+      ],
+      "displayName": "Kimi K2.5 (High)"
+    },
+    "gemini-3-pro": {
+      "provider": "openrouter",
+      "model": "google/gemini-3-pro",
+      "maxContextSize": 1048576,
+      "displayName": "Gemini 3 Pro"
+    }
+  }
+}
