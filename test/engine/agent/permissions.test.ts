@@ -8,6 +8,7 @@ import {
   GenericSubprocessRuntimeAdapter,
   withPermissionArgs,
 } from "../../../src/engine/agent/adapters/generic.js";
+import { DEVIN_PERMISSION_ARGS } from "../../../src/engine/agent/adapters/devin.js";
 import { getAgentRuntime, SUBPROCESS_PERMISSION_ARGS } from "../../../src/engine/agent/registry.js";
 import { events } from "../../../src/engine/engineEvents.js";
 import { LiveEngine } from "../../../src/engine/liveMode.js";
@@ -157,7 +158,7 @@ describe("Phase 2C · GenericSubprocessSession runs auto-approved", () => {
   });
 
   it("announces an unverified flag as assumed (warn), never as auto-approved (REV-2C-002)", async () => {
-    for (const target of ["pi", "windsurf"] as const) {
+    for (const target of ["pi"] as const) {
       const dir = installFakeCli(target);
       const { logs, off } = captureLogs();
       try {
@@ -221,7 +222,6 @@ describe("Phase 2C · every subprocess runtime carries its auto-approval flag", 
     { target: "kimi", baseArgs: [], flags: ["--auto"] },
     { target: "pi", baseArgs: [], flags: ["--approve"] },
     { target: "cursor", baseArgs: [], flags: ["-f"] },
-    { target: "windsurf", baseArgs: [], flags: ["--permission-mode", "dangerous"] },
     { target: "agy", baseArgs: [], flags: ["--dangerously-skip-permissions"] },
   ];
 
@@ -242,6 +242,39 @@ describe("Phase 2C · every subprocess runtime carries its auto-approval flag", 
       20_000,
     );
   }
+
+  it(
+    "spawns `devin` with its verified `--permission-mode dangerous` and the print-mode argv",
+    async () => {
+      // Devin is the Phase 3A rename of the old `windsurf` target. It does not
+      // fit the `[...baseArgs, ...flags]` table above because `--print` needs the
+      // prompt (supplied through `--prompt-file`, REV-3A-001) and cannot show the
+      // workspace-trust prompt (`--respect-workspace-trust false`), so the argv
+      // is asserted in full here — against the same fake-CLI pattern.
+      const dir = installFakeCli("devin");
+      const runtime = getAgentRuntime("devin", { env: { PATH: dir }, permissions: "auto" });
+      expect(runtime.id).toBe("devin");
+      // REV-3A-004: single source of truth — the registry table and the adapter
+      // hold the *same* array instance, so they cannot drift.
+      expect(SUBPROCESS_PERMISSION_ARGS.devin).toBe(DEVIN_PERMISSION_ARGS);
+      expect(SUBPROCESS_PERMISSION_ARGS.devin).toEqual(["--permission-mode", "dangerous"]);
+
+      const session = await runtime.createSession({ title: "devin" });
+      const argv = await argvOf(session);
+      expect(argv.slice(0, 5)).toEqual([
+        "-p",
+        "--respect-workspace-trust",
+        "false",
+        "--permission-mode",
+        "dangerous",
+      ]);
+      const [flag, tmpPath] = argv.slice(-2);
+      expect(flag).toBe("--prompt-file");
+      expect(argv).toHaveLength(7);
+      expect(tmpPath?.startsWith(join(tmpdir(), "huginn-prompt-"))).toBe(true);
+    },
+    20_000,
+  );
 
   it(
     "accepts a permissionArgs override through RuntimeOptions",

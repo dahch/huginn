@@ -137,6 +137,42 @@ describe("runtimes enumerate their own MCP servers (REQ-32 / AC-32.1)", () => {
     }
   });
 
+  it("devin (registry construction) runs `devin mcp list`, keeping enabled/disabled and transport", async () => {
+    const { path: cliPath, cleanup } = installFakeCli("devin", "devin-mcp-list.txt");
+    try {
+      const runtime = getAgentRuntime("devin", { env: { PATH: cliPath } });
+      const listings = await runtime.listMcpServers?.();
+
+      expect(listings?.map((l) => l.name)).toEqual([
+        "leann-server",
+        "codegraph",
+        "muninn",
+        "playwright",
+        "testhttp",
+        "teststdio",
+      ]);
+      // The CLI's own configuration word (never a liveness probe).
+      expect(listings?.find((l) => l.name === "teststdio")).toEqual({
+        name: "teststdio",
+        status: "disabled",
+        transport: "stdio",
+        detail: "echo",
+      });
+      // A remote server is `URL: …` → an http transport.
+      expect(listings?.find((l) => l.name === "testhttp")).toEqual({
+        name: "testhttp",
+        status: "enabled",
+        transport: "http",
+        detail: "https://example.com/mcp",
+      });
+      // A redacted command stays verbatim rather than being guessed at.
+      expect(listings?.find((l) => l.name === "playwright")?.detail).toBe("<redacted>");
+      expect(listings?.some((l) => l.status === "connected")).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("opencode reads its binary override so a wrapper can be enumerated too", async () => {
     // Two different CLIs in one temp dir, both emitting *opencode-format* output so
     // the parser is not the variable: the wrapper answers with opencode's captured
@@ -200,7 +236,7 @@ describe("runtimes enumerate their own MCP servers (REQ-32 / AC-32.1)", () => {
       const omp = new OmpRuntimeAdapter({ env: { PATH: cliPath } });
       expect(await omp.listMcpServers()).toEqual([]);
 
-      for (const target of ["kimi", "pi", "cursor", "windsurf", "codex"] as const) {
+      for (const target of ["kimi", "pi", "cursor", "codex"] as const) {
         const runtime = getAgentRuntime(target, { env: { PATH: cliPath } });
         expect(await runtime.listMcpServers?.(), target).toEqual([]);
       }

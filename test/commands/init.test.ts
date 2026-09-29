@@ -374,7 +374,7 @@ describe("huginn init wizard — non-interactive", () => {
     expect(cap.output).toContain("init complete");
     // the findings are reported on stdout; InitReport carries only the decisions
     expect(cap.output).toContain("bun");
-    expect(cap.output).toContain("windsurf");
+    expect(cap.output).toContain("devin");
     expect(cap.detectCalls).toHaveLength(1);
   });
 

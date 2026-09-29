@@ -14,6 +14,8 @@ import {
   ClaudeRuntimeAdapter,
   CodexRuntimeAdapter,
   CommandCodeRuntimeAdapter,
+  DEVIN_PERMISSION_ARGS,
+  DevinRuntimeAdapter,
   GenericSubprocessRuntimeAdapter,
   OmpRuntimeAdapter,
   OpencodeRuntimeAdapter,
@@ -32,7 +34,7 @@ export const AGENT_BINARIES: Record<AgentTarget, string[]> = {
   kimi: ["kimi", "kimi-code"],
   pi: ["pi"],
   cursor: ["cursor"],
-  windsurf: ["windsurf"],
+  devin: ["devin"],
   agy: ["agy"],
 };
 
@@ -85,8 +87,10 @@ export function subprocessPermissionMessage(
 /**
  * Auto-approval flag of every subprocess runtime (Phase 2C), used by the
  * runtimes whose adapter is constructed inline here. The class-based adapters
- * (`claude`, `codex`, `omp`, `commandcode`, `qwen`) carry the same value as an
- * exported constant next to their runtime.
+ * (`claude`, `codex`, `omp`, `commandcode`, `qwen`, `devin`) carry the same
+ * value as an exported constant next to their runtime — `devin` reuses
+ * {@link DEVIN_PERMISSION_ARGS} directly so the documented table and the
+ * adapter cannot drift (REV-3A-004).
  *
  * These are the CLIs' **own** switches, not a huginn protocol: they are what
  * keeps the cycle from stalling when a CLI would otherwise wait for an approval
@@ -102,8 +106,11 @@ export const SUBPROCESS_PERMISSION_ARGS: Partial<Record<AgentTarget, string[]>> 
   kimi: ["--auto"],
   pi: ["--approve"],
   cursor: ["-f"],
-  // Phase 3 renames this target to `devin`; the adapter is ready either way.
-  windsurf: ["--permission-mode", "dangerous"],
+  // Phase 3A: `devin --permission-mode dangerous` auto-approves every tool
+  // (verified with `devin --help`) and replaces the old `windsurf` target. The
+  // flags live next to the adapter; this is the same array instance, so the
+  // adapter can never diverge from the table.
+  devin: DEVIN_PERMISSION_ARGS,
   agy: ["--dangerously-skip-permissions"],
 };
 
@@ -205,9 +212,13 @@ export async function resolveAgent(sources: AgentResolutionSources = {}): Promis
   if (userAgent) return userAgent;
 
   const env = sources.env ?? process.env;
-  if (env.HUGINN_AGENT && env.HUGINN_AGENT.trim().length > 0) {
-    return validateTarget(env.HUGINN_AGENT);
-  }
+  // REV-3A-005: route `HUGINN_AGENT` through the same softening as a persisted
+  // config, so a *removed* value (e.g. `windsurf`, now `devin`) warns and falls
+  // through to detection instead of crashing the run. An arbitrary unknown value
+  // is still rejected by `fromStoredConfig` (SEC-001) — only the removed-target
+  // case is degraded.
+  const envAgent = fromStoredConfig(env.HUGINN_AGENT, "the HUGINN_AGENT environment variable");
+  if (envAgent) return envAgent;
 
   const detected = await detectAvailableAgents(env.PATH ?? process.env.PATH ?? "");
   const firstAvailable = detected.find((d) => d.available);
@@ -274,12 +285,15 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         homeDir: options.homeDir,
         env: options.env,
       });
-    // REQ-27 / REQ-35.3: `kimi`, `pi`, `cursor` and `windsurf` expose no listing
-    // command (verified by probing `--help` where installed), so discovery is
-    // honestly empty (`[]` — the `${id}/default` placeholder is gone) and the
-    // picker offers free-text ids. `agy` *does* list (`agy models`) and is wired
-    // below. (`gemini` was removed entirely: its non-interactive form needs
-    // `-p <arg>` and it is superseded by `agy`.)
+    // REQ-27 / REQ-35.3: `kimi`, `pi` and `cursor` expose no listing command
+    // (verified by probing `--help` where installed), so discovery is honestly
+    // empty (`[]` — the `${id}/default` placeholder is gone) and the picker
+    // offers free-text ids. `agy` (`agy models`) and `devin` (`devin models
+    // list`) *do* list and are wired in their own adapters below. (`gemini` was
+    // removed entirely: its non-interactive form needs `-p <arg>` and it is
+    // superseded by `agy`.)
+    case "devin":
+      return new DevinRuntimeAdapter(options);
     case "agy":
       return new GenericSubprocessRuntimeAdapter({
         id: "agy",
@@ -307,20 +321,18 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         env: options.env,
       });
     case "cursor":
-    case "windsurf":
       return new GenericSubprocessRuntimeAdapter({
         id: target,
         name: AGENT_REGISTRY[target]?.label ?? target,
         command: target,
-        // REV-003/S1: neither CLI is installed on the reference machine, so the
+        // REV-003/S1: `cursor` is not installed on the reference machine, so the
         // flag is unverified-but-conventional (`--model`); overridable via
         // `RuntimeOptions.modelArgs`.
         modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
-        // Phase 2C: `cursor -f` is verified; `windsurf --permission-mode
-        // dangerous` is not (the binary is renamed to `devin` in Phase 3), so
-        // windsurf's flag is announced as assumed (REV-2C-002).
+        // Phase 2C: `cursor -f` is verified; the flag is announced as
+        // auto-approved.
         permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS[target],
-        permissionArgsVerified: target !== "windsurf",
+        permissionArgsVerified: true,
         permissions: options.permissions,
         projectPath: options.projectPath,
         homeDir: options.homeDir,

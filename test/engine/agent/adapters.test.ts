@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
@@ -793,6 +793,111 @@ describe("OpencodeRuntimeAdapter and OpencodeSession", () => {
     // Abort
     await session.abort();
     expect(mockAbort).toHaveBeenCalledWith({ path: { id: "created-session-123" } });
+  });
+});
+
+describe("REV-3A-001 · promptFileFlag keeps oversized prompts off argv", () => {
+  /**
+   * A fake CLI that reads the `--prompt-file` it was handed, reports the file's
+   * byte-length and mode, and (optionally) hangs so a timeout path can be
+   * exercised — so a failure proves the *mechanism* (temp file written, flag +
+   * path in argv, content intact, file removed), not just an internal field.
+   *
+   * `--` after `-e <script>` stops node from parsing the runtime's own flags
+   * (`--prompt-file …`) as its options.
+   */
+  const READER = [
+    "const fs = require('node:fs');",
+    "const i = process.argv.indexOf('--prompt-file');",
+    "const p = process.argv[i + 1];",
+    "fs.writeFileSync(process.env.HUGINN_PROMPT_CAPTURE, p);",
+    "const st = fs.statSync(p);",
+    "const text = fs.readFileSync(p, 'utf8');",
+    "process.stdout.write(JSON.stringify({ argv: process.argv.slice(1), path: p, len: text.length, head: text.slice(0, 8), mode: (st.mode & 0o777).toString(8) }));",
+    "if (process.env.HUGINN_PROMPT_HANG === '1') setTimeout(() => {}, 10000);",
+  ].join("\n");
+
+  it("writes a 200 KB prompt to a 0600 temp file, passes --prompt-file <path>, and removes it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-prompt-capture-"));
+    try {
+      const capture = join(tempDir, "path.txt");
+      const adapter = new GenericSubprocessRuntimeAdapter({
+        id: "devin",
+        name: "Devin",
+        command: process.execPath,
+        args: ["-e", READER, "--"],
+        promptViaStdin: false,
+        promptFileFlag: "--prompt-file",
+        env: { HUGINN_PROMPT_CAPTURE: capture },
+      });
+
+      const prompt = "P".repeat(200 * 1024); // 200 KB — far beyond the 4096 positional cap
+      const session = await adapter.createSession({ title: "long prompt" });
+      const result = await session.prompt(prompt);
+      const info = JSON.parse(result.text) as {
+        argv: string[];
+        path: string;
+        len: number;
+        head: string;
+        mode: string;
+      };
+
+      // The flag + a private temp path are on the argv; the prompt text never is.
+      expect(info.argv).toEqual(["--prompt-file", info.path]);
+      expect(info.argv).not.toContain(prompt);
+      expect(info.path.startsWith(join(tmpdir(), "huginn-prompt-"))).toBe(true);
+      // Written 0600 (owner-only) so the embedded spec/ADR/plan is not world-readable.
+      expect(info.mode).toBe("600");
+      // The CLI read back exactly what huginn wrote — no truncation at any limit.
+      expect(info.len).toBe(prompt.length);
+      expect(info.head).toBe("P".repeat(8));
+
+      // The temp file is gone once the prompt settled.
+      expect(existsSync(info.path)).toBe(false);
+      expect(existsSync(readFileSync(capture, "utf8"))).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("removes the temp file when the prompt times out", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-prompt-timeout-"));
+    try {
+      const capture = join(tempDir, "path.txt");
+      const adapter = new GenericSubprocessRuntimeAdapter({
+        id: "devin",
+        name: "Devin",
+        command: process.execPath,
+        args: ["-e", READER, "--"],
+        promptViaStdin: false,
+        promptFileFlag: "--prompt-file",
+        env: { HUGINN_PROMPT_CAPTURE: capture, HUGINN_PROMPT_HANG: "1" },
+      });
+
+      const session = await adapter.createSession({ title: "hanging prompt" });
+      await expect(session.prompt("x".repeat(5000), { timeoutMs: 1500 })).rejects.toThrow(/timed out/);
+
+      const path = readFileSync(capture, "utf8");
+      expect(path.startsWith(join(tmpdir(), "huginn-prompt-"))).toBe(true);
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the positional 4096 cap when no promptFileFlag is configured", async () => {
+    const adapter = new GenericSubprocessRuntimeAdapter({
+      id: "pi",
+      name: "Pi",
+      command: process.execPath,
+      args: ["-e", "0", "--"],
+      promptViaStdin: false,
+      maxPromptArgLength: 50,
+    });
+    const session = await adapter.createSession({ title: "no file flag" });
+    await expect(session.prompt("a".repeat(60))).rejects.toThrow(
+      /exceeds maximum command line argument limit/,
+    );
   });
 });
 

@@ -77,7 +77,7 @@ describe("AGENT_REGISTRY", () => {
       "cursor",
       "claude",
       "opencode",
-      "windsurf",
+      "devin",
       "qwen",
       "codex",
       "agy",
@@ -146,14 +146,16 @@ describe("registerMcpForTarget", () => {
 
   it("writes the mcpServers shape exactly", () => {
     const env = makeEnv();
-    registerMcpForTarget("windsurf", baseOpts(env));
+    registerMcpForTarget("devin", baseOpts(env));
     const parsed = JSON.parse(
-      readFileSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"), "utf8"),
+      readFileSync(join(env.project, ".devin", "mcp_config.json"), "utf8"),
     );
     expect(parsed.mcpServers.muninn).toEqual({
       command: "huginn",
       args: ["mcp", "run", "--project", env.project],
     });
+    // The user scope is written too.
+    expect(existsSync(join(env.home, ".config", "devin", "mcp_config.json"))).toBe(true);
   });
 
   it("writes the opencode shape exactly", () => {
@@ -240,7 +242,7 @@ describe("registerMcpForTarget", () => {
 
   it("creates a new config file with restrictive 0o600 permissions (SEC-1001)", () => {
     const env = makeEnv();
-    const regs = registerMcpForTarget("windsurf", baseOpts(env));
+    const regs = registerMcpForTarget("devin", baseOpts(env));
     expect(regs.length).toBeGreaterThan(0);
     expect(statSync(regs[0].path).mode & 0o777).toBe(0o600);
   });
@@ -415,13 +417,14 @@ describe("handleSetupCommand", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await handleSetupCommand({
-        "--agent": "windsurf,claude",
+        "--agent": "devin,claude",
         "--project": env.project,
         "--home": env.home,
         "--opencode-config-dir": env.opencodeConfigDir,
       });
       // Exactly those two — the other nine targets are untouched.
-      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(true);
+      expect(existsSync(join(env.project, ".devin", "mcp_config.json"))).toBe(true);
+      expect(existsSync(join(env.home, ".config", "devin", "mcp_config.json"))).toBe(true);
       expect(existsSync(join(env.home, ".claude.json"))).toBe(true);
       expect(existsSync(join(env.home, ".gemini", "settings.json"))).toBe(false);
       expect(existsSync(join(env.project, ".cursor", "mcp.json"))).toBe(false);
@@ -491,7 +494,7 @@ describe("handleSetupCommand", () => {
     });
     try {
       await handleSetupCommand({
-        "--agent": "windsurf,claude",
+        "--agent": "devin,claude",
         "--dry-run": true,
         "--project": env.project,
         "--home": env.home,
@@ -501,9 +504,10 @@ describe("handleSetupCommand", () => {
       // The preview still describes the work...
       expect(lines.join("\n")).toMatch(/dry-run/i);
       // ...and touches *nothing*: no MCP config, no rules, no portable fallback.
-      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(false);
+      expect(existsSync(join(env.project, ".devin", "mcp_config.json"))).toBe(false);
+      expect(existsSync(join(env.home, ".config", "devin", "mcp_config.json"))).toBe(false);
       expect(existsSync(join(env.home, ".claude.json"))).toBe(false);
-      expect(existsSync(join(env.project, ".windsurfrules"))).toBe(false);
+      expect(existsSync(join(env.project, ".windsurf", "rules", "muninn.md"))).toBe(false);
       expect(existsSync(join(env.project, "CLAUDE.md"))).toBe(false);
       expect(existsSync(join(env.home, ".huginn", "mcp.json"))).toBe(false);
     } finally {
@@ -514,7 +518,7 @@ describe("handleSetupCommand", () => {
   it("--installed filters the selection and never widens it (AC-38.2)", async () => {
     const env = makeEnv();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    // Only `claude` is "installed" and only `windsurf` is named: the intersection
+    // Only `claude` is "installed" and only `devin` is named: the intersection
     // is empty, so *nothing* may be written — the flag must not fall back to the
     // whole installed fleet.
     const detect = async () =>
@@ -522,7 +526,7 @@ describe("handleSetupCommand", () => {
     try {
       await handleSetupCommand(
         {
-          "--agent": "windsurf",
+          "--agent": "devin",
           "--installed": true,
           "--project": env.project,
           "--home": env.home,
@@ -532,7 +536,7 @@ describe("handleSetupCommand", () => {
       );
 
       expect(existsSync(join(env.home, ".claude.json"))).toBe(false);
-      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(false);
+      expect(existsSync(join(env.project, ".devin", "mcp_config.json"))).toBe(false);
     } finally {
       logSpy.mockRestore();
     }
@@ -542,7 +546,7 @@ describe("handleSetupCommand", () => {
     const env = makeEnv();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const detect = async () =>
-      AGENT_TARGETS.map((id) => ({ id, available: id === "claude" || id === "windsurf" })) as never;
+      AGENT_TARGETS.map((id) => ({ id, available: id === "claude" || id === "devin" })) as never;
     try {
       await handleSetupCommand(
         { "--installed": true, "--project": env.project, "--home": env.home, "--opencode-config-dir": env.opencodeConfigDir },
@@ -550,7 +554,7 @@ describe("handleSetupCommand", () => {
       );
 
       expect(existsSync(join(env.home, ".claude.json"))).toBe(true);
-      expect(existsSync(join(env.home, ".codeium", "windsurf", "mcp_config.json"))).toBe(true);
+      expect(existsSync(join(env.project, ".devin", "mcp_config.json"))).toBe(true);
       // An uninstalled target is untouched.
       expect(existsSync(join(env.home, ".qwen", "settings.json"))).toBe(false);
       expect(existsSync(join(env.project, ".cursor", "mcp.json"))).toBe(false);

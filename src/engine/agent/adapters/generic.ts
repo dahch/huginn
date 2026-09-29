@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { AgentTarget } from "../../../agents/integrator.js";
 import { resolveMcpPaths } from "../../../agents/integrator.js";
@@ -66,7 +68,7 @@ export interface GenericSubprocessOptions {
   /**
    * The CLI's own **auto-approval** flag(s) (Phase 2C), e.g.
    * `["--dangerously-skip-permissions"]` for Claude Code or
-   * `["--permission-mode", "dangerous"]` for Windsurf.
+   * `["--permission-mode", "dangerous"]` for Devin.
    *
    * A subprocess runtime closes stdin right after the prompt (SEC-002), so it
    * can never consult huginn for an approval: without this flag a CLI that
@@ -78,10 +80,10 @@ export interface GenericSubprocessOptions {
   /**
    * Whether {@link permissionArgs} is a **verified** auto-approval switch
    * (Phase 2C, REV-2C-002). Defaults to `true`. Runtimes whose flag is only
-   * assumed — the binary is renamed (`windsurf` → `devin`) or the flag's
-   * semantics are dubious (`pi --approve` means "trust project-local files") —
-   * set it to `false`, and the once-per-runtime notice then says the flag is
-   * assumed rather than claiming the CLI is auto-approved.
+   * assumed — the binary is unverified or a flag's semantics are dubious
+   * (`pi --approve` means "trust project-local files") — set it to `false`, and
+   * the once-per-runtime notice then says the flag is assumed rather than
+   * claiming the CLI is auto-approved.
    */
   permissionArgsVerified?: boolean;
   /**
@@ -102,6 +104,24 @@ export interface GenericSubprocessOptions {
   defaultTimeoutMs?: number;
   promptViaStdin?: boolean;
   maxPromptArgLength?: number;
+  /**
+   * The CLI's own "read the prompt from a file" flag (REV-3A-001), e.g.
+   * `--prompt-file` for Devin.
+   *
+   * Only meaningful when {@link promptViaStdin} is `false`. A CLI that
+   * *requires* the prompt as an argument (`devin -p`) still rejects prompts far
+   * larger than `ARG_MAX` (`MAX_ARG_STRLEN`, ~128 KB per argument on Linux), and
+   * a real huginn prompt embeds the spec/ADR/plan, so the positional path's
+   * {@link maxPromptArgLength} cap would make the runtime fail in production
+   * even though small-prompt tests pass.
+   *
+   * When this flag is set, the prompt is written to a unique, mode-`0o600` temp
+   * file under `os.tmpdir()` and `[promptFileFlag, tmpPath]` is appended to the
+   * argv instead — there is **no length limit** on this path, and the prompt
+   * never appears in the argv (nor in `ps`). The temp file is removed when the
+   * prompt settles: on `close`, `error`, timeout and abort.
+   */
+  promptFileFlag?: string;
 }
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB bound against memory DoS (SEC-003)
@@ -347,27 +367,64 @@ export class GenericSubprocessSession implements IAgentSession {
     // Prefer streaming prompt text safely via child.stdin.write(text); child.stdin.end().
     // If promptViaStdin is explicitly set to false, check length and use '--' end-of-options delimiter.
     const useStdin = this.runtimeOptions.promptViaStdin !== false;
+    const promptFileFlag = this.runtimeOptions.promptFileFlag;
     let childArgs: string[];
+    // REV-3A-001: the directory holding the temp prompt file (when
+    // `promptFileFlag` is wired) is owned by this prompt and removed as soon as
+    // the prompt settles.
+    let promptDir: string | undefined;
 
-    if (useStdin) {
-      childArgs = [...baseArgs];
-    } else {
-      const maxLen = this.runtimeOptions.maxPromptArgLength ?? DEFAULT_MAX_PROMPT_ARG_LENGTH;
-      if (text.length > maxLen) {
-        throw new Error(`Prompt length (${text.length}) exceeds maximum command line argument limit (${maxLen})`);
-      }
-      childArgs = baseArgs.includes("--")
-        ? [...baseArgs, text]
-        : [...baseArgs, "--", text];
-    }
-
+    // Guard the whole async arg-prep path below (the temp prompt file is written
+    // with `await`) so two prompts can never overlap on one session.
     this.isPrompting = true;
+    try {
+      if (useStdin) {
+        childArgs = [...baseArgs];
+      } else if (promptFileFlag) {
+        // A CLI that needs the prompt as an argument but rejects prompts larger
+        // than `ARG_MAX` (devin `-p`): hand it the prompt through a private temp
+        // file via its own `--prompt-file` flag. No length cap on this path.
+        promptDir = await mkdtemp(join(tmpdir(), "huginn-prompt-"));
+        const promptFile = join(promptDir, "prompt.txt");
+        try {
+          await writeFile(promptFile, text, { encoding: "utf8", mode: 0o600 });
+        } catch (err) {
+          rmSync(promptDir, { recursive: true, force: true });
+          promptDir = undefined;
+          throw new Error(`Could not write the temporary prompt file: ${(err as Error).message}`);
+        }
+        childArgs = [...baseArgs, promptFileFlag, promptFile];
+      } else {
+        const maxLen = this.runtimeOptions.maxPromptArgLength ?? DEFAULT_MAX_PROMPT_ARG_LENGTH;
+        if (text.length > maxLen) {
+          throw new Error(`Prompt length (${text.length}) exceeds maximum command line argument limit (${maxLen})`);
+        }
+        childArgs = baseArgs.includes("--")
+          ? [...baseArgs, text]
+          : [...baseArgs, "--", text];
+      }
+    } catch (err) {
+      this.isPrompting = false;
+      throw err;
+    }
 
     return new Promise<PromptResult>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
       let timedOut = false;
       let settled = false;
+
+      // REV-3A-001: best-effort removal of the per-prompt temp file. Called from
+      // every settle path (close/error/timeout/abort) and from a failed spawn.
+      const removePromptFile = () => {
+        if (!promptDir) return;
+        try {
+          rmSync(promptDir, { recursive: true, force: true });
+        } catch {
+          // best-effort
+        }
+        promptDir = undefined;
+      };
 
       const cleanup = () => {
         this.isPrompting = false;
@@ -386,6 +443,7 @@ export class GenericSubprocessSession implements IAgentSession {
         } catch {
           // best-effort
         }
+        removePromptFile();
         this.activeProcess = undefined;
         this.terminateProcess = undefined;
       };
@@ -420,6 +478,7 @@ export class GenericSubprocessSession implements IAgentSession {
         });
       } catch (err) {
         this.isPrompting = false;
+        removePromptFile();
         reject(err);
         return;
       }
@@ -685,7 +744,7 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
    * (REQ-32 / AC-32.1).
    *
    * A runtime with a verified listing command (`mcpListCommand`) spawns it under
-   * a bounded deadline; one without (`omp`, `kimi`, `pi`, `cursor`, `windsurf`,
+   * a bounded deadline; one without (`omp`, `kimi`, `pi`, `cursor`,
    * `codex`) resolves `[]` — an explicit "I have no way to enumerate", which the
    * status helper turns into config-file discovery rather than an empty truth.
    * Never throws: a failed spawn is an empty listing, not a crash.

@@ -15,6 +15,8 @@ so the parsers under test are verified against the actual formats they must hand
 | `qwen-mcp-list.txt` | `qwen mcp list` | `Configured MCP servers:` then `<ESC>[32m✓<ESC>[0m <name>: <command> (<transport>) - Connected`. 1 server. Parser: `parseQwenMcpList`. |
 | `agy-mcp-list.txt` | `agy mcp list` | TSV with header `NAME TYPE STATUS COMMAND/URL` then rows; status is `enabled`/`disabled` (configuration state, **not** a liveness probe). 5 servers. Parser: `parseAgyMcpList`. |
 | `commandcode-mcp-list.txt` | `commandcode mcp list` | Blank line, `MCP Servers`, a `NAME TYPE SCOPE AUTH STATUS` table, then `Total: N server(s)`. 1 server; scope is surfaced as `detail`. Parser: `parseCommandcodeMcpList`. |
+| `devin-models.txt` | `devin models list` | `Available models (N families)` preamble, then one `<Family Label> (<family-uid>)` section per family (some followed by an indented `aliases: …` note) and indented variant rows `<model_uid>` + 2+ spaces + `<label>` with an optional trailing `[cost / context]` annotation, plus a free-text footer. 763 lines; parses to **644** models across **54** families. Parser: `parseDevinModels` (AC-27.4). |
+| `devin-mcp-list.txt` | `devin mcp list` | `Configured MCP servers:` heading, then per server a glyph-led row (`• <name>` enabled, `✗ <name>  (disabled)`) followed by an indented `Command: …` (stdio) or `URL: …` (http) detail. 6 servers; the status is the CLI's own enabled/disabled configuration word, never a liveness probe. Parser: `parseDevinMcpList` (AC-32.1). |
 
 ## Redaction of `opencode-provider-list.json`
 
@@ -38,5 +40,14 @@ future re-capture cannot silently reintroduce a live key. If you re-capture this
 fixture, re-run that test before committing.
 
 Regenerating: run the equivalent commands against installed `opencode`/
-`commandcode`/`omp`/`agy` CLIs. See `plan.md` Iteration 25 for the exact API
+`commandcode`/`omp`/`agy`/`devin` CLIs. See `plan.md` Iteration 25 for the exact API
 (`client.provider.list()` against a `opencode serve` daemon).
+
+## Path redaction of the MCP fixtures
+
+The captured MCP listings quote the absolute paths the reference machine uses for
+agent binaries and projects (e.g. `codegraph`, `muninn`). Any personal home path
+(`/Users/<user>/…`) was rewritten to a neutral `/home/dev/…` when the fixture was
+captured — only the path prefix changed, never the row shape — so the fixtures
+carry no machine-specific identity. The parsers split on column runs and never
+depend on a path's length, so this does not affect them.

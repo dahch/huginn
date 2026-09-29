@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_TARGETS } from "../../../src/agents/integrator.js";
@@ -150,9 +150,9 @@ describe("Agent Registry & Factory", () => {
     expect(cursor.id).toBe("cursor");
     expect(cursor.name).toBe("Cursor");
 
-    const windsurf = getAgentRuntime("windsurf");
-    expect(windsurf.id).toBe("windsurf");
-    expect(windsurf.name).toBe("Windsurf");
+    const devin = getAgentRuntime("devin");
+    expect(devin.id).toBe("devin");
+    expect(devin.name).toBe("Devin");
 
     const agy = getAgentRuntime("agy");
     expect(agy.id).toBe("agy");
@@ -160,7 +160,7 @@ describe("Agent Registry & Factory", () => {
   });
 
   it("never fabricates a model catalog for runtimes without a listing command (REQ-27)", async () => {
-    for (const target of ["kimi", "pi", "cursor", "windsurf", "claude", "qwen", "codex"] as const) {
+    for (const target of ["kimi", "pi", "cursor", "claude", "qwen", "codex"] as const) {
       const runtime = getAgentRuntime(target, { env: { PATH: "/dev/null" } });
       // AC-27.4: no `${id}/default` placeholder, no static list — honest [].
       expect(await runtime.getAvailableModels()).toEqual([]);
@@ -220,20 +220,106 @@ describe("Agent Registry & Factory", () => {
     }
   });
 
+  it("wires the real `devin models list` listing command and ignores its preamble (AC-27.4)", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-devin-wiring-"));
+    try {
+      const devinBin = join(tempDir, "devin");
+      writeFileSync(
+        devinBin,
+        "#!/bin/sh\n" +
+          '[ "$1" = "models" ] && [ "$2" = "list" ] || exit 9\n' +
+          "printf 'Available models (1 families)\\n\\n" +
+          "Claude Opus 5.5 (claude-opus-5.5)\\n" +
+          "  claude-opus-5-5-medium                                          Claude Opus 5.5 Medium  [$4 / 1M Output]\\n'\n",
+      );
+      chmodSync(devinBin, 0o755);
+
+      const runtime = getAgentRuntime("devin", { env: { PATH: tempDir } });
+      expect(await runtime.getAvailableModels()).toEqual([
+        {
+          id: "claude-opus-5-5-medium",
+          name: "Claude Opus 5.5 Medium",
+          provider: "Claude Opus 5.5",
+          description: "$4 / 1M Output",
+        },
+      ]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds the verified `devin --print` argv with the prompt in a temp file, not on the argv", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-devin-argv-"));
+    try {
+      const capture = join(tempDir, "prompt.txt");
+      const devinBin = join(tempDir, "devin");
+      writeFileSync(
+        devinBin,
+        "#!/bin/sh\n" +
+          'printf \'%s\\n\' "$@"\n' +
+          'prev=""\n' +
+          'for a in "$@"; do\n' +
+          '  if [ "$prev" = "--prompt-file" ]; then cp "$a" "$HUGINN_PROMPT_CAPTURE"; fi\n' +
+          '  prev="$a"\n' +
+          'done\n' +
+          "exit 0\n",
+      );
+      chmodSync(devinBin, 0o755);
+
+      const runtime = getAgentRuntime("devin", {
+        // Keep the real PATH behind the temp dir so the fake `devin` can still
+        // resolve `cp`.
+        env: { PATH: `${tempDir}:${process.env.PATH ?? ""}`, HUGINN_PROMPT_CAPTURE: capture },
+        permissions: "auto",
+      });
+      expect(runtime.id).toBe("devin");
+      const session = await runtime.createSession({ title: "devin" });
+      // Larger than any sane argument cap: a real huginn prompt embeds the
+      // spec/ADR/plan, so this must never travel on the argv (REV-3A-001).
+      const prompt = `fix the failing test ${"x".repeat(8192)}`;
+      const result = await session.prompt(prompt, { model: "opus" });
+      const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
+
+      // Verified with `devin --help`/a live probe: print mode requires the prompt
+      // from a file or an argument, and cannot show the workspace-trust prompt,
+      // so `--respect-workspace-trust false` is always passed. The prompt is
+      // handed over via `--prompt-file <tmp>` — never positionally.
+      expect(argv.slice(0, 7)).toEqual([
+        "-p",
+        "--respect-workspace-trust",
+        "false",
+        "--model",
+        "opus",
+        "--permission-mode",
+        "dangerous",
+      ]);
+      const [flag, tmpPath] = argv.slice(-2);
+      expect(flag).toBe("--prompt-file");
+      expect(argv).toHaveLength(9);
+      expect(tmpPath?.startsWith(join(tmpdir(), "huginn-prompt-"))).toBe(true);
+      expect(argv).not.toContain(prompt);
+      // The CLI read back exactly what huginn wrote, and the temp file is gone
+      // once the prompt settled.
+      expect(readFileSync(capture, "utf8")).toBe(prompt);
+      expect(existsSync(tmpPath!)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   // Spawns five short-lived processes; the default 5s budget is tight under the
   // parallel full-suite run, so this one gets its own (REV-3302/O2).
   it(
     "exposes the runtime's native model flag for the runtimes without a listing command (AC-27.5)",
     async () => {
-      // REV-003/S1: `kimi`/`pi`/`cursor`/`windsurf` used to have no `modelArgs` at
-      // all, so `HUGINN_MODEL` was their only (unread) model channel.
+      // REV-003/S1: `kimi`/`pi`/`cursor` used to have no `modelArgs` at all, so
+      // `HUGINN_MODEL` was their only (unread) model channel.
       const tempDir = mkdtempSync(join(tmpdir(), "huginn-modelargs-"));
       try {
         const cases: Array<[AgentTarget, string[]]> = [
           ["kimi", ["-m", "moonshot/kimi-k2.5"]],
           ["pi", ["-m", "moonshot/kimi-k2.5"]],
           ["cursor", ["--model", "moonshot/kimi-k2.5"]],
-          ["windsurf", ["--model", "moonshot/kimi-k2.5"]],
         ];
 
         for (const [target, expected] of cases) {
@@ -353,6 +439,47 @@ describe("Agent Registry & Factory", () => {
       expect(AGENT_TARGETS).not.toContain("gemini");
       expect(resolved).toBe("opencode");
       expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("falls back with a warning when a persisted config names the removed windsurf (AC-35.3)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Phase 3A renamed `windsurf` to `devin`; an old `.huginn/config.json` must
+      // keep working: warn, then fall through to auto-detection (empty PATH →
+      // the opencode fallback), never throw.
+      const resolved = await resolveAgent({
+        projectConfig: { agent: "windsurf" },
+        env: { PATH: "" },
+      });
+      expect(AGENT_TARGETS).not.toContain("windsurf");
+      expect(AGENT_TARGETS).toContain("devin");
+      expect(resolved).toBe("opencode");
+      expect(warn).toHaveBeenCalled();
+      const message = warn.mock.calls.flat().join(" ");
+      expect(message).toContain('"windsurf"');
+      expect(message).toContain('"devin"');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("degrades HUGINN_AGENT=windsurf with a warning instead of throwing (REV-3A-005)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // The env var is a *stored* source too: a removed value must warn and fall
+      // through to detection (empty PATH → the opencode fallback), exactly like a
+      // persisted config — never fail the run hard.
+      const resolved = await resolveAgent({ env: { HUGINN_AGENT: "windsurf", PATH: "" } });
+      expect(resolved).toBe("opencode");
+      expect(warn).toHaveBeenCalled();
+      const message = warn.mock.calls.flat().join(" ");
+      expect(message).toContain('"windsurf"');
+      expect(message).toContain('"devin"');
+      // The notice names the env source, not a config file.
+      expect(message).toContain("HUGINN_AGENT");
     } finally {
       warn.mockRestore();
     }

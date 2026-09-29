@@ -64,7 +64,7 @@ Core commands:
   live     interactive refinement + autonomous execution in one dashboard
   run      execute the build cycle against plan.md/spec.md/adr.md
   init     guided onboarding: agent, models, Muninn MCP and .huginn/config.json
-  setup    register the Muninn MCP + rules with Cursor, Claude, OpenCode, Windsurf, …
+  setup    register the Muninn MCP + rules with Cursor, Claude, OpenCode, Devin, …
   doctor   diagnose the local environment, providers and Muninn database
 
 Examples:
@@ -130,7 +130,7 @@ Commands:
   live    interactive refinement + autonomous execution: chat-refine the idea
           (or extend an existing project), draft/update spec.md/adr.md/plan.md,
           approve, then run the build cycles in the same dashboard
-  setup   register Muninn MCP + rules with Cursor, Claude, OpenCode and Windsurf
+  setup   register Muninn MCP + rules with Cursor, Claude, OpenCode and Devin
   doctor  diagnose the local environment, providers and Muninn database
   check   verify TypeScript execution contracts and pre-emit diagnostics
   install compatibility no-op: the opencode agents and step prompts are built

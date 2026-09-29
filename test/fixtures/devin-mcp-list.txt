@@ -1,0 +1,19 @@
+Configured MCP servers:
+
+  • leann-server
+    Command: leann_mcp
+
+  • codegraph
+    Command: codegraph serve --mcp
+
+  • muninn
+    Command: huginn mcp run --project /home/dev/project
+
+  • playwright
+    Command: <redacted>
+
+  • testhttp
+    URL: https://example.com/mcp
+
+  ✗ teststdio  (disabled)
+    Command: echo

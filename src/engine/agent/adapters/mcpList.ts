@@ -40,6 +40,9 @@ export const AGY_MCP_LIST_TIMEOUT_MS = 3000;
 /** `commandcode mcp list` is a local table read too; same bound as `agy`. */
 export const COMMANDCODE_MCP_LIST_TIMEOUT_MS = 5000;
 
+/** `devin mcp list` merges its local/project/user config files (measured ≈ 0.9 s). */
+export const DEVIN_MCP_LIST_TIMEOUT_MS = 5000;
+
 /** A leading status glyph the CLIs print before the server name. */
 const LEADING_GLYPH = /^[✓✔✗✘×✕]\s*/;
 
@@ -346,6 +349,77 @@ export function parseCommandcodeMcpList(stdout: string): McpServerListing[] {
       status: mapMcpListingStatus(rawStatus),
       detail: detailParts.length > 0 ? detailParts.join(" · ") : undefined,
     });
+  }
+
+  return listings;
+}
+
+/**
+ * Bullet/status glyph that opens a `devin mcp list` row.
+ *
+ * Enabled rows use a bullet (`  • <name>`); a disabled row swaps it for a
+ * cross (`  ✗ <name>  (disabled)`).
+ */
+const DEVIN_MCP_GLYPH = /^[•·*✔✓✗✘×✕]\s+/;
+
+/** Trailing `  (disabled)` marker a disabled `devin mcp list` row carries. */
+const DEVIN_MCP_DISABLED_MARKER = /\s{2,}\(disabled\)$/;
+
+/** Glyphs that mean "configured but disabled" even without the explicit marker. */
+const DEVIN_MCP_DISABLED_GLYPHS = new Set(["✗", "✘", "×", "✕"]);
+
+/**
+ * Detail line under a server: `    Command: …` (stdio) or `    URL: …` (http).
+ *
+ * REV-3A-007: matched case-insensitively — a future devin build may print
+ * `command:`/`url:` (or any case), and the label is configuration, not content.
+ */
+const DEVIN_MCP_DETAIL = /^(command|url):\s*(.+)$/i;
+
+/**
+ * Pure parser for `devin mcp list` (REQ-32 / AC-32.1).
+ *
+ * Verified format: a `Configured MCP servers:` heading, then per server a
+ * glyph-led row (`  • <name>` when enabled, `  ✗ <name>  (disabled)` when
+ * disabled) followed by an indented detail line — `Command: <cmd>` for a stdio
+ * server or `URL: <url>` for a remote one. The transport is taken from the
+ * CLI's own label (matched case-insensitively, REV-3A-007), the status is the
+ * CLI's own enabled/disabled word (a *configuration* state, never a liveness
+ * probe — a redacted command like `<redacted>` is surfaced verbatim rather than
+ * guessed at), and the heading — which has neither a glyph nor a detail prefix —
+ * is inert. Exported for fixture tests.
+ */
+export function parseDevinMcpList(stdout: string): McpServerListing[] {
+  const listings: McpServerListing[] = [];
+  const seen = new Set<string>();
+  let current: McpServerListing | undefined;
+
+  for (const rawLine of sanitizeTerminalText(stdout).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const glyph = DEVIN_MCP_GLYPH.exec(line);
+    if (glyph) {
+      const body = line.slice(glyph[0].length).trim();
+      const marker = DEVIN_MCP_DISABLED_MARKER.exec(body);
+      const name = (marker ? body.slice(0, marker.index) : body).trim();
+      if (!name || seen.has(name)) {
+        current = undefined;
+        continue;
+      }
+      seen.add(name);
+      const disabled = marker !== null || DEVIN_MCP_DISABLED_GLYPHS.has(glyph[0].trim());
+      current = { name, status: disabled ? "disabled" : "enabled" };
+      listings.push(current);
+      continue;
+    }
+
+    const detail = DEVIN_MCP_DETAIL.exec(line);
+    if (detail && current) {
+      current.transport = detail[1].toUpperCase() === "URL" ? "http" : "stdio";
+      const value = detail[2].trim();
+      if (value) current.detail = value;
+    }
   }
 
   return listings;

@@ -21,7 +21,7 @@ export type AgentTarget =
   | "cursor"
   | "claude"
   | "opencode"
-  | "windsurf"
+  | "devin"
   | "qwen"
   | "codex"
   | "agy"
@@ -37,9 +37,15 @@ export type McpFormat = "mcpServers" | "opencode" | "toml";
  * successor where one exists). A persisted config naming one of them warns and
  * falls back instead of failing the run (AC-35.3); any other unknown value is
  * still rejected (SEC-001).
+ *
+ * `windsurf` is the Phase 3 rename of this target: the CLI is now the Devin
+ * agent (its rule/runtime plumbing — `.windsurf/rules`, `--permission-mode
+ * dangerous` — was carried over), so an old `"agent": "windsurf"` config maps to
+ * `devin` through the same warn-and-detect path as `gemini` → `agy`.
  */
 export const REMOVED_AGENT_TARGETS: ReadonlyMap<string, string> = new Map([
   ["gemini", "agy"],
+  ["windsurf", "devin"],
 ]);
 
 /**
@@ -131,12 +137,21 @@ export const AGENT_REGISTRY: Record<AgentTarget, AgentSpec> = {
     mcpPaths: ["{opencodeConfigDir}/opencode.json"],
     rulesFile: "AGENTS.md",
   },
-  windsurf: {
-    id: "windsurf",
-    label: "Windsurf",
+  devin: {
+    id: "devin",
+    label: "Devin",
     format: "mcpServers",
-    mcpPaths: ["{home}/.codeium/windsurf/mcp_config.json"],
-    rulesFile: ".windsurfrules",
+    // Verified against the CLI (`devin mcp add --scope …`): the scopes and their
+    // files are project `.devin/mcp_config.json` and user
+    // `~/.config/devin/mcp_config.json` (a third, uncommitted `local` scope at
+    // `.devin/mcp_config.local.json` also exists; huginn writes the two above).
+    mcpPaths: ["{project}/.devin/mcp_config.json", "{home}/.config/devin/mcp_config.json"],
+    // `devin rules paths` reports the project rule directory as
+    // `.windsurf/rules/*.md` (always-on) — the Devin CLI kept Windsurf's rules
+    // root. Huginn appends its marked block to one dedicated file so it never
+    // collides with the user's own rules. (Devin also loads `AGENTS.md`/
+    // `CLAUDE.md` as always-on "Standard"/"Claude" rules.)
+    rulesFile: ".windsurf/rules/muninn.md",
   },
   qwen: {
     id: "qwen",

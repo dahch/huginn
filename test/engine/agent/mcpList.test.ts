@@ -12,6 +12,7 @@ import {
   parseAgyMcpList,
   parseClaudeMcpList,
   parseCommandcodeMcpList,
+  parseDevinMcpList,
   parseOpencodeMcpList,
   parseQwenMcpList,
   runMcpListCommand,
@@ -140,6 +141,28 @@ describe("per-agent MCP listing parsers (REQ-32 / AC-32.1)", () => {
       { name: "demo", transport: undefined, status: "connected", detail: undefined },
     ]);
     expect(parseOpencodeMcpList(colored)[0]?.name).not.toContain("\u001b");
+  });
+
+  it("parses `devin mcp list` and accepts `command:`/`url:` in any case (REV-3A-007)", () => {
+    const stdout = [
+      "Configured MCP servers:",
+      "",
+      "  • stdio-srv",
+      "    command: npx something --mcp",
+      "",
+      "  • remote-srv",
+      "    uRl: https://example.com/mcp",
+      "",
+      "  ✗ off-srv  (disabled)",
+      "    COMMAND: echo",
+      "",
+    ].join("\n");
+
+    expect(parseDevinMcpList(stdout)).toEqual([
+      { name: "stdio-srv", status: "enabled", transport: "stdio", detail: "npx something --mcp" },
+      { name: "remote-srv", status: "enabled", transport: "http", detail: "https://example.com/mcp" },
+      { name: "off-srv", status: "disabled", transport: "stdio", detail: "echo" },
+    ]);
   });
 });
 
