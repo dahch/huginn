@@ -1,216 +1,239 @@
 # Huginn — Agent & Command Inventory
 
-This file documents the opencode subagents and slash commands that **huginn
-installs and drives**, plus what a developer working *on* huginn needs to know
-to run, test, and debug it. The definitions themselves live in
-`templates/agents/*.md` and `templates/commands/*.md`; the engine code that
-invokes them is `src/engine/phases.ts` and `src/engine/cycle.ts`.
+This file documents the roles and step instructions **huginn composes and drives itself**, plus what
+a developer working *on* huginn needs to know to run, test, and debug it.
 
-> The `build` agent is built into opencode and is **not** bundled by huginn —
-> it is invoked by name (`agent: "build"`) by the execute and fix phases and by
-> `/commit-all`.
+The definitions live in `src/engine/steps/instructions.ts` (the inlined role texts and task bodies),
+are composed per step by `src/engine/steps/prompts.ts` over the bounded context helpers in
+`src/engine/steps/context.ts`, and are driven by `src/engine/phases.ts` + `src/engine/cycle.ts`.
 
-## 1. The five agents (installed to `~/.config/opencode/agents/`)
+> There is **nothing to install**. The old opencode subagents/slash commands, the `templates/` tree,
+> `scripts/postinstall.ts` and `HUGINN_TEMPLATES_DIR` are gone; `huginn install` prints a
+> compatibility notice and exits 0. The only agent huginn ever asks opencode for by name is the
+> built-in `build` agent — used by `EXECUTE` and the `FIX_*` phases so the SDK session keeps that
+> agent's tools. Every other step is a plain prompt, which is what makes a subprocess runtime
+> (Claude Code, Codex, …) behave identically.
 
-### `spec-auditor`
-- **Purpose**: Contract auditor. Detects **semantic deviation** between `spec.md`
-  and the implementation — omissions, additions, substitutions — across module
-  boundaries, domain model, port/adapter contracts, behavior, config, and
-  `EXECUTION_CONSTRAINTS`. Explicitly *not* a code-quality reviewer.
-- **Permissions** (frontmatter): read/glob/grep/list allowed; `edit` denied;
-  bash restricted to `git diff/log/show/ls-files`, `find*`, `cat*`; webfetch,
-  websearch, task, todowrite denied.
-- **Driven by**: `SPEC_AUDIT` phase (`prompt` with `agent: "spec-auditor"`),
-  and inside `/validate-step` (phase 2 of its chain).
-- **Contract with the engine**: the report must end with the line
-  `Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION` —
+## 1. The five embedded roles
+
+Each role is one inlined string. They are read from memory, never from disk, so a bundled
+`dist/cli.js` and a source checkout behave the same — and none of them carries opencode frontmatter
+permissions any more: what a role may touch is decided by the runtime, and *read-only-ness* is
+enforced by huginn (see §4).
+
+### `spec-auditor` (`ROLE_SPEC_AUDITOR`)
+- **Purpose**: Contract auditor. Detects **semantic deviation** between `spec.md` and the
+  implementation — omissions, additions, substitutions — across module boundaries, domain model,
+  port/adapter contracts, behavior, config, and `EXECUTION_CONSTRAINTS`. Explicitly *not* a
+  code-quality reviewer.
+- **Contract with the engine**: the report must state
+  `### Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION`;
   `parseSpecAuditVerdict` in `src/engine/gate.ts` reads it.
-- **Manual use**: `huginn install && opencode` then
-  `spec-auditor: audit semantic alignment between SPEC.md and src/...`.
+- **Driven by**: `SPEC_AUDIT` (`specAuditPrompt`) and as sub-prompt 2 of `VALIDATE_STEP`
+  (`validateStepSpecPrompt`).
+- **Greenfield skip**: on a repo with no implementation code (`hasImplementationCode`,
+  `src/engine/diff.ts`) the role is never invoked — the audit is recorded as `skipped`.
 
-### `qa`
-- **Purpose**: Senior QA engineer. Tests (unit 70% / integration 20% / E2E 10%),
-  coverage analysis, gap reporting. Has **two modes** decided by the invocation
-  prompt: if it contains `AUDIT-ONLY MODE` the agent must **not** write/modify
-  any test file — it runs existing tests, reports coverage, and lists gaps
-  (used by `/validate-step`); otherwise FIX mode, full test authoring.
-- **Permissions**: `edit` allowed; bash allows test runners (`npx *`,
-  `npm run test*`, `npm run coverage*`, `npm test*`, `yarn test*`, `pnpm*`,
-  `bun test*`, `bun run test*`, `bun run coverage*`, `vitest*`, `jest*`,
-  `playwright*`, `cypress*`, `pytest*`, `cargo test*`, `go test*`) and
-  reading coverage/config files; webfetch denied; websearch, todowrite
-  allowed; task denied.
-- **Guardrails**: tests always run **non-interactively** — never watch mode
-  (`vitest run` / `jest --watchAll=false --ci --runInBand` / `bun test` /
-  `pytest -q`, never bare `vitest`, `cypress open`, `playwright test --ui`).
-  Searches must never recursively glob package-manager/build-cache
-  directories (`node_modules`, `build/`, `dist/`, `.git/`, `~/.gradle`,
-  `~/.m2`, `~/.npm`, `Pods/`, `.build/`) — scope to the project tree with
+### `qa` (`ROLE_QA`)
+- **Purpose**: Senior QA engineer. Tests (unit 70% / integration 20% / E2E 10%), coverage analysis,
+  gap reporting. Has **two modes** decided by the prompt it receives: with the `AUDIT-ONLY MODE`
+  block it must **not** write or modify any test file; otherwise it is the full test-authoring mode.
+- **Guardrails**: tests always run **non-interactively** — never watch mode (`vitest run` /
+  `jest --watchAll=false --ci --runInBand` / `bun test` / `pytest -q`). Searches must never
+  recursively glob package-manager/build-cache directories (`node_modules`, `build/`, `dist/`,
+  `.git/`, `~/.gradle`, `~/.m2`, `~/.npm`, `Pods/`, `.build/`) — scope to the project tree with
   bounded patterns instead.
-- **Driven by**: `/test-module` (FIX mode) and `/validate-step` phase 1
-  (AUDIT-ONLY mode).
+- **Driven by**: `TEST_MODULE` (full mode, `testModulePrompt`) and sub-prompt 1 of `VALIDATE_STEP`
+  (`validateStepQaPrompt`), where `auditOnlyGuardrails()` (`src/engine/steps/context.ts`) appends the
+  audit-only contract: run the existing suite **once**, non-interactively and read-only; write **no**
+  artefacts (no coverage output, `-u`/`--update` snapshots forbidden, no file-writing reporters); do
+  not create, modify, move or delete anything.
 
-### `security`
-- **Purpose**: Application security audit — hardcoded secrets/credentials,
-  auth & authorization flaws, injection, dependency CVEs (`npm audit`, Maven
-  dependency-check), data exposure, insecure config, weak crypto. Read-only:
-  never modifies the codebase.
-- **Permissions**: `edit` denied; bash allows `grep -r*`, `find * -name
-  .env*/...`, `cat package*.json|yarn.lock|pom.xml|build.gradle*|*application*`,
-  `npm audit*`, `git log --all --full-history*`, `git grep*`, `git diff*`;
-  webfetch/websearch allowed; task denied; todowrite allowed.
-- **Driven by**: `/secure-check` (fast pre-push scan) and `/validate-step`
-  phase 3 (scoped diff excluding test files, which contain mock credentials).
-- **Manual use**: `/secure-check` before a push.
+### `security` (`ROLE_SECURITY`)
+- **Purpose**: Application security audit — hardcoded secrets/credentials, auth & authorization
+  flaws, injection, dependency CVEs (`npm audit`, Maven dependency-check), data exposure, insecure
+  config, weak crypto. Stack-aware (Java / Node / polyglot). Read-only: never modifies the codebase.
+- **Driven by**: `SECURE_CHECK` (fast pre-push scan, `secureCheckPrompt`) and sub-prompt 3 of
+  `VALIDATE_STEP` (`validateStepSecurityPrompt`), whose task body scopes the diff and **excludes
+  test files** (they contain mock credentials and produce false positives).
 
-### `doc-writer`
-- **Purpose**: Senior technical writer. Creates/updates README.md, ADR.md,
-  SPEC.md, DESIGN.md, AGENTS.md, API docs, and inline comments — updates only
-  what is stale.
-- **Permissions**: `edit` allowed; bash allows `git log/diff/shortlog/tag`,
-  `find * -name *.ts/*.tsx/*.md`, `cat package.json|tsconfig*|openapi*|swagger*`;
-  webfetch/websearch allowed; task denied; todowrite allowed.
-- **Driven by**: `/doc-sync` (non-blocking `DOC_SYNC` phase).
-- **Note**: this agent's prompt is the same documentation policy the huginn
-  docs were written against; keep `templates/agents/doc-writer.md` in sync with
-  the doc set it describes.
+### `doc-writer` (`ROLE_DOC_WRITER`)
+- **Purpose**: Senior technical writer. Creates/updates README.md, ADR.md, SPEC.md, DESIGN.md,
+  AGENTS.md, API docs, and inline comments — updates only what is stale.
+- **Driven by**: `DOC_SYNC` (`docSyncPrompt`, informative — it can never block).
+- **Note**: this role's text is the same documentation policy the huginn docs were written against;
+  a change to that policy belongs in `src/engine/steps/instructions.ts`, not in a template.
 
-### `reviewing`
-- **Purpose**: Expert code reviewer — Clean Architecture, DDD, SOLID, FSD
-  (Feature-Sliced Design), performance, patterns. Reports only, never edits.
-- **Permissions**: `edit` denied; bash allows `git diff/log/show/blame`;
-  webfetch/websearch allowed; todowrite denied; **`task` is restricted to
-  exactly `qa`, `spec-auditor`, `security` — every other Task target is
-  denied** (see delegation note below).
-- **Guardrails**: searches are scoped to the project's own source tree;
-  recursive globs over package-manager/build-cache directories
-  (`node_modules`, `build/`, `dist/`, `.git/`, `Pods/`, `.build/`,
-  `~/.gradle`, `~/.m2`, `~/.npm`) are banned — a `**` glob there can hang
-  for tens of minutes and stall the pipeline. Use bounded patterns
-  (`find <path> -maxdepth N ... | head`) and grep scoped to project paths.
-- **Driven by**: `/review` (pre-PR review of `main...HEAD`) and `/validate-step`
-  (it is the `agent:` of that command and orchestrates the three-phase chain).
+### `reviewing` (`ROLE_REVIEWING`)
+- **Purpose**: Expert code reviewer — Clean Architecture, DDD, SOLID, FSD (Feature-Sliced Design),
+  performance, patterns. Reports only, never edits.
+- **Guardrails**: searches are scoped to the project's own source tree; recursive globs over
+  package-manager/build-cache directories (`node_modules`, `build/`, `dist/`, `.git/`, `Pods/`,
+  `.build/`, `~/.gradle`, `~/.m2`, `~/.npm`) are banned — a `**` glob there can hang for tens of
+  minutes and stall the pipeline. Use bounded patterns (`find <path> -maxdepth N ... | head`) and
+  grep scoped to project paths.
+- **Driven by**: `REVIEW` (`reviewPrompt`, pre-PR review of `main...HEAD`).
 
-## 2. The six slash commands (installed to `~/.config/opencode/commands/`)
+> The task bodies were snapshotted verbatim from the opencode command templates that hugged the roles
+> in the previous design, so some of them still *read* as delegation instructions ("Delegate to the
+> `qa` subagent", `$ARGUMENTS`, `!`git …`` placeholders). The wording is preserved deliberately —
+> the gates depend on those literals — while the orchestration is huginn's: each body is sent as its
+> own prompt, and the `!`git …`` interpolations are resolved by huginn through a subcommand allowlist
+> (`resolveShellInterpolations`, `src/engine/steps/context.ts`).
 
-| Command | `agent:` | Purpose |
-|---|---|---|
-| `/validate-step <module> [spec] [git-range]` | `reviewing` | Full validation gate: chains **qa (AUDIT-ONLY) → spec-auditor → security**, detects cross-phase contradictions, and emits `### Overall gate: 🟢/🟡/🔴` plus a trailing `✅ AUTO-APPROVED` / `⚠️ REVIEW REQUESTED` / `🛑 BLOCKED` marker line. |
-| `/test-module <module>` | `qa` | Full QA cycle on a module: analyze, write missing tests, run, report coverage. |
-| `/secure-check` | `security` | Fast pre-push scan of `git diff HEAD` for secrets/tokens/credentials. |
-| `/review` | `reviewing` | Pre-PR review of `git diff main...HEAD` — architecture, SOLID, merge-blockers. |
-| `/doc-sync` | `doc-writer` | Sync stale docs with code (checks README/SPEC/DESIGN/ADR/AGENTS against recent history). |
-| `/commit-all` | `build` | Groups pending changes into atomic **Conventional Commits** (`feat/fix/refactor/chore/docs/test/perf/ci/style/build(scope):`), orders commits dependencies→domain→infra→UI, bans force-push/amend/empty/`misc` commits, then shows `git log --oneline -10`. |
+## 2. The step prompts (there are no installed commands)
+
+| Phase | Composer (`src/engine/steps/prompts.ts`) | What it carries | Verdict |
+|---|---|---|---|
+| `SPEC_AUDIT` | `specAuditPrompt` | spec-auditor role + spec/adr/plan + iteration + git status | `### Overall fidelity:` parsed by `parseSpecAuditVerdict` |
+| `EXECUTE` | `executePrompt` | the iteration's prompt verbatim (+ the profile preamble) | non-blocking, but an empty report still fails closed |
+| `VALIDATE_STEP` | `validateStepSubPrompts` (qa / spec / security) + `validateStepSynthesisPrompt` | three independent audits, then a consolidation turn | huginn computes it (§4) |
+| `TEST_MODULE` | `testModulePrompt` | qa role + module scope | judge pass (`judgePhase`) |
+| `SECURE_CHECK` | `secureCheckPrompt` | security role + scoped diff | judge pass |
+| `REVIEW` | `reviewPrompt` | reviewing role + pre-PR diff | judge pass |
+| `DOC_SYNC` | `docSyncPrompt` | doc-writer role + recent history | informative (never blocks) |
+| `COMMIT_ALL` | `commitAllPrompt` | commit instruction + pending changes | informative (never blocks) |
+| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_SECURITY` / `FIX_REVIEW` | `fixFindingsPrompt` (+ the speculative/security extras) | the finding report + the extra instructions | re-runs the gate |
+
+`runCommand` still exists on `IAgentSession` (the opencode and generic adapters implement it) but **no
+step uses it**: a huginn step is always a prompt, so a runtime with no command surface runs the same
+pipeline.
 
 ## 3. Which model runs what
 
-The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` +
-`src/engine/cycle.ts` (run) and `src/engine/liveMode.ts` (live):
+The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `src/engine/cycle.ts`
+(run) and `src/engine/liveMode.ts` (live):
 
 | Work | Model | How |
 |---|---|---|
-| `SPEC_AUDIT` (spec-auditor invocation) | **executor** | `prompt({ agent: "spec-auditor", model: executor })` — unless the repo has no implementation code yet, in which case the audit is **skipped** (`hasImplementationCode`, `src/engine/diff.ts`) and the agent is never invoked |
-| `EXECUTE` (build agent) | **executor** | `prompt({ agent: "build", model: executor })` |
-| All 6 slash commands | **executor** | `runCommand({ command, arguments, model: "provider/model" (executor) })` |
-| Judge pass for TEST_MODULE / SECURE_CHECK / REVIEW | **executor** | `judgePhase(client, session, executor, ...)` |
-| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_SECURITY` / `FIX_REVIEW` | **thinker** | `fixSpec` / `fixFindings` / `fixSecurity` → `prompt({ agent: "build", model: thinker })` |
+| `SPEC_AUDIT` (spec-auditor prompt) | **executor** | `promptWithContext({ text: specAuditPrompt(ctx), model: executor })` — unless the repo has no implementation code yet, in which case the audit is **skipped** (`hasImplementationCode`, `src/engine/diff.ts`) and the role is never invoked |
+| `EXECUTE` (build agent) | **executor** | `promptWithContext({ text: executePrompt(ctx), agent: "build", model: executor })` |
+| `VALIDATE_STEP` (qa + spec-auditor + security + synthesis) | **executor** | four `promptWithContext` calls, each with `model: executor` |
+| Judge pass for `TEST_MODULE` / `SECURE_CHECK` / `REVIEW` | **executor** | `judgePhase(..., executor, ...)` |
+| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_SECURITY` / `FIX_REVIEW` | **thinker** | `fixFindingsPrompt` → `promptWithContext({ agent: "build", model: thinker })` |
 | `huginn plan` drafts (spec → adr → plan) | **thinker** | `prompt({ model: thinker })`, 20-min timeout each |
-| `huginn live` chat refinement / scope extraction / doc drafts (LiveEngine) | **thinker** | `prompt({ model: thinker })` via `liveMode.ts`, 20-min timeout each (`LIVE_PROMPT_TIMEOUT_MS`); after handoff the resulting `CycleEngine` uses the executor per the rows above |
+| `huginn live` chat refinement / scope extraction / doc drafts (`LiveEngine`) | **thinker** | `prompt({ model: thinker })` via `liveMode.ts`, 20-min timeout each; after handoff the resulting `CycleEngine` uses the executor per the rows above |
 
-Subagent delegation *inside* a command (e.g. `/validate-step`'s chain) is
-handled by opencode via the Task tool with the orchestrating agent's
-permissions — the harness only chooses the top-level command's model.
+## 4. Orchestration, verdicts and the read-only guard
 
-## 4. Delegation note (must stay true in the templates)
+`/validate-step` used to work only because the installed `reviewing` agent could delegate to `qa`,
+`spec-auditor` and `security` through opencode's Task tool. That allowlist is gone with the templates:
+**huginn runs the chain itself** (qa → spec-auditor → security → synthesis, one prompt each) and
+decides the outcome:
 
-`/validate-step` works only because the `reviewing` agent may delegate via the
-Task tool to `qa`, `spec-auditor`, and `security` — its frontmatter allows
-exactly those three and denies all other Task targets. If you edit
-`templates/agents/reviewing.md`, keep the `task:` allowlist intact; `huginn run`
-does **not** verify this at runtime, so a broken allowlist surfaces as a
-fail-closed `🛑 BLOCKED` at the `VALIDATE_STEP` gate.
+- `computeValidateVerdict` derives the gate from the three sub-reports (each must emit its own
+  `### Audit status:` / `### Overall fidelity:` line): an empty or marker-less report is `blocked`, any
+  blocked → `blocked`, any warning → `warning`, all green → `pass`. The synthesis may only **escalate**
+  it, never downgrade it.
+- `enforceValidateVerdict` strips every pre-existing `### Overall gate:`/handoff line from the
+  synthesis and appends huginn's own, so `parseValidateStepVerdict` reads back exactly what huginn
+  computed. The verdict also travels structurally as `authoritativeVerdict`, which `runPhase` prefers
+  over parsing the report text.
+- The auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`, `REVIEW`) are marked `readOnly`:
+  the engine hashes the working tree before and after the step (`treeHash`) and forces `blocked` when
+  the signature is **missing or changed** (`readOnlyTreeViolation`) — a phase that wrote to the
+  repository cannot pass its own gate.
+- Repository-derived material is untrusted data: it is bounded (60 000 characters), sanitized,
+  fence-neutralised and wrapped in a `<<<BEGIN/END UNTRUSTED-<nonce> …>>>` block whose nonce the
+  content cannot guess (`embedUntrusted`), document paths are symlink-screened and contained
+  (`src/util/docPath.ts`), and every `git` call goes through the hardened seam in
+  `src/engine/diff.ts` (no pager/fsmonitor/hooks, `--no-ext-diff --no-textconv`, a subcommand
+  allowlist and a forbidden-argument screen).
 
 ## 5. Runtime requirements
 
-1. **Bun** (the bin is `#!/usr/bin/env bun`; bundle is Bun-target).
-2. **opencode CLI** on `$PATH` with authenticated providers, started by huginn
-   itself via `opencode serve --port <n> --hostname 127.0.0.1` in the project
-   dir (logs to `.harness/logs/server.log`).
-3. **git repo** — required for `run` and `live` (module inference, base commits,
-   agent context, doc staging). Plan/spec/adr files must exist for `run` (but
-   not for `plan`/`live`, which create or update them).
-4. **Templates installed** — `huginn install` (or the `bun install`
-   postinstall). Missing pieces only produce a warning at `run`/`plan`/`live`,
-   but the corresponding gates will fail closed without them.
+1. **Bun** (the bin is `#!/usr/bin/env bun`; the bundle is Bun-target).
+2. **An agent CLI on `$PATH`** — any of the 13 registered targets. `opencode` is the default and the
+   only runtime with a native permission subscriber (`--permissions ask|deny`) and server-side
+   session history; when it is used, huginn starts it itself via
+   `opencode serve --port <n> --hostname 127.0.0.1` in the project dir (logs to
+   `.harness/logs/server.log`).
+3. **`git` on `$PATH`** — used for module inference, diffs, base commits, doc staging and worktree
+   sandboxing. The project directory does **not** have to be a repository: `run`/`plan`/`live`
+   bootstrap one (`git init -b main` + `.gitignore` + a bootstrap commit) unless `--no-git-init` is
+   passed. `plan.md`/`spec.md`/`adr.md` must exist for `run` (but not for `plan`/`live`, which create
+   or update them).
+4. **Nothing to install** — the roles and task bodies are embedded in the binary (§1). There is no
+   `templates/` directory, no `postinstall` hook and no warning about missing pieces.
 
 ## 6. Developer workflow (working on huginn itself)
 
 ```sh
-bun install            # runs scripts/postinstall.ts — prompts to install
-                       # templates interactively, silent if all present,
-                       # prints "huginn install --yes" hint when unattended
+bun install            # dependencies only — there is no postinstall hook any more
 bun link               # exposes the global `huginn` bin → dist/cli.js
-bun test               # unit tests: cli, gate, decisionBroker, plan parser,
-                       # state store, installer, client timeouts, diff
-                       # (greenfield detection), update check (version compare
-                       # + cache), live mode (scope extraction, draft format
-                       # contract, handoff), cycle (run-loop regression: abort
-                       # interruption, empty EXECUTE fail-closed),
-                       # permissions (question handling), markdown rendering
+bun test               # unit tests under src/**/*.test.ts (bun:test)
+vitest run             # integration + Muninn suite under test/**/*.test.ts
 bun run typecheck      # tsc --noEmit (strict)
 bun run dev -- ...     # run from source, e.g.
                        #   bun run dev -- run --project ../repo --thinker a/b --executor c/d
 bun run build          # bun build src/cli.ts --target=bun --outdir=dist --minify
 ```
 
+The suites that matter for the step pipeline and its state: `src/engine/gate.test.ts` (the verdict
+parsers), `src/engine/cycle.test.ts` (retry/escalation, the read-only guard, structural verdicts),
+`src/engine/steps/prompts.test.ts` + `src/engine/steps/context.test.ts` (composition, bounding,
+nonce delimitation, the git-interpolation allowlist, doc containment), `test/engine/phases.test.ts`
+(the orchestrated `VALIDATE_STEP`: three sub-prompts plus synthesis, the deterministic verdict and
+the single imposed gate/handoff line), `test/engine/phasesContractGuard.test.ts` (a compiler-contract
+verification that throws fails closed), `test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts`
+(bootstrap and path containment), and `test/state/liveSession.test.ts` +
+`test/engine/liveSessionPersistence.test.ts` + `test/commands/liveSessions.test.ts` (the persisted
+live store, resume flags and reattach).
+
 ### Env overrides (all optional)
 
 | Variable | Effect |
 |---|---|
-| `HUGINN_TEMPLATES_DIR` | Where `templates/` is read from (default: auto-detected by walking up from the module location — works from `src/`, `dist/`, `scripts/`). |
-| `HUGINN_OPENCODE_CONFIG_DIR` | Install destination (default `~/.config/opencode`). The installer tests use this to isolate a temp config dir; also where the update-check cache (`huginn-update-cache.json`) lives. |
+| `HUGINN_OPENCODE_CONFIG_DIR` | Where opencode's own config lives (default `~/.config/opencode`); also where the update-check cache (`huginn-update-cache.json`) is written. No longer an install destination (`getOpencodeConfigDir`, `src/setup/opencodeConfig.ts`). |
 | `HUGINN_NO_UPDATE_CHECK` | Any non-empty value disables the background npm version check (`src/update.ts`). |
-| `HUGINN_DEBUG` | Print full error stack traces on fatal errors (`src/cli.ts`). |
-| `CI` | `huginn install` skips its prompt (`--yes` implied); `promptYesNo` returns the fallback. |
+| `HUGINN_DEBUG` | Print full error stack traces on fatal errors, plus non-fatal notes (e.g. why Muninn indexing or contract verification was skipped). |
+| `HUGINN_THEME` | `light` \| `dark` \| `auto` (default) — pins the TUI palette (`src/tui/theme.ts`). |
+| `NO_COLOR` | Any non-empty value clears every theme token and `dimColor` (per no-color.org). |
+| `CI` | Every prompt (`promptLine`/`promptYesNo`, `src/util/prompt.ts`) returns its fallback instead of reading stdin; nothing blocks on a human. |
 
-### Testing the templates
+### Testing the step prompts and the verdict contract
 
-- `src/setup/install.test.ts` asserts the exact 11-piece inventory
-  (5 agents + 6 commands), idempotency, no-overwrite-without-`--force`, and
-  `--only` filtering — keep `REQUIRED_TEMPLATES` and the `templates/` tree in
-  sync or these fail.
-- The verdict-marker contract between templates and parsers is covered on the
-  parser side in `src/engine/gate.test.ts` (markers, secondary lines, and the
-  null/fail-closed case). If you change a template's marker wording, update the
-  corresponding parser and its tests in the same change.
+- The verdict markers are a **three-way contract**: the literals in
+  `src/engine/steps/instructions.ts` / `src/engine/steps/context.ts` (`AUDIT_STATUS_*`,
+  `SPEC_FIDELITY_*`, the `VALIDATE_STEP_GATE_LOGIC` and handoff lines), huginn's own enforcement
+  (`computeValidateVerdict` / `enforceValidateVerdict` in `src/engine/phases.ts`), and the parsers in
+  `src/engine/gate.ts` (`parseValidateStepVerdict`, `parseSpecAuditVerdict`, `parseAuditStatus`). A
+  wording change must update all three plus their tests (`src/engine/gate.test.ts`,
+  `test/engine/phases.test.ts`) in the **same commit** — nothing else keeps the embedded literal and
+  its parser from drifting, since both now live in this repository.
+- Consequence of ADR-40: a huginn-computed verdict wins over the report text. If you make a phase emit
+  `authoritativeVerdict`, its prose no longer decides the gate.
 
-## 7. Manual invocation examples (in an opencode session)
+## 7. Running a single step and inspecting what huginn sent
 
+There is no manual invocation inside an opencode session any more — `spec-auditor`, `qa`,
+`/validate-step` … exist only as prompt text. To exercise one step in isolation:
+
+```sh
+# Run a single phase per iteration (debugging), e.g. just the gate
+bun run dev -- run --project . --only-phase VALIDATE_STEP
+
+# ...or with the built bin
+huginn run --project /path/to/repo --only-phase SPEC_AUDIT
 ```
-/validate-step src/contexts/notifications SPECS.md
-/test-module src/features/auth
-/secure-check
-/review
-/doc-sync
-/commit-all
-spec-auditor: audit src/ against SPEC.md
-qa: AUDIT-ONLY MODE — run tests and report coverage for src/features/auth
-security: audit the current diff for hardcoded secrets
-doc-writer: update the docs that are stale
-reviewing: review src/ for architecture violations
-```
+
+`--only-phase` accepts any phase name in the union over every profile
+(`validatePhase`, `src/cli.ts`), and it leaves the state resumable. The composed
+prompt is not printed, but every phase attempt's raw report is written to
+`<project>/.harness/reports/II-PHASE-N.md`, and `.harness/logs/server.log` holds the opencode server's
+own output.
 
 ## 8. In-app Live console commands & project skills
 
-Distinct from §2 (the six opencode commands huginn *installs*), the `huginn` / `huginn live`
-console has its own slash-command surface. `submit()` in `src/tui/LiveDashboard.tsx` intercepts any
-`/<…>` input **before** it reaches `LiveEngine.chat()`; an unrecognised `/…` command is answered
-with a system message and never forwarded to the model.
+The `huginn` / `huginn live` console has its own slash-command surface, unrelated to the step prompts
+above. `submit()` in `src/tui/LiveDashboard.tsx` intercepts any `/<…>` input **before** it reaches
+`LiveEngine.chat()`; an unrecognised `/…` command is answered with a system message and never
+forwarded to the model.
 
 | Command | Behaviour | Backing code |
 |---|---|---|
 | `/help` | Opens the cheat-sheet modal (`HelpModal`) with commands, shortcuts and the active agent/model/project banner. | `src/tui/HelpModal.tsx` |
-| `/agent` | Lists registered runtimes (active one marked). | `src/agents/integrator.ts` (`AGENT_TARGETS`) |
+| `/agent` | Opens the interactive runtime picker (`AgentPickerModal`): availability, active marker, detected path. | `src/tui/AgentPickerModal.tsx` |
 | `/agent <id>` | Hot-switches the runtime; fails closed if `isAvailable()` is false. | `LiveEngine.switchRuntime()` |
 | `/models`, `/model` | Opens `ModelPickerModal`. | `src/tui/ModelPickerModal.tsx` |
 | `/model <thinker> [executor]` | Validates `provider/model` and updates models for the session. | `LiveEngine.updateModels()` |
@@ -221,6 +244,9 @@ with a system message and never forwarded to the model.
 | `/clear` | Clears chat + stream viewports. | — |
 | `/draft` / `/go` | Runs scope extraction and drafting. | `LiveEngine.draft()` |
 | `/quit` / `/abort` | Two-step confirmation, then aborts. | `LiveEngine.requestAbort()` |
+
+Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `--session <id>` and
+`--list-sessions`/`-sl` read `<project>/.huginn/live/sessions.json` (`src/state/liveSession.ts`).
 
 **Project skills** (`src/engine/skills/loader.ts`): `loadSkills()` discovers `*.md` skills in
 `<project>/.huginn/skills/` then `<project>/.opencode/skills/` (`.huginn` wins on id collision),
@@ -253,4 +279,9 @@ This project is indexed by Muninn. Before designing any change, call
 dependency paths. Before emitting any final code, call `muninn_verify_contract`.
 
 Do not emit final code that has not been contract-verified.
+
+If you need a decision from the user to proceed, ask with a marked block:
+`<<<HUGINN_QUESTION>>>` + a JSON array of
+`{"question", "options":[{"label","description"}]}` + `<<<END_HUGINN_QUESTION>>>`
+on their own lines, and Huginn will present the choices.
 <!-- huginn:muninn-rules:end -->

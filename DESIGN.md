@@ -28,13 +28,15 @@ rationalized in [`ADR.md`](./ADR.md).
 
 ```
 src/
-├── cli.ts                  entry point; arg parsing (run/live/plan/install/setup/doctor/memory/mcp/check/config), banner, lifecycle wiring
+├── cli.ts                  entry point; arg parsing (run/live/plan/install/setup/doctor/memory/mcp/check/config), git bootstrap gate, live-session resume flags, banner, lifecycle wiring
 ├── agents/
-│   └── integrator.ts       AGENT_REGISTRY (11 targets) + setup(): Muninn MCP registration, per-target rules injection, and the installed × registered provisioning matrix (REQ-15/REQ-38)
+│   └── integrator.ts       AGENT_REGISTRY (13 targets) + setup(): Muninn MCP registration, per-target rules injection, and the installed × registered provisioning matrix (REQ-15/REQ-38)
 ├── commands/
 │   ├── check.ts            CLI commands: handleCheckCommand (verify TypeScript contracts), printCheckUsage
 │   ├── config.ts           CLI commands: handleConfigCommand (show/set thinker+executor), printConfigUsage
 │   ├── doctor.ts           CLI commands: runDoctorChecks, handleDoctorCommand (environment/Muninn diagnostics)
+│   ├── init.ts             CLI commands: handleInitCommand (onboarding wizard incl. the runtime model picker), printInitUsage
+│   ├── install.ts          CLI commands: handleInstallCommand (compatibility no-op — prompts are built in)
 │   ├── memory.ts           CLI commands: handleMemoryCommand (init, search, sync, index), handleMcpCommand (run), usage formatters
 │   └── setup.ts            CLI commands: handleSetupCommand (run the universal agent integrator)
 ├── config.ts               RunConfig; UserConfig schema, model resolution + source attribution, atomic symlink-safe config persistence
@@ -48,36 +50,44 @@ src/
 ├── update.ts               background npm version check (cache + semver compare + reminder)
 ├── engine/
 │   ├── agent/
-│   │   ├── types.ts            IAgentRuntime, IAgentSession, ModelInfo, ModelCatalog, McpStatusReport contracts
-│   │   ├── registry.ts         Agent factory, PATH auto-detection, resolution precedence, isExecutableBinary
+│   │   ├── types.ts            IAgentRuntime (incl. sessionHistory), IAgentSession, ModelInfo, ModelCatalog, McpStatusReport contracts
+│   │   ├── registry.ts         Agent factories, AGENT_BINARIES, PATH auto-detection, resolution precedence, SUBPROCESS_PERMISSION_ARGS, subprocessPermissionMessage
+│   │   ├── modelCatalog.ts     discoverModelCatalog: the shared catalog lookup + reason used by the picker and the init wizard
 │   │   ├── mcpStatus.ts        fetchMcpStatusWithTimeout (bounded `Promise.race`, 60 s listing cache) + attributed, `undefined`-safe formatMcpBadge (REQ-30/REQ-32)
 │   │   ├── index.ts            barrel export for runtime subsystem
 │   │   └── adapters/
-│   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK); connected-provider discovery + `opencode models` fallback
+│   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK); connected-provider discovery + `opencode models` fallback; sessionHistory = true
 │   │       ├── claude.ts       ClaudeRuntimeAdapter (Claude Code CLI / stdio)
-│   │       ├── codex.ts        CodexRuntimeAdapter (OpenAI Codex CLI)
+│   │       ├── codex.ts        CodexRuntimeAdapter (OpenAI Codex CLI) + `codex mcp list --json` parser
 │   │       ├── omp.ts          OmpRuntimeAdapter (Oh My Pi CLI) + `omp models` parser
 │   │       ├── agy.ts          `agy models` parser (id<TAB>name TSV)
 │   │       ├── commandcode.ts  CommandCodeRuntimeAdapter (Command Code CLI) + `--list-models` parser
 │   │       ├── qwen.ts         QwenRuntimeAdapter (Qwen Code CLI)
+│   │       ├── kimi.ts         KimiRuntimeAdapter: `-p <prompt>` prompt mode, no permission flag, `kimi provider list --json`
+│   │       ├── pi.ts           PiRuntimeAdapter: `-p` + stdin, `--model`, `pi --list-models`, assumed `--approve`
+│   │       ├── devin.ts        DevinRuntimeAdapter (formerly `windsurf`): `-p --respect-workspace-trust false` + `--prompt-file`, `devin models list`, `devin mcp list`
+│   │       ├── mcode.ts        McodeRuntimeAdapter (MiniMax Code): `exec --input -` + `--permission full`; no model listing, no mcp command
+│   │       ├── mimo.ts         MimoRuntimeAdapter (MiMo Code): `run` from stdin + `--yolo`, `mimo models`, `mimo mcp list`
 │   │       ├── modelList.ts    runModelListCommand: bounded, sanitized spawn used by every listing CLI (REQ-27)
-│   │       ├── mcpList.ts      per-CLI `mcp list` parsers (opencode/claude/qwen/agy/commandcode) + listMcpServersViaCommand (REQ-32)
-│   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio, native model flags)
+│   │       ├── mcpList.ts      per-CLI `mcp list` parsers (opencode/claude/qwen/agy/commandcode/codex/devin/mimo) + listMcpServersViaCommand (REQ-32)
+│   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio, native model flags, auto-approval args, sessionHistory = false)
 │   │       └── index.ts        re-exports all adapters
-│   ├── cycle.ts            CycleEngine: pipeline-as-data (per profile), retry/fix/escalate loop, state machine
-│   ├── phases.ts           the 8 phase functions + 3 fix functions; builds prompts/commands
+│   ├── cycle.ts            CycleEngine: pipeline-as-data (per profile, `readOnly` flag), retry/fix/escalate loop, structural verdicts, state machine
+│   ├── phases.ts           the 8 phase functions + 3 fix functions; the single prompt seam; huginn-orchestrated VALIDATE_STEP; read-only tree guard
+│   ├── steps/              huginn-owned step instructions (REQ-40): instructions.ts (embedded roles/tasks), prompts.ts (per-step composers), context.ts (bounded reads, git capture, untrusted embedding, verdict contracts), types.ts (StepContext)
+│   ├── gitRepo.ts          ensureGitRepository: `git init -b main` + `.gitignore` + identity + bootstrap commit (REQ-39)
 │   ├── gate.ts             verdict parsers, JSON judge, fail-closed logic
 │   ├── profiles.ts         PROFILES: the named pipelines (huginn Cycle + sdd/odd/rdd/strict-tdd) over the phase vocabulary (REQ-36)
-│   ├── receipts.ts         frozen iteration evidence under .huginn/receipts/ (tree hash + verdicts) for rdd/strict-tdd (REQ-36)
+│   ├── receipts.ts         frozen iteration evidence under .huginn/receipts/ + treeHash (used by the read-only guard) for rdd/strict-tdd (REQ-36)
 │   ├── questionBlock.ts    agent-agnostic `<<<HUGINN_QUESTION>>>` block parser + answer formatter (REQ-37)
 │   ├── decisionBroker.ts   FIFO queue of pending human/permission decisions
 │   ├── permissions.ts      opencode event subscription: permission handling + stream forwarding
 │   ├── planMode.ts         `huginn plan`: drafts spec/adr/plan via the thinker; exported prompt
 │   │                       builders + draft-format contract reused by live mode
-│   ├── liveMode.ts         LiveEngine: chat-refine → scope → draft → approve → handoff to CycleEngine
+│   ├── liveMode.ts         LiveEngine: chat-refine → scope → draft → approve → handoff to CycleEngine; transcript replay, session persistence, resume/reattach, switchRuntime, getDiagnostics
 │   ├── liveRepo.ts         live-mode git helpers: repo context, intent-to-add staging, docs commit
 │   ├── modelRouter.ts      "provider/model" → {providerID, modelID} + back
-│   ├── diff.ts             git helpers, inferModules, hasImplementationCode (greenfield detection)
+│   ├── diff.ts             git helpers + hardening, inferModules, hasImplementationCode (greenfield detection), probeGitRepo/gitRepoState/isGitRepo
 │   ├── skills/
 │   │   ├── loader.ts       skill discovery (.huginn/skills → .opencode/skills), flat-frontmatter parser, BUILTIN_SKILLS, containment + O_NOFOLLOW read
 │   │   ├── types.ts        Skill contract (id, name, description, triggers, body, filePath, builtin)
@@ -100,13 +110,15 @@ src/
 │       └── memory-service.ts MemoryService core + IMemoryService interface: saveObservation, search, getContext, linkSymbol, inspectSymbol, getStats, syncToDisk, importFromDisk
 ├── server/
 │   ├── lifecycle.ts        spawn/kill `opencode serve`, health polling, server.log
-│   └── client.ts           SDK wrapper: createClient, session creation, prompt/runCommand (sandbox `directory` query), withTimeout
+│   └── client.ts           SDK wrapper: createClient, session creation, prompt/runCommand (sandbox `directory` query), sessionExists (reattach probe), withTimeout
 ├── setup/
-│   └── install.ts          template discovery, install/uninstall bookkeeping
+│   └── opencodeConfig.ts   getOpencodeConfigDir (HUGINN_OPENCODE_CONFIG_DIR override)
 ├── state/
 │   ├── store.ts            .harness/ layout, atomic state persistence, progress markdown
+│   ├── liveSession.ts      persisted live sessions: <project>/.huginn/live/sessions.json (atomic, 0o600, caps, containment, sanitization)
 │   └── schema.ts           zod schema for HarnessState/HistoryEntry
 ├── util/
+│   ├── prompt.ts           promptLine/promptYesNo + PromptIo (TTY/CI guard, readline plumbing)
 │   └── text.ts             sanitizeTerminalText (ANSI + C0/C1 control stripping) shared by TUI, agent adapters & skills (SEC-001)
 ├── plan/
 │   ├── parser.ts           plan.md → Iteration[]
@@ -114,20 +126,23 @@ src/
 └── tui/
     ├── app.tsx             runTui and runLiveTui entry points
     ├── render.tsx          alternate screen setup, console patching, ink render bridges
+    ├── theme.ts            semantic colour tokens, light/dark/auto modes, NO_COLOR handling (REQ-47)
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
     ├── commandRegistry.ts  single slash-command registry (id, aliases, argHint, description) driving dispatch, the palette and /help (REQ-28 / ADR-28)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
+    ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
     ├── feedback.ts         the one feedback voice: ✓/⚠/… prefixes, next-step hints, empty-chat first-run hints (REQ-31)
+    ├── sessionContext.ts   shared status summaries for the header and the side panel (no fabricated values) (REQ-47)
     ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
+    ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only (REQ-47)
+    ├── LiveHero.tsx        empty-conversation hero (brand + first-run guidance) (REQ-47)
     ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
-    ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette)
+    ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette, composer, side panel)
     ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp), attributed to the active agent
     ├── AgentPickerModal.tsx interactive runtime picker (/agent): availability, active marker, detected path (REQ-33)
     ├── HelpModal.tsx       live slash-command cheat sheet (generated from the registry), shortcuts & active config (/help)
     ├── SkillsModal.tsx     project/built-in skills browser & prompt-body preview (/skills)
     └── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence (honest discovery states)
-scripts/postinstall.ts       bun install hook → installer prompt
-templates/{agents,commands}/ opencode agent/command definitions bundled as markdown
 ```
 
 ### Runtime wiring (`src/cli.ts` → engine → frontends)
@@ -138,7 +153,7 @@ flowchart TD
     CMD -- "run" --> RUN["startServer() → CycleEngine"]
     CMD -- "plan" --> PLAN["runPlan()"]
     CMD -- "live" --> LIVE["LiveEngine"]
-    CMD -- "install" --> INST["runInstall()"]
+    CMD -- "install" --> INST["handleInstallCommand() (no-op)"]
     CMD -- "memory" --> MEM["handleMemoryCommand()"]
     CMD -- "mcp" --> MCP["handleMcpCommand()"]
     CMD -- "check" --> CHK["handleCheckCommand()"]
@@ -183,19 +198,26 @@ interface PipelineStep {
   fixPhase: PhaseName | null; // FIX_* phase to run when blocked
   fixLabel: string;
   blocking: boolean;
+  readOnly?: boolean;        // auditor phases: a tree-hash guard must prove they did not write
 }
 ```
 
-| phase | fn | gate | fixPhase | blocking |
-|---|---|---|---|---|
-| SPEC_AUDIT | `specAudit` | spec-audit | FIX_SPEC | ✅ |
-| EXECUTE | `execute` | none | — | — |
-| VALIDATE_STEP | `validateStep` | validate-step | FIX_VALIDATE | ✅ |
-| TEST_MODULE | `testModule` | judge | FIX_TEST | ✅ |
-| SECURE_CHECK | `secureCheck` | judge | FIX_SECURITY | ✅ |
-| REVIEW | `review` | judge | FIX_REVIEW | ✅ |
-| DOC_SYNC | `docSync` | none | — | — |
-| COMMIT_ALL | `commitAll` | none | — | — |
+| phase | fn | gate | fixPhase | blocking | readOnly |
+|---|---|---|---|---|---|
+| SPEC_AUDIT | `specAudit` | spec-audit | FIX_SPEC | ✅ | ✅ |
+| EXECUTE | `execute` | none | — | — | — |
+| VALIDATE_STEP | `validateStep` | validate-step | FIX_VALIDATE | ✅ | ✅ |
+| TEST_MODULE | `testModule` | judge | FIX_TEST | ✅ | — |
+| SECURE_CHECK | `secureCheck` | judge | FIX_SECURITY | ✅ | ✅ |
+| REVIEW | `review` | judge | FIX_REVIEW | ✅ | ✅ |
+| DOC_SYNC | `docSync` | none | — | — | — |
+| COMMIT_ALL | `commitAll` | none | — | — | — |
+
+Every step is a **prompt huginn composes itself** (`src/engine/steps/`), sent through the single
+`promptWithContext` seam; no step is an installed slash command, and only `EXECUTE`/the `FIX_*` phases
+name opencode's built-in `build` agent (§ 28.2). The `readOnly` flag is enforced at runtime: the
+engine hashes the work tree before and after the step (`treeHash`) and forces `blocked` when the
+signature is missing or changed (§ 5).
 
 That table is the **Huginn Cycle** — `profile: "huginn"`, the default. Since REQ-36 the pipeline is
 selected per run from `PROFILES` (`src/engine/profiles.ts`), a record of named `PhaseName[]`
@@ -318,9 +340,21 @@ flowchart LR
 - The two parser functions return `Verdict | null`. `null` means "no parseable
   marker" and the engine's `gatedVerdict()` maps it to `blocked` with a warning
   — **fail closed**.
-- `validate-step` verdicts merge every signal by severity (`blocked > warning >
-  pass`): the `### Overall gate:` line, the trailing handoff markers from
-  `templates/commands/validate-step.md`, and near-miss prose. Severity merging
+- **Structural verdicts win**: when a phase computed the verdict itself it travels as
+  `authoritativeVerdict` on the phase result (`resolveStructuralVerdict`), and `runPhase` gates on that
+  field instead of re-reading the report text — so a report whose prose contradicts its own gate line
+  cannot change the outcome. `VALIDATE_STEP` is the case that matters: huginn runs the qa/spec-auditor/
+  security sub-prompts itself, computes the verdict from their `### Audit status:` / `### Overall
+  fidelity:` lines (`computeValidateVerdict` — empty or marker-less → `blocked`), lets the synthesis
+  only *escalate* it, and rewrites the report's gate/handoff lines (`enforceValidateVerdict`) so
+  exactly one coherent verdict remains (§ 28.2).
+- **Read-only guard**: for the auditor phases the engine hashes the work tree
+  (`treeHash`) before and after the step; a missing or changed signature forces `blocked`
+  (`readOnlyTreeViolation`) and the phase's own verdict is discarded — an audit that wrote to the
+  repository can never pass a gate.
+- `validate-step` verdicts still merge every signal by severity (`blocked > warning >
+  pass`): the `### Overall gate:` line, the trailing handoff markers the embedded
+  validate-step instruction carries, and near-miss prose. Severity merging
   means a contradiction (e.g. a 🟢 overall gate plus a `🛑 BLOCKED` handoff)
   can never downgrade the report; the prose signals are negation-aware so a
   clean report listing what it does NOT contain (`no 🔴`, `not blocked`) is not
@@ -437,6 +471,11 @@ has instead of inventing new ones:
   plan.md` shows the drafts; abort drops the staging (`unstageDocs`); approval
   commits them (`commitDocs`, subject `docs(scope): <first line of scope>`)
   and clears stale `.harness/` state before a fresh `CycleEngine` takes over.
+- **Session context that survives** (§ 29): `messages` is mirrored to
+  `<project>/.huginn/live/sessions.json`, so the conversation outlives a restart *and* the handoff
+  (which clears `.harness/` only); a resumed run reattaches to the stored opencode session when it is
+  still alive, and a runtime whose backend keeps no history receives a bounded, nonce-delimited
+  transcript of the prior turns on every prompt.
 
 ```mermaid
 sequenceDiagram
@@ -513,50 +552,54 @@ blocks. The only cross-cutting wiring done outside the engines is
 `subscribeToEvents`, which is handed the engine's `ask()` as its decision
 callback — one line in `cli.ts` (`(req) => engine.ask(req)` / `(req) => live.ask(req)`).
 
-## 10. Installer design
+## 10. Built-in step prompts (the installer is gone)
+
+The cycle no longer delegates to opencode agents or commands that must be copied into a config
+directory; huginn composes every step's instruction itself and sends it as a prompt (§ 28.2):
 
 ```mermaid
 flowchart LR
-    A[bun install] --> B[scripts/postinstall.ts]
-    B --> C{all 11 present?}
-    C -- yes --> Z[silent exit 0]
-    C -- no --> D[promptYesNo]
-    D -- no --> Z
-    D -- yes --> E[installTemplates]
-    F[huginn install] --> E
-    E --> G[copy templates/{agents,commands}/*.md → ~/.config/opencode/...]
-    G --> H{file exists?}
-    H -- yes, no force --> I[skip]
-    H -- no --> J[copy + chmod 0644]
-    H -- yes, force --> J
+    A["cycle step (phases.ts)"] --> B["step prompt builder (engine/steps/prompts.ts)"]
+    B --> C["role + task text (engine/steps/instructions.ts)"]
+    B --> D["bounded context (engine/steps/context.ts): docs, git, modules"]
+    D --> E["embedUntrusted(...) — sanitized, fence-neutralised, nonce-delimited"]
+    C --> F["prompt(text) → IAgentSession"]
+    E --> F
+    G["huginn install"] --> H["handleInstallCommand(): no-op notice, exit 0"]
 ```
 
-- `REQUIRED_TEMPLATES` is a fixed list of 11 entries (5 agents + 6 commands)
-  and doubles as the runtime contract: `huginn run`/`plan` warn when any is
-  missing.
-- `findTemplatesRoot()` walks up at most 8 directory levels from
-  `import.meta.dir` looking for `templates/{agents,commands}`, which makes the
-  same code work from `src/` (dev), `dist/` (bundled bin) and `scripts/`
-  (postinstall). `HUGINN_TEMPLATES_DIR` short-circuits the walk.
-- The destination defaults to `~/.config/opencode` and is overridable via
-  `HUGINN_OPENCODE_CONFIG_DIR` — this is how the installer tests isolate
-  themselves from the real config dir.
-- No-overwrite is deliberate: opencode config may be personalized, and the
-  agent/command files are the user's, not huginn's. `--force` exists for
-  re-bundling.
+- `src/engine/steps/instructions.ts` inlines the five roles (`spec-auditor`, `qa`, `security`,
+  `doc-writer`, `reviewing`) and the task bodies, preserving the exact literals the gates depend on
+  (`AUDIT-ONLY MODE`, the `### Overall fidelity:` / `### Overall gate:` markers, the trailing handoff
+  lines, the non-interactive/scan guardrails). Nothing is read from disk at runtime, so a bundled bin
+  and a source checkout behave identically.
+- `src/engine/steps/prompts.ts` composes per-step text; `src/engine/steps/context.ts` provides the
+  bounded readers (60 000-character cap, regular-file check) and the git capture (4 s timeout, byte
+  ceiling, subcommand allowlist — `diff`, `log`, `status`, `ls-files`, `show` only), the
+  `!`git …`` interpolation resolver (with only `head`/`sort` pipes) and the audit/fidelity verdict
+  contracts.
+- The old `templates/{agents,commands}/` tree, `scripts/postinstall.ts`, `src/setup/install.ts`, the
+  `postinstall` script and `HUGINN_TEMPLATES_DIR` are removed. `huginn install` survives as a
+  documented no-op (`src/commands/install.ts`) because `install` is still a routed subcommand.
+- The two primitives the old installer owned moved rather than vanished: `promptLine`/`promptYesNo`
+  (with the `PromptIo` seam) live in `src/util/prompt.ts`, and `getOpencodeConfigDir` in
+  `src/setup/opencodeConfig.ts`.
 
 ## 11. Key invariants
 
 1. **Fail closed**: no path exists where an unparseable gate report becomes a
-   pass. (`gatedVerdict`, judge fallback, both tests.)
+   pass. (`gatedVerdict`, judge fallback, both tests.) A huginn-computed verdict is authoritative
+   (`authoritativeVerdict`), and a read-only auditor phase whose tree signature is missing or changed
+   is forced to `blocked`.
 2. **Every decision gets exactly one answer**: FIFO + `resolveAll` on abort.
 3. **No state loss**: `state.json` is only ever replaced atomically; the `run`
    cycle never touches plan/spec/adr — the only writers are `plan` mode (at
    creation time) and live mode (human-approved drafts, committed via git).
 4. **`.harness/` never participates in the build**: excluded in `.gitignore`
-   and filtered out of every git-diff-based helper.
+   and filtered out of every git-diff-based helper. Live-session state lives outside it
+   (`<project>/.huginn/live/sessions.json`) under a `.huginn/.gitignore` holding `*`.
 5. **The pipeline table is the only place phase wiring lives**: adding a phase
-   is adding one row (plus its `phases.ts` function and template command).
+   is adding one row (plus its `phases.ts` function and its step prompt).
    The phase-name lists that mirror the pipeline — `MAIN_PHASES`
    (`src/engine/types.ts`), the TUI's `BASE_PHASES` (`src/tui/Dashboard.tsx`)
    and `PHASE_LABEL` (`src/state/store.ts`) — are duplicated by hand and must
@@ -584,9 +627,10 @@ flowchart LR
 - A single global emitter is simple and decouples the engine from the UI, but
   means any state the dashboard keeps must be re-derived from events (it cannot
   reach into the engine beyond `getState`).
-- Bundled markdown templates are transparent and user-editable but can drift
-  from what the engine's parsers expect — the parser regexes are the contract,
-  and the templates are the other side of it.
+- Bundled step prompts are transparent and versioned with the engine, but they can no longer be
+  personalised by the user (the old installer copied them into the opencode config so they could be
+  edited) — the parser regexes and the embedded marker lines are the contract, and both now live in
+  the same repository, so a change to a marker must update the parser in the same commit.
 - All model traffic is synchronous request/response through one opencode
   session per iteration; parallelism (multiple agents at once) is deliberately
   not attempted, which keeps verdict ordering and state trivial.
@@ -1564,8 +1608,12 @@ flowchart TD
 
 Both `run` and `live` default `--project` to `canonicalize(process.cwd())` (realpath, so embedded
 paths match what the opencode server resolves) and resolve models from configuration instead of
-erroring on missing flags. A non-git project is still a fatal error. `--sandbox` / `--no-sandbox`
-are boolean flags (`BOOLEAN_FLAGS`) stored in `RunConfig.sandbox` (default `true`).
+erroring on missing flags. A project that is inside **no** work tree is no longer fatal: the command
+bootstraps one (`ensureGitRepositoryOrExit` → `git init -b main` + `.gitignore` + bootstrap commit,
+§ 28.1) unless `--no-git-init` asks for the fail-closed behavior. `--sandbox` / `--no-sandbox`
+are boolean flags (`BOOLEAN_FLAGS`) stored in `RunConfig.sandbox` (default `true`); the live-session
+flags (`--continue`/`-c`, `--session <id>`, `--list-sessions`/`-sl`) are boolean/valued flags declared
+there too, so a bare `-c` can never swallow the following idea.
 
 #### Model resolution precedence
 
@@ -1625,14 +1673,14 @@ unreachable config layer:
 agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`
 (`src/agents/integrator.ts`), so a new agent is a one-row addition (REQ-15).
 
-#### `AGENT_REGISTRY` (11 targets + `all`)
+#### `AGENT_REGISTRY` (13 targets + `all`)
 
 | id | label | MCP config path(s) | format | rules file |
 |---|---|---|---|---|
 | `cursor` | Cursor | `<project>/.cursor/mcp.json`, `<home>/.cursor/mcp.json` | `mcpServers` | `.cursorrules` |
 | `claude` | Claude Code / Desktop | `<project>/.mcp.json`, `<home>/.claude.json`, `<home>/.claude/claude_desktop_config.json` | `mcpServers` | `CLAUDE.md` |
 | `opencode` | OpenCode | `<home>/.config/opencode/opencode.json` (honors `HUGINN_OPENCODE_CONFIG_DIR`) | `opencode` (`mcp` key) | `AGENTS.md` |
-| `windsurf` | Windsurf | `<home>/.codeium/windsurf/mcp_config.json` | `mcpServers` | `.windsurfrules` |
+| `devin` | Devin | `<project>/.devin/mcp_config.json`, `<home>/.config/devin/mcp_config.json` | `mcpServers` | `.windsurf/rules/muninn.md` |
 | `qwen` | Qwen Code | `<home>/.qwen/settings.json` | `mcpServers` | `QWEN.md` |
 | `codex` | OpenAI Codex CLI | `<home>/.codex/config.toml` | `toml` (`[mcp_servers.muninn]`) | `AGENTS.md` |
 | `agy` | Antigravity CLI (agy) | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` | `AGENTS.md` |
@@ -1640,6 +1688,8 @@ agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`
 | `pi` | Pi coding agent | `<home>/.pi/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` | `AGENTS.md` |
 | `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.commandcode/mcp.json` | `mcpServers` | `AGENTS.md` |
 | `omp` | Oh My Pi | `<home>/.omp/mcp.json`, `<project>/.omp/mcp.json` | `mcpServers` | `AGENTS.md` |
+| `mcode` | MiniMax Code | `<project>/.mcp.json` | `mcpServers` | `AGENTS.md` |
+| `mimo` | MiMo Code | `<home>/.config/mimocode/mimocode.json` | `opencode` (`mcp` key) | `AGENTS.md` |
 
 #### Three registration formats
 
@@ -1761,9 +1811,10 @@ letting `createSandbox` throw.
   `iterationSessionId` was bound to a different directory and is never reused.
 - **The agent is bound to the sandbox through the opencode SDK `directory` query parameter, not
   just rewritten paths.** `createSession`, `prompt` and `runCommand` in `src/server/client.ts`
-  forward a `directory` to the server, and `PhaseContext.directory` is set to `workPath`;
-  `agentDirectory(ctx)` (`ctx.directory ?? ctx.projectPath`) is passed to every phase prompt and
-  slash command (including the `FIX_*` thinker prompts). The `PhaseContext` also carries
+  forward a `directory` to the server (the phase pipeline only uses `prompt` — see § 28.2), and
+  `PhaseContext.directory` is set to `workPath`; `agentDirectory(ctx)` (`ctx.directory ??
+  ctx.projectPath`) is passed to every phase prompt, including the `FIX_*` thinker prompts. The
+  `PhaseContext` also carries
   `projectPath = workPath`, `baseCommit = headCommit(workPath)`, and the `spec/adr/plan` doc paths
   mapped into the sandbox (`sandboxDocPath`), so harness-side module inference (`inferModules`) and
   the compiler paths use `workPath` too. **Muninn is the deliberate exception**: the `PhaseContext`
@@ -1900,12 +1951,14 @@ flowchart TD
 The runtime abstraction defines two foundational ports:
 
 1. **`IAgentRuntime`**:
-   - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `agy`).
+   - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`).
    - `name: string` — human-readable agent name.
+   - `readonly sessionHistory?: boolean` — `true` when the backend keeps the conversation server-side (only `opencode`); every subprocess adapter declares `false` and `undefined` is read as "does not keep history" (§ 29.1).
    - `isAvailable(): Promise<boolean>` — non-blocking probe verifying if the agent's executable binary exists on `PATH` or daemon is reachable.
    - `getAvailableModels(): Promise<ModelInfo[]>` — queries the models the runtime can actually use (never a fabricated catalog); returns `[]` when the runtime exposes no listing mechanism.
    - `getModelCatalog?(): Promise<ModelCatalog>` — richer discovery carrying a `reason` when the catalog is empty, so an empty result is never indistinguishable from a failure (REQ-27/AC-27.4).
    - `getMcpStatus(): Promise<McpStatusReport>` — inspects configured Model Context Protocol servers, transport types, and tool counts.
+   - `listMcpServers?(): Promise<McpServerListing[]>` — the agent's own enumeration where its CLI can list servers (REQ-32).
    - `createSession(options: SessionOptions): Promise<IAgentSession>` — creates an execution session bounded to the target directory.
    - `startDaemon?(): Promise<void>` / `stopDaemon?(): Promise<void>` — lifecycle hooks for runtimes requiring background daemons (e.g. OpenCode server).
 
@@ -1917,13 +1970,18 @@ The runtime abstraction defines two foundational ports:
 
 ### 21.2 Concrete Adapters (`src/engine/agent/adapters/`)
 
-- **`OpencodeRuntimeAdapter`**: Wraps `opencode serve` and `@opencode-ai/sdk`. Manages background server lifecycle (`startDaemon`, `stopDaemon`), translates `client.provider.list()` and `client.mcp.status()`, and runs sessions via OpenCode's HTTP SDK.
+- **`OpencodeRuntimeAdapter`**: Wraps `opencode serve` and `@opencode-ai/sdk`. Manages background server lifecycle (`startDaemon`, `stopDaemon`), translates `client.provider.list()` and `client.mcp.status()`, runs sessions via OpenCode's HTTP SDK, and is the only adapter with `sessionHistory = true`.
 - **`ClaudeRuntimeAdapter`**: Connects to the Claude Code CLI (`claude`). Supports interactive prompt streaming with `--print` flags and stdin piping.
-- **`CodexRuntimeAdapter`**: Integrates with OpenAI Codex CLI (`codex`).
+- **`CodexRuntimeAdapter`**: Integrates with OpenAI Codex CLI (`codex`); model via `-m`, servers via `codex mcp list --json`, no model listing.
 - **`OmpRuntimeAdapter`**: Connects to Oh My Pi (`omp`).
 - **`CommandCodeRuntimeAdapter`**: Integrates with Command Code (`commandcode` or fallback `command-code`).
 - **`QwenRuntimeAdapter`**: Integrates with Qwen Code (`qwen` or fallback `qwen-code`).
-- **`GenericSubprocessRuntimeAdapter`**: Reusable base adapter and session implementation managing subprocess stdio, process groups, timeouts, and JSON/TOML MCP status inspection.
+- **`KimiRuntimeAdapter`**: kimi's prompt-mode shape — the prompt is the `-p <prompt>` flag value (no stdin channel, no `--prompt-file`), permission flags are the empty list (the CLI rejects them in prompt mode), and discovery parses `kimi provider list --json`.
+- **`PiRuntimeAdapter`**: `-p` with the prompt on stdin, `--model`, `pi --list-models`, and the *assumed* `--approve` (project-resource trust, announced as such).
+- **`DevinRuntimeAdapter`**: print mode `-p --respect-workspace-trust false` with the prompt passed through `--prompt-file`; `devin models list` and `devin mcp list`.
+- **`McodeRuntimeAdapter`**: MiniMax Code — `exec --input -` plus `--permission full`; no model listing and no `mcp` command (both honestly absent → `[]`/config fallback).
+- **`MimoRuntimeAdapter`**: MiMo Code — `run` reads the prompt from stdin, `--yolo`, `mimo models`, `mimo mcp list`, with an opencode-format `mcp` container.
+- **`GenericSubprocessRuntimeAdapter`**: Reusable base adapter and session implementation managing subprocess stdio, process groups, timeouts, native model flags, per-runtime auto-approval args, and JSON/TOML MCP status inspection; it is what `agy` and `cursor` are built from.
 
 ### 21.3 Agent Resolution Precedence
 
@@ -1933,8 +1991,10 @@ When initializing `CycleEngine` or `LiveEngine`, Huginn resolves the active runt
 2. **Project Config**: `<project>/.huginn/config.json` (`agent` key)
 3. **User Config**: `~/.huginn/config.json` (`agent` key)
 4. **Environment**: `HUGINN_AGENT`
-5. **Auto-Detection**: Scans `PATH` using `detectAvailableAgents()` for installed binaries (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`).
+5. **Auto-Detection**: Scans `PATH` using `detectAvailableAgents()` for the first installed binary, in `AGENT_TARGETS` order (`cursor`, `claude`, `opencode`, `devin`, `qwen`, `codex`, `agy`, `kimi`, `pi`, `commandcode`, `omp`, `mcode`, `mimo`).
 6. **Fallback**: Default to `opencode`.
+
+The stored/env paths are softened for a target that was **removed** (`REMOVED_AGENT_TARGETS`: `gemini → agy`, `windsurf → devin`): it warns and falls through to detection, while any other unknown value is still rejected (SEC-001).
 
 ### 21.4 Security Hardening & Subprocess Isolation
 
@@ -2301,7 +2361,7 @@ Iteration 23 adds a file-based **skills subsystem** (`src/engine/skills/`) and t
 
 ### 24.1 Motivation & Architectural Objectives
 
-1. **Project-specific prompting**: teams want reusable, version-controlled prompt fragments (audits, refactors, domain explainers) without editing huginn's source or the installed opencode templates.
+1. **Project-specific prompting**: teams want reusable, version-controlled prompt fragments (audits, refactors, domain explainers) without editing huginn's source or its embedded step prompts.
 2. **Command discoverability**: before this iteration Live mode understood only `/draft`, `/go`, `/quit` and `/abort`; every other `/…` string was silently forwarded to the model as chat text, which produced confusing model replies to typos.
 3. **Untrusted input**: skill files and skill directories come from the checked-out repository, so discovery and parsing must be treated as an attack surface (symlink escape, oversized reads, terminal-escape injection, prototype pollution).
 
@@ -2423,7 +2483,8 @@ configuration the engine needs, while `huginn --help` dumped one flat ~90-line s
 five commands a newcomer actually wants were indistinguishable from installer internals and
 model-resolution precedence. Three changes ship together: a guided `huginn init` wizard, a two-tier
 `--help` hierarchy, and greenfield-launch onboarding. The implementation lives in
-`src/commands/init.ts` (new), `src/cli.ts`, `src/commands/setup.ts`, `src/setup/install.ts`, and
+`src/commands/init.ts` (new), `src/cli.ts`, `src/commands/setup.ts`, `src/util/prompt.ts` (the shared
+prompt seam, moved here when the template installer was removed) and
 `src/engine/agent/registry.ts`.
 
 ### 25.1 Motivation & Architectural Objectives
@@ -2468,10 +2529,10 @@ returned `InitReport`:
 
 | Step | Detection / action | Source |
 |---|---|---|
-| 1. Repository | `existsSync(join(project, ".git"))` — informational only; a missing repo prints a `git init` tip and never fails | `src/commands/init.ts` |
+| 1. Repository | `isGitRepo(project)` (`git rev-parse --is-inside-work-tree` — a subdirectory, a linked worktree or a symlinked checkout counts) — informational only; a missing work tree prints a `git init` tip and never fails | `src/engine/diff.ts` |
 | 2. Package manager | `detectPackageManager(projectPath)`: `bun.lock`/`bun.lockb` → `bun`, `pnpm-lock.yaml` → `pnpm`, `yarn.lock` → `yarn`, `package-lock.json` → `npm`, a lone `package.json` → `npm`, nothing → `unknown` (bun wins when lockfiles coexist) | `detectPackageManager` |
 | 3. Agent CLIs | `detectAvailableAgents(env.PATH)`, printed primary-first (`PRIMARY_AGENT_CLIS` = `opencode`, `claude`, `codex`, `omp`) then the remaining `AGENT_TARGETS` in registry order; available entries show a green `✔` and their path, unavailable ones are dimmed | `src/engine/agent/registry.ts` |
-| 4. Agent & models | TTY-only prompts, else the flags/defaults; the default agent is the first `available: true` entry of the *same* printed list, falling back to `DEFAULT_AGENT` (`opencode`) | `promptChoiceDefault` / `promptTextDefault` |
+| 4. Agent & models | TTY-only prompts, else the flags/defaults; the default agent is the first `available: true` entry of the *same* printed list, falling back to `DEFAULT_AGENT` (`opencode`). The models come from a **numbered picker fed by the chosen runtime's catalog** (`discoverModelCatalog` → `getModelCatalog()`), with a plain-text fallback plus the sanitized `reason` when the runtime lists nothing (§ 30) | `promptChoiceDefault` / `promptTextDefault` / `promptModelChoice` |
 | 5. Muninn MCP | delegates to `handleSetupCommand({ "--agent", "--project", "--home"[, "--opencode-config-dir", "--force"] })`; `--skip-setup` skips it | `src/commands/setup.ts` |
 | 6. Project config | `saveUserConfig(projectPath, { agent, thinker, executor })` → `<project>/.huginn/config.json` (atomic, unknown keys preserved); overwrite prompt on a TTY unless `--force` | `src/config.ts` |
 
@@ -2546,7 +2607,7 @@ Three exports add the routing rule without touching the live-first default:
 Three small extractions keep the wizard from re-implementing existing behaviour:
 
 - **`promptLine(question, fallback, io)` + `PromptIo { env?, stdin?, stdout? }`**
-  (`src/setup/install.ts`) — one readline implementation whose TTY/CI guard and `node:readline`
+  (`src/util/prompt.ts`) — one readline implementation whose TTY/CI guard and `node:readline`
   plumbing are shared. `promptYesNo(question, fallback, io)` now delegates to it (asking `[y/N]`
   with the `"yes"`/`"no"` fallback), so the `install` command and the wizard read answers through the
   identical seam; every field defaults to the real `process.*` primitive, so production callers omit
@@ -2585,7 +2646,11 @@ changed.
 | `commandcode` | `commandcode --list-models` (group headings, `id` + 2-space description rows; the trailing `Pass the full id…` / `Docs:` footer breaks the parse) | 82 |
 | `omp` | `omp models` (`<provider> (<count>)` sections + box-drawing table; header and border rows skipped) | 192 |
 | `agy` | `agy models` (`id<TAB>name` TSV; non-TSV preamble and duplicates dropped) | 14 |
-| `claude`, `qwen`, `kimi`, `pi`, `cursor`, `windsurf`, `codex` | none → `[]` **with a reason** | — |
+| `devin` | `devin models list` | captured in `test/fixtures/devin-models.txt` |
+| `mimo` | `mimo models` | captured in `test/fixtures/mimo-models.txt` |
+| `pi` | `pi --list-models` | captured in `test/fixtures/pi-models.txt` |
+| `kimi` | `kimi provider list --json` | captured in `test/fixtures/kimi-provider-list.json` |
+| `claude`, `qwen`, `codex`, `cursor`, `mcode` | none → `[]` **with a reason** | — |
 
 ```mermaid
 flowchart TD
@@ -2711,7 +2776,10 @@ list use it; the rest fall back to config-file discovery with `status: "unknown"
 | `qwen` | `qwen mcp list` | `parseQwenMcpList` | `connected` |
 | `agy` | `agy mcp list` | `parseAgyMcpList` | `enabled`/`disabled` (TSV; **config state**) |
 | `commandcode` | `commandcode mcp list` | `parseCommandcodeMcpList` | scope/auth surfaced as `detail` |
-| `omp`, `kimi`, `pi`, `cursor`, `windsurf` | *(none)* | — | config discovery → `unknown` |
+| `codex` | `codex mcp list --json` | `parseCodexMcpList` | per-server `enabled`/`discovered`/`auth_status` |
+| `devin` | `devin mcp list` | `parseDevinMcpList` | `• <name>` rows with an indented `Command:`/`URL:` detail; `✗ <name> (disabled)` |
+| `mimo` | `mimo mcp list` | `parseOpencodeMcpList` (reused — opencode-format output) | `connected` |
+| `omp`, `kimi`, `pi`, `cursor`, `mcode` | *(none)* | — | config discovery → `unknown` |
 
 ```mermaid
 flowchart TD
@@ -2892,6 +2960,346 @@ that observes identical stats across a switch).
   read. Provisioning keeps the single `registerMcpForTarget` (atomic, symlink-safe, key- and
   sibling-preserving, `0o600`); an existing registration is a no-op and an unparseable config is
   reported, never rewritten.
+
+## 28. Phase 8 — Huginn-owned cycle, git bootstrap, per-runtime permissions & runtime lineup
+
+Phase 8 removes the last dependencies the cycle had on *things outside the binary* and makes the
+runtime support honest. Verified facts behind it: `run`/`plan`/`live` refused to start in any
+directory that was not already a git repository; the cycle delegated its gates to slash commands and
+subagents that had to be copied into `~/.config/opencode` (and that a subprocess runtime could not
+resolve at all); a subprocess runtime had no way to answer a permission prompt, so
+`--permissions ask|deny` silently ran it fully auto-approved; and the runtime registry had drifted
+from the CLIs that exist. The implementation lives in `src/engine/steps/` (new),
+`src/engine/gitRepo.ts` (new), `src/engine/phases.ts`, `src/engine/cycle.ts`, `src/engine/diff.ts`,
+`src/engine/agent/registry.ts` + `src/engine/agent/adapters/`, `src/util/docPath.ts` (new),
+`src/util/prompt.ts` and `src/commands/install.ts`. The phase *engine* (`runPhase`/`runIteration`),
+the pipeline-as-data model, the worktree sandboxing model and the Muninn schema are untouched.
+
+### 28.1 Git bootstrap instead of a repository prerequisite (REQ-39)
+
+The prerequisite was not only strict, it was *wrong*: `existsSync(<project>/.git)` reports "not a
+repository" for a subdirectory, a linked worktree and a symlinked checkout — all of which are inside
+a work tree — while a bare repository and `.git` itself answer `false` with exit 0. A boolean cannot
+tell those apart, and the dangerous question is which failure may be answered with `git init`: a
+dubious-ownership or permission error must never be read as "this directory is safe to initialize".
+
+```mermaid
+flowchart TD
+    A["work command (run / plan / live)"] --> B["probeGitRepo(projectPath)"]
+    B --> C["git rev-parse --is-inside-work-tree"]
+    C -- "stdout true" --> D["work-tree → continue"]
+    C -- "stdout false, or git's 'not a git repository'" --> E{"--no-git-init?"}
+    C -- "any other failure" --> F["error → print reason, exit 1 (no mutation)"]
+    E -- yes --> G["<path> is not a git repository → exit 1"]
+    E -- no --> H["ensureGitRepository(): init -b main, .gitignore, identity, bootstrap commit"]
+    H --> I["re-probe → work-tree → continue"]
+```
+
+- **The tri-state** (`probeGitRepo` / `gitRepoState` / `isGitRepo`, `src/engine/diff.ts`) is
+  `work-tree | not-a-repo | error`, with git's own message kept as `detail`.
+- **The bootstrap** (`ensureGitRepository`, `src/engine/gitRepo.ts`) runs `git init -b main`, writes
+  `GITIGNORE_PATTERNS` (`node_modules/`, `dist/`, `build/`, `.harness/`, `.huginn/`, `*.log`,
+  `coverage/`, `.DS_Store`, `.env`) only when the name is free, fills in a committable identity
+  (`user.email`/`user.name`, treating an **empty** answer as missing, written `--local` so the user's
+  global config is never touched) and creates the commit `chore: initialize repository`. The engine
+  now always has a `HEAD` to diff against — which is also what makes `createSandbox` viable on a
+  greenfield project.
+- **Two hardening details worth keeping.** The `.gitignore` write is `lstat`-guarded (never following
+  the final component) and then created with the exclusive `wx` flag at `0o600`, so a repository (or
+  a directory about to become one) shipping a *dangling* `.gitignore -> ~/.bashrc` cannot make
+  onboarding write outside the project. And the bootstrap commit uses `--no-gpg-sign` rather than
+  `-c commit.gpgsign=false`, because `-c` is a forbidden argument to the hardened `git()` screen
+  (§ 28.6) — one invocation must not need an exemption the screen exists to close.
+- **`--no-git-init`** keeps the previous behavior for callers that must not be mutated, and
+  `huginn init` reports the same state through `isGitRepo()` while staying informational (it prints a
+  `git init` tip and never initializes).
+
+### 28.2 The cycle owns its step instructions (REQ-40 / REQ-41)
+
+The prompt composition is what makes a subprocess runtime a first-class citizen, so it is the single
+seam every phase goes through:
+
+```mermaid
+flowchart LR
+    A["phase fn (phases.ts)"] --> B["composer (engine/steps/prompts.ts)"]
+    B --> C["role + task literal (engine/steps/instructions.ts)"]
+    B --> D["bounded context (engine/steps/context.ts)"]
+    D --> E["embedUntrusted / embedFile — sanitized, bounded, nonce-delimited"]
+    B --> F["resolveShellInterpolations — git subcommand allowlist"]
+    C --> G["promptWithContext → IAgentSession.prompt(text, { agent?, model, directory })"]
+    E --> G
+    F --> G
+    H["huginn install"] --> I["handleInstallCommand(): no-op notice, exit 0"]
+```
+
+- `promptWithContext` is the only path a step takes, and the only `agent` it ever names is opencode's
+  built-in `build` (`EXECUTE` and the `FIX_*` phases), so a subprocess runtime receives the same text
+  as a plain prompt and opencode's session keeps the build agent's tools. Nothing calls `runCommand`
+  any more, which is why the same eight phases now run on every runtime.
+- `validateStep` is huginn-orchestrated: qa (`auditOnlyGuardrails()` → `AUDIT-ONLY MODE`, run the
+  suite once non-interactively, write no artefact), spec-auditor, security, then a synthesis turn
+  that receives the three reports. The sub-prompts demand the deterministic final lines
+  (`### Audit status:` for qa/security, `### Overall fidelity:` for the spec auditor) and the
+  synthesis emits the consolidated report.
+- There is nothing to install: `templates/{agents,commands}/`, `scripts/postinstall.ts`,
+  `src/setup/install.ts`, the `postinstall` script and `HUGINN_TEMPLATES_DIR` are gone, and
+  `huginn install` is a no-op handler (`src/commands/install.ts`) kept only because `install` is a
+  routed subcommand. The two primitives the installer owned moved: `promptLine`/`promptYesNo` (with
+  the `PromptIo` seam) to `src/util/prompt.ts`, `getOpencodeConfigDir` to
+  `src/setup/opencodeConfig.ts`.
+
+### 28.3 Deterministic verdicts and the read-only audit guard (REQ-40)
+
+Once huginn generates the `VALIDATE_STEP` report itself, letting the gate read that report would make
+the verdict the model's again — and nothing enforced that an auditor phase is read-only.
+
+```mermaid
+flowchart TD
+    subgraph phase["VALIDATE_STEP"]
+        A["qa (AUDIT-ONLY)"] --> B["spec-auditor"] --> C["security"] --> D["synthesis"]
+    end
+    A -- "### Audit status:" --> V["computeValidateVerdict(reports, synthesis)"]
+    B -- "### Overall fidelity:" --> V
+    C -- "### Audit status:" --> V
+    D -- "canonical '### Overall gate:' line" --> V
+    V --> W["enforceValidateVerdict(text, verdict)"]
+    V --> X["authoritativeVerdict on the PhaseOutput"]
+    X --> Y["resolveStructuralVerdict → runPhase gates on the field"]
+    Z["treeHash before"] --> T["readOnlyTreeViolation(before, after)"]
+    T -- "missing/changed" --> U["verdict forced to blocked"]
+```
+
+- **The sub-report verdict is fail-closed and deterministic**: an empty or marker-less report is
+  `blocked`, any blocked → `blocked`, any warning → `warning`, all green → `pass`
+  (`computeSubReportVerdict`). The synthesis is advisory: only its *canonical* `### Overall gate:`
+  line is read (`parseCanonicalGateLineVerdict`) and it may only escalate the result — reading any
+  emoji in the body would turn a model echoing its own template into a spurious BLOCKED.
+- **The report and the verdict are reconciled**: `enforceValidateVerdict` strips every pre-existing
+  gate/handoff line and appends huginn's own, so `parseValidateStepVerdict` (unchanged) reads back
+  exactly what huginn computed; the effective verdict also travels structurally as
+  `authoritativeVerdict`, and `runPhase` prefers it over the text (`resolveStructuralVerdict`).
+- **Read-only is enforced, not assumed**: `SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK` and `REVIEW`
+  carry `readOnly: true` in the pipeline; the engine hashes the working tree before and after the
+  step and forces `blocked` when the signature is **missing** as well as when it changed
+  (`readOnlyTreeViolation`) — a hash that cannot be taken is not evidence of a clean step.
+- The compiler-contract check short-circuits the gate before any model call when it finds a
+  violation **or cannot run** (`verifyContractsOrFail`, fail-closed — the gate is never silently
+  degraded to an agent-judged pass).
+
+### 28.4 Per-runtime permission auto-approval (REQ-42)
+
+| runtime | auto-approval flag | note |
+|---|---|---|
+| `claude` | `--dangerously-skip-permissions` | |
+| `codex` | `--dangerously-bypass-approvals-and-sandbox` | |
+| `qwen` | `-y` | |
+| `omp` | `--auto-approve` | |
+| `commandcode` | `--yolo` | |
+| `devin` | `--permission-mode dangerous` | carried over from the `windsurf` target |
+| `agy` | `--dangerously-skip-permissions` | |
+| `mcode` | `--permission full` | the `smart` default still decides per action |
+| `mimo` | `--yolo` | `run`'s own switch; its global `--trust`/`--never-ask` are rejected by `run` |
+| `cursor` | `-f` | |
+| `pi` | `--approve` | announced as *assumed*: project-resource trust, not tool auto-approval |
+| `kimi` | *(none)* | prompt mode rejects every permission switch and forces its own auto mode |
+| `opencode` | *(not applicable)* | permissions are enforced through the event subscriber |
+
+`SUBPROCESS_PERMISSION_ARGS` (`src/engine/agent/registry.ts`) is the table the inline-constructed
+runtimes read, while the class-based adapters export the same array *instance* next to their argv
+(`KIMI_PERMISSION_ARGS`, `PI_PERMISSION_ARGS`, `DEVIN_PERMISSION_ARGS`, `MCODE_PERMISSION_ARGS`,
+`MIMO_PERMISSION_ARGS`), so the documented table and the runtime cannot drift. Fail-closed behavior:
+`assertPermissionModeSupported(runtime.id, permissions)` (`src/cli.ts`) exits 1 before anything runs
+when `ask`/`deny` meets a non-opencode runtime, `LiveEngine.switchRuntime` refuses the same
+combination with the same wording (`subprocessPermissionMessage`), and an invalid `--permissions`
+value (`denn`) exits 1 instead of falling back to `auto`.
+
+### 28.5 Runtime lineup (REQ-43)
+
+| target | binary(ies) | model discovery | MCP enumeration |
+|---|---|---|---|
+| `opencode` | `opencode` | SDK `provider.list().connected` + `opencode models` fallback | `opencode mcp list` |
+| `claude` | `claude` | none → `[]` with a reason | `claude mcp list` (health-checks) |
+| `qwen` | `qwen`, `qwen-code` | none → `[]` with a reason | `qwen mcp list` |
+| `codex` | `codex` | none → `[]` with a reason | `codex mcp list --json` |
+| `commandcode` | `commandcode`, `command-code` | `commandcode --list-models` | `commandcode mcp list` |
+| `omp` | `omp` | `omp models` | none → config discovery (`unknown`) |
+| `agy` | `agy` | `agy models` (TSV) | `agy mcp list` (TSV, `enabled`/`disabled`) |
+| `devin` | `devin` | `devin models list` | `devin mcp list` |
+| `kimi` | `kimi`, `kimi-code` | `kimi provider list --json` | none → config discovery |
+| `pi` | `pi` | `pi --list-models` | none → config discovery |
+| `cursor` | `cursor` | none → `[]` with a reason | none → config discovery |
+| `mcode` | `mcode` | none (honestly absent) | none (the CLI has no `mcp` command) |
+| `mimo` | `mimo` | `mimo models` | `mimo mcp list` |
+
+`AGENT_BINARIES` declares the primary and fallback names, `detectAvailableAgents`/`resolveAgent` scan
+them in `AGENT_TARGETS` order, and `REMOVED_AGENT_TARGETS` (`windsurf → devin`, `gemini → agy`) makes
+a persisted removed target warn and fall through to detection instead of throwing (any *other*
+unknown value is still rejected, so a hostile config cannot name an arbitrary binary).
+
+### 28.6 Repository material is untrusted (REQ-40 / hardening)
+
+| surface | hazard | contained by |
+|---|---|---|
+| any embedded fragment (docs, git output, module names, reports, transcript) | repository text read as instructions; unbounded size | `embedUntrusted` — sanitized, fence-neutralised, `<<<BEGIN/END UNTRUSTED-<nonce> …>>>`, capped at `MAX_EMBEDDED_OUTPUT` = 60 000 chars with a truncation marker |
+| a `!`git …`` interpolation inside a task body | arbitrary command execution through a prompt | `resolveShellInterpolations` — subcommand allowlist (`diff`, `log`, `status`, `ls-files`, `show`), write/exec flags rejected, only `head`/`sort` pipes |
+| document paths (`spec.md`, `adr.md`, `plan.md`, embedded files) | symlinked read (exfiltration into a prompt) or write (clobbering the link target) | `src/util/docPath.ts` — a symlinked final component is always refused; inside the project the `realpath`ed path must stay inside the `realpath`ed root; a missing tail is decided on its nearest existing ancestor; an explicit out-of-project path keeps working, symlink-screened |
+| every git invocation | `core.pager`/`core.fsmonitor`/`core.hooksPath`, `diff.external`, a `.gitattributes` textconv driver, or a later `--ext-diff`/`--textconv` argument executing a repository-chosen program | `git()` — global `--no-pager -c core.pager=cat -c core.fsmonitor=false -c core.hooksPath=/dev/null`; `--no-ext-diff --no-textconv` inserted after the subcommand **and** at the end of the option argv (last-one-wins), plus a subcommand allowlist and the `FORBIDDEN_GIT_ARG` screen (`-c`, `--output`, `--exec-path`, `--upload-pack`, `--config-env`, `--git-dir`, `--work-tree`, `--no-index`, `--ext-diff`, `--textconv`, `-O`) for the bounded runner |
+| the live-session store | a hostile id echoed into a terminal or sent back to the opencode server | `LIVE_ID_PATTERN` validation plus `sanitizeTerminalText` on every identity field, in and out (§ 29.2) |
+
+## 29. Phase 8 — Live context, persisted sessions & resume
+
+The refinement conversation used to live only in `LiveEngine.messages`, so closing huginn lost it and
+the handoff to the cycle (`resetHarnessState`, which clears `.harness/`) blanked it. The other half
+of the problem was an assumption: opencode keeps the conversation server-side, every subprocess
+runtime does not, and a resumed or long session therefore saw no history at all. The implementation
+lives in `src/state/liveSession.ts` (new), `src/engine/liveMode.ts`, `src/server/client.ts`
+(`probeSession`), `src/cli.ts` (flags + listing) and `src/tui/LiveDashboard.tsx` (rehydration).
+
+### 29.1 Runtime session history and bounded transcript replay
+
+`IAgentRuntime.sessionHistory?: boolean` declares whether the backend keeps the conversation:
+`true` for opencode only, `false` for every subprocess adapter, and `undefined` is read as
+"does not keep history" — so context is re-sent rather than silently dropped.
+
+For a history-less runtime each turn carries `formatTranscript(messages)`: at most
+`TRANSCRIPT_MAX_TURNS` = 12 turns / 12 000 characters, newest last, with an explicit omission marker,
+each line `USER:`/`ASSISTANT:` sanitized, and the **current ask is never part of it**. The block is
+wrapped by `wrapUntrustedTranscript` in a `<<<BEGIN/END UNTRUSTED TRANSCRIPT-<nonce>>>` block whose
+nonce is fresh per prompt. A session that was successfully reattached to its server-side id
+suppresses the replay (`reattached`) instead of sending the conversation twice.
+
+### 29.2 The persisted store (`<project>/.huginn/live/sessions.json`)
+
+```mermaid
+flowchart TD
+    A["LiveEngine.messages"] --> B["upsertLiveSession(projectPath, session)"]
+    B --> C["sessions.json.tmp (exclusive, 0o600)"]
+    C --> D["renameSync → sessions.json"]
+    E["resume"] --> F["loadLiveSessions / getLiveSession / listLiveSessions"]
+    F --> G["sanitized LiveSession[] ([] + warning on any failure)"]
+    H["liveDir(projectPath)"] --> I["lstat every component → refuse a symlink; realpath(dir) must stay under realpath(projectPath); reopen O_DIRECTORY|O_NOFOLLOW"]
+```
+
+- **Location**: deliberately outside `.harness/` (the handoff clears it) and under `.huginn/`, whose
+  `.gitignore` is written `*`, so the state never dirties the working tree and the git-derived prompt
+  context stays clean.
+- **Atomicity and containment**: an exclusive temp file in the same directory is written `0o600` and
+  `renameSync`ed into place; every path component is `lstat`ed (a symlink is always refused) and
+  `realpath(liveDir)` must stay inside `realpath(projectPath)`; only directory levels this process
+  created are `chmod`ed `0o700`, and the directory is re-opened `O_DIRECTORY|O_NOFOLLOW` before a
+  write.
+- **Caps** (`MAX_LIVE_MESSAGES` = 200, `MAX_LIVE_SESSIONS` = 20, `MAX_LIVE_MESSAGE_CHARS` = 20 000
+  with a `…[truncated]` marker, `MAX_LIVE_STORE_BYTES` = 8 MB) are enforced on the **write** path as
+  well as on read — the per-message and per-session caps alone allow a store several times over the
+  byte cap, and a file the reader refuses would make the next save drop everything it can no longer
+  see. Shrinking announces what it drops.
+- **Fail-open reads**: a missing, unreadable, oversized, malformed or linked file yields `[]` (or
+  `undefined`) plus a warning on the engine log channel, so a damaged store is visible instead of
+  indistinguishable from "this project never ran live".
+- **Sanitized identities**: `id`, `runtimeId`, `projectPath`, `createdAt`, `updatedAt`,
+  `opencodeSessionId`, the title and every message text are terminal-sanitized in and out, and an id
+  that does not match `LIVE_ID_PATTERN` (`[A-Za-z0-9._:-]{1,128}` with at least one alphanumeric)
+  drops the whole session — the id is also sent back to the opencode server by the reattach probe.
+- **Deliberate residual**: two processes writing the store are serialized only by the atomic rename
+  (last writer wins; there is no cross-process lock), and containment is decided on the directory
+  *name* rather than held open as an `O_DIRECTORY` fd across the write.
+
+### 29.3 Resume flags, listing and reattach
+
+- **A plain `huginn live` always starts a new session.** Resume is explicit:
+  `--session <id>` (strongest) → `--continue`/`-c` (the project's most recently updated session,
+  saying so and starting fresh when there is none). A bare `--session` with no id exits 1 rather
+  than silently resuming nothing.
+- **`--list-sessions` / `-sl` is a report, not a run**: it prints id, `updatedAt`, runtime id, message
+  count and title (newest first) and exits 0 **before** permissions, the git bootstrap, the agent
+  runtime or the TUI are touched, so listing can never initialize a repository, spawn an agent or
+  start a cycle. The store's own warnings (which never change the exit code) are drained from the log
+  channel and printed to stderr; the project path is sanitized because this output is a terminal
+  sink.
+- **Reattach**: a resumed conversation probes its stored `opencodeSessionId` through the client.
+  `probeSession` keeps `exists` / `gone` / `failed` distinct so the outcome can be *reported* rather
+  than guessed; only a confirmed `exists` reattaches (and suppresses the transcript replay), anything
+  else replays the transcript and says so.
+
+### 29.4 Rehydration after the handoff
+
+The handoff reset clears `.harness/` only. The conversation therefore survives the cycle, and after
+it the live view is **rehydrated from the engine** (`LiveEngine.messages` is the view's source), so
+the refinement continues where it left off instead of rendering an empty card.
+
+## 30. Phase 8 — Onboarding model picker (REQ-45)
+
+`huginn init` used to ask for thinker/executor as free text while `ModelPickerModal` already
+discovered what the runtime can run (ADR-27) — two selection paths over the same runtime, one of them
+blind. Step 4 now goes through the same helper the modal uses:
+
+```mermaid
+flowchart TD
+    A["init step 4 (src/commands/init.ts)"] --> B["discoverModelCatalog(runtime) (engine/agent/modelCatalog.ts)"]
+    B -- "getModelCatalog() present" --> C["{ models, reason? }"]
+    B -- "legacy runtime" --> D["getAvailableModels()"]
+    C --> E{"catalog non-empty?"}
+    E -- yes --> F["numbered picker of provider/model ids (+ description)"]
+    E -- no --> G["plain text entry + sanitized reason"]
+    F --> H["entry value: current id as-is; an explicit flag the catalog omits verbatim; else catalog seed (thinker → first, executor → second)"]
+```
+
+- **Preselection rules** (`promptModelChoice`): a real catalog id is used as-is; an explicit
+  `--thinker`/`--executor` the catalog does not list is kept **verbatim**, so pressing Enter never
+  silently overrides what the user typed; a *default* absent from the catalog seeds from the catalog
+  (thinker → first model, executor → second) so the two pickers do not land on the same model.
+- **Honest fallback**: with no catalog, or an empty one carrying a `reason`, the wizard falls back to
+  plain text entry and prints the sanitized reason — a runtime that cannot list models is never a
+  dead end, and the non-TTY/`--yes` path uses the same values.
+- Sharing `discoverModelCatalog` is what keeps the wizard and the modal from drifting: one discovery
+  contract, one error vocabulary.
+
+## 31. Phase 8 — Composer, semantic theme & honest live surfaces (REQ-46 / REQ-47)
+
+### 31.1 The composer is an editor (`src/tui/composer.ts`)
+
+The message row was a single-line input: editing meant retyping and a long draft could not be written.
+`composer.ts` is a small text model — caret position within the wrapped draft, insertion at the caret,
+`←`/`→` by character (word-wise with `⌥`/Ctrl), `Backspace`/`Delete` at the caret,
+`Home`/`End` at the ends of the caret's *visual* row, and `cursorLineParts` painting the `▏` glyph in
+a free column (or over the character it covers when the row is full) so the caret never pushes a
+column off the row. On a draft that wraps, `↑`/`↓` move the caret between the composer's own visual
+rows (`cursorIndexAtRow`); on a single-row draft the key is swallowed, so the terminal still never
+scrolls. The draft soft-wraps up to `MAX_INPUT_ROWS` = 6 visible rows and then scrolls internally
+(`composerScroll`), so the layout budget is one content line until the draft actually wraps.
+
+### 31.2 Semantic theme tokens (`src/tui/theme.ts`)
+
+| aspect | behaviour |
+|---|---|
+| tokens | `text`, `muted`, `border`, `borderFocus`, `accent`, `accentStrong`, `ok`, `warn`, `danger`, `info`, `thinker`, `executor`, `system`, `brand` |
+| `text` | `undefined` — Ink emits no foreground escape, so the body inherits the terminal's own foreground (the only always-legible value) |
+| modes | `light`, `dark`, `auto` (default, memoised on the raw environment); `auto` sniffs `COLORFGBG` when the terminal advertises it and otherwise stays background-agnostic |
+| override | `HUGINN_THEME` (`light`\|`dark`\|`auto`) |
+| `NO_COLOR` | any non-empty value clears every token **and** gates `dimColor` (chalk does not consult `NO_COLOR` itself) |
+| retired | hard-coded chalk colour names, including the `color="white"` chat body that was invisible on a white terminal; `muted` is a real colour (`gray`), not `dimColor` |
+
+Components ask for a role, never a colour, so the whole view moves together and a guardian test can
+forbid the washed-out colour families by name.
+
+### 31.3 Live context panel, empty-state hero and non-fabricated summaries
+
+- **`InfoPanel.tsx` — the LIVE CONTEXT column.** Rendered only when the terminal is wide enough:
+  `SIDE_PANEL_MIN_COLUMNS` = 100, `SIDE_PANEL_MIN_ROWS` = 8 spare rows, and enough width left for the
+  cards (`SIDE_PANEL_MIN_CARD_COLUMNS` = 44) after `SIDE_PANEL_WIDTH` = 34 columns plus a 1-column
+  gap. It shows the stage, agent + models, the per-agent MCP enumeration, the git branch/tree state,
+  the worktree sandbox, Muninn's counts, the size of the conversation and one stage-appropriate tip
+  (`PANEL_TIP_PREFIX`). It lives inside the region the cards already own, so it can never push the
+  composer, palette or footer off the frame; below the thresholds the header alone carries the facts.
+- **`LiveHero.tsx` — the empty-state hero.** When the conversation is empty the card renders the raven
+  brand (`buildRavenArtRows`, the same art as `RavenHeader`) plus the console's first-run hints
+  (`EMPTY_CHAT_HINTS`), sliced to the rows the card really has — an empty session guides instead of
+  looking like a dead console.
+- **`sessionContext.ts` — one vocabulary, no fabrication.** The header's second row and the panel
+  derive their strings from pure functions, so they cannot disagree. Two rules: a counter with
+  nothing to count renders `""` (never `0`), an unreadable Muninn database reports its sanitized
+  error instead of looking empty, and the summaries carry no colour — the TUI picks the token, which
+  is what keeps `NO_COLOR` a presentation concern.
 
 
 

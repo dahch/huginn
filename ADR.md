@@ -904,3 +904,433 @@ avoids. They are ordered by how central the decision is to the design.
 - **Consequences**:
   - *Positive*: memory becomes a durable asset that outlives any individual agent and any switch between them; the user sees exactly which agents share the brain and can fix gaps in one command; the `huginn` profile's quality claims get an independent evidence source.
   - *Negative*: provisioning touches many third-party configs, so it must be conservative (idempotent, key-preserving, dry-runnable); the bare default covers **every registered** target (so it writes for agents that are not installed), which is why `--installed` exists to narrow it and why the matrix names the gaps.
+
+---
+
+## ADR-38: Bootstrap a git repository instead of requiring one
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: `run`/`plan`/`live` aborted with `"<path>" is not a git repository.` in any
+  directory outside a work tree, which made the first contact with a greenfield project a
+  failure. The existing check (`existsSync(<project>/.git)`) was also wrong: a subdirectory, a
+  linked worktree and a symlinked checkout all *are* inside a work tree and were reported as
+  "not a repository", while a bare repository and `.git` itself answer `false` with exit 0 and
+  therefore cannot be distinguished from an empty directory by an exit code. The dangerous
+  question is which failure may be answered with `git init`: a dubious-ownership, permission or
+  git-missing error must never be mistaken for "this directory is safe to initialize", or
+  huginn would mutate a directory it cannot even classify.
+- **Decision**:
+  1. **Three-way classification, not a boolean.** `probeGitRepo` (`src/engine/diff.ts`) runs
+     `git rev-parse --is-inside-work-tree` and returns `work-tree` (stdout `true`),
+     `not-a-repo` (stdout `false`, or git's own "not a git repository" message) or `error`
+     (anything else). `gitRepoState` exposes the state, `isGitRepo` the work-tree predicate.
+  2. **Bootstrap only a `not-a-repo` directory.** `ensureGitRepository` (`src/engine/gitRepo.ts`)
+     runs `git init -b main`, writes a default `.gitignore` **when the name is free**
+     (`node_modules/`, `dist/`, `build/`, `.harness/`, `.huginn/`, `*.log`, `coverage/`,
+     `.DS_Store`, `.env`), guarantees a committable identity (a missing **or empty** local
+     `user.email`/`user.name` is filled in as `huginn@localhost`/`huginn` — never the user's
+     global config) and creates the bootstrap commit `chore: initialize repository` with
+     `--no-gpg-sign`, so the engine always has a `HEAD` to diff against and the worktree
+     sandbox can be created.
+  3. **Fail closed everywhere else.** `error` prints the reason and exits 1 **without touching
+     the directory**; `--no-git-init` restores the old message and exit 1 for `not-a-repo`.
+     `ensureGitRepositoryOrExit` (`src/cli.ts`) gates `run`, `plan` and `live` with this.
+  4. **Onboarding stays informational.** `huginn init` reports the same state through
+     `isGitRepo()` and only prints a `git init` tip; it never initializes.
+- **Consequences**:
+  - *Positive*: a greenfield directory is usable in one command; the work-tree test is correct
+    for subdirectories, linked worktrees and symlinked checkouts; a repository huginn cannot
+    classify is never mutated; the `.gitignore` write uses `lstat` (never following the final
+    component) plus an exclusive `wx` `0o600` create, so a repository shipping a *dangling*
+    `.gitignore` symlink cannot make onboarding write outside the project.
+  - *Negative*: huginn now writes to the user's directory (a branch, a `.gitignore` and a commit
+    appear in history); a bare repository and `.git` itself classify as `not-a-repo` because they have
+    no work tree, so the bootstrap path is what runs for them — deliberate (the classifier documents
+    it), but it means `--no-git-init` is the only way to refuse, and a non-repository directory the
+    user intended to leave untouched is now initialized by default.
+  - *Alternative considered*: keeping the hard prerequisite and improving only the error message
+    — rejected, it leaves the empty-directory case (the common one) unsolved; treating any `rev-parse`
+    failure as "initialize me" — rejected, that is how a dubious-ownership error would become a
+    `git init`.
+
+---
+
+## ADR-39: The cycle owns its step instructions (no installer)
+
+- **Date**: 2026-09-29
+- **Status**: Accepted (supersedes ADR-5 and ADR-6, and the template-resolution half of ADR-9)
+- **Context**: Every gate was delegated to an opencode slash command or subagent that had to be
+  installed into `~/.config/opencode` (`templates/{agents,commands}/*.md`, `huginn install`, a
+  `bun install` postinstall hook). ADR-5 already named the failure mode: the installed copy can
+  drift from the parser contract, and a user's edited copy that omits a marker fails closed. The
+  dependency was also one-sided: a subprocess runtime (`claude`, `codex`, `dev`) has no command
+  surface at all, so those steps degraded to literal text, and subprocess support (ADR-21) could
+  not work for `VALIDATE_STEP` while the step was a slash command.
+- **Decision**: huginn composes every step's instruction itself and sends it as a **prompt**:
+  - `src/engine/steps/instructions.ts` inlines the five role texts (`spec-auditor`, `qa`,
+    `security`, `doc-writer`, `reviewing`) and the task bodies, preserving the literals the gates
+    depend on (`AUDIT-ONLY MODE`, the `### Overall fidelity:` / `### Overall gate:` marker lines,
+    the trailing handoff lines, the non-interactive/scan guardrails). Nothing is read from disk at
+    runtime, so a bundled bin and a source checkout behave identically.
+  - `src/engine/steps/prompts.ts` composes the per-phase prompts (including the three
+    `VALIDATE_STEP` sub-prompts and the synthesis); `src/engine/steps/context.ts` provides the
+    bounded readers, the git capture, the untrusted-data embedding and the verdict contracts.
+  - `promptWithContext` (`src/engine/phases.ts`) is the single seam: the composed text goes to the
+    active `IAgentSession` as a prompt, and the only `agent` ever named is opencode's built-in
+    `build` (used by `EXECUTE` and the `FIX_*` phases, so the SDK session keeps that agent's tools).
+  - `src/setup/install.ts`, `scripts/postinstall.ts` and the whole `templates/` tree are removed,
+    along with the `postinstall` script and `HUGINN_TEMPLATES_DIR`. `huginn install` survives as a
+    documented no-op (`src/commands/install.ts`) because `install` is a routed subcommand; the two
+    primitives the installer owned moved rather than vanished — `promptLine`/`promptYesNo` (with
+    the `PromptIo` seam) to `src/util/prompt.ts` and `getOpencodeConfigDir` to
+    `src/setup/opencodeConfig.ts`.
+- **Consequences**:
+  - *Positive*: the pipeline no longer depends on what is installed in the user's agent config; one
+    code path serves every runtime, so a subprocess run performs the same eight phases as opencode;
+    there is no install step to document, forget or drift.
+  - *Negative*: the prompts are no longer user-editable artefacts — personalising a role now means
+    changing huginn (the old no-overwrite policy of ADR-6 is moot); a marker change must update the
+    embedded literal and its parser in the same commit, since the two now live in one repository
+    instead of two; `promptLine`/`promptYesNo` moved, which is an import-path change for out-of-tree
+    consumers.
+  - *Alternative considered*: keeping the templates as the source of truth and installing them
+    (rejected — that is exactly the external dependency being removed); reading them from disk at
+    runtime (rejected — the single-file bundle would have to ship a directory).
+
+---
+
+## ADR-40: Structural verdicts and a read-only audit guard
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: Two fail-closed properties of ADR-3 were only as strong as the model's prose. (a)
+  `VALIDATE_STEP` became a huginn-orchestrated chain (ADR-39), so the phase generates its own verdict
+  — yet the gate still read a `### Overall gate:` line that a synthesis model wrote, which meant a
+  synthesis echoing the template (which contains the three-emoji skeleton) or wording it differently
+  could move the verdict. (b) The four auditor phases are *supposed* to be read-only, but nothing
+  enforced it: an auditor that edited a test file to make it pass would pass its own gate.
+- **Decision**:
+  1. **Huginn computes the gate.** `computeValidateVerdict` (`src/engine/phases.ts`) derives the
+     verdict from the three sub-reports (`computeSubReportVerdict`: an empty or marker-less report →
+     `blocked`, any blocked → `blocked`, any warning → `warning`, all green → `pass`) and reads only
+     the synthesis' **canonical gate line**; the synthesis may *escalate* the result, never downgrade
+     it. `enforceValidateVerdict` strips every pre-existing gate/handoff line from the report and
+     appends huginn's own, so the human report carries exactly one coherent verdict.
+  2. **The verdict travels structurally.** `PhaseOutput.authoritativeVerdict` carries it and
+     `runPhase` gates on `resolveStructuralVerdict(result)` instead of re-parsing the text, so a
+     report whose prose contradicts its own gate line cannot change the outcome.
+  3. **Read-only phases are enforced, not assumed.** `SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`
+     and `REVIEW` are marked `readOnly` in the pipeline; the engine hashes the working tree
+     (`treeHash`, `src/engine/receipts.ts`) before and after the step, and
+     `readOnlyTreeViolation(before, after)` forces `blocked` when the signature is **missing** as
+     well as when it changed — a hash that cannot be taken is not evidence of a clean step.
+- **Consequences**:
+  - *Positive*: the verdict of a huginn-run gate is huginn's own, and the audit chain's fail-closed
+    semantics survive a model that answers with prose; an audit that wrote to the repository (or an
+    environment where the tree cannot be hashed) cannot pass.
+  - *Negative*: an auditor that legitimately writes a build artefact now blocks and needs the fix
+    loop or `force-continue`; the tree hash costs one git call per auditor phase and has a resolution
+    limit (it covers the tracked tree and the ignored paths the hash defines), which is why a
+    *missing* signature is treated as a violation rather than ignored.
+  - *Alternative considered*: trusting the synthesis and keeping the textual gate (rejected — that is
+    the failure this ADR closes); comparing file lists instead of a hash (rejected — content changes
+    without a path change would pass).
+
+---
+
+## ADR-41: Repository material is untrusted data — nonce-delimited prompts, contained document paths, hardened git
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: Once huginn composes its own prompts (ADR-39), the text of a prompt is built from
+  things a repository controls: `spec.md`/`adr.md`/`plan.md`, module names from `plan.md`, `git
+  status`/`git diff` output, phase reports, and the whole architecture-drafting context. A clone is
+  attacker-controlled the moment it is not ours. Three distinct escapes were open: (a) repository
+  text could be read as *instructions* (a document shipping its own fence or a `<<<END …>>>` delimiter
+  could break out of huginn's block), (b) a document path could be a symlink — surveyed on read
+  (exfiltrating the target's content into a prompt) and clobbered on write (`spec.md -> ~/.aws/credentials`),
+  and (c) `git` itself is configured by the repository: `core.pager`, `core.fsmonitor`,
+  `core.hooksPath`, `diff.external`, a `.gitattributes` textconv driver and even a later
+  `--ext-diff`/`--textconv` argument all execute a repository-chosen program while huginn merely tries
+  to read a diff or a status.
+- **Decision**:
+  1. **Every repository-derived fragment is data, bounded and delimited.** `embedUntrusted`
+     (`src/engine/steps/context.ts`) sanitizes the text, neutralises fences and huginn's own
+     `<<<BEGIN/END UNTRUSTED…>>>` tokens, and wraps it in a block tagged with a **fresh random nonce**
+     whose closing delimiter the content cannot guess. `boundEmbedded` caps it at
+     `MAX_EMBEDDED_OUTPUT` = 60 000 characters with an explicit truncation marker, file reads happen
+     through `readFileDetailed` (regular-file check, `O_NOFOLLOW`) and names are sanitized
+     (`sanitizeDerivedText`/`sanitizeDerivedName`). The same discipline covers plan mode's prompts
+     (`untrustedBlock` in `src/engine/planMode.ts`) and the live transcript
+     (`wrapUntrustedTranscript`). A `!`git …`` interpolation a task body carries is resolved by
+     huginn through a subcommand allowlist (`diff`, `log`, `status`, `ls-files`, `show`), rejects
+     write/exec flags and supports only `head`/`sort` pipes.
+  2. **Document paths are contained.** `src/util/docPath.ts` is the single screen for every document
+     read or write (`checkDocPath`/`assertDocPath`): a symlinked **final component is always refused**
+     (never followed, read or overwritten); when the path is lexically inside the project the
+     `realpath`ed path must stay inside the `realpath`ed project root, so a symlinked *parent*
+     (`docs/ -> /etc`) is caught too; a path that does not exist yet is decided on its nearest
+     existing ancestor (plan mode drafts new documents); an explicitly configured document outside
+     the project (`--spec /srv/shared/spec.md`) keeps working but is still symlink-screened.
+  3. **Every git invocation is hardened at one seam.** `git()` (`src/engine/diff.ts`) prefixes every
+     call with `--no-pager -c core.pager=cat -c core.fsmonitor=false -c core.hooksPath=/dev/null`,
+     inserts `--no-ext-diff --no-textconv` for diff-producing subcommands (`diff`, `show`, `log`,
+     `whatchanged`, `format-patch`) **twice** — right after the subcommand and again at the end of the
+     option argv, because those two are last-one-wins in git's parser — and the bounded runner
+     additionally enforces a subcommand allowlist and rejects
+     `-c`, `--output`, `--exec-path`, `--upload-pack`, `--config-env`, `--git-dir`, `--work-tree`,
+     `--no-index`, `--ext-diff`, `--textconv` and `-O`. The bootstrap commit uses
+     `--no-gpg-sign` rather than the screened `-c commit.gpgsign=false`, so no call site needs an
+     exemption from the screen.
+- **Consequences**:
+  - *Positive*: a hostile repository can neither instruct the agent through a prompt, read or
+    overwrite a file through a document symlink, nor execute a program through git configuration;
+    every consumer of repository text goes through the same bounded, nonce-delimited path, so a new
+    call site cannot silently weaken it.
+  - *Negative*: a legitimate symlinked document is now refused (fail-closed trade-off, and the
+    reason must be surfaced instead of silently skipping); one extra git call per bounded invocation
+    for the hardening `-c` flags; `core.hooksPath=/dev/null` means a repository's own hooks never run
+    under huginn, which is intended but worth knowing.
+
+---
+
+## ADR-42: Per-runtime permission auto-approval, with `ask`/`deny` failing closed
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: `--permissions ask|deny` is implemented as an opencode **event subscriber**
+  (`src/engine/permissions.ts`): the server emits a permission request, huginn answers, the run
+  continues. A subprocess runtime closes `stdin` after the prompt, so it has no channel back
+  mid-turn — yet the CLI accepted `--permissions ask` for it and did nothing with it, so a run that
+  asked for human approval silently ran **fully auto-approved**. The mirror image was missing too:
+  the CLIs each have their own switch that suppresses their interactive approval prompt
+  (`claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox`, …),
+  and without it a non-interactive run stalls at the first tool call.
+- **Decision**:
+  1. **Each subprocess runtime is started with its own auto-approval flag** —
+     `SUBPROCESS_PERMISSION_ARGS` (`src/engine/agent/registry.ts`): `claude`
+     `--dangerously-skip-permissions`, `codex` `--dangerously-bypass-approvals-and-sandbox`, `qwen`
+     `-y`, `omp` `--auto-approve`, `commandcode` `--yolo`, `devin` `--permission-mode dangerous`,
+     `agy` `--dangerously-skip-permissions`, `mcode` `--permission full`, `mimo` `--yolo`, `cursor`
+     `-f`, `pi` `--approve` (announced as *assumed*: project-resource trust, not tool
+     auto-approval), and **`kimi` no flag at all** (its prompt mode rejects every permission switch
+     and forces its own auto mode, so the honest list is empty). The array instances are shared with
+     the adapters, so the table and the runtime cannot drift.
+  2. **`ask`/`deny` fail closed where they cannot be honoured**:
+     `assertPermissionModeSupported` (`src/cli.ts`) exits 1 for a non-opencode runtime, naming the
+     runtime and the supported alternative; `LiveEngine.switchRuntime` refuses the same combination
+     (same message via `subprocessPermissionMessage`); an invalid `--permissions` value (e.g.
+     `denn`) exits 1 instead of falling back to `auto`.
+  3. **opencode keeps the native path** — `auto`/`ask`/`deny` are still enforced through the event
+     subscriber, and opencode is the only runtime for which the subscriber exists.
+- **Consequences**:
+  - *Positive*: a non-interactive run cannot stall on an approval prompt, and a user who asked for
+    approvals is never silently given a fully-permissive run; the refusal names what to do instead.
+  - *Negative*: `ask`/`deny` are effectively opencode-only (documented, deliberate); each runtime's
+    flag is a CLI detail that may move between versions, mitigated by keeping it next to the adapter
+    and reusing one array instance; `pi`'s `--approve` is *assumed* to be the equivalent (a wrong
+    assumption must be announced rather than hidden).
+  - *Alternative considered*: pretending to support `ask` for subprocesses (rejected — that is the
+    silent downgrade this ADR removes); refusing to run subprocesses at all when `ask` is set
+    (rejected — `auto` is the default and works).
+
+---
+
+## ADR-43: Runtime lineup refresh — Devin replaces Windsurf, MiniMax Code and MiMo Code join
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: The registry drifted from the CLIs that actually exist. `windsurf` is now the Devin
+  CLI; `gemini` was already removed (its non-interactive form needs `-p <arg>`); MiniMax Code
+  (`mcode`) and MiMo Code (`mimo`) were absent; and three adapters drove their CLI with the wrong
+  shape (kimi writes its prompt to `stdin` although its prompt mode only accepts `-p <prompt>`; pi
+  needs `-p` *with* the prompt on stdin; codex had no model flag or MCP enumeration). A wrong argv
+  does not fail loudly — it makes the CLI enter interactive mode and hang until the phase timeout.
+- **Decision**:
+  1. **Thirteen targets**: `AGENT_TARGETS` is `cursor`, `claude`, `opencode`, `devin`, `qwen`,
+     `codex`, `agy`, `kimi`, `pi`, `commandcode`, `omp`, `mcode`, `mimo`; `AGENT_BINARIES` declares
+     each target's executable name(s) and detection scans them in registry order.
+  2. **`windsurf` → `devin`**, with a first-class `DevinRuntimeAdapter`: print mode
+     (`-p --respect-workspace-trust false`) with the prompt passed through `--prompt-file`,
+     `devin models list` for discovery and `devin mcp list` for enumeration. `REMOVED_AGENT_TARGETS`
+     (`windsurf → devin`, `gemini → agy`) keeps a stale config working: it warns and falls through to
+     detection instead of throwing.
+  3. **`mcode` / `mimo`** are first-class adapters: `mcode` (MiniMax Code) is single-shot
+     (`exec --input -`, `--permission full`) with **no** model listing and **no** `mcp` command —
+     both honestly absent — and `mimo` (MiMo Code) is the opencode-style one (`run` reads the prompt
+     from stdin, `mimo models`, `mimo mcp list`, an opencode-format `mcp` container).
+  4. **`kimi` / `pi` / `codex` are wired to their verified non-interactive forms**: kimi passes the
+     prompt as the `-p <prompt>` value and discovers models via `kimi provider list --json`; pi uses
+     `-p` with the prompt on stdin, `--model` and `pi --list-models`; codex passes the model with `-m`
+     and enumerates servers with `codex mcp list --json` while exposing no model listing.
+- **Consequences**:
+  - *Positive*: the registry matches the CLIs that exist, so a persisted config cannot name a
+    renamed target fatally and a new runtime is a one-row addition; a wrong argv (a hang) is replaced
+    by an adapter that was verified against the CLI's own `--help`.
+  - *Negative*: the per-target plumbing keeps a historical wart — Devin's rules file is still
+    `.windsurf/rules/muninn.md` because the CLI kept Windsurf's rules root; `mcode`/`mimo` ship as a
+    single binary name each, so there is no fallback name to try; `kimi`'s empty permission list is
+    correct but looks like an omission and needs the comment that explains it.
+
+---
+
+## ADR-44: Persisted live sessions, bounded transcript replay and session reattach
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: `LiveEngine.messages` lived in memory, so closing huginn lost the whole refinement
+  conversation; worse, the handoff to the cycle cleared `.harness/` (`resetHarnessState`), so even a
+  running session went blank when the build started. The other half of the problem was that
+  `sessionHistory` was assumed: opencode keeps the conversation server-side, and every subprocess
+  runtime does not — a resumed run against one of those saw **no history at all**, so the next turn's
+  answer was produced against the current message only.
+- **Decision**:
+  1. **Declare the capability.** `IAgentRuntime.sessionHistory` is `true` for opencode only; every
+     subprocess adapter declares `false`, and `undefined` is read as "does not keep history", so
+     context is re-sent rather than silently dropped.
+  2. **Replay a bounded, non-forgeable transcript.** For a history-less runtime each turn carries
+     `formatTranscript(messages)` — capped at `TRANSCRIPT_MAX_TURNS` = 12 turns / 12 000 characters
+     with an explicit omission marker, sanitized — wrapped by `wrapUntrustedTranscript` in a
+     `<<<BEGIN/END UNTRUSTED TRANSCRIPT-<nonce>>>` block (ADR-41). The current ask is never part of
+     the block.
+  3. **Persist outside `.harness/`.** The conversation is written to
+     `<project>/.huginn/live/sessions.json` (`src/state/liveSession.ts`), never inside `.harness/`
+     (which the handoff clears): atomic (exclusive temp in the same directory + `renameSync`), mode
+     `0o600` with the `live/` directory `0o700` (only levels this process created are `chmod`ed),
+     every path component symlink-checked and the resolved directory contained in the resolved
+     project root. Caps — 200 messages per session, 20 sessions per project, 20 000 characters per
+     message, 8 MB for the whole store — are enforced on **write** as well as on read, and the store
+     is shrunk to fit while announcing what it drops. Reads are fail-open (missing/corrupt/oversized/
+     linked → `[]` plus a warning). `<project>/.huginn/.gitignore` holds `*`, so the state never
+     dirties the working tree.
+  4. **Resume is explicit and reattaches.** A plain `huginn live` always starts a new session;
+     `--session <id>` is the strongest request, `--continue`/`-c` adopts the project's most recently
+     updated session (saying so and starting fresh when there is none), and
+     `--list-sessions`/`-sl` prints the stored sessions (id, `updatedAt`, runtime, message count,
+     title) and exits 0 **before** permissions, git bootstrap, the runtime or the TUI are touched. A
+     bare `--session` with no id exits 1. A resumed conversation reattaches to its stored
+     `opencodeSessionId` when that session still exists (probed through the client, with `exists` /
+     `gone` / `failed` kept distinct), so the prior turns come from the server instead of being
+     replayed; when it is gone (or the lookup failed) the transcript is replayed, and the outcome is
+     announced rather than silently ignored.
+  5. **Identities are validated, not echoed.** A persisted id must match `LIVE_ID_PATTERN`
+     (1–128 chars of `[A-Za-z0-9._:-]` with at least one alphanumeric) or the whole session is
+     dropped, and every identity field (`id`, `runtimeId`, `projectPath`, timestamps,
+     `opencodeSessionId`) is terminal-sanitized on the way in and out — the id is also sent back to
+     the opencode server by the reattach probe.
+- **Consequences**:
+  - *Positive*: a live conversation survives a restart and a cycle handoff, a one-shot CLI still
+    sees the prior turns, and the user chooses whether to resume; the store cannot grow without
+    bound, cannot be reached through a symlinked path, and never appears in `git status`.
+  - *Negative*: a second persisted surface to keep secure (`.harness/` plus `.huginn/live/`), and two
+    processes writing the same store are serialized only by the atomic rename (last writer wins —
+    there is no cross-process lock, recorded as a deliberate residual); containment is decided on the
+    directory name rather than held open as an `O_DIRECTORY` fd across the write, so a link swapped
+    in during the write is refused by the checks that follow it rather than impossible.
+
+---
+
+## ADR-45: The onboarding model picker is fed by the runtime's own catalog
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: `huginn init` asked for thinker/executor as **free text** while `ModelPickerModal`
+  already discovered the active runtime's catalog (ADR-27) — two selection paths over the same
+  runtime, one of them unaware of what the runtime can actually run, and both carrying their own
+  discovery call. A wizard that offers a model the runtime does not have ends in a run that fails at
+  the first prompt, which is exactly the onboarding experience the wizard exists to remove.
+- **Decision**:
+  1. **One discovery helper.** The wizard and the modal both go through `discoverModelCatalog(runtime)`
+     (`src/engine/agent/modelCatalog.ts`), which prefers `getModelCatalog()` so an empty result can
+     carry a `reason`, so the two surfaces cannot drift.
+  2. **A numbered picker, with a chosen preselection.** Step 4 presents a numbered list of
+     `provider/model` ids (with the catalog description when one exists). A current value is preserved
+     as the preselection — a real catalog id is used as-is, and an explicit `--thinker`/`--executor`
+     flag the catalog does not list is kept verbatim, so pressing Enter never silently overrides it.
+     A *default* absent from the catalog seeds from the catalog (thinker → first model, executor →
+     second) so the two pickers do not land on the same model.
+  3. **Honest fallback.** With no catalog (or an empty one carrying a `reason`) the wizard falls back
+     to plain text entry and prints the sanitized reason, so a runtime that cannot list models is
+     never a dead end; the sanitized reason is also what the `--yes`/non-TTY path uses.
+- **Consequences**:
+  - *Positive*: onboarding offers what the runtime can run, the wizard and the picker share one
+    discovery contract, and a model the catalog does not know is never silently replaced.
+  - *Negative*: a runtime with no listing mechanism (and therefore no catalog) keeps a free-text
+    field, so the wizard's guarantee is only as good as the runtime's `--list-models` support; the
+    catalog is host-specific, so the offered list is not deterministic across machines.
+
+---
+
+## ADR-46: Semantic theme tokens for the TUI
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: the TUI hard-coded chalk colour *names* at every call site, including a
+  `color="white"` chat body and log lines — invisible on a white terminal, which is the failure a
+  user actually reported — plus a heavy use of `dimColor` (SGR 2) that is unreadable on both light
+  and dark backgrounds. Nothing in the code expressed *intent* (`this is muted`, `this is a danger
+  state`), so a colour decision had to be re-made at every render site and could not be changed
+  consistently.
+- **Decision**:
+  1. **One semantic palette.** `src/tui/theme.ts` exposes tokens (`text`, `muted`, `border`,
+     `borderFocus`, `accent`, `accentStrong`, `ok`, `warn`, `danger`, `info`, `thinker`, `executor`,
+     `system`, `brand`) which every component reads instead of a colour name; `text` is `undefined`
+     so Ink emits no foreground escape at all and the body inherits the terminal's own foreground —
+     the only value always legible. Accents stay on medium-tone colours and `muted` is a real colour
+     (`gray`), not `dimColor`.
+  2. **Modes.** `light`, `dark` and `auto` (default, memoised on the raw environment), pinned with
+     `HUGINN_THEME`; `auto` never assumes a dark background and sniffs `COLORFGBG` only when the
+     terminal advertises it.
+  3. **`NO_COLOR` is honoured.** A non-empty `NO_COLOR` (no-color.org) clears every token *and* gates
+     `dimColor`, because chalk does not itself consult `NO_COLOR` and would keep colouring in a TTY.
+- **Consequences**:
+  - *Positive*: nothing is invisible on a white terminal and the whole view moves together; a colour
+    change is one edit, and a guardian test can forbid the washed-out colour families by name.
+  - *Negative*: components must ask for a token (a new role has to be named deliberately rather than
+    reusing a colour); `auto` is a heuristic, so an uncooperative terminal can still be guessed wrong
+    — the explicit `HUGINN_THEME` is the escape hatch.
+
+---
+
+## ADR-47: Live console ergonomics and honest surfaces — composer editor, context panel, empty-state hero
+
+- **Date**: 2026-09-29
+- **Status**: Accepted
+- **Context**: the live console had three gaps a session on this machine exposed. The composer was a
+  single-line input with no caret: editing meant re-typing the line, and a long draft could not be
+  written at all. Nothing on screen said *what state the session was in* (branch, sandbox, agent,
+  models, memory, how much conversation had accumulated) except transient chat messages, and an empty
+  conversation rendered as a blank card that looked like a dead console. The `run` dashboard and the
+  live console also each grew their own header/summary code, which is how two surfaces start to
+  disagree.
+- **Decision**:
+  1. **A real composer text model** (`src/tui/composer.ts`): caret movement and editing by character
+     (word-wise with `⌥`/Ctrl), `Home`/`End` on the caret's *visual* row, insertion at the caret,
+     soft wrapping that grows to `MAX_INPUT_ROWS` = 6 rows and then scrolls internally, with the caret
+     always painted inside the row (`cursorLineParts`) so the frame budget is unchanged.
+  2. **A shared status vocabulary** (`src/tui/sessionContext.ts`): the header's second row and the
+     side panel derive their strings from the engine's report through pure functions, so they cannot
+     disagree. Two rules are enforced there: **no fabrication** — a counter with nothing to count
+     renders `""`, not `0`, and a Muninn database that could not be read reports its sanitized error
+     instead of looking empty — and **no colour** (the TUI picks the token).
+  3. **A live context panel** (`src/tui/InfoPanel.tsx`): a compact **LIVE CONTEXT** column beside the
+     conversation on wide terminals only (`SIDE_PANEL_MIN_COLUMNS` = 100, `SIDE_PANEL_MIN_ROWS` = 8,
+     leaving the cards at least `SIDE_PANEL_MIN_CARD_COLUMNS` = 44 columns) with the stage, agent and
+     models, the per-agent MCP enumeration, the git branch and tree state, the worktree sandbox,
+     Muninn's counts, the size of the conversation and one stage-appropriate tip. It lives inside the
+     region the cards already own, so it can never push the composer, palette or footer off the frame;
+     a narrower terminal does not render it at all.
+  4. **An empty-state hero** (`src/tui/LiveHero.tsx`): the raven brand plus the first-run guidance
+     inside the conversation card when the conversation is empty, sharing the header's art
+     (`buildRavenArtRows`, ADR-29) and the console's hint list (`EMPTY_CHAT_HINTS`), sliced to the
+     rows the card really has.
+- **Consequences**:
+  - *Positive*: the input row is a usable editor at the row cost of one line (it grows only when the
+    draft wraps); the session's state is visible without asking; an empty console guides instead of
+    looking broken; the two status surfaces cannot drift.
+  - *Negative*: the panel adds a width/height gate that must stay in the layout budget (and its
+    absence below the thresholds means the header alone must carry the facts); the hero and the panel
+    multiply the render paths that must be tested at 80×24 and at 100+ columns; `↑`/`↓` now carry
+    four meanings (palette, history, scroll, caret row) distinguished solely by mode, so the
+    precedence rules stay load-bearing.
