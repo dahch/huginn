@@ -87,6 +87,13 @@ export function parseOmpModels(stdout: string): ModelInfo[] {
 }
 
 /**
+ * Oh My Pi's auto-approval switch (Phase 2C): `omp prompt` closes stdin after
+ * the prompt, so an approval request can never be answered. It is omp's own flag
+ * (re-verify with `omp --help`) and is overridable through `permissionArgs`.
+ */
+export const OMP_PERMISSION_ARGS = ["--auto-approve"];
+
+/**
  * Oh My Pi CLI. `omp models` prints its catalog as provider sections with a
  * box-drawing table (AC-27.4); a selected model is forwarded via `--model`
  * (AC-27.5).
@@ -104,6 +111,8 @@ export class OmpRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
       args: options.args ?? ["prompt"],
       models: options.models,
       modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
+      permissionArgs: options.permissionArgs ?? OMP_PERMISSION_ARGS,
+      permissions: options.permissions,
       modelListCommand: options.modelListCommand ?? {
         command: "omp",
         args: ["models"],

@@ -3,7 +3,7 @@ import type { RunConfig } from "../config";
 import { createClient, createSession, prompt, abortSession } from "../server/client";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
 import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
-import { getAgentRuntime } from "./agent/registry.js";
+import { getAgentRuntime, subprocessPermissionMessage } from "./agent/registry.js";
 import type { AgentTarget } from "../agents/integrator.js";
 import { MemoryService } from "../muninn/service/memory-service.js";
 import { resolveDatabasePath } from "../muninn/db/client.js";
@@ -213,7 +213,18 @@ export class LiveEngine {
           client: target === "opencode" ? this.client : undefined,
           port: this.cfg.port,
           projectPath: this.cfg.projectPath,
+          // Phase 2C: a subprocess runtime needs its own auto-approval flag to
+          // avoid stalling on a CLI permission prompt; opencode keeps enforcing
+          // `--permissions` through the engine's event subscriber.
+          permissions: this.cfg.permissions,
         });
+
+    // REV-2C-001: never switch into a subprocess runtime while `--permissions`
+    // is ask/deny — it cannot ask huginn mid-turn, so running it auto-approved
+    // would be more permissive than requested. Refuse and keep the old runtime.
+    if (newRuntime.id !== "opencode" && this.cfg.permissions !== "auto") {
+      throw new Error(subprocessPermissionMessage(newRuntime.id, this.cfg.permissions));
+    }
 
     if (!(await newRuntime.isAvailable())) {
       throw new Error(

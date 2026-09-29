@@ -8,6 +8,7 @@ import {
   type AgentTarget,
 } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
+import type { PermissionMode } from "../../config.js";
 import {
   AGY_MCP_LIST_TIMEOUT_MS,
   ClaudeRuntimeAdapter,
@@ -49,7 +50,62 @@ export interface RuntimeOptions {
    * argv without forking the registry.
    */
   modelArgs?: (model: string) => string[];
+  /**
+   * Overrides the runtime's auto-approval flag(s) (Phase 2C). Defaults to the
+   * CLI's own switch (see {@link SUBPROCESS_PERMISSION_ARGS}); injectable for
+   * the same reason as `modelArgs`.
+   */
+  permissionArgs?: string[];
+  /**
+   * Huginn's `--permissions` mode (Phase 2C). A subprocess runtime closes stdin
+   * after the prompt, so `ask`/`deny` cannot be honoured: the CLI refuses to
+   * start one in those modes (REV-2C-001) rather than running it more
+   * permissively than requested. opencode ignores this option — its permissions
+   * are enforced through the engine's event subscriber (`src/engine/permissions.ts`).
+   */
+  permissions?: PermissionMode;
 }
+
+/**
+ * REV-2C-001: the message used to fail closed when `ask`/`deny` is requested for
+ * a subprocess runtime, which has no channel back to huginn mid-turn. Shared by
+ * the CLI gate (`run`/`runLive`) and `LiveEngine.switchRuntime` so both refuse
+ * with the same words.
+ */
+export function subprocessPermissionMessage(
+  runtimeId: string,
+  permissions: PermissionMode,
+): string {
+  return (
+    `[huginn] --permissions ${permissions} is not supported for the "${runtimeId}" subprocess runtime ` +
+    `(it cannot ask huginn mid-turn). Use "auto" (default) or choose the opencode runtime.`
+  );
+}
+
+/**
+ * Auto-approval flag of every subprocess runtime (Phase 2C), used by the
+ * runtimes whose adapter is constructed inline here. The class-based adapters
+ * (`claude`, `codex`, `omp`, `commandcode`, `qwen`) carry the same value as an
+ * exported constant next to their runtime.
+ *
+ * These are the CLIs' **own** switches, not a huginn protocol: they are what
+ * keeps the cycle from stalling when a CLI would otherwise wait for an approval
+ * that can never arrive (stdin is closed after the prompt). Each flag can shift
+ * between CLI versions — re-verify with `<cli> --help` before trusting it.
+ */
+export const SUBPROCESS_PERMISSION_ARGS: Partial<Record<AgentTarget, string[]>> = {
+  claude: ["--dangerously-skip-permissions"],
+  codex: ["--dangerously-bypass-approvals-and-sandbox"],
+  qwen: ["-y"],
+  omp: ["--auto-approve"],
+  commandcode: ["--yolo"],
+  kimi: ["--auto"],
+  pi: ["--approve"],
+  cursor: ["-f"],
+  // Phase 3 renames this target to `devin`; the adapter is ready either way.
+  windsurf: ["--permission-mode", "dangerous"],
+  agy: ["--dangerously-skip-permissions"],
+};
 
 export interface AgentResolutionSources {
   flagAgent?: string;
@@ -192,6 +248,10 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         // flag is unverified-but-conventional (kimi-code follows the `-m`
         // convention of its siblings); `RuntimeOptions.modelArgs` overrides it.
         modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
+        // Phase 2C: `--auto` is the never-ask switch; `-y` still prompts on
+        // actions kimi considers risky, which would stall a closed stdin.
+        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS.kimi,
+        permissions: options.permissions,
         projectPath: options.projectPath,
         homeDir: options.homeDir,
         env: options.env,
@@ -204,6 +264,12 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         // REV-003/S1: not installed on the reference machine — unverified but
         // conventional (`-m`), and overridable via `RuntimeOptions.modelArgs`.
         modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
+        // Phase 2C: `--approve` is pi's documented "trust project-local files"
+        // switch — dubious as a blanket auto-approval and unverified on the
+        // reference machine, so it is announced as assumed (REV-2C-002).
+        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS.pi,
+        permissionArgsVerified: false,
+        permissions: options.permissions,
         projectPath: options.projectPath,
         homeDir: options.homeDir,
         env: options.env,
@@ -220,6 +286,8 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         name: AGENT_REGISTRY.agy?.label ?? "agy",
         command: "agy",
         modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
+        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS.agy,
+        permissions: options.permissions,
         modelListCommand: {
           command: "agy",
           args: ["models"],
@@ -248,6 +316,12 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
         // flag is unverified-but-conventional (`--model`); overridable via
         // `RuntimeOptions.modelArgs`.
         modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
+        // Phase 2C: `cursor -f` is verified; `windsurf --permission-mode
+        // dangerous` is not (the binary is renamed to `devin` in Phase 3), so
+        // windsurf's flag is announced as assumed (REV-2C-002).
+        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS[target],
+        permissionArgsVerified: target !== "windsurf",
+        permissions: options.permissions,
         projectPath: options.projectPath,
         homeDir: options.homeDir,
         env: options.env,

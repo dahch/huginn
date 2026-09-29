@@ -7,6 +7,7 @@ import {
   detectAvailableAgents,
   getAgentRuntime,
   resolveAgent,
+  SUBPROCESS_PERMISSION_ARGS,
 } from "../../../src/engine/agent/registry.js";
 import type {
   IAgentRuntime,
@@ -246,7 +247,9 @@ describe("Agent Registry & Factory", () => {
           const session = await runtime.createSession({ title: target });
           const result = await session.prompt("go", { model: "moonshot/kimi-k2.5" });
           const argv = result.text.split("\n").map((line) => line.trim()).filter(Boolean);
-          expect(argv).toEqual(expected);
+          // The model flag comes first; the runtime's auto-approval flag(s)
+          // (Phase 2C) are appended after it — see permissions.test.ts.
+          expect(argv).toEqual([...expected, ...(SUBPROCESS_PERMISSION_ARGS[target] ?? [])]);
         }
 
         // The flag stays overridable through `RuntimeOptions`.
@@ -259,6 +262,7 @@ describe("Agent Registry & Factory", () => {
         expect(result.text.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual([
           "--kimi-model",
           "moonshot/kimi-k2.5",
+          ...(SUBPROCESS_PERMISSION_ARGS.kimi ?? []),
         ]);
       } finally {
         rmSync(tempDir, { recursive: true, force: true });

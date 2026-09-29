@@ -79,6 +79,14 @@ export function parseCommandCodeModels(stdout: string): ModelInfo[] {
  */
 const COMMANDCODE_LIST_TIMEOUT_MS = 10000;
 
+/**
+ * Command Code's auto-approval switch (Phase 2C): `commandcode -p` closes stdin
+ * after the prompt, so an approval request can never be answered. It is Command
+ * Code's own flag (re-verify with `commandcode --help`) and is overridable
+ * through `permissionArgs`.
+ */
+export const COMMANDCODE_PERMISSION_ARGS = ["--yolo"];
+
 export class CommandCodeRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
   constructor(options: Partial<GenericSubprocessOptions> = {}) {
     const command = options.command ?? "commandcode";
@@ -91,6 +99,8 @@ export class CommandCodeRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
       args: options.args ?? ["-p"],
       models: options.models,
       modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
+      permissionArgs: options.permissionArgs ?? COMMANDCODE_PERMISSION_ARGS,
+      permissions: options.permissions,
       modelListCommand: options.modelListCommand ?? {
         command: "commandcode",
         args: ["--list-models"],

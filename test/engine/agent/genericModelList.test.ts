@@ -3,7 +3,10 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenericSubprocessRuntimeAdapter } from "../../../src/engine/agent/adapters/generic.js";
-import { CommandCodeRuntimeAdapter } from "../../../src/engine/agent/adapters/commandcode.js";
+import {
+  CommandCodeRuntimeAdapter,
+  COMMANDCODE_PERMISSION_ARGS,
+} from "../../../src/engine/agent/adapters/commandcode.js";
 import type { ModelInfo } from "../../../src/engine/agent/types.js";
 
 const tempDirs: string[] = [];
@@ -158,7 +161,8 @@ describe("REQ-27 · native model forwarding (AC-27.5)", () => {
     const result = await session.prompt("hello", { model: "claude-sonnet-5" });
 
     const args = result.text.split("\n").map((l) => l.trim()).filter(Boolean);
-    expect(args).toEqual(["-p", "-m", "claude-sonnet-5"]);
+    // Phase 2C: the runtime's auto-approval flags are appended after the model.
+    expect(args).toEqual(["-p", "-m", "claude-sonnet-5", ...COMMANDCODE_PERMISSION_ARGS]);
   });
 
   it("replaces the model the base argv already carries instead of dropping the selection (REV-005)", async () => {

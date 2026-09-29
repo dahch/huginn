@@ -4,12 +4,14 @@ import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import type { AgentTarget } from "../../../agents/integrator.js";
 import { resolveMcpPaths } from "../../../agents/integrator.js";
+import type { PermissionMode } from "../../../config.js";
 import {
   isReservedKey,
   loadProjectMcpConfig,
   parseMcpServerEntry,
 } from "../mcpConfig.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
+import { events } from "../../engineEvents.js";
 import { isExecutableBinary } from "../binaryUtils.js";
 import { listMcpServersViaCommand, type McpListCommandSpec } from "./mcpList.js";
 import { runModelListCommand } from "./modelList.js";
@@ -61,6 +63,42 @@ export interface GenericSubprocessOptions {
    * extra env hint only.
    */
   modelArgs?: (model: string) => string[];
+  /**
+   * The CLI's own **auto-approval** flag(s) (Phase 2C), e.g.
+   * `["--dangerously-skip-permissions"]` for Claude Code or
+   * `["--permission-mode", "dangerous"]` for Windsurf.
+   *
+   * A subprocess runtime closes stdin right after the prompt (SEC-002), so it
+   * can never consult huginn for an approval: without this flag a CLI that
+   * decides an action needs permission blocks until the phase timeout and the
+   * cycle hangs. The flag is the CLI's own switch (not a huginn protocol) and
+   * may change between CLI versions — re-verify it against `<cli> --help`.
+   */
+  permissionArgs?: string[];
+  /**
+   * Whether {@link permissionArgs} is a **verified** auto-approval switch
+   * (Phase 2C, REV-2C-002). Defaults to `true`. Runtimes whose flag is only
+   * assumed — the binary is renamed (`windsurf` → `devin`) or the flag's
+   * semantics are dubious (`pi --approve` means "trust project-local files") —
+   * set it to `false`, and the once-per-runtime notice then says the flag is
+   * assumed rather than claiming the CLI is auto-approved.
+   */
+  permissionArgsVerified?: boolean;
+  /**
+   * Whether the CLI is launched auto-approved (Phase 2C). Defaults to `true`,
+   * which is the only workable mode for a one-shot subprocess; set it to
+   * `false` only to opt a runtime back into interactive prompts (which will
+   * stall the cycle if the CLI asks for something).
+   */
+  autoApprovePermissions?: boolean;
+  /**
+   * Huginn's `--permissions` mode, carried here **for transparency only**. A
+   * subprocess runtime supports `auto` and cannot honour `ask`/`deny` (there is
+   * no channel back to huginn), so the CLI fails closed before a session is ever
+   * created (REV-2C-001); the adapter's notice is therefore only ever emitted
+   * for `auto`.
+   */
+  permissions?: PermissionMode;
   defaultTimeoutMs?: number;
   promptViaStdin?: boolean;
   maxPromptArgLength?: number;
@@ -170,6 +208,59 @@ function withModelArgs(
 }
 
 /**
+ * Appends the runtime's auto-approval flags to argv (Phase 2C).
+ *
+ * Unlike `--model`, these flags are never *replaced*: an auto-approval switch
+ * has no meaningful value to override, so a flag the base argv already carries
+ * (`--auto-approve`, `--flag=value`, and a separate value in the case of
+ * `["--permission-mode", "dangerous"]`) is left untouched and simply not
+ * duplicated. Exported for the argv unit tests.
+ */
+export function withPermissionArgs(
+  baseArgs: string[],
+  permissionArgs: string[] | undefined,
+): string[] {
+  if (!permissionArgs || permissionArgs.length === 0) return [...baseArgs];
+
+  const result = [...baseArgs];
+  const appended: string[] = [];
+  const present = (flag: string) =>
+    [...result, ...appended].some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+
+  for (let i = 0; i < permissionArgs.length; i++) {
+    const token = permissionArgs[i];
+    if (!token.startsWith("-") || token === "-") {
+      // A bare value (only meaningful right after its flag) — keep it.
+      appended.push(token);
+      continue;
+    }
+    if (present(token)) {
+      // Already on the command line: drop the flag *and* its separate value.
+      const value = permissionArgs[i + 1];
+      if (value !== undefined && !value.startsWith("-")) i++;
+      continue;
+    }
+    appended.push(token);
+  }
+
+  return appended.length === 0 ? result : [...result, ...appended];
+}
+
+/**
+ * The **effective** auto-approval flags for a subprocess runtime (Phase 2C): the
+ * wired flags, or an empty list when auto-approval was explicitly opted out of
+ * (`autoApprovePermissions: false`). Single pure helper shared by the session's
+ * argv construction and the once-per-runtime notice so the log can never diverge
+ * from what is actually spawned (REV-2C-005). Exported for the unit tests.
+ */
+export function effectivePermissionArgs(
+  options: Pick<GenericSubprocessOptions, "autoApprovePermissions" | "permissionArgs">,
+): string[] {
+  if (options.autoApprovePermissions === false) return [];
+  return options.permissionArgs ?? [];
+}
+
+/**
  * Truthfulness guard for config-discovered servers (REQ-30 / AC-30.1).
  *
  * This adapter holds **no MCP client**: it can read `.huginn/mcp.json` and the
@@ -218,6 +309,16 @@ export class GenericSubprocessSession implements IAgentSession {
     this.id = id;
   }
 
+  /**
+   * The auto-approval flags every prompt of this session is launched with
+   * (Phase 2C). Empty when the runtime has none wired, or when auto-approval
+   * was explicitly opted out of — in that case the CLI's own permission
+   * behaviour applies and it may block on an approval nobody can answer.
+   */
+  private autoApproveArgs(): string[] {
+    return effectivePermissionArgs(this.runtimeOptions);
+  }
+
   async prompt(text: string, options?: PromptOptions): Promise<PromptResult> {
     if (this.aborted) {
       throw new Error(`Session ${this.id} was aborted`);
@@ -227,10 +328,17 @@ export class GenericSubprocessSession implements IAgentSession {
     }
 
     const command = this.runtimeOptions.command;
-    const baseArgs = withModelArgs(
-      this.runtimeOptions.args ?? [],
-      this.runtimeOptions.modelArgs,
-      options?.model,
+    // Phase 2C: the model flag is replaced (AC-27.5) while the auto-approval
+    // flags are only ever added once — a CLI that asks for permission cannot be
+    // answered (stdin is closed after the prompt), so it must never be given the
+    // chance to ask.
+    const baseArgs = withPermissionArgs(
+      withModelArgs(
+        this.runtimeOptions.args ?? [],
+        this.runtimeOptions.modelArgs,
+        options?.model,
+      ),
+      this.autoApproveArgs(),
     );
     const cwd = options?.directory ?? this.sessionOptions.directory ?? this.runtimeOptions.projectPath ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? this.runtimeOptions.defaultTimeoutMs ?? 120000;
@@ -460,6 +568,8 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
   readonly id: AgentTarget;
   readonly name: string;
   protected options: GenericSubprocessOptions;
+  /** Guards the once-per-runtime permission log (Phase 2C). */
+  private permissionNoticeEmitted = false;
 
   constructor(options: GenericSubprocessOptions) {
     this.id = options.id;
@@ -696,7 +806,43 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
   }
 
   async createSession(options: SessionOptions): Promise<IAgentSession> {
+    this.announcePermissionMode();
     const sessionId = randomUUID();
     return new GenericSubprocessSession(sessionId, this.options, options);
+  }
+
+  /**
+   * Phase 2C transparency, emitted once per runtime (the first session it
+   * creates — not on every prompt): subprocess runtimes can only ever run
+   * auto-approved, so the user must be able to see *which* switch was used.
+   *
+   * REV-2C-002: the flag is only described as "auto-approved" when it is
+   * verified; an assumed flag (`permissionArgsVerified: false`) is announced as
+   * a `warn` that it is unverified and the CLI may still prompt. `ask`/`deny`
+   * are handled fail-closed by the CLI (REV-2C-001), so nothing is ever claimed
+   * for them here.
+   */
+  private announcePermissionMode(): void {
+    if (this.permissionNoticeEmitted) return;
+    this.permissionNoticeEmitted = true;
+
+    if ((this.options.permissions ?? "auto") !== "auto") return;
+
+    const flags = effectivePermissionArgs(this.options);
+    if (flags.length === 0) return;
+
+    const flagText = flags.join(" ");
+    if (this.options.permissionArgsVerified === false) {
+      events.emit("log", {
+        level: "warn",
+        message: `[huginn] ${this.id}: assuming ${flagText}; not verified — the CLI may still prompt`,
+      });
+      return;
+    }
+
+    events.emit("log", {
+      level: "info",
+      message: `[huginn] ${this.id}: running with ${flagText} (auto-approved permissions)`,
+    });
   }
 }

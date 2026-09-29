@@ -2,6 +2,14 @@ import { GenericSubprocessRuntimeAdapter, type GenericSubprocessOptions } from "
 import { parseQwenMcpList } from "./mcpList.js";
 
 /**
+ * Qwen Code's auto-approval switch (Phase 2C, `-y` / `--yolo`): `qwen prompt`
+ * closes stdin after the prompt, so a permission request can never be answered
+ * and would stall the cycle. It is Qwen Code's own flag (re-verify with
+ * `qwen --help`) and is overridable through `permissionArgs`.
+ */
+export const QWEN_PERMISSION_ARGS = ["-y"];
+
+/**
  * Qwen Code CLI. No model-listing command is exposed (verified), so discovery
  * returns `[]` rather than a fabricated catalog (AC-27.4); a selected model is
  * forwarded via `-m` (AC-27.5).
@@ -20,6 +28,8 @@ export class QwenRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
       args: options.args ?? ["prompt"],
       models: options.models,
       modelArgs: options.modelArgs ?? ((model) => ["-m", model]),
+      permissionArgs: options.permissionArgs ?? QWEN_PERMISSION_ARGS,
+      permissions: options.permissions,
       modelListCommand: options.modelListCommand,
       mcpListCommand: options.mcpListCommand ?? {
         command,

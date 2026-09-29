@@ -8,6 +8,7 @@ import {
   describeModelSources,
   loadConfigLayers,
   resolveModelsFromConfig,
+  type PermissionMode,
   type RunConfig,
 } from "./config";
 import { MAIN_PHASES, type PhaseName } from "./engine/types";
@@ -34,7 +35,7 @@ import { printBanner, type BannerInfo } from "./banner";
 import { runPlanMode } from "./engine/planMode";
 import { LiveEngine } from "./engine/liveMode";
 import { maybePrintUpdateReminder } from "./update";
-import { resolveAgent, getAgentRuntime, OpencodeRuntimeAdapter } from "./engine/agent/index.js";
+import { resolveAgent, getAgentRuntime, OpencodeRuntimeAdapter, subprocessPermissionMessage } from "./engine/agent/index.js";
 import type { AgentTarget } from "./agents/integrator.js";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
@@ -316,6 +317,38 @@ function flagEnabled(value: ParsedArgs[string]): boolean {
   return value === true;
 }
 
+/** The only values `--permissions` accepts (REV-2C-004). */
+export const PERMISSION_MODES = ["auto", "ask", "deny"] as const;
+
+/**
+ * Parse `--permissions`, failing closed on anything outside the allowlist
+ * (REV-2C-004): a typo such as `--permissions denn` (or a bare flag left as
+ * `true`) must abort, not silently fall back to `auto` — which would be *less*
+ * restrictive than the user asked for. Shared by `run` and `runLive` so the two
+ * paths can never diverge.
+ */
+export function resolvePermissions(flag: ParsedArgs[string]): PermissionMode {
+  if (flag === undefined) return "auto";
+  const value = String(flag);
+  if ((PERMISSION_MODES as readonly string[]).includes(value)) return value as PermissionMode;
+  console.error(
+    `Invalid --permissions "${value}". Valid: ${PERMISSION_MODES.join(", ")}`,
+  );
+  process.exit(1);
+}
+
+/**
+ * Fail closed when a subprocess runtime is asked to honour `ask`/`deny`
+ * (REV-2C-001). A subprocess CLI closes stdin after the prompt, so it cannot
+ * consult huginn mid-turn: starting it auto-approved would silently run *more*
+ * permissively than requested. opencode keeps the native subscriber path.
+ */
+export function assertPermissionModeSupported(runtimeId: string, permissions: PermissionMode): void {
+  if (runtimeId === "opencode" || permissions === "auto") return;
+  console.error(subprocessPermissionMessage(runtimeId, permissions));
+  process.exit(1);
+}
+
 /**
  * Gate every work command (`run`, `plan`, `live`) on a usable git repository
  * (REQ-5). Membership of a work tree is decided by `git rev-parse
@@ -559,6 +592,7 @@ export async function main(argv: string[]): Promise<void> {
   const projectPath = canonicalize(
     typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
+  const permissions = resolvePermissions(args["--permissions"]);
   const layers = loadConfigLayers(projectPath);
   const { thinker, executor } = resolveModelsFromConfig({
     flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
@@ -585,12 +619,7 @@ export async function main(argv: string[]): Promise<void> {
     agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
     profile: resolveProfile(args["--profile"], layers.project.profile ?? layers.user.profile),
-    permissions:
-      args["--permissions"] === "ask"
-        ? "ask"
-        : args["--permissions"] === "deny"
-          ? "deny"
-          : "auto",
+    permissions,
     maxRetries: num(args["--max-retries"], 3),
     fromIteration: typeof args["--from-iteration"] === "string" ? num(args["--from-iteration"], 1) : undefined,
     onlyPhase: typeof args["--only-phase"] === "string" ? validatePhase(args["--only-phase"]) : undefined,
@@ -672,7 +701,14 @@ export async function main(argv: string[]): Promise<void> {
     projectPath,
     port: cfg.port,
     serverTimeoutMs: cfg.serverTimeoutMs,
+    // Phase 2C: subprocess runtimes launch with their own auto-approval flag;
+    // opencode keeps enforcing `--permissions` through the event subscriber
+    // (see `subscribeToEvents` below).
+    permissions: cfg.permissions,
   });
+  // REV-2C-001: a subprocess runtime cannot honour ask/deny — refuse to start
+  // the cycle instead of silently running it more permissively than requested.
+  assertPermissionModeSupported(runtime.id, cfg.permissions);
 
   try {
     await runtime.startDaemon?.();
@@ -824,6 +860,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   const projectPath = canonicalize(
     typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
+  const permissions = resolvePermissions(args["--permissions"]);
   const layers = loadConfigLayers(projectPath);
   const modelSources = describeModelSources({
     flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
@@ -867,12 +904,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
     profile: resolveProfile(args["--profile"], layers.project.profile ?? layers.user.profile),
-    permissions:
-      args["--permissions"] === "ask"
-        ? "ask"
-        : args["--permissions"] === "deny"
-          ? "deny"
-          : "auto",
+    permissions,
     maxRetries: num(args["--max-retries"], 3),
     fromIteration: typeof args["--from-iteration"] === "string" ? num(args["--from-iteration"], 1) : undefined,
     onlyPhase: typeof args["--only-phase"] === "string" ? validatePhase(args["--only-phase"]) : undefined,
@@ -908,7 +940,14 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     projectPath,
     port: cfg.port,
     serverTimeoutMs: cfg.serverTimeoutMs,
+    // Phase 2C: subprocess runtimes launch with their own auto-approval flag;
+    // opencode keeps enforcing `--permissions` through the event subscriber
+    // (see `subscribeToEvents` below).
+    permissions: cfg.permissions,
   });
+  // REV-2C-001: a subprocess runtime cannot honour ask/deny — refuse to start
+  // the cycle instead of silently running it more permissively than requested.
+  assertPermissionModeSupported(runtime.id, cfg.permissions);
 
   try {
     await runtime.startDaemon?.();

@@ -16,6 +16,14 @@ import type { PhaseName } from "./engine/types";
 import { AGENT_TARGETS, REMOVED_AGENT_TARGETS } from "./agents/integrator";
 import { DEFAULT_PROFILE, isProfileName, PROFILE_NAMES, type ProfileName } from "./engine/profiles";
 
+/**
+ * Huginn's `--permissions` modes (Phase 2C). `auto` auto-approves, `ask` and
+ * `deny` require a channel back to huginn mid-turn. A single alias reused by the
+ * config, the CLI flag parser and the agent registry so the allowlist exists
+ * once (REV-2C-004).
+ */
+export type PermissionMode = "auto" | "ask" | "deny";
+
 export interface RunConfig {
   projectPath: string;
   planPath: string;
@@ -27,7 +35,7 @@ export interface RunConfig {
   mode: "auto" | "supervised";
   /** Execution methodology (REQ-36 / ADR-35); undefined means the Huginn Cycle. */
   profile?: ProfileName;
-  permissions: "auto" | "ask" | "deny";
+  permissions: PermissionMode;
   maxRetries: number;
   fromIteration?: number;
   onlyPhase?: PhaseName;
