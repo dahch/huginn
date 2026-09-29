@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { CycleEngine } from "../engine/cycle";
-import { LiveAbortError, type LiveEngine } from "../engine/liveMode";
+import { LiveAbortError, type LiveEngine, type TranscriptTurn } from "../engine/liveMode";
 import { saveUserConfig, saveGlobalUserConfig, getProjectConfigPath, getUserConfigPath, type RunConfig } from "../config";
 import { AGENT_TARGETS } from "../agents/integrator";
 import { isAgentTarget } from "../engine/agent/registry";
@@ -87,6 +87,55 @@ function statusRow(label: string, value: string): string {
 interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
+}
+
+/**
+ * Phase 4D (REQ-2.3) — the conversation a freshly mounted view starts from.
+ *
+ * The engine's transcript is the source of truth for what was said, so a view that
+ * mounts on a live session already in progress shows the conversation again
+ * instead of an empty card. That is what makes the return from a cycle keep the
+ * chat: `LiveApp` swaps this view for the cycle `Dashboard` and back, which
+ * *unmounts* it, and only the transcript outlives the remount.
+ *
+ * Every turn is sanitized on the way in, exactly like a live `liveChat` payload:
+ * a resumed or hand-made session, or an agent turn, can carry terminal escapes
+ * (SEC-001) and this text goes straight to the terminal.
+ */
+function transcriptToChatMessages(turns: ReadonlyArray<TranscriptTurn>): ChatMessage[] {
+  return turns.map((turn) => ({ role: turn.role, text: sanitizeTerminalText(turn.text) }));
+}
+
+/**
+ * Phase 4D (REQ-2.3) — true when `event` only re-announces the newest turn the
+ * engine had already recorded when this view hydrated, so appending it would show
+ * that turn twice.
+ *
+ * The engine records a turn *before* it emits the event that announces it, and a
+ * remount (returning from a cycle) can land between the two: the turn is then
+ * hydrated from the transcript *and* announced by an event this instance is
+ * already listening for. They are the same turn only while the transcript is still
+ * — turn for turn — the one that was hydrated, which is why the whole snapshot is
+ * compared rather than a count: an appended, dropped (the transcript is capped at
+ * 100 turns) or cleared turn always invalidates it, so a genuine later message is
+ * never swallowed, even one that repeats the same text (a repeat is a later
+ * position). Pure — exported for the hydration tests.
+ */
+export function isHydratedReplay(
+  transcript: ReadonlyArray<TranscriptTurn>,
+  hydrated: ReadonlyArray<TranscriptTurn>,
+  event: { role: ChatMessage["role"]; text: string },
+): boolean {
+  // Nothing was hydrated: every event is news (a `/clear`ed view included).
+  if (hydrated.length === 0) return false;
+  if (transcript.length !== hydrated.length) return false;
+  for (let i = 0; i < transcript.length; i++) {
+    const turn = transcript[i]!;
+    const seen = hydrated[i]!;
+    if (turn.role !== seen.role || turn.text !== seen.text) return false;
+  }
+  const newest = transcript[transcript.length - 1]!;
+  return newest.role === event.role && sanitizeTerminalText(newest.text) === sanitizeTerminalText(event.text);
 }
 
 interface FormattedLine {
@@ -225,7 +274,24 @@ function RefineView({
   const paletteReservedRows =
     headerHeight + INPUT_HEIGHT + FOOTER_HEIGHT + CARD_MIN_ROWS * 2 + PALETTE_BORDER_ROWS;
   const [stage, setStage] = useState<LiveStage>("refine");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  /**
+   * The transcript this view hydrated from (Phase 4D). It is what tells a
+   * *replayed* `liveChat` event — the turn was recorded before the remount that
+   * put this instance back on screen — from a genuinely new turn: see
+   * {@link isHydratedReplay}. Read once, with the state below, at mount.
+   */
+  const hydratedTranscript = useRef<ReadonlyArray<TranscriptTurn>>([]);
+  /**
+   * The conversation as rendered. It starts from the engine's transcript rather
+   * than from `[]`, so returning from a cycle (which remounts this view) shows the
+   * conversation again instead of an empty card (REQ-2.3); from then on it grows
+   * from the `liveChat` events, exactly as before.
+   */
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    const transcript = live.getTranscript();
+    hydratedTranscript.current = transcript;
+    return transcriptToChatMessages(transcript);
+  });
   const [decision, setDecision] = useState<DecisionRequest | undefined>();
   const [draftInput, setDraftInput] = useState("");
   /** Submitted prompts of this session, oldest first (REQ-34 / AC-34.1). */
@@ -369,7 +435,10 @@ function RefineView({
     const offs: Array<() => void> = [
       events.on("liveStage", (e) => setStage(e.stage)),
       events.on("liveChat", (e) => {
-        setMessages((m) => [...m, { role: e.role, text: e.text }]);
+        // Phase 4D (REQ-2.3): a turn that was hydrated from the transcript at mount
+        // is not rendered a second time when its own event reaches this instance.
+        if (isHydratedReplay(live.getTranscript(), hydratedTranscript.current, e)) return;
+        setMessages((m) => [...m, { role: e.role, text: sanitizeTerminalText(e.text) }]);
         setChatScroll(0); // auto-scroll to bottom on new message
       }),
       events.on("phaseStart", () => {
@@ -417,7 +486,7 @@ function RefineView({
         exitTimer.current = null;
       }
     };
-  }, [exit]);
+  }, [exit, live]);
 
   const inputEnabled = !busy && stage !== "draft" && !decision;
 
@@ -738,6 +807,13 @@ function RefineView({
         return;
       }
       case "/clear": {
+        // Phase 4D (REQ-2.3): the view rehydrates from the engine transcript
+        // whenever it mounts (returning from a cycle remounts it), so clearing only
+        // the render state would hand the user back the turns they just cleared. The
+        // engine's copy goes with it — and the hydrated snapshot with it, so the next
+        // turns are never taken for a replay of what was cleared.
+        live.clearTranscript();
+        hydratedTranscript.current = [];
         setMessages([]);
         clearStream();
         setChatScroll(0);

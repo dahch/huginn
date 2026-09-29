@@ -50,6 +50,9 @@ function createMockLive(overrides?: Partial<LiveEngine>): LiveEngine {
     models: { thinker: "a/b", executor: "a/b" },
     currentStage: "refine",
     ideaText: "",
+    // Phase 4D: the view hydrates its conversation from the transcript at mount.
+    getTranscript: vi.fn().mockReturnValue([]),
+    clearTranscript: vi.fn(),
     start: vi.fn().mockResolvedValue(undefined),
     chat: vi.fn().mockResolvedValue(undefined),
     draft: vi.fn().mockResolvedValue("aborted"),

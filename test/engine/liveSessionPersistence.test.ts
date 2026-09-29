@@ -873,3 +873,77 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     }
   });
 });
+
+/**
+ * Phase 4D — `/clear` in the console must clear the conversation the view
+ * rehydrates from, not only the render state (REQ-2.3): the view remounts
+ * (returning from a cycle swaps it out and back in) and would otherwise hand the
+ * user back the very turns they just cleared.
+ */
+describe("LiveEngine transcript clearing (Phase 4D)", () => {
+  it("empties the transcript in memory and in the stored session, keeping the id", async () => {
+    const engine = new LiveEngine({ cfg: makeCfg(), runtime: stubRuntime("reply") });
+    await engine.chat("first question");
+    const id = engine.getSessionId();
+    const before = latestLiveSession(dir)!;
+    expect(engine.getTranscript()).toHaveLength(2);
+    expect(before.messages).toHaveLength(2);
+
+    engine.clearTranscript();
+
+    expect(engine.getTranscript()).toEqual([]);
+    // The session itself survives: same handle, same file, same record.
+    const after = latestLiveSession(dir)!;
+    expect(engine.getSessionId()).toBe(id);
+    expect(after.id).toBe(id);
+    expect(after.messages).toEqual([]);
+    expect(existsSync(liveSessionsPath(dir))).toBe(true);
+    // What *describes* the conversation is untouched, so `-c/--continue` still
+    // names it and a listing still recognises it.
+    expect(after.createdAt).toBe(before.createdAt);
+    expect(after.title).toBe(before.title);
+    expect(after.runtimeId).toBe("opencode");
+    expect(after.projectPath).toBe(dir);
+  });
+
+  it("keeps the same session growing after a clear, and a resume sees it emptied", async () => {
+    const engine = new LiveEngine({ cfg: makeCfg(), runtime: stubRuntime("reply") });
+    await engine.chat("cleared away");
+    const id = engine.getSessionId();
+    engine.clearTranscript();
+
+    // The next turn lands in the *same* record: the conversation was reset, not
+    // replaced, so nothing about the session handle moves.
+    await engine.chat("a fresh question");
+    expect(loadLiveSessions(dir)).toHaveLength(1);
+    expect(engine.getSessionId()).toBe(id);
+    expect(engine.getTranscript().map((m) => m.text)).toEqual(["a fresh question", "reply"]);
+
+    // A restart resuming that session rehydrates the current conversation only —
+    // never the turns that were cleared out of it.
+    const resumed = new LiveEngine({
+      cfg: makeCfg(),
+      runtime: stubRuntime("reply"),
+      resume: { id },
+    });
+    expect(resumed.getTranscript().map((m) => m.text)).toEqual(["a fresh question", "reply"]);
+  });
+
+  it("still clears the in-memory conversation when the store cannot be written", async () => {
+    // A regular file where the live *directory* must be: the persist fails.
+    mkdirSync(join(dir, ".huginn"), { recursive: true });
+    writeFileSync(join(dir, ".huginn", "live"), "not a directory");
+    const { messages, off } = warnings();
+    try {
+      const engine = new LiveEngine({ cfg: makeCfg(), runtime: stubRuntime("reply") });
+      await engine.chat("keep me");
+
+      engine.clearTranscript();
+
+      expect(engine.getTranscript()).toEqual([]);
+      expect(messages.some((m) => m.includes("could not persist live session"))).toBe(true);
+    } finally {
+      off();
+    }
+  });
+});

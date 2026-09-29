@@ -400,6 +400,25 @@ export class LiveEngine {
   }
 
   /**
+   * Phase 4D (REQ-2.3) — drops the whole conversation, in memory **and** on disk.
+   *
+   * `/clear` in the console empties the *viewport*, but the view rehydrates itself
+   * from {@link getTranscript} whenever it mounts (returning from a cycle remounts
+   * it), so clearing only the view would hand the user back exactly the turns they
+   * just cleared on the next remount — or, worse, silently on the next cycle.
+   *
+   * The **session survives**: the same record keeps its `id`, `title`, `idea`,
+   * stage and runtime session id, so `-c/--continue` still finds the conversation
+   * and it keeps growing in the same place. Only its `messages` are emptied. Like
+   * every other checkpoint, the write is best-effort — a read-only project logs a
+   * warning instead of breaking the turn.
+   */
+  clearTranscript(): void {
+    this.messages = [];
+    this.persistLiveSession();
+  }
+
+  /**
    * Id of the **persisted live session** (Phase 4B) — the handle `-c/--session`
    * accepts (Phase 4C). The agent's own session id is
    * {@link getOpencodeSessionId}.
