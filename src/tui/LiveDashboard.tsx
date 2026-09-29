@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { CycleEngine } from "../engine/cycle";
-import { LiveAbortError, type LiveEngine, type TranscriptTurn } from "../engine/liveMode";
+import {
+  LiveAbortError,
+  type DiagnosticsInfo,
+  type LiveEngine,
+  type TranscriptTurn,
+} from "../engine/liveMode";
 import { saveUserConfig, saveGlobalUserConfig, getProjectConfigPath, getUserConfigPath, type RunConfig } from "../config";
 import { AGENT_TARGETS } from "../agents/integrator";
 import { isAgentTarget } from "../engine/agent/registry";
@@ -23,7 +28,6 @@ import {
   busyFeedback,
   causeText,
   configSaveStep,
-  emptyChatHints,
   failureFeedback,
   failureHeadline,
   okFeedback,
@@ -55,7 +59,12 @@ import {
 } from "./composer.js";
 import { loadSkills, findSkill, type Skill } from "../engine/skills/index.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
-import { fetchMcpStatusWithTimeout, formatMcpBadge, MCP_STATUS_POLL_TIMEOUT_MS } from "../engine/agent/mcpStatus.js";
+import {
+  fetchMcpStatusWithTimeout,
+  formatMcpBadge,
+  MCP_STATUS_POLL_TIMEOUT_MS,
+  type McpBadge,
+} from "../engine/agent/mcpStatus.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import {
   RavenHeader,
@@ -64,6 +73,14 @@ import {
   useRavenHeaderPlan,
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
+import { InfoPanel, sidePanelPlan, type PanelData } from "./InfoPanel.js";
+import { LiveHero } from "./LiveHero.js";
+import {
+  sessionStat,
+  stageTip,
+  type ContextStat,
+  type GitSummary,
+} from "./sessionContext.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -74,12 +91,21 @@ const STATUS_TITLE = "System Diagnostics";
 
 /** Live context rows rendered by `LiveHeader` (stage/badge + models). */
 const LIVE_HEADER_CONTEXT_ROWS = 2;
-/** Columns the live view's outer `paddingX={1}` spends around the header. */
+/**
+ * Columns the live view's outer `paddingX={1}` spends: around the header and
+ * around the main row (cards + side panel) below it.
+ */
 const LIVE_VIEW_OUTER_INSET = 2;
 /** `minHeight` both scrollable cards keep so their title row is never clipped. */
 const CARD_MIN_ROWS = 4;
 /** Rows a card's rounded border spends (top + bottom). */
 const CARD_BORDER_ROWS = 2;
+/** Columns a card's rounded border spends (left + right). */
+const CARD_BORDER_COLUMNS = 2;
+/** Columns a card's `paddingX={1}` spends. */
+const CARD_PADDING_COLUMNS = 2;
+/** Everything a card spends around its body, horizontally. */
+const CARD_HORIZONTAL_CHROME = CARD_BORDER_COLUMNS + CARD_PADDING_COLUMNS;
 /** The card's own title row, above the body. */
 const CARD_TITLE_ROWS = 1;
 /** Rows the composer's `marginTop={1}` spends. */
@@ -107,9 +133,32 @@ const PALETTE_BORDER_ROWS = 2;
  * the tallest command palette (6 content rows + border). The header's own row
  * cost is added on top when the plan is derived, so the art can never squeeze
  * the viewport (AC-29.3 / AC-28.4).
+ *
+ * The side panel is deliberately absent from this figure: it shares the cards'
+ * row rather than claiming one of its own, so it can never take a row from the
+ * composer, the palette or the footer (REQ-12).
  */
 const VIEWPORT_RESERVED_ROWS =
   CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT + MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS;
+
+/**
+ * How long a diagnostics probe stays good (Phase 7B / REQ-12). The side panel and
+ * `/status` read the *same* probe through this window, so a wide terminal does not
+ * double the git work the command does, and two `/status` presses a second apart
+ * do not each spawn `git`. A *failed* probe is never cached, so a retry after a
+ * failure always re-probes.
+ */
+const DIAGNOSTICS_TTL_MS = 3_000;
+/**
+ * How often the side panel refreshes the git/Muninn lines while it is on screen.
+ * Slow on purpose: it is a status panel, not a monitor, and each refresh costs a
+ * `git status` on the project.
+ */
+const DIAGNOSTICS_POLL_MS = 15_000;
+/** Share of the header's second row the git/sandbox/context summary may claim. */
+const HEADER_STATUS_SHARE = 0.4;
+/** Columns the header keeps for the models before it shows that summary at all. */
+const HEADER_MIN_MODEL_COLUMNS = 30;
 
 function statusRow(label: string, value: string): string {
   return `│ ${label.padEnd(STATUS_LABEL_WIDTH)} ${value.padEnd(STATUS_VALUE_WIDTH)}│`;
@@ -367,6 +416,12 @@ function RefineView({
   const [availableSkills, setAvailableSkills] = useState<Skill[]>(() => loadSkills(cfg.projectPath));
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatusReport | null>(null);
+  /**
+   * The last diagnostics probe (Phase 7B / REQ-12): what feeds the side panel's
+   * git/Muninn lines and the header's git summary. `null` means "not known yet" —
+   * the panel then omits those rows rather than inventing them (NFR-10).
+   */
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsInfo | null>(null);
   const [currentThinker, setCurrentThinker] = useState(cfg.thinker);
   const [currentExecutor, setCurrentExecutor] = useState(cfg.executor);
   const [focusCard, setFocusCard] = useState<"chat" | "stream">("chat");
@@ -392,6 +447,26 @@ function RefineView({
   const lastFlushTime = useRef(0);
   const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logBuf = useRef<typeof logs>(logs);
+  /**
+   * The in-flight/last diagnostics probe, with the time it was taken (Phase 7B /
+   * REQ-12). Sharing it keeps the panel and `/status` on one `git` call per
+   * {@link DIAGNOSTICS_TTL_MS}; the entry is dropped on failure so the next
+   * `/status` really does retry (AC-31.2).
+   */
+  const diagnosticsProbe = useRef<{ at: number; probe: Promise<DiagnosticsInfo> } | null>(null);
+  const loadDiagnostics = useCallback((): Promise<DiagnosticsInfo> => {
+    const cached = diagnosticsProbe.current;
+    if (cached && Date.now() - cached.at < DIAGNOSTICS_TTL_MS) return cached.probe;
+    const probe = live.getDiagnostics();
+    diagnosticsProbe.current = { at: Date.now(), probe };
+    // A failed probe is not an answer: never let the cache answer the retry with
+    // the same failure. (The handler also keeps the rejection from going
+    // unhandled while the panel is the only reader.)
+    probe.catch(() => {
+      if (diagnosticsProbe.current?.probe === probe) diagnosticsProbe.current = null;
+    });
+    return probe;
+  }, [live]);
 
   const clearStream = () => {
     if (streamTimer.current) {
@@ -925,7 +1000,10 @@ function RefineView({
       }
       case "/status": {
         try {
-          const diag = await live.getDiagnostics();
+          // Same probe the side panel reads (Phase 7B / REQ-12): one `git` call
+          // serves both, and what `/status` prints can never contradict the panel.
+          const diag = await loadDiagnostics();
+          setDiagnostics(diag);
           const safeBranch = sanitizeTerminalText(diag.gitBranch).slice(0, STATUS_VALUE_WIDTH);
           const sandboxStr = diag.worktreeSandbox ? "Yes (isolated worktree)" : "No (primary tree)";
           const cleanStr = diag.gitClean ? "Clean" : "Modified / dirty";
@@ -1148,6 +1226,95 @@ function RefineView({
     ? Math.max(1, Math.floor(availableHeight * 0.58))
     : Math.max(1, availableHeight);
   const streamHeight = showStreamPanel ? Math.max(1, availableHeight - chatHeight) : 0;
+
+  // ── Side panel (REQ-12) ──────────────────────────────────────────────────
+  // The panel shares the row the cards live in, so it changes no frame budget: the
+  // conversation keeps `cardsWidth` columns and the panel takes the rest, and on
+  // anything narrow (or short, or with the palette open) `sidePanelPlan` says "no
+  // panel" and the row is exactly what it was before.
+  const panelPlan = useMemo(
+    () =>
+      sidePanelPlan({
+        columns: terminalSize.columns,
+        availableHeight,
+        inset: LIVE_VIEW_OUTER_INSET,
+      }),
+    [terminalSize.columns, availableHeight],
+  );
+
+  // The panel's git/Muninn lines refresh on a slow timer while it is on screen —
+  // and only then: a narrow terminal pays for no probe at all (REQ-12).
+  useEffect(() => {
+    if (!panelPlan.visible) return;
+    let active = true;
+    const refresh = async (): Promise<void> => {
+      try {
+        const info = await loadDiagnostics();
+        if (active) setDiagnostics(info);
+      } catch {
+        // A failed probe is reported by `/status`; the panel just drops the rows
+        // it cannot fill instead of showing stale or invented values (NFR-10).
+        if (active) setDiagnostics(null);
+      }
+    };
+    void refresh();
+    const interval = setInterval(() => void refresh(), DIAGNOSTICS_POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [panelPlan.visible, loadDiagnostics]);
+
+  // ── Live status summaries (REQ-12) ───────────────────────────────────────
+  const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
+  /**
+   * The conversation the live prompt carries, counted from the turns on screen.
+   * System notices are the console's own feedback, not conversation, so they are
+   * not counted — and an empty conversation reports nothing at all, rather than a
+   * fabricated zero (NFR-10).
+   */
+  const sessionContext = useMemo<ContextStat>(() => {
+    let turns = 0;
+    let chars = 0;
+    for (const message of messages) {
+      if (message.role === "system") continue;
+      turns += 1;
+      chars += message.text.length;
+    }
+    return { turns, chars };
+  }, [messages]);
+  /** The working tree as last probed, or `null` while nothing is known yet. */
+  const gitSummary: GitSummary | null = diagnostics
+    ? {
+        branch: diagnostics.gitBranch,
+        clean: diagnostics.gitClean,
+        sandbox: diagnostics.worktreeSandbox,
+      }
+    : null;
+  /** The attributed MCP badge, shared by the header and the panel (AC-32.4). */
+  const mcpBadge = useMemo(
+    () => formatMcpBadge(mcpStatus, live.runtime.id),
+    [mcpStatus, live.runtime],
+  );
+  /** The one reminder the panel and the hero's tip box show for this stage. */
+  const tip = stageTip(stage);
+  const panelData: PanelData = {
+    stageLabel: STAGE_LABEL[stage].label,
+    stageToken: STAGE_LABEL[stage].token,
+    busy,
+    spinner,
+    agentName: currentRuntimeName,
+    thinker: currentThinker,
+    executor: currentExecutor,
+    mcpText: mcpBadge.text,
+    mcpToken: mcpStatusToken(mcpBadge.status),
+    git: gitSummary,
+    memory: diagnostics?.memoryStats ?? null,
+    context: sessionContext,
+    tip,
+  };
+  /** Columns the cards column keeps beside the panel (all of them without one). */
+  const cardsWidth = panelPlan.cardsWidth;
 
   // Never leave focus on a card that is not rendered.
   useEffect(() => {
@@ -1399,8 +1566,6 @@ function RefineView({
     }
   });
 
-  const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
-
   // Slice visible lines for Chat
   const chatStart = Math.max(0, formattedChatLines.length - visibleChatLinesCount - chatScroll);
   const visibleChatLines = formattedChatLines.slice(chatStart, chatStart + visibleChatLinesCount);
@@ -1423,10 +1588,11 @@ function RefineView({
         cfg={cfg}
         spinner={spinner}
         runtimeName={currentRuntimeName}
-        runtimeId={live.runtime.id}
         thinker={currentThinker}
         executor={currentExecutor}
-        mcpStatus={mcpStatus}
+        mcpBadge={mcpBadge}
+        git={gitSummary}
+        context={sessionContext}
       />
 
       {showModelPicker ? (
@@ -1471,31 +1637,44 @@ function RefineView({
           onCancel={() => setShowAgentPicker(false)}
         />
       ) : (
-        <>
-          <ScrollableChatCard
-            lines={visibleChatLines}
-            totalLines={formattedChatLines.length}
-            scrollOffset={chatScroll}
-            maxScroll={maxChatScroll}
-            isFocused={focusCard === "chat"}
-            busy={busy}
-            spinner={spinner}
-            height={chatHeight}
-          />
-
-          {showStreamPanel && (
-            <ScrollableStreamCard
-              lines={visibleStreamLines}
-              totalLines={streamLines.length}
-              scrollOffset={streamScroll}
-              chars={streamChars}
-              isFocused={focusCard === "stream"}
-              spinner={spinner}
+        // The main row (REQ-12): the cards keep `cardsWidth` columns and the side
+        // panel takes the rest. Without a panel `cardsWidth` is the whole content
+        // width, so this row is pixel-for-pixel what the column used to be.
+        <Box flexDirection="row" width={terminalSize.columns - LIVE_VIEW_OUTER_INSET}>
+          <Box flexDirection="column" width={cardsWidth}>
+            <ScrollableChatCard
+              lines={visibleChatLines}
+              totalLines={formattedChatLines.length}
+              scrollOffset={chatScroll}
+              maxScroll={maxChatScroll}
+              isFocused={focusCard === "chat"}
               busy={busy}
-              height={streamHeight}
+              spinner={spinner}
+              height={chatHeight}
+              width={cardsWidth}
+              // One home per tip: the panel already carries it on a wide
+              // terminal, so the hero's tip box only fills that role when there
+              // is no panel beside the conversation.
+              tip={panelPlan.visible ? "" : tip}
             />
-          )}
-        </>
+
+            {showStreamPanel && (
+              <ScrollableStreamCard
+                lines={visibleStreamLines}
+                totalLines={streamLines.length}
+                scrollOffset={streamScroll}
+                chars={streamChars}
+                isFocused={focusCard === "stream"}
+                spinner={spinner}
+                busy={busy}
+                height={streamHeight}
+                width={cardsWidth}
+              />
+            )}
+          </Box>
+
+          <InfoPanel plan={panelPlan} data={panelData} />
+        </Box>
       )}
 
       {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
@@ -1549,24 +1728,27 @@ function LiveHeader({
   cfg,
   spinner,
   runtimeName,
-  runtimeId,
   thinker,
   executor,
-  mcpStatus,
+  mcpBadge,
+  git,
+  context,
 }: {
   plan: RavenHeaderPlan;
   stage: LiveStage;
   cfg: RunConfig;
   spinner: string;
   runtimeName: string;
-  /** Active agent target, so the MCP badge attributes its numbers (AC-32.4). */
-  runtimeId: string;
   thinker: string;
   executor: string;
-  mcpStatus?: McpStatusReport | null;
+  /** The attributed MCP badge (already resolved by the caller, AC-32.4). */
+  mcpBadge: McpBadge;
+  /** The working tree as last probed, or `null` while nothing is known. */
+  git: GitSummary | null;
+  /** The conversation's own size, for the header's context counter. */
+  context: ContextStat;
 }) {
   const s = STAGE_LABEL[stage];
-  const mcpBadge = formatMcpBadge(mcpStatus, runtimeId);
   // Presence over decoration (AC-29.4): the raven brand is followed by the live
   // stage, a (truthful) MCP badge, the active runtime, the project path and the
   // active models. Every dynamic value is sanitized and clamped to the columns
@@ -1592,11 +1774,22 @@ function LiveHeader({
     rightBudget - mcpText.length - (runtimeValue ? runtimeLabel.length + runtimeValue.length : 0) - sep.length;
   const projectValue = projectRoom >= 10 ? headerValue(cfg.projectPath, projectRoom) : "";
 
-  // Row 2: thinker always, executor while both ids still fit side by side.
+  // Row 2 (REQ-12): the models on the left, the session's own status on the
+  // right — branch and whether the tree is dirty, the worktree sandbox, and the
+  // conversation counter. The status cell is whole-or-nothing: it only claims
+  // columns while the models keep `HEADER_MIN_MODEL_COLUMNS` of their own, so a
+  // squeezed row loses the summary rather than the model names, and it is
+  // clamped to its share of the row so it can never wrap.
+  const statusRoom = Math.min(
+    Math.max(0, rowWidth - HEADER_MIN_MODEL_COLUMNS),
+    Math.floor(rowWidth * HEADER_STATUS_SHARE),
+  );
+  const statusText = statusRoom > 0 ? sessionStat(git, context, statusRoom) : "";
+  const modelsWidth = rowWidth - (statusText.length > 0 ? statusText.length + gap : 0);
   const modelLabels = "thinker: ".length + "executor: ".length;
-  const modelRoom = rowWidth - gap - modelLabels - 2;
+  const modelRoom = modelsWidth - gap - modelLabels - 2;
   const bothModels = modelRoom >= 16;
-  const thinkerBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : rowWidth - "thinker: ".length - gap);
+  const thinkerBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : modelsWidth - "thinker: ".length - gap);
   const safeThinker = headerValue(thinker, thinkerBudget);
   const executorBudget = modelRoom - safeThinker.length;
   const safeExecutor = bothModels && executorBudget >= 4 ? headerValue(executor, executorBudget) : "";
@@ -1648,6 +1841,13 @@ function LiveHeader({
                 </>,
               ]
             : []),
+          ...(statusText
+            ? [
+                <Text key="status" color={THEME.muted} wrap="truncate">
+                  {statusText}
+                </Text>,
+              ]
+            : []),
         ],
       ]}
     />
@@ -1663,6 +1863,8 @@ function ScrollableChatCard({
   busy,
   spinner,
   height,
+  width,
+  tip,
 }: {
   lines: FormattedLine[];
   totalLines: number;
@@ -1672,15 +1874,21 @@ function ScrollableChatCard({
   busy: boolean;
   spinner: string;
   height: number;
+  /** Columns the card occupies (the panel takes the rest of the row). */
+  width: number;
+  /** The stage's reminder, shown in the hero's tip box while the card is empty. */
+  tip: string;
 }) {
   // Body rows actually available inside the fixed-height card: the effective
   // height (Yoga applies `minHeight` over `height`) minus the border and the
-  // title row. The first-run hints are sliced to it, so they can never push the
-  // frame past the terminal height on a short terminal (AC-31.3).
+  // title row. The hero is sliced to it, so it can never push the frame past the
+  // terminal height on a short terminal (AC-31.3).
   const bodyRows = Math.max(
     0,
     Math.max(height, CARD_MIN_ROWS) - CARD_BORDER_ROWS - CARD_TITLE_ROWS,
   );
+  /** Columns the body really has — the hero's own width budget (REQ-12). */
+  const bodyColumns = Math.max(0, width - CARD_HORIZONTAL_CHROME);
   return (
     <Box
       borderStyle="round"
@@ -1688,24 +1896,28 @@ function ScrollableChatCard({
       flexDirection="column"
       paddingX={1}
       height={height}
+      width={width}
       minHeight={CARD_MIN_ROWS}
     >
-      <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent}>
+      {/* The title row is exactly one clipped row: with the side panel beside it
+          the card can be much narrower than the terminal, and a wrapped title
+          would cost a body row the layout never reserved (REV-6001). */}
+      <Box justifyContent="space-between" height={CARD_TITLE_ROWS} overflow="hidden">
+        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent} wrap="truncate">
           Conversation {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
         </Text>
-        <Box>
+        <Box flexShrink={1} overflow="hidden">
           {maxScroll > 0 && (
-            <Text color={THEME.muted}>
+            <Text color={THEME.muted} wrap="truncate">
               {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
               ({totalLines} lines){" "}
             </Text>
           )}
-          {busy && <Text color={THEME.warn}>{spinner} thinking...</Text>}
+          {busy && <Text color={THEME.warn} wrap="truncate">{spinner} thinking...</Text>}
         </Box>
       </Box>
       {lines.length === 0 ? (
-        <EmptyChatHints maxRows={bodyRows} />
+        <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} />
       ) : (
         lines.map((l) => {
           if (l.type === "blank") {
@@ -1750,31 +1962,6 @@ function ScrollableChatCard({
   );
 }
 
-/**
- * First-run guidance (AC-31.3): an empty conversation shows what the console can
- * do — the palette, `/draft`, `/mcp`, `/status` — in the raven's voice instead
- * of a single generic line. One row per hint, truncated rather than wrapped, and
- * sliced to the rows the card actually has, so the block can never widen the
- * frame or push it past the terminal height.
- */
-function EmptyChatHints({ maxRows }: { maxRows: number }) {
-  const hints = emptyChatHints(maxRows);
-  if (hints.length === 0) return null;
-  return (
-    <Box flexDirection="column" overflow="hidden">
-      {hints.map((line, index) => (
-        <Text
-          key={line}
-          wrap="truncate"
-          color={index === 0 ? THEME.accentStrong : THEME.muted}
-        >
-          {line}
-        </Text>
-      ))}
-    </Box>
-  );
-}
-
 function ScrollableStreamCard({
   lines,
   totalLines,
@@ -1784,6 +1971,7 @@ function ScrollableStreamCard({
   spinner,
   busy,
   height,
+  width,
 }: {
   lines: string[];
   totalLines: number;
@@ -1793,6 +1981,8 @@ function ScrollableStreamCard({
   spinner: string;
   busy: boolean;
   height: number;
+  /** Columns the card occupies (the panel takes the rest of the row). */
+  width: number;
 }) {
   return (
     <Box
@@ -1801,15 +1991,23 @@ function ScrollableStreamCard({
       flexDirection="column"
       paddingX={1}
       height={height}
+      width={width}
       minHeight={CARD_MIN_ROWS}
     >
-      <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent}>
+      {/* One clipped title row, exactly like the conversation card: beside the
+          side panel the card is narrower than the terminal and a wrapped title
+          would steal a body row from the stream. */}
+      <Box justifyContent="space-between" height={CARD_TITLE_ROWS} overflow="hidden">
+        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent} wrap="truncate">
           THINKING & LIVE AGENT STREAM {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
         </Text>
-        <Box>
-          {chars > 0 && <Text color={THEME.muted}>{(chars / 1024).toFixed(1)} KB </Text>}
-          {busy && <Text color={THEME.warn}>{spinner} streaming </Text>}
+        <Box flexShrink={1} overflow="hidden">
+          {chars > 0 && (
+            <Text color={THEME.muted} wrap="truncate">
+              {(chars / 1024).toFixed(1)} KB{" "}
+            </Text>
+          )}
+          {busy && <Text color={THEME.warn} wrap="truncate">{spinner} streaming </Text>}
         </Box>
       </Box>
       {lines.length === 0 ? (
