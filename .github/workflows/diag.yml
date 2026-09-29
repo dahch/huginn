@@ -1,0 +1,61 @@
+name: diag
+
+# TEMPORARY diagnostic workflow — not triggered by push, only manually.
+# Purpose: reproduce the vitest stall observed inside `prepublishOnly` during the
+# v2.0.0-rc.1 publish run, with a verbose reporter and bounded timeouts so the
+# exact test that blocks is visible instead of hanging for hours.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Environment
+        run: |
+          nproc
+          free -m
+          ulimit -a
+          node -v
+          npm -v
+          bun --version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Profiles file alone, verbose, serial (bounded 300s)
+        run: |
+          set +e
+          timeout 300 npx vitest run test/engine/profiles.test.ts \
+            --reporter=verbose \
+            --no-file-parallelism \
+            --testTimeout=20000 \
+            --hookTimeout=20000 \
+            --teardownTimeout=15000
+          echo "EXIT=$?"
+
+      - name: Full suite exactly as prepublishOnly runs it (bounded 900s)
+        run: |
+          set +e
+          timeout 900 npm run test
+          echo "EXIT=$?"
+
+      - name: Post-attempt snapshot
+        if: always()
+        run: |
+          ps -eo pid,ppid,stat,etimes,comm,args | head -60
