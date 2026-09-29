@@ -7,6 +7,21 @@ import { git } from "./diff";
 const IGNORED_DIRS = new Set([".harness", ".git", "node_modules", "dist", "build"]);
 
 /**
+ * Caps on the git-derived context embedded in prompts (REV-002). The architect
+ * prompt travels on every stateless turn, so an unbounded `git status`/source
+ * tree (a huge or dirty repo) would otherwise be re-sent with each attempt. The
+ * truncation is announced with a marker rather than silent.
+ */
+const MAX_SOURCE_TREE_CHARS = 4_000;
+const MAX_REPO_CONTEXT_CHARS = 8_000;
+const CONTEXT_TRUNCATED_MARKER = "\n…[truncated]";
+
+/** Truncates prompt context to `max` characters, appending a visible marker. */
+function capContext(text: string, max: number): string {
+  return text.length <= max ? text : text.slice(0, max) + CONTEXT_TRUNCATED_MARKER;
+}
+
+/**
  * Best-effort file read. Returns "" on any failure and logs a warning instead
  * of silently treating an unreadable file as absent.
  */
@@ -42,18 +57,20 @@ function sourceTree(projectPath: string): string {
   }
   const lines = [...dirs].sort();
   if (roots.length > 0) lines.push(...roots.sort().map((f) => `/${f}`));
-  return lines.length > 0 ? lines.join("\n") : "(no source files yet)";
+  const text = lines.length > 0 ? lines.join("\n") : "(no source files yet)";
+  return capContext(text, MAX_SOURCE_TREE_CHARS);
 }
 
 /** Snapshot of git history, working-tree state and source tree for prompts. */
 export function repoContext(projectPath: string): string {
   const log = git(projectPath, ["log", "--oneline", "-30"]);
   const status = git(projectPath, ["status", "--short"]);
-  return [
+  const context = [
     `git log --oneline -30:\n${log.stdout || "(no commits yet)"}`,
     `git status --short:\n${status.stdout || "(clean working tree)"}`,
     `Source tree:\n${sourceTree(projectPath)}`,
   ].join("\n\n");
+  return capContext(context, MAX_REPO_CONTEXT_CHARS);
 }
 
 /**

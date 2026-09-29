@@ -140,6 +140,28 @@ export interface IAgentSession {
 export interface IAgentRuntime {
   id: AgentTarget;
   name: string;
+  /**
+   * Whether **this runtime's session keeps the conversation server-side**
+   * (Phase 4A).
+   *
+   * - `true` — the backend owns the history: every prompt after the first rides
+   *   on the session's own accumulated turns and only needs the new text
+   *   (`opencode`, whose HTTP server holds the session).
+   * - `false` — the runtime is **one-shot/stateless**: each prompt spawns a
+   *   fresh process with no memory of the previous ones, so a caller that wants
+   *   context must send a self-contained body (system prompt + transcript +
+   *   current turn). Every subprocess CLI is in this group (`claude`, `codex`,
+   *   `commandcode`, `devin`, `mcode`, `mimo`, `kimi`, `pi`, `qwen`, `agy`,
+   *   `omp`, `cursor`) — see {@link GenericSubprocessRuntimeAdapter}, which
+   *   declares `false` for all of them.
+   *
+   * `undefined` is read as "does not keep history" by the live engine: re-sending
+   * context is always safe (the worst case is duplicated context), whereas
+   * assuming a history that does not exist silently drops the conversation. Only
+   * a runtime that *knows* its backend persists the session should declare
+   * `true`.
+   */
+  readonly sessionHistory?: boolean;
   isAvailable(): Promise<boolean>;
   getAvailableModels(): Promise<ModelInfo[]>;
   /**

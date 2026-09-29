@@ -702,6 +702,16 @@ export class GenericSubprocessSession implements IAgentSession {
 export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
   readonly id: AgentTarget;
   readonly name: string;
+  /**
+   * Phase 4A: a subprocess CLI is **one-shot**. `prompt()` spawns a brand-new
+   * process, prints the prompt into its stdin (or its own prompt flag) and the
+   * process exits — nothing survives to the next call, not even the session id
+   * (the generic session is a UUID this adapter mints locally). Callers that want
+   * context across turns must therefore send a self-contained body; the live
+   * engine does exactly that for every runtime whose `sessionHistory` is not
+   * `true`.
+   */
+  readonly sessionHistory = false;
   protected options: GenericSubprocessOptions;
   /** Guards the once-per-runtime permission log (Phase 2C). */
   private permissionNoticeEmitted = false;

@@ -130,6 +130,13 @@ export class OpencodeSession implements IAgentSession {
 export class OpencodeRuntimeAdapter implements IAgentRuntime {
   readonly id = "opencode" as const;
   readonly name = "OpenCode";
+  /**
+   * Phase 4A: the opencode **server** owns the session and replays every prior
+   * turn, so the live engine may send just the new text after the first turn
+   * instead of re-assembling a transcript. This is the only runtime that can
+   * truthfully claim it — every subprocess CLI is one-shot.
+   */
+  readonly sessionHistory = true;
 
   private _client?: OpencodeClient;
   private serverHandle?: ServerHandle;

@@ -621,6 +621,22 @@ describe("Agent Registry & Factory", () => {
   });
 });
 
+describe("Phase 4A · session-history capability per runtime", () => {
+  it("only opencode claims a server-side session; every subprocess runtime is one-shot", () => {
+    for (const target of AGENT_TARGETS) {
+      const runtime = getAgentRuntime(target, { env: { PATH: "" } });
+      if (target === "opencode") {
+        // The opencode server holds the session and replays prior turns.
+        expect(runtime.sessionHistory).toBe(true);
+      } else {
+        // A subprocess CLI spawns a fresh process per prompt: the live engine
+        // must send a self-contained transcript, never assume a history.
+        expect(runtime.sessionHistory).toBe(false);
+      }
+    }
+  });
+});
+
 describe("Agent Subsystem Barrel Exports", () => {
   it("exports public registry, adapters, and types", async () => {
     const AgentSubsystem = await import("../../../src/engine/agent/index.js");
