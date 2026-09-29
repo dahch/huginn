@@ -158,7 +158,7 @@ describe("ModelPickerModal Component", () => {
     expect(elapsed).toBeLessThan(3000);
   });
 
-  it("surfaces a sanitized discovery error instead of fake fallback models (AC-27.7)", async () => {
+  it("degrades a thrown discovery failure to a sanitized reasoned empty state (AC-27.7 / REV-508)", async () => {
     const stdout = new PassThrough();
     let output = "";
     stdout.on("data", (chunk) => {
@@ -168,6 +168,7 @@ describe("ModelPickerModal Component", () => {
     const stdin = createMockStdin();
     const runtime: IAgentRuntime = {
       ...createMockRuntime([]),
+      // No getModelCatalog → the base accessor is used, and it rejects.
       getAvailableModels: async () => {
         // Control character must be stripped by sanitizeTerminalText (SEC-001).
         throw new Error("offline\u0007");
@@ -188,8 +189,11 @@ describe("ModelPickerModal Component", () => {
     await new Promise((r) => setTimeout(r, 50));
     instance.unmount();
 
-    // Error is shown verbatim (sanitized), never masked by a hardcoded catalog.
-    expect(output).toContain("Model discovery from OpenCode failed: offline");
+    // The throw is absorbed by the shared discovery helper and surfaces as a
+    // sanitized reason in the honest empty state — never masked by a hardcoded
+    // catalog and never carrying the raw control character (SEC-001).
+    const flattened = output.replace(/[│\r\n]+/g, " ").replace(/\s+/g, " ");
+    expect(flattened).toContain("No models discovered from OpenCode — offline");
     expect(output).not.toContain("\u0007");
     expect(output).toContain("anthropic/claude-sonnet-5 (current thinker)");
     expect(output).toContain("Type a provider/model id and press Enter");

@@ -16,7 +16,14 @@ import { join, resolve } from "node:path";
 import chalk from "chalk";
 import { AGENT_TARGETS, type AgentTarget } from "../agents/integrator.js";
 import type { SetupReport } from "../agents/integrator.js";
-import { detectAvailableAgents, isAgentTarget } from "../engine/agent/registry.js";
+import {
+  detectAvailableAgents,
+  getAgentRuntime,
+  isAgentTarget,
+  type RuntimeOptions,
+} from "../engine/agent/registry.js";
+import type { IAgentRuntime, ModelCatalog, ModelInfo } from "../engine/agent/types.js";
+import { catalogReasonFromError, discoverModelCatalog } from "../engine/agent/modelCatalog.js";
 import { isGitRepo } from "../engine/diff.js";
 import {
   DEFAULT_AGENT,
@@ -26,6 +33,7 @@ import {
   saveUserConfig,
 } from "../config.js";
 import { promptLine, promptYesNo, type PromptIo } from "../util/prompt.js";
+import { sanitizeTerminalText } from "../util/text.js";
 import { handleSetupCommand } from "./setup.js";
 
 /** Package manager inferred from the project's lockfile (ADR-26). */
@@ -71,6 +79,14 @@ export interface InitDeps {
   promptText?: (question: string, fallback: string) => Promise<string>;
   promptChoice?: (question: string, choices: string[], fallback: string) => Promise<string>;
   confirm?: (question: string, fallback?: boolean) => Promise<boolean>;
+  /**
+   * Agent runtime factory (Phase 5). Defaults to the real
+   * {@link getAgentRuntime}; injectable so tests drive the model picker with a
+   * fake catalog instead of spawning a CLI. The wizard only ever calls the
+   * runtime's *discovery* methods (`getModelCatalog`/`getAvailableModels`) — it
+   * never starts a daemon or opens a session.
+   */
+  getRuntime?: (target: AgentTarget, options?: RuntimeOptions) => IAgentRuntime;
   log?: (...parts: unknown[]) => void;
   error?: (...parts: unknown[]) => void;
 }
@@ -171,6 +187,75 @@ async function promptChoiceDefault(
     return choices[index - 1];
   }
   return choices.includes(answer) ? answer : fallback;
+}
+
+/**
+ * Discover the model catalog of the chosen agent's runtime (Phase 5).
+ *
+ * The precedence and the failure handling live in the shared
+ * {@link discoverModelCatalog} helper (REV-503/REV-504/REV-508), so this wizard
+ * and `ModelPickerModal` can never drift — and the `reason` is sanitized *there*
+ * at the boundary, not at each print site. Only building the runtime is local to
+ * the wizard; a `getRuntime` that itself throws degrades through the very same
+ * path (no daemon is started, no session is opened: the runtime is only asked to
+ * *list* models).
+ */
+async function loadModelCatalog(
+  getRuntime: (target: AgentTarget, options?: RuntimeOptions) => IAgentRuntime,
+  agent: AgentTarget,
+  projectPath: string,
+): Promise<ModelCatalog> {
+  try {
+    const runtime = getRuntime(agent, { projectPath });
+    return await discoverModelCatalog(runtime);
+  } catch (err) {
+    // `getRuntime` threw while constructing the adapter (unknown target, bad
+    // options): degrade exactly like a failed discovery (REV-508).
+    return { models: [], reason: catalogReasonFromError(err) };
+  }
+}
+
+/**
+ * Numbered model picker (Phase 5) reusing the wizard's `promptChoice` seam: the
+ * choice labels are the (sanitized) `provider/model` ids, optionally suffixed
+ * with a short description when the catalog carries one.
+ *
+ * REV-501: the current value is *preserved* as the preselection instead of being
+ * silently dropped. When it is a real catalog id it is used as-is; when it is an
+ * explicit `--thinker`/`--executor` flag that the catalog does not list (a model
+ * the CLI can still resolve by name) it is kept verbatim, so pressing Enter
+ * retains the flag rather than quietly falling back to the first model. Only a
+ * genuinely empty value falls through to the first discovered model (never a
+ * fabricated substitution).
+ *
+ * The label is mapped back to the model id so the persisted value is always a
+ * real catalog id (or the kept flag), and a blank/unknown answer falls back to
+ * the pre-selected default.
+ */
+async function promptModelChoice(
+  question: string,
+  models: ModelInfo[],
+  fallback: string,
+  promptChoice: (question: string, choices: string[], fallback: string) => Promise<string>,
+): Promise<string> {
+  const entries = models.map((model) => {
+    const id = sanitizeTerminalText(model.id);
+    const description = model.description ? sanitizeTerminalText(model.description).trim() : "";
+    return { id, label: description.length > 0 ? `${id} — ${description}` : id };
+  });
+  const ids = new Set(entries.map((entry) => entry.id));
+  // REV-501: keep a non-empty current value (a flag, or a catalog id) as the
+  // preselection; only an empty value drops to the first discovered model.
+  const defaultId: string = ids.has(fallback) ? fallback : fallback || entries[0]?.id || "";
+  const defaultLabel = entries.find((entry) => entry.id === defaultId)?.label ?? defaultId;
+  const answer = await promptChoice(
+    question,
+    entries.map((entry) => entry.label),
+    defaultLabel,
+  );
+  const chosen = entries.find((entry) => entry.label === answer);
+  if (chosen) return chosen.id;
+  return ids.has(answer) ? answer : defaultId;
 }
 
 /**
@@ -306,10 +391,55 @@ export async function handleInitCommand(
       ((question: string, fallback: string) => promptTextDefault(question, fallback, io));
     const pickedAgent = await promptChoice("   Default agent", choices, report.agent);
     if (isAgentTarget(pickedAgent)) report.agent = pickedAgent;
-    const pickedThinker = (await promptText("   Thinker model", report.thinker)).trim();
-    if (pickedThinker.length > 0) report.thinker = pickedThinker;
-    const pickedExecutor = (await promptText("   Executor model", report.executor)).trim();
-    if (pickedExecutor.length > 0) report.executor = pickedExecutor;
+
+    // Phase 5: prefer a numbered model picker driven by the runtime's own
+    // catalog. The runtime is built *after* the agent is final, from the chosen
+    // target, and only ever asked to list models (no daemon, no session).
+    const getRuntime = deps.getRuntime ?? getAgentRuntime;
+    const catalog = await loadModelCatalog(getRuntime, report.agent, projectPath);
+    if (catalog.models.length > 0) {
+      log(chalk.dim(`   ${catalog.models.length} models available from ${report.agent}`));
+      // Preselect a value that is either an explicit flag or a real catalog id.
+      // REV-501: a flag the catalog does not list is kept verbatim, so pressing
+      // Enter preserves it instead of silently overriding it. REV-505: for a
+      // default that is not in the catalog, seed from the catalog itself and
+      // mirror the TUI (thinker → first model, executor → second) so the two
+      // pickers do not both land on the same model.
+      const catalogIds = new Set(catalog.models.map((model) => model.id));
+      const seedModel = (current: string, flag: string, index: number): string => {
+        if (flag.length > 0 || catalogIds.has(current)) return current;
+        return catalog.models[index]?.id ?? catalog.models[0]?.id ?? current;
+      };
+      report.thinker = await promptModelChoice(
+        "   Thinker model",
+        catalog.models,
+        seedModel(report.thinker, flagThinker, 0),
+        promptChoice,
+      );
+      report.executor = await promptModelChoice(
+        "   Executor model",
+        catalog.models,
+        seedModel(report.executor, flagExecutor, 1),
+        promptChoice,
+      );
+    } else {
+      // No catalog (or a reasoned empty one): fall back to the plain-text entry
+      // so a runtime that cannot list models is never a dead end. The reason was
+      // already sanitized by `discoverModelCatalog` at the discovery boundary, so
+      // it is printed verbatim here (no duplicate sanitization, REV-503/REV-508).
+      const reason = catalog.reason ?? "";
+      log(
+        chalk.dim(
+          reason.length > 0
+            ? `   no model catalog for ${report.agent}: ${reason}`
+            : `   no model catalog for ${report.agent}; enter model ids manually`,
+        ),
+      );
+      const pickedThinker = (await promptText("   Thinker model", report.thinker)).trim();
+      if (pickedThinker.length > 0) report.thinker = pickedThinker;
+      const pickedExecutor = (await promptText("   Executor model", report.executor)).trim();
+      if (pickedExecutor.length > 0) report.executor = pickedExecutor;
+    }
   } else {
     log(chalk.dim(`   using ${yes ? "--yes" : "non-interactive"} defaults`));
   }

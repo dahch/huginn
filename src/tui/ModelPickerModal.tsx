@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { IAgentRuntime, ModelInfo } from "../engine/agent/types.js";
+import { discoverModelCatalog } from "../engine/agent/modelCatalog.js";
 import { sanitizeTerminalText } from "../util/text.js";
 
 export interface ModelPickerResult {
@@ -85,28 +86,28 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     let active = true;
     void (async () => {
       try {
-        // AC-27.4 / REV-010: prefer the richer catalog when the runtime provides
-        // one, so an empty result can carry the *reason* it is empty instead of
-        // a generic message; fall back to the plain accessor otherwise.
-        let models: ModelInfo[] = [];
-        let reason: string | undefined;
-        if (typeof runtime.getModelCatalog === "function") {
-          const catalog = await runtime.getModelCatalog();
-          models = Array.isArray(catalog?.models) ? catalog.models : [];
-          reason = catalog?.reason;
-        } else {
-          const discovered = await runtime.getAvailableModels();
-          models = Array.isArray(discovered) ? discovered : [];
-        }
+        // AC-27.4 / REV-010: discovery is delegated to the shared helper
+        // (REV-503/REV-504/REV-508) so this modal and `huginn init` share one
+        // source of truth: it prefers the richer catalog (an empty result can
+        // then carry the *reason* it is empty), falls back to the plain accessor,
+        // and degrades any failure to an empty catalog. The `reason` is already
+        // sanitized at that boundary, so it is never re-sanitized (or rendered
+        // raw) here.
+        const catalog = await discoverModelCatalog(runtime);
 
         if (!active) return;
-        setAvailableModels(models);
-        setDiscoveryReason(reason ? sanitizeTerminalText(reason) : null);
+        setAvailableModels(catalog.models);
+        setDiscoveryReason(catalog.reason ?? null);
         // Seed from the runtime's own catalog (never a hardcoded list); fall
         // back to the current values passed via props when filled already.
-        setSelectedThinker((prev) => prev || models[0]?.id || "");
-        setSelectedExecutor((prev) => prev || models[1]?.id || models[0]?.id || "");
+        setSelectedThinker((prev) => prev || catalog.models[0]?.id || "");
+        setSelectedExecutor(
+          (prev) => prev || catalog.models[1]?.id || catalog.models[0]?.id || "",
+        );
       } catch (err) {
+        // The helper absorbs every discovery failure, so this branch only guards
+        // against an unforeseen error: it keeps the distinct "discovery failed"
+        // state rather than leaving the modal stuck on "loading".
         if (active) {
           setDiscoveryError(
             sanitizeTerminalText(err instanceof Error ? err.message : String(err)) ||
