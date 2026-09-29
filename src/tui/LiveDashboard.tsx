@@ -35,6 +35,23 @@ import {
   suggestionOverlayHeight,
   type SuggestionRow,
 } from "./CommandSuggestions.js";
+import {
+  caretRowEnd,
+  caretRowStart,
+  composerRowBudget,
+  composerScroll,
+  cursorIndexAtRow,
+  cursorLineParts,
+  deleteAt,
+  deleteBefore,
+  deleteWordAfter,
+  deleteWordBefore,
+  insertAt,
+  layoutComposer,
+  moveCursorLeft,
+  moveCursorRight,
+  sanitizeComposerInput,
+} from "./composer.js";
 import { loadSkills, findSkill, type Skill } from "../engine/skills/index.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import { fetchMcpStatusWithTimeout, formatMcpBadge, MCP_STATUS_POLL_TIMEOUT_MS } from "../engine/agent/mcpStatus.js";
@@ -42,6 +59,7 @@ import { sanitizeTerminalText } from "../util/text.js";
 import {
   RavenHeader,
   headerValue,
+  ravenHeaderPlan,
   useRavenHeaderPlan,
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
@@ -63,8 +81,20 @@ const CARD_MIN_ROWS = 4;
 const CARD_BORDER_ROWS = 2;
 /** The card's own title row, above the body. */
 const CARD_TITLE_ROWS = 1;
-const INPUT_HEIGHT = 4; // marginTop 1 + border 2 + the input line itself
-// ...and nothing in that row may wrap, or the reservation is a lie (REV-3201).
+/** Rows the composer's `marginTop={1}` spends. */
+const INPUT_MARGIN_ROWS = 1;
+/** Rows the composer's rounded border spends (top + bottom). */
+const INPUT_BORDER_ROWS = 2;
+/** Everything the composer spends around its content lines. */
+const INPUT_CHROME_ROWS = INPUT_MARGIN_ROWS + INPUT_BORDER_ROWS;
+/** The composer's footprint with a single content line — its budget floor. */
+const INPUT_HEIGHT = INPUT_CHROME_ROWS + 1;
+/**
+ * Columns the composer spends before the draft text itself: this view's own
+ * `paddingX={1}` (2), the composer's border (2) and `paddingX={1}` (2), and the
+ * `❯ ` prompt glyph (2). A row may never widen past these (REV-3201).
+ */
+const COMPOSER_TEXT_INSET = 8;
 /** Submitted prompts kept for ↑/↓ recall (REQ-34 / AC-34.1). */
 const INPUT_HISTORY_LIMIT = 50;
 const FOOTER_HEIGHT = 1;
@@ -259,20 +289,47 @@ function RefineView({
 }) {
   const { exit } = useApp();
   const terminalSize = useTerminalSize();
-  // The raven header's real row cost (raven mark + live context, or the
-  // plain-text fallback) comes from the same plan the component renders, so the
-  // layout budget can never disagree with the header (REQ-29 / AC-29.3).
-  // `outerInset: 2` is this view's own `paddingX={1}` around the header.
-  const headerPlan = useRavenHeaderPlan(
-    LIVE_HEADER_CONTEXT_ROWS,
-    VIEWPORT_RESERVED_ROWS,
-    terminalSize,
-    LIVE_VIEW_OUTER_INSET,
+  /**
+   * The composer's draft and the caret into it (Phase 6 / REQ-6). They live in
+   * one state object so every edit moves both together — and so the fast path
+   * (a paste, a held key) can use a functional update that never reads a stale
+   * draft. The caret is a code-unit index over the text, and every edit goes
+   * through the pure helpers in `composer.ts`, so the model and what is rendered
+   * can never drift apart.
+   */
+  const [draft, setDraft] = useState<{ text: string; cursor: number }>({
+    text: "",
+    cursor: 0,
+  });
+  const draftInput = draft.text;
+  const cursor = draft.cursor;
+  /** Submitted prompts of this session, oldest first (REQ-34 / AC-34.1). */
+  const [inputHistory, setInputHistory] = useState<string[]>([]);
+  /** Position while recalling: `null` means "not recalling". */
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+
+  /** The recall hint the composer shows to the right of its first row, if any. */
+  const historyHint =
+    inputHistory.length > 0
+      ? historyIndex !== null
+        ? `history ${inputHistory.length}`
+        : "↑ history"
+      : "";
+  const historyHintWidth = historyHint.length > 0 ? historyHint.length + 1 : 0;
+  /** Columns left for the draft once the chrome and the recall hint are paid for. */
+  const composerTextWidth = Math.max(
+    1,
+    terminalSize.columns - COMPOSER_TEXT_INSET - historyHintWidth,
   );
-  const headerHeight = headerPlan.height;
-  /** Rows the palette must leave for the header, cards, input and footer. */
-  const paletteReservedRows =
-    headerHeight + INPUT_HEIGHT + FOOTER_HEIGHT + CARD_MIN_ROWS * 2 + PALETTE_BORDER_ROWS;
+  /** The wrapped draft (its rows and the caret's place in them). */
+  const composerLayout = useMemo(
+    () => layoutComposer(draftInput, cursor, composerTextWidth),
+    [draftInput, cursor, composerTextWidth],
+  );
+  // The composer's row budget itself is derived below, next to the rest of the
+  // frame budget: it is the *last* claim on the terminal's rows, so it needs the
+  // header, the log tail, a pending decision and the palette to be known first
+  // (REV-6001).
   const [stage, setStage] = useState<LiveStage>("refine");
   /**
    * The transcript this view hydrated from (Phase 4D). It is what tells a
@@ -293,11 +350,6 @@ function RefineView({
     return transcriptToChatMessages(transcript);
   });
   const [decision, setDecision] = useState<DecisionRequest | undefined>();
-  const [draftInput, setDraftInput] = useState("");
-  /** Submitted prompts of this session, oldest first (REQ-34 / AC-34.1). */
-  const [inputHistory, setInputHistory] = useState<string[]>([]);
-  /** Position while recalling: `null` means "not recalling". */
-  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState<boolean>(initialShowModelPicker);
   const [showMcpInspector, setShowMcpInspector] = useState<boolean>(false);
@@ -505,6 +557,97 @@ function RefineView({
     !suggestionsDismissed &&
     inputEnabled &&
     suggestionMatches.length > 0;
+
+  // ── Frame budget (REQ-6 / REV-6001) ──────────────────────────────────────
+  // Every row of the frame is claimed here, in the order it must be paid for:
+  // the header, the log tail, a pending decision, the palette — and only then
+  // the composer, which is the part that has to give. That is what keeps the
+  // input row and the footer on screen at any terminal size, with no line ever
+  // spilling over it.
+  // The decision modal's own frame, reserved before the composer so a pending
+  // decision can never be the reason the input row scrolls away.
+  const decisionHeight = decision ? 6 : 0;
+
+  let maxLogsAllowed = 0;
+  if (terminalSize.rows >= 36) maxLogsAllowed = 4;
+  else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
+  else if (terminalSize.rows >= 25) maxLogsAllowed = 2;
+  else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
+  // While the palette or the agent picker is open it owns the row budget: the log
+  // tail steps aside so neither can push the input row or the frame off-screen
+  // (AC-28.4 / REV-303).
+  if (suggestionsOpen || showAgentPicker) maxLogsAllowed = 0;
+
+  const visibleLogs = logs.slice(-maxLogsAllowed);
+  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+
+  // The header's own cost with the composer at its floor. Growing the composer
+  // only ever *raises* the reserved-rows figure the art has to fit under, so the
+  // header can only get shorter — this is the worst case the composer pays for.
+  const headerFloorHeight = useMemo(
+    () =>
+      ravenHeaderPlan({
+        columns: terminalSize.columns,
+        rows: terminalSize.rows,
+        contextRows: LIVE_HEADER_CONTEXT_ROWS,
+        reservedRows: VIEWPORT_RESERVED_ROWS,
+        outerInset: LIVE_VIEW_OUTER_INSET,
+      }).height,
+    [terminalSize.columns, terminalSize.rows],
+  );
+  // The palette's tallest possible cost while it is open. It is reserved in full
+  // so the composer can never claim rows the palette needs: the palette's own
+  // height is derived from the *real* input height below, so it absorbs whatever
+  // the composer grows by and the reservation is only ever an upper bound.
+  const paletteReservedWhileOpen = suggestionsOpen
+    ? MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS
+    : 0;
+  /**
+   * Rows the frame needs however tall the composer gets: the header, the
+   * composer's chrome (margin + border), the footer, the visible log tail, a
+   * pending decision, the open palette, and one {@link CARD_MIN_ROWS} floor for
+   * the conversation — a card is never shorter than its floor, because Yoga
+   * applies `minHeight` over `height` (REV-6001).
+   */
+  const composerShellRows =
+    headerFloorHeight +
+    INPUT_CHROME_ROWS +
+    FOOTER_HEIGHT +
+    logsHeight +
+    decisionHeight +
+    paletteReservedWhileOpen +
+    CARD_MIN_ROWS;
+  /**
+   * Content rows the composer claims: the wrapped draft, floored at 1, capped at
+   * its scrolling limit and by the rows the shell above actually leaves — so a
+   * short terminal keeps the composer at its floor instead of pushing the frame
+   * off-screen (REQ-6 / REV-6001).
+   */
+  const composerRows = composerRowBudget(
+    terminalSize.rows,
+    composerShellRows,
+    composerLayout.rows.length,
+  );
+  /** The composer's real row cost, which the layout budget below pays for. */
+  const inputHeight = INPUT_CHROME_ROWS + composerRows;
+
+  // The raven header's real row cost (raven mark + live context, or the
+  // plain-text fallback) comes from the same plan the component renders, so the
+  // layout budget can never disagree with the header (REQ-29 / AC-29.3).
+  // `outerInset: 2` is this view's own `paddingX={1}` around the header.
+  // The composer's growth is added to the viewport floor so the header keeps
+  // degrading instead of squeezing the conversation (AC-29.3).
+  const headerPlan = useRavenHeaderPlan(
+    LIVE_HEADER_CONTEXT_ROWS,
+    VIEWPORT_RESERVED_ROWS + (composerRows - 1),
+    terminalSize,
+    LIVE_VIEW_OUTER_INSET,
+  );
+  const headerHeight = headerPlan.height;
+  /** Rows the palette must leave for the header, cards, input and footer. */
+  const paletteReservedRows =
+    headerHeight + inputHeight + FOOTER_HEIGHT + CARD_MIN_ROWS * 2 + PALETTE_BORDER_ROWS;
+
   const suggestionRowCap = Math.max(
     1,
     Math.min(MAX_SUGGESTION_ROWS, terminalSize.rows - paletteReservedRows),
@@ -528,7 +671,8 @@ function RefineView({
 
   /** Insert the accepted command, leaving a trailing space when it takes arguments. */
   const acceptSuggestion = (command: SlashCommand): void => {
-    setDraftInput(command.takesArgs ? `${command.id} ` : command.id);
+    const next = command.takesArgs ? `${command.id} ` : command.id;
+    setDraft({ text: next, cursor: next.length });
     setSuggestionIndex(0);
     setHistoryIndex(null);
   };
@@ -702,7 +846,7 @@ function RefineView({
    */
   const submit = async (override?: string): Promise<void> => {
     const text = (override ?? draftInput).trim();
-    setDraftInput("");
+    setDraft({ text: "", cursor: 0 });
     setHistoryIndex(null);
     if (!text) return;
     // Remember what the user actually asked for. Slash commands are not prompts,
@@ -966,31 +1110,21 @@ function RefineView({
   );
 
   // Dynamic layout calculations based on terminal size.
-  // `headerPlan`/`paletteReservedRows` are derived at the top of the component.
-  const decisionHeight = decision ? 6 : 0;
+  // `headerPlan`/`paletteReservedRows`, the composer's row budget and the log
+  // tail are all derived in the frame-budget block at the top of the component.
   // The palette is height-bounded (≤6 content rows + border) and part of the budget.
   const suggestionHeight = suggestionOverlayHeight(suggestionRows);
 
-  let maxLogsAllowed = 0;
-  if (terminalSize.rows >= 36) maxLogsAllowed = 4;
-  else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
-  else if (terminalSize.rows >= 25) maxLogsAllowed = 2;
-  else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
-  // While the palette or the agent picker is open it owns the row budget: the log
-  // tail steps aside so neither can push the input row or the frame off-screen
-  // (AC-28.4 / REV-303).
-  if (suggestionHeight > 0 || showAgentPicker) maxLogsAllowed = 0;
-
-  const visibleLogs = logs.slice(-maxLogsAllowed);
-  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
-
   // Floor at 1 (not 8) so the frame still fits on very short terminals now that
-  // the palette also draws rows; the cards shrink with it (AC-28.4).
+  // the palette also draws rows; the cards shrink with it (AC-28.4). Everything
+  // subtracted here is already paid for by `composerRows`, so the cards keep at
+  // least their `CARD_MIN_ROWS` floor and the input row and the footer always
+  // land inside the terminal (REV-6001).
   const availableHeight = Math.max(
     1,
     terminalSize.rows -
       headerHeight -
-      INPUT_HEIGHT -
+      inputHeight -
       FOOTER_HEIGHT -
       logsHeight -
       decisionHeight -
@@ -1125,21 +1259,34 @@ function RefineView({
       const canRecall = (draftInput === "" && focusCard === "chat") || historyIndex !== null;
       if (key.upArrow && canRecall && inputHistory.length > 0) {
         const next = historyIndex === null ? inputHistory.length - 1 : Math.max(0, historyIndex - 1);
+        const recalled = inputHistory[next] ?? "";
         setHistoryIndex(next);
-        setDraftInput(inputHistory[next] ?? "");
+        setDraft({ text: recalled, cursor: recalled.length });
         return;
       }
       if (key.downArrow && historyIndex !== null) {
         const next = historyIndex + 1;
-        if (next >= inputHistory.length) {
-          setHistoryIndex(null);
-          setDraftInput("");
-        } else {
-          setHistoryIndex(next);
-          setDraftInput(inputHistory[next] ?? "");
-        }
+        const recalled = next >= inputHistory.length ? "" : inputHistory[next] ?? "";
+        setHistoryIndex(next >= inputHistory.length ? null : next);
+        setDraft({ text: recalled, cursor: recalled.length });
         return;
       }
+    }
+
+    // Multi-line caret (REQ-6): with a draft that wraps onto several visual rows,
+    // ↑/↓ move the caret between them. A single-row draft has nowhere to move, so
+    // the key is swallowed — the terminal still never scrolls (AC-21.4).
+    if (inputEnabled && focusCard === "chat" && draftInput !== "" && (key.upArrow || key.downArrow)) {
+      setDraft((current) => {
+        const layout = layoutComposer(current.text, current.cursor, composerTextWidth);
+        if (layout.rows.length <= 1) return current;
+        const target = key.upArrow
+          ? Math.max(0, layout.cursorRow - 1)
+          : Math.min(layout.rows.length - 1, layout.cursorRow + 1);
+        if (target === layout.cursorRow) return current;
+        return { text: current.text, cursor: cursorIndexAtRow(layout, target, layout.cursorCol) };
+      });
+      return;
     }
 
     // Arrow keys scroll when input is empty or when stream card is focused
@@ -1159,30 +1306,90 @@ function RefineView({
       return;
     }
 
-    if (key.leftArrow || key.rightArrow || key.delete || key.ctrl || key.meta) {
+    // With the composer disabled (busy / decision) nothing edits the draft; `q` on
+    // an empty draft is the one remaining shortcut, exactly as before.
+    if (!inputEnabled) {
+      if (input === "q" && draftInput === "") {
+        live.requestAbort();
+        failSession(new LiveAbortError());
+      }
       return;
     }
 
-    if (inputEnabled) {
-      if (key.return) {
-        void submit();
-        return;
-      }
-      if (key.backspace) {
-        setHistoryIndex(null);
-        setDraftInput((d) => d.slice(0, -1));
-        return;
-      }
-      const sanitized = input
-        .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "")
-        .replace(/[\x00-\x1F\x7F-\x9F]/g, "");
-      if (sanitized) {
-        setHistoryIndex(null);
-        setDraftInput((d) => d + sanitized);
-      }
-    } else if (input === "q" && draftInput === "") {
-      live.requestAbort();
-      failSession(new LiveAbortError());
+    // Caret movement and in-place editing (REQ-6): ←/→ move by character, with
+    // Ctrl/⌥ for whole words; Home/End jump to the ends; Backspace and Delete act
+    // on the caret; printable text is inserted where the caret is. Every update is
+    // functional, so a held key or a pasted block can never read a stale draft.
+    if (key.leftArrow) {
+      setHistoryIndex(null);
+      setDraft((current) => ({
+        text: current.text,
+        cursor: moveCursorLeft(current.text, current.cursor, key.ctrl || key.meta),
+      }));
+      return;
+    }
+    if (key.rightArrow) {
+      setHistoryIndex(null);
+      setDraft((current) => ({
+        text: current.text,
+        cursor: moveCursorRight(current.text, current.cursor, key.ctrl || key.meta),
+      }));
+      return;
+    }
+    // Ctrl/⌥+Backspace and Ctrl/⌥+Delete delete a whole word (REV-6006). They are
+    // matched *before* the Ctrl guard below, which used to swallow the key; plain
+    // Backspace/Delete arrive without the flag, so nothing else changes. A
+    // terminal that sends Ctrl+Backspace as ^H (0x08) is reported by Ink as a
+    // plain Backspace and keeps deleting one character.
+    if ((key.ctrl || key.meta) && (key.backspace || key.delete)) {
+      setHistoryIndex(null);
+      setDraft((current) =>
+        key.backspace
+          ? deleteWordBefore(current.text, current.cursor)
+          : deleteWordAfter(current.text, current.cursor),
+      );
+      return;
+    }
+    // Any other Ctrl/Meta chord is a shortcut, never draft text.
+    if (key.ctrl || key.meta) {
+      return;
+    }
+    // Home/End act on the caret's own *visual* row, so a wrapped draft can be
+    // edited row by row (REV-6004); a one-row draft behaves exactly as before.
+    if (key.home) {
+      setHistoryIndex(null);
+      setDraft((current) => {
+        const layout = layoutComposer(current.text, current.cursor, composerTextWidth);
+        return { text: current.text, cursor: caretRowStart(layout) };
+      });
+      return;
+    }
+    if (key.end) {
+      setHistoryIndex(null);
+      setDraft((current) => {
+        const layout = layoutComposer(current.text, current.cursor, composerTextWidth);
+        return { text: current.text, cursor: caretRowEnd(layout) };
+      });
+      return;
+    }
+    if (key.return) {
+      void submit();
+      return;
+    }
+    if (key.delete) {
+      setHistoryIndex(null);
+      setDraft((current) => deleteAt(current.text, current.cursor));
+      return;
+    }
+    if (key.backspace) {
+      setHistoryIndex(null);
+      setDraft((current) => deleteBefore(current.text, current.cursor));
+      return;
+    }
+    const sanitized = sanitizeComposerInput(input);
+    if (sanitized) {
+      setHistoryIndex(null);
+      setDraft((current) => insertAt(current.text, current.cursor, sanitized));
     }
   });
 
@@ -1295,8 +1502,12 @@ function RefineView({
             value={draftInput}
             enabled={inputEnabled}
             placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect"
-            historyLength={inputHistory.length}
-            recalling={historyIndex !== null}
+            historyHint={historyHint}
+            width={composerTextWidth}
+            rows={composerLayout.rows}
+            cursorRow={composerLayout.cursorRow}
+            cursorCol={composerLayout.cursorCol}
+            visibleRows={composerRows}
           />
           {suggestionsOpen && (
             <CommandSuggestions
@@ -1615,54 +1826,130 @@ function ScrollableStreamCard({
 }
 
 /**
- * The composer (REQ-34 / AC-34.2): deliberately the most prominent row in the
- * view — its own accent border, a clear prompt glyph and, while it is empty, a
- * hint that the previous inputs can be recalled.
+ * The composer (REQ-34 / AC-34.2, REQ-6): deliberately the most prominent row in
+ * the view — its own accent border, a clear prompt glyph, a visible caret and,
+ * while it is empty, a hint that the previous inputs can be recalled.
+ *
+ * Phase 6 turns it into a real editor: the draft soft-wraps onto as many content
+ * rows as the frame can afford it (`height` grows with them, pushing the rest of
+ * the frame up), the caret block is painted on its own row, and past the cap the
+ * box scrolls so the caret's row is always the one on screen.
  */
 function ChatInputRow({
   value,
   enabled,
   placeholder,
-  historyLength = 0,
-  recalling = false,
+  historyHint = "",
+  width,
+  rows,
+  cursorRow,
+  cursorCol,
+  visibleRows,
 }: {
   value: string;
   enabled: boolean;
   placeholder: string;
-  historyLength?: number;
-  recalling?: boolean;
+  /** Recall hint shown beside the first row (`""` hides it). */
+  historyHint?: string;
+  /** Columns one draft row may occupy, caret included. */
+  width: number;
+  /** Every wrapped row of the draft. */
+  rows: string[];
+  /** Absolute row the caret sits on. */
+  cursorRow: number;
+  /** Column the caret sits at within its row. */
+  cursorCol: number;
+  /** Content rows the box shows (the composer's budget); the rest scroll. */
+  visibleRows: number;
 }) {
   const accent = enabled ? "green" : "gray";
+  const contentRows = Math.max(1, visibleRows);
+  const scroll = composerScroll(cursorRow, rows.length, contentRows);
+  const window = rows.slice(scroll, scroll + contentRows);
   return (
-    // height/overflow/truncate keep the promise INPUT_HEIGHT makes: this row is
-    // exactly one content line, whatever the placeholder or history hint length.
+    // height/overflow/border keep the promise `inputHeight` makes: the box is
+    // `visibleRows` content rows plus its two border rows, whatever the text or
+    // the recall hint length — nothing here may widen or lengthen past that.
     <Box
-      marginTop={1}
+      marginTop={INPUT_MARGIN_ROWS}
       borderStyle="round"
       borderColor={accent}
       paddingX={1}
       flexDirection="row"
-      height={3}
+      justifyContent="space-between"
+      height={contentRows + INPUT_BORDER_ROWS}
       overflow="hidden"
     >
-      <Text bold color={accent}>{enabled ? "❯ " : "· "}</Text>
-      {value.length > 0 ? (
-        <Text color="white" wrap="truncate">
-          {value}
-        </Text>
-      ) : (
-        <Text dimColor wrap="truncate">
-          {placeholder}
-        </Text>
-      )}
-      {historyLength > 0 && (
+      <Box flexDirection="column" flexShrink={1} flexGrow={1} overflow="hidden">
+        {value.length > 0 ? (
+          window.map((line, index) => {
+            const row = scroll + index;
+            return (
+              <Box key={row} flexDirection="row" height={1}>
+                <Text bold color={accent}>{index === 0 ? "❯ " : "  "}</Text>
+                <CursorLine
+                  line={line}
+                  width={width}
+                  cursor={row === cursorRow ? cursorCol : null}
+                  color={accent}
+                />
+              </Box>
+            );
+          })
+        ) : (
+          <Box flexDirection="row" height={1}>
+            <Text bold color={accent}>{enabled ? "❯ " : "· "}</Text>
+            <Text dimColor wrap="truncate">
+              {placeholder}
+            </Text>
+          </Box>
+        )}
+      </Box>
+      {historyHint.length > 0 && (
         <Box flexShrink={0}>
-          <Text dimColor>
-            {"  "}
-            {recalling ? `history ${historyLength}` : "↑ history"}
-          </Text>
+          <Text dimColor>{" "}{historyHint}</Text>
         </Box>
       )}
     </Box>
+  );
+}
+
+/**
+ * One composer row with the caret painted in it (REQ-6). The caret is a reverse
+ * block that costs exactly one column, so a row can never render wider than
+ * `width` and the frame stays inside the terminal. When the row has no free
+ * column left the block is painted *over* the character it sits on — the
+ * character stays readable and is never dropped to make room for a glyph
+ * (REV-6002).
+ */
+function CursorLine({
+  line,
+  width,
+  cursor,
+  color,
+}: {
+  line: string;
+  width: number;
+  /** Caret column on this row, or `null` when the caret is elsewhere. */
+  cursor: number | null;
+  color: string;
+}) {
+  if (cursor === null || width <= 0) {
+    return (
+      <Text color="white" wrap="truncate">
+        {line.slice(0, Math.max(0, width))}
+      </Text>
+    );
+  }
+  // `before` + caret cell + `tail` is at most `width` wide and spells the whole
+  // row out, so the caret can neither widen the row past the composer's column
+  // budget nor hide what it sits next to (see `cursorLineParts`).
+  const { before, caret, tail } = cursorLineParts(line, cursor, width);
+  return (
+    <Text color="white" wrap="truncate">
+      {before}
+      <Text inverse color={color}>{caret}</Text>
+      {tail}
+    </Text>
   );
 }
