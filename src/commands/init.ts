@@ -2,12 +2,13 @@
  * `huginn init` — guided onboarding wizard (REQ-26, ADR-26).
  *
  * Deliberately a *thin orchestrator*: it introduces no new I/O primitives. Git
- * and lockfile detection are `existsSync` checks, agent discovery is delegated
- * to `detectAvailableAgents`, MCP registration to `huginn setup`, and the config
- * is persisted with the shared atomic `saveUserConfig`. Every side effect is
- * injectable through {@link InitDeps} so tests never touch the real home, the
- * real terminal or the real project — including the `env`/`stdin`/`stdout` seam
- * the prompts read.
+ * detection goes through the shared `isGitRepo` (so a subdirectory, a linked
+ * worktree or a symlinked checkout counts), lockfile detection uses `existsSync`,
+ * agent discovery is delegated to `detectAvailableAgents`, MCP registration to
+ * `huginn setup`, and the config is persisted with the shared atomic
+ * `saveUserConfig`. Every side effect is injectable through {@link InitDeps} so
+ * tests never touch the real home, the real terminal or the real project —
+ * including the `env`/`stdin`/`stdout` seam the prompts read.
  */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -16,6 +17,7 @@ import chalk from "chalk";
 import { AGENT_TARGETS, type AgentTarget } from "../agents/integrator.js";
 import type { SetupReport } from "../agents/integrator.js";
 import { detectAvailableAgents, isAgentTarget } from "../engine/agent/registry.js";
+import { isGitRepo } from "../engine/diff.js";
 import {
   DEFAULT_AGENT,
   DEFAULT_EXECUTOR_MODEL,
@@ -246,8 +248,8 @@ export async function handleInitCommand(
   log(chalk.bold(`\n[huginn] init — onboarding for ${projectPath}\n`));
 
   log(chalk.bold("1. Repository"));
-  const isGitRepo = existsSync(join(projectPath, ".git"));
-  if (isGitRepo) {
+  const inGitRepo = isGitRepo(projectPath);
+  if (inGitRepo) {
     log(`   ${chalk.green("✔")} git repository detected`);
   } else {
     log(`   ${chalk.yellow("•")} no .git directory here`);

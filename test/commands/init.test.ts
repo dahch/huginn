@@ -11,6 +11,7 @@ import { PassThrough, Readable, Writable } from "node:stream";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { AGENT_TARGETS, type SetupReport } from "../../src/agents/integrator.js";
+import { git } from "../../src/engine/diff.js";
 import {
   detectPackageManager,
   handleInitCommand,
@@ -1013,16 +1014,28 @@ describe("huginn init — flag parsing edges", () => {
 });
 
 describe("huginn init — git detection and safety", () => {
-  it("reports a git repository when .git exists", async () => {
+  it("reports a git repository when the project is inside one (QA #19)", async () => {
     const env = makeEnv();
-    mkdirSync(join(env.project, ".git"));
+    // the same check the wizard uses: an empty `.git` directory is NOT a repo
+    expect(git(env.project, ["init", "-b", "main"]).code).toBe(0);
     const cap = await runInit(env, { "--yes": true });
 
     expect(cap.output).toContain("git repository detected");
     expect(cap.output).not.toContain("no .git directory here");
   });
 
-  it("guides the developer when .git is absent without failing", async () => {
+  it("reports a repository for a subdirectory of one, not just for a `.git` sibling", async () => {
+    const env = makeEnv();
+    expect(git(env.project, ["init", "-b", "main"]).code).toBe(0);
+    const nested = join(env.project, "packages", "app");
+    mkdirSync(nested, { recursive: true });
+    const cap = await runInit(env, { "--yes": true, "--project": nested });
+
+    expect(cap.output).toContain("git repository detected");
+    expect(cap.output).not.toContain("no .git directory here");
+  });
+
+  it("guides the developer when the project is outside any work tree without failing", async () => {
     const env = makeEnv();
     const cap = await runInit(env, { "--yes": true });
 

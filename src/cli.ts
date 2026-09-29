@@ -26,6 +26,8 @@ import {
   clearStaleHarness,
 } from "./state/store";
 import { CycleEngine } from "./engine/cycle";
+import { gitRepoState, probeGitRepo } from "./engine/diff";
+import { ensureGitRepository } from "./engine/gitRepo";
 import { subscribeToEvents } from "./engine/permissions";
 import { events } from "./engine/engineEvents";
 import { printBanner, type BannerInfo } from "./banner";
@@ -87,6 +89,7 @@ Common flags:
   --tui | --headless   interactive dashboard vs stdout logs       (default: tui if TTY)
   --force              overwrite existing documents/files
   --yes                accept defaults and never prompt (non-interactive / CI)
+  --no-git-init        fail instead of initializing a missing git repository
 
 More:
   huginn --help --all  run this for advanced options: every command, flag and default
@@ -152,6 +155,13 @@ Model resolution (run/live):
     4. environment       HUGINN_THINKER_MODEL / HUGINN_EXECUTOR_MODEL
     5. defaults          thinker: anthropic/claude-opus-4-5
                          executor: opencode/gpt-5.1-codex
+
+Git repository (run/plan/live):
+  The project may be any directory inside a git work tree — a subdirectory and a
+  linked worktree both count. A directory outside one is initialized in place
+  with a notice: \`git init -b main\`, a default .gitignore when missing, and a
+  "chore: initialize repository" bootstrap commit.
+  --no-git-init         fail instead of initializing a missing git repository
 
 Required (run):
   --project <path>      git repo being built (must contain plan.md, spec.md, adr.md)  (default: cwd)
@@ -223,6 +233,7 @@ const BOOLEAN_FLAGS = new Set([
   "--global",
   "--choose-model",
   "--skip-setup",
+  "--no-git-init",
   "--all",
   "--installed",
   "--status",
@@ -304,6 +315,62 @@ export function canonicalize(p: string): string {
   } catch {
     return resolve(p);
   }
+}
+
+/**
+ * A boolean flag arrives as `true` when it is written bare, but `--flag=false`
+ * (and `=0`) reaches us as the raw string "false". Normalize both so an explicit
+ * `--no-git-init=false` never switches on the fail-closed mode.
+ */
+function flagEnabled(value: ParsedArgs[string]): boolean {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized !== "" && normalized !== "false" && normalized !== "0";
+  }
+  return value === true;
+}
+
+/**
+ * Gate every work command (`run`, `plan`, `live`) on a usable git repository
+ * (REQ-5). Membership of a work tree is decided by `git rev-parse
+ * --is-inside-work-tree`, so being in a subdirectory, a linked worktree or a
+ * symlinked checkout no longer aborts with a false "is not a git repository".
+ * A directory outside any work tree is initialized in place (branch `main`,
+ * `.gitignore`, bootstrap commit) with a notice, unless `--no-git-init` asks for
+ * the fail-closed behavior. When git cannot even answer — dubious ownership,
+ * permissions, git missing (REV-001) — the command exits instead of mutating a
+ * directory we cannot classify.
+ */
+export function ensureGitRepositoryOrExit(projectPath: string, args: ParsedArgs): void {
+  const { state, detail } = probeGitRepo(projectPath);
+  if (state === "work-tree") return;
+  if (state === "error") {
+    console.error(
+      `[huginn] could not determine the git repository state at ${projectPath}: ${detail}`,
+    );
+    process.exit(1);
+  }
+  if (flagEnabled(args["--no-git-init"])) {
+    console.error(`"${projectPath}" is not a git repository.`);
+    process.exit(1);
+  }
+  try {
+    ensureGitRepository(projectPath);
+  } catch (err) {
+    console.error(
+      `[huginn] could not initialize a git repository at ${projectPath}: ${(err as Error).message}`,
+    );
+    process.exit(1);
+  }
+  if (gitRepoState(projectPath) !== "work-tree") {
+    console.error(`[huginn] could not initialize a git repository at ${projectPath}.`);
+    process.exit(1);
+  }
+  console.log(
+    chalk.dim(
+      `[huginn] initialized a git repository at ${projectPath} (branch main) + .gitignore + initial commit`,
+    ),
+  );
 }
 
 /**
@@ -510,10 +577,7 @@ export async function main(argv: string[]): Promise<void> {
     userConfig: layers.user,
   });
 
-  if (!existsSync(join(projectPath, ".git"))) {
-    console.error(`"${projectPath}" is not a git repository.`);
-    process.exit(1);
-  }
+  ensureGitRepositoryOrExit(projectPath, args);
 
   const resolvedAgent = await resolveAgent({
     flagAgent: typeof args["--agent"] === "string" ? args["--agent"] : undefined,
@@ -715,10 +779,7 @@ async function runPlan(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   warnIfMissingTemplates();
-  if (!existsSync(join(projectPath, ".git"))) {
-    console.error(`"${projectPath}" is not a git repository.`);
-    process.exit(1);
-  }
+  ensureGitRepositoryOrExit(projectPath, args);
 
   const promptFile =
     typeof args["--prompt-file"] === "string" ? args["--prompt-file"] : "";
@@ -784,10 +845,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   });
   const thinker = modelSources.thinker.value;
   const executor = modelSources.executor.value;
-  if (!existsSync(join(projectPath, ".git"))) {
-    console.error(`"${projectPath}" is not a git repository.`);
-    process.exit(1);
-  }
+  ensureGitRepositoryOrExit(projectPath, args);
 
   const promptFile =
     typeof args["--prompt-file"] === "string" ? args["--prompt-file"] : "";

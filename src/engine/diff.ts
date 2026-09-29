@@ -51,8 +51,40 @@ export function git(projectPath: string, args: string[]): { stdout: string; stde
   }
 }
 
+export type GitRepoState = "work-tree" | "not-a-repo" | "error";
+
+/**
+ * Three-way classification of `projectPath` with `git rev-parse
+ * --is-inside-work-tree` (REV-001/REV-002), plus git's own message.
+ *
+ * A bare repository and a directory inside `.git` answer `false` *with exit 0*,
+ * so an exit code alone cannot tell "greenfield directory" from "git already
+ * knows this place", and a failure that is not git's "not a git repository"
+ * (dubious ownership, permissions, git missing) must never be mistaken for a
+ * directory that is safe to `git init`.
+ */
+export function probeGitRepo(projectPath: string): { state: GitRepoState; detail: string } {
+  const res = git(projectPath, ["rev-parse", "--is-inside-work-tree"]);
+  const detail = res.stderr || res.stdout || `exit code ${res.code}`;
+  if (res.code === 0) {
+    if (res.stdout === "true") return { state: "work-tree", detail };
+    if (res.stdout === "false") return { state: "not-a-repo", detail };
+    return { state: "error", detail };
+  }
+  // Being outside every work tree is the only failure that means "initialize me".
+  return `${res.stdout} ${res.stderr}`.toLowerCase().includes("not a git repository")
+    ? { state: "not-a-repo", detail }
+    : { state: "error", detail };
+}
+
+/** The tri-state alone, for callers that only branch on it. */
+export function gitRepoState(projectPath: string): GitRepoState {
+  return probeGitRepo(projectPath).state;
+}
+
+/** True only inside a work tree: a bare repo or `.git` itself is not one. */
 export function isGitRepo(projectPath: string): boolean {
-  return git(projectPath, ["rev-parse", "--is-inside-work-tree"]).code === 0;
+  return gitRepoState(projectPath) === "work-tree";
 }
 
 export function headCommit(projectPath: string): string | null {
