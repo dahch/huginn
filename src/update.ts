@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import pkg from "../package.json";
-import { getOpencodeConfigDir } from "./setup/install";
+import { getOpencodeConfigDir } from "./setup/opencodeConfig";
 
 export const UPDATE_CHECK_URL = `https://registry.npmjs.org/${pkg.name}/latest`;
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;

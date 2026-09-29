@@ -1248,6 +1248,38 @@ describe("huginn init routing & help hierarchy (AC-26.2)", () => {
   });
 });
 
+describe("huginn install — compatibility no-op", () => {
+  it("prints the built-in notice, exits 0 and never enters the run/plan/live path", async () => {
+    // `install` is a known command, so it must be handled before the live-first
+    // default. A *greenfield* temp project is used on purpose: if the branch ever
+    // regressed, the run/plan/live path would either git-init this directory or
+    // `process.exit(1)` on the missing plan/spec/adr — so an untouched project,
+    // empty stderr and exit 0 all prove the work checks never ran (REQ-26/AC-26).
+    const env = makeEnv();
+    const errors: string[] = [];
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      errors.push(parts.map((part) => String(part)).join(" "));
+    });
+    try {
+      const output = await captureMain(["install", "--project", env.project]);
+
+      // the no-op prints exactly the notice and nothing else (no banner, no logs)
+      expect(output).toBe(
+        "[huginn] agents and step prompts are built in; there is nothing to install.",
+      );
+      expect(stripAnsi(errors.join("\n"))).toBe("");
+      expect(process.exitCode ?? 0).toBe(0);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    // no git repository, no harness state, no documents: run/plan/live was skipped
+    expect(existsSync(join(env.project, ".git"))).toBe(false);
+    expect(existsSync(join(env.project, ".huginn"))).toBe(false);
+    expect(existsSync(join(env.project, "plan.md"))).toBe(false);
+  });
+});
+
 describe("greenfield launch ergonomics", () => {
   it("treats a project without .huginn/ as never initialized", () => {
     const env = makeEnv();

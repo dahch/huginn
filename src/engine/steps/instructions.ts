@@ -8,9 +8,9 @@
  * the pipeline no longer depends on slash commands or subagents installed in
  * `~/.config/opencode`.
  *
- * These strings are a snapshot of the templates in `templates/` (kept in the repo
- * during Phase 2A; their installation is removed in Phase 2B). Do not edit by
- * hand: they preserve exact literals the gate depends on (`AUDIT-ONLY MODE`, the
+ * These strings were snapshotted from the `templates/` files that lived in the
+ * repo during Phase 2A and were removed in Phase 2B. Do not edit by hand: they
+ * preserve exact literals the gate depends on (`AUDIT-ONLY MODE`, the
  * "Overall fidelity"/"Overall gate" verdict markers, the trailing handoff lines,
  * and the non-interactive/scan guardrails).
  */

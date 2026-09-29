@@ -36,21 +36,12 @@ import { LiveEngine } from "./engine/liveMode";
 import { maybePrintUpdateReminder } from "./update";
 import { resolveAgent, getAgentRuntime, OpencodeRuntimeAdapter } from "./engine/agent/index.js";
 import type { AgentTarget } from "./agents/integrator.js";
-import {
-  describeTemplates,
-  getMissing,
-  getOpencodeConfigDir,
-  installTemplates,
-  listInstalled,
-  listTemplates,
-  promptYesNo,
-  type TemplateKind,
-} from "./setup/install";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
 import { handleCheckCommand } from "./commands/check";
 import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
 import { handleInitCommand, printInitUsage } from "./commands/init.js";
+import { handleInstallCommand } from "./commands/install";
 
 /**
  * Concise two-tier help (REQ-26 / AC-26.2): the Core commands and the flags a
@@ -111,7 +102,7 @@ Usage:
   huginn init [--yes] [--skip-setup] [flags]  guided onboarding wizard (agent, models, MCP, config)
   huginn plan --project <repo> --thinker <provider/model> "<idea>" [flags]
   huginn live [flags]         explicit live mode ["<idea>"]
-  huginn install [--yes] [--force] [--only agents|commands]
+  huginn install              compatibility no-op: agents and step prompts are built in
   huginn memory init [--db <path>] [--project <path>]
   huginn memory search <query> [--category <cat>] [--limit <n>] [--project <path>]
   huginn memory sync [--import] [--file <path>] [--project <path>]
@@ -141,8 +132,8 @@ Commands:
   setup   register Muninn MCP + rules with Cursor, Claude, OpenCode and Windsurf
   doctor  diagnose the local environment, providers and Muninn database
   check   verify TypeScript execution contracts and pre-emit diagnostics
-  install install the opencode subagents and slash commands huginn needs into
-          ~/.config/opencode (agents/ and commands/)
+  install compatibility no-op: the opencode agents and step prompts are built
+          into huginn, so there is nothing to install
   memory  query and manage persistent codebase memory (init, search, sync, index)
   mcp     start the Muninn MCP server for agent memory integration (run)
   config  inspect and persist thinker/executor configuration (show, set)
@@ -204,11 +195,6 @@ Optional:
   --phase-timeout <ms>  hard deadline per phase step (0 disables)  (default: 1200000, 20 min)
   --agent <target>      target agent runtime (opencode, claude, codex, omp, etc.)
   --choose-model        open the interactive model selector on startup
-
-Install:
-  --yes                 install without asking (non-interactive / CI)
-  --force               overwrite existing files in ~/.config/opencode (default: never)
-  --only agents|commands  restrict the install to subagents or slash commands only
 `;
 }
 
@@ -415,11 +401,11 @@ function isInteractiveTerminal(): boolean {
 
 /**
  * Greenfield launch ergonomics (iteration 24, bullet 3): instead of failing with
- * "not a git repository" or dumping template warnings, an unconfigured
- * repository gets the onboarding wizard (TTY) or a short pointer to
- * `huginn init` (non-interactive). The pointer itself never exits non-zero —
- * it is guidance; on a TTY the delegated wizard still reports a failed step
- * (e.g. MCP registration) through `process.exitCode` (REV-201).
+ * "not a git repository", an unconfigured repository gets the onboarding wizard
+ * (TTY) or a short pointer to `huginn init` (non-interactive). The pointer
+ * itself never exits non-zero — it is guidance; on a TTY the delegated wizard
+ * still reports a failed step (e.g. MCP registration) through `process.exitCode`
+ * (REV-201).
  */
 export async function handleGreenfieldLaunch(
   args: ParsedArgs,
@@ -487,7 +473,11 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   if (command === "install") {
-    await runInstall(args);
+    // Compatibility no-op (exit 0): the opencode agents and step prompts are
+    // built in now, so there is nothing to copy into ~/.config/opencode. Because
+    // `install` is a known command, this branch is what keeps it out of the
+    // run/plan/live path — which would exit 1 on the missing plan/spec/adr docs.
+    handleInstallCommand();
     return;
   }
   if (command === "memory") {
@@ -631,7 +621,6 @@ export async function main(argv: string[]): Promise<void> {
     console.error("No saved harness state to resume. Run without --resume to start fresh.");
     process.exit(1);
   }
-  warnIfMissingTemplates(cfg.tui);
 
   let state;
   if (args["--force-restart"]) {
@@ -778,7 +767,6 @@ async function runPlan(args: ParsedArgs): Promise<void> {
     console.error("Missing required --thinker.\n\n" + usage());
     process.exit(1);
   }
-  warnIfMissingTemplates();
   ensureGitRepositoryOrExit(projectPath, args);
 
   const promptFile =
@@ -897,8 +885,6 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     sandbox: !args["--no-sandbox"],
   };
 
-  warnIfMissingTemplates(cfg.tui);
-
   if (!cfg.tui) {
     printBanner({ thinker, executor, projectPath, iteration: 1, phase: "LIVE" });
     void maybePrintUpdateReminder();
@@ -1011,102 +997,6 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   } finally {
     sub.close();
     await runtime.stopDaemon?.();
-  }
-}
-
-async function runInstall(args: ParsedArgs): Promise<void> {
-  const force = Boolean(args["--force"]);
-  const auto = Boolean(args["--yes"]) || process.env.CI === "true";
-  const only: TemplateKind | undefined =
-    args["--only"] === "agents" ? "agent" : args["--only"] === "commands" ? "command" : undefined;
-
-  const configDir = getOpencodeConfigDir();
-  let all: ReturnType<typeof listTemplates>;
-  try {
-    all = listTemplates(configDir).filter((t) => !only || t.kind === only);
-  } catch (err) {
-    console.error(`[huginn] could not locate the bundled templates: ${(err as Error).message}`);
-    console.error(`[huginn] set HUGINN_TEMPLATES_DIR to the huginn templates/ directory.`);
-    process.exit(1);
-  }
-  const missing = getMissing(configDir).filter((t) => !only || t.kind === only);
-  const targets = force ? all : missing;
-
-  if (targets.length === 0) {
-    console.log(
-      force
-        ? `[huginn] nothing to overwrite — no templates are installed yet. Run without --force to install them.`
-        : `[huginn] all required opencode agents/commands are already present in ${configDir}.`,
-    );
-    return;
-  }
-
-  console.log(`[huginn] opencode config dir: ${configDir}\n`);
-  console.log(
-    force
-      ? `[huginn] the following will be (re)installed, overwriting existing files:`
-      : `[huginn] the following required opencode agents/commands are missing:`,
-  );
-  for (const line of describeTemplates(targets)) console.log(line);
-  console.log();
-
-  if (!auto) {
-    const ok = await promptYesNo("Install these opencode agents/commands now?");
-    if (!ok) {
-      console.log("[huginn] cancelled. Run `huginn install --yes` later to install them.");
-      return;
-    }
-  }
-
-  const result = installTemplates({ force, only });
-  const installed = result.installed;
-  const skipped = result.skipped;
-  const overwritten = result.overwritten;
-  const remaining = only ? getMissing(configDir).filter((t) => t.kind === only) : getMissing(configDir);
-
-  if (installed.length > 0) {
-    console.log(`[huginn] installed ${installed.length}: ${installed.join(", ")}`);
-  }
-  if (overwritten.length > 0) {
-    console.log(`[huginn] overwrote ${overwritten.length}: ${overwritten.join(", ")}`);
-  }
-  if (skipped.length > 0) {
-    console.log(`[huginn] skipped (already present): ${skipped.join(", ")}`);
-  }
-  if (remaining.length > 0) {
-    console.log(`[huginn] ⚠ still missing: ${remaining.map((t) => `${t.kind}s/${t.name}`).join(", ")}`);
-  } else if (listInstalled(configDir).filter((t) => !only || t.kind === only).length > 0) {
-    console.log("[huginn] ✓ all required opencode agents/commands are now present.");
-  }
-}
-
-function warnIfMissingTemplates(tui?: boolean): void {
-  let missing;
-  try {
-    missing = getMissing();
-  } catch (err) {
-    const msg =
-      `[huginn] ⚠ could not check opencode agents/commands: ${(err as Error).message}. ` +
-      `Set HUGINN_TEMPLATES_DIR to the huginn templates/ directory.`;
-    if (tui) {
-      events.emit("log", { level: "warn", message: msg });
-    } else {
-      console.warn(msg);
-    }
-    return;
-  }
-  if (missing.length === 0) return;
-  if (tui) {
-    events.emit("log", {
-      level: "warn",
-      message: `${missing.length} required opencode agent(s)/command(s) are not installed yet: ${missing.map((t) => `${t.kind}s/${t.name}`).join(", ")}. Run 'huginn install'.`,
-    });
-  } else {
-    console.warn(
-      `[huginn] ⚠ ${missing.length} required opencode agent(s)/command(s) are not installed yet:\n` +
-        `  ${missing.map((t) => `${t.kind}s/${t.name}`).join(", ")}\n` +
-        `  Run \`huginn install\` to install them into ${getOpencodeConfigDir()}.`,
-    );
   }
 }
 

@@ -25,7 +25,7 @@ import {
   getProjectConfigPath,
   saveUserConfig,
 } from "../config.js";
-import { promptLine, promptYesNo, type PromptIo } from "../setup/install.js";
+import { promptLine, promptYesNo, type PromptIo } from "../util/prompt.js";
 import { handleSetupCommand } from "./setup.js";
 
 /** Package manager inferred from the project's lockfile (ADR-26). */
