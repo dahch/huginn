@@ -1,8 +1,10 @@
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname, basename } from "node:path";
 import { stateSchema, type HarnessState, type HistoryEntry } from "./schema";
 import { MAIN_PHASES, type PhaseName } from "../engine/types";
+import { assertDocPath } from "../util/docPath";
+import { writeFileAtomic } from "../util/atomicWrite";
 
 export function harnessDir(projectPath: string): string {
   return join(projectPath, ".harness");
@@ -74,15 +76,32 @@ export function loadState(projectPath: string): HarnessState | null {
   }
 }
 
+/**
+ * Persist the harness state (SEC-102).
+ *
+ * Fail-closed on the *path*: the state file is screened with the shared doc-path
+ * helper, so a cloned repository shipping `.harness/state.json` (or the whole
+ * `.harness`) as a symlink can make huginn neither truncate nor overwrite the
+ * link's target — the write throws instead. The write itself is atomic on the
+ * checked path: an exclusive temp file in the same directory, `renameSync`d into
+ * place, the same pattern `state/liveSession.ts` uses for its store.
+ */
 export function saveState(projectPath: string, state: HarnessState): void {
-  const p = statePath(projectPath);
+  const p = assertDocPath(statePath(projectPath), {
+    projectPath,
+    label: "the harness state",
+    action: "write",
+  });
   mkdirSync(dirname(p), { recursive: true });
   state.updatedAt = new Date().toISOString();
-  const tmp = `${p}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n");
-  renameSync(tmp, p);
+  writeFileAtomic(p, JSON.stringify(state, null, 2) + "\n", 0o600);
 }
 
+/**
+ * Write one phase report (SEC-102). Same containment and atomicity as
+ * {@link saveState}: the report name is repository-reachable, so a link planted
+ * at `.harness/reports/<name>.md` must never be written through.
+ */
 export function writeReport(
   projectPath: string,
   iteration: number,
@@ -90,11 +109,15 @@ export function writeReport(
   attempt: number,
   content: string,
 ): string {
-  const dir = reportsDir(projectPath);
-  mkdirSync(dir, { recursive: true });
   const name = `${String(iteration).padStart(2, "0")}-${phase}-${attempt}.md`;
-  const p = join(dir, name);
-  writeFileSync(p, content);
+  const p = join(reportsDir(projectPath), name);
+  const target = assertDocPath(p, {
+    projectPath,
+    label: "a phase report",
+    action: "write",
+  });
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileAtomic(target, content, 0o600);
   return p;
 }
 
@@ -171,8 +194,16 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
   }
 
   const out = join(harnessDir(projectPath), "PROGRESS.md");
-  mkdirSync(harnessDir(projectPath), { recursive: true });
-  writeFileSync(out, lines.join("\n"));
+  // SEC-102: same containment as `saveState` — a cloned repository must not be
+  // able to make the progress page overwrite a file outside the project by
+  // shipping `.harness/PROGRESS.md` (or `.harness`) as a symlink.
+  const target = assertDocPath(out, {
+    projectPath,
+    label: "the progress page",
+    action: "write",
+  });
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileAtomic(target, lines.join("\n"), 0o600);
   return out;
 }
 

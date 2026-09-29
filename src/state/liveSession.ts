@@ -59,16 +59,14 @@ import {
   openSync,
   readSync,
   realpathSync,
-  renameSync,
-  unlinkSync,
   writeFileSync,
-  writeSync,
   type Stats,
 } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { join, sep } from "node:path";
 import { events, type LiveStage } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text";
+import { writeFileAtomic } from "../util/atomicWrite";
 
 /** One persisted turn of a live conversation. */
 export interface LiveSessionMessage {
@@ -146,6 +144,23 @@ const HUGINN_GITIGNORE = "*\n";
 const ROLES = new Set<LiveSessionMessage["role"]>(["user", "assistant", "system"]);
 const STAGES = new Set<LiveStage>(["refine", "draft", "approve", "execute"]);
 
+/**
+ * M-3 — the charset a persisted **identity** may use.
+ *
+ * `sanitizeTerminalText` keeps the *store* from printing control sequences, but an
+ * id is not only printed: it is a key (`getLiveSession`), a value the 4C reattach
+ * probe sends back to the opencode server, and the handle `--session <id>` accepts.
+ * A hand-edited (or attacker-authored) store could therefore carry an id full of
+ * separators, spaces or `..`, so every recorded id must be a plain opaque token: at
+ * most 128 characters of `[A-Za-z0-9._:-]`, with **at least one alphanumeric** so
+ * that `.`, `..`, `-` or `:` alone — names that mean "a path component" or
+ * "nothing" to a later consumer — never pass.
+ *
+ * A real id (a `randomUUID()` from {@link newLiveSessionId}, an opencode `ses_…`)
+ * always satisfies this; anything that does not is discarded (never repaired).
+ */
+export const LIVE_ID_PATTERN = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._:-]{1,128}$/;
+
 /** `O_NOFOLLOW`/`O_DIRECTORY`/`O_NONBLOCK` are absent on some platforms (Windows). */
 const NO_FOLLOW = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
 const DIRECTORY_ONLY = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
@@ -201,11 +216,20 @@ function normalizeMessage(raw: unknown): LiveSessionMessage | undefined {
 
 /**
  * Best-effort parse of one stored session record. Returns `undefined` only for a
- * record that cannot be used at all (no id); missing optional fields are
+ * record that cannot be used at all (no usable id); missing optional fields are
  * defaulted so a partially damaged file still yields the sessions that are intact.
  * Every field that survives is sanitized before it is handed out — including the
  * timestamps and the runtime session id (SEC-4C-001), which the 4C reattach path
  * sends back to the opencode server and names in a log line.
+ *
+ * M-3: identity fields must additionally match {@link LIVE_ID_PATTERN}. An `id`
+ * that does not is not "cleaned up" — the record is dropped, exactly like the
+ * empty-id case (an id that is not a plain opaque token identifies nothing huginn
+ * should look up or address). A malformed `opencodeSessionId` drops **that field**
+ * rather than the whole conversation: the record is still the user's transcript,
+ * and without the field the 4C reattach simply opens a new agent session (the
+ * fail-open path it already has), instead of probing a server with a value a
+ * hand-edited store chose.
  */
 function normalizeSession(raw: unknown): LiveSession | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -216,7 +240,7 @@ function normalizeSession(raw: unknown): LiveSession | undefined {
   // listing. An id left empty by sanitization identifies nothing: the record is
   // dropped as malformed rather than kept under an invisible name.
   const id = typeof s.id === "string" ? sanitizeTerminalText(s.id) : "";
-  if (id.trim() === "") return undefined;
+  if (!LIVE_ID_PATTERN.test(id)) return undefined;
   const now = new Date().toISOString();
   const rawMessages = Array.isArray(s.messages) ? s.messages : [];
   const messages = rawMessages
@@ -240,10 +264,18 @@ function normalizeSession(raw: unknown): LiveSession | undefined {
   // SEC-4C-001: this one is a boundary too — it is sent back to the opencode
   // server by the 4C reattach probe and echoed into a log line, so it is
   // sanitized here like every other identity field. An id left empty by
-  // sanitization names nothing: it is dropped rather than kept as "".
+  // sanitization names nothing: it is dropped rather than kept as "" (M-3: the
+  // same applies to one that is not a plain opaque token at all).
   if (typeof s.opencodeSessionId === "string") {
     const opencodeSessionId = sanitizeTerminalText(s.opencodeSessionId);
-    if (opencodeSessionId.trim() !== "") session.opencodeSessionId = opencodeSessionId;
+    if (LIVE_ID_PATTERN.test(opencodeSessionId)) {
+      session.opencodeSessionId = opencodeSessionId;
+    } else {
+      warn(
+        `ignoring the malformed opencode session id stored for live session ${id}; ` +
+          `a resumed run will start a new agent session`,
+      );
+    }
   }
   return session;
 }
@@ -513,53 +545,6 @@ function ensureLiveDir(projectPath: string): string {
   if (createdLive) chmodBestEffort(dir, 0o700);
   ensureHuginnGitignore(huginnDir);
   return dir;
-}
-
-/**
- * Writes `body` atomically with an exclusive temp file (SEC-901 style): created
- * in the same directory with a random suffix and the `wx` flag, so a symlink
- * planted at that name is never followed; `renameSync` then replaces the target
- * name rather than following it.
- */
-function writeFileAtomic(path: string, body: string, mode: number): void {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
-    let fd: number;
-    try {
-      fd = openSync(tmp, "wx", mode);
-    } catch (err) {
-      if (errorCode(err) === "EEXIST") {
-        lastErr = err;
-        continue;
-      }
-      throw err;
-    }
-    try {
-      writeSync(fd, body, null, "utf8");
-    } catch (err) {
-      try {
-        closeSync(fd);
-      } catch {
-        // already closed
-      }
-      try {
-        unlinkSync(tmp);
-      } catch {
-        // best-effort cleanup
-      }
-      throw err;
-    }
-    closeSync(fd);
-    try {
-      chmodSync(tmp, mode);
-    } catch {
-      // best-effort: some filesystems/platforms reject explicit modes
-    }
-    renameSync(tmp, path);
-    return;
-  }
-  throw new Error(`could not create a unique temp file for ${path}: ${String(lastErr)}`);
 }
 
 /** The envelope exactly as it is written to disk (and therefore measured). */

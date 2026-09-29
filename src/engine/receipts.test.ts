@@ -1,9 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { git } from "./diff";
-import { treeHash } from "./receipts";
+import { treeHash, writeIterationReceipt, type IterationReceipt } from "./receipts";
 
 let dir: string;
 
@@ -170,5 +179,64 @@ describe("treeHash (REV-001/REV-103/REV-104)", () => {
     const after = treeHash(dir);
     expect(after).toBeDefined();
     expect(after).not.toBe(before);
+  });
+});
+
+/**
+ * SEC-102 — the receipt path (`.huginn/receipts/iter-<n>.json`) is a name the
+ * repository ships, so a clone can plant a symlink there and have huginn
+ * overwrite the link's target on every iteration.
+ */
+describe("writeIterationReceipt — symlink containment (SEC-102)", () => {
+  const windows = process.platform === "win32";
+  let victim: { root: string; target: string; cleanup: () => void };
+
+  beforeEach(() => {
+    const root = mkdtempSync(join(tmpdir(), "huginn-receipt-victim-"));
+    const target = join(root, "precious.txt");
+    writeFileSync(target, "the user's file\n");
+    victim = { root, target, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  });
+
+  afterEach(() => {
+    victim.cleanup();
+  });
+
+  const receipt: IterationReceipt = {
+    profile: "rdd",
+    evidence: "snapshot",
+    iteration: 1,
+    title: "t",
+    verdicts: [],
+    createdAt: "2025-01-01T00:00:00.000Z",
+  };
+
+  it("refuses a symlinked receipt and leaves its target intact", () => {
+    if (windows) return;
+    mkdirSync(join(dir, ".huginn", "receipts"), { recursive: true });
+    symlinkSync(victim.target, join(dir, ".huginn", "receipts", "iter-1.json"));
+
+    expect(writeIterationReceipt(dir, receipt)).toBeUndefined();
+
+    expect(readFileSync(victim.target, "utf8")).toBe("the user's file\n");
+  });
+
+  it("refuses a symlinked .huginn directory that escapes the project", () => {
+    if (windows) return;
+    symlinkSync(victim.root, join(dir, ".huginn"));
+
+    expect(writeIterationReceipt(dir, receipt)).toBeUndefined();
+
+    expect(readdirSync(victim.root)).toEqual(["precious.txt"]);
+    expect(readFileSync(victim.target, "utf8")).toBe("the user's file\n");
+  });
+
+  it("still writes a real receipt atomically, with no temp left behind", () => {
+    const path = writeIterationReceipt(dir, receipt);
+
+    expect(path).toBe(join(dir, ".huginn", "receipts", "iter-1.json"));
+    expect(existsSync(path!)).toBe(true);
+    expect(JSON.parse(readFileSync(path!, "utf8")).profile).toBe("rdd");
+    expect(readdirSync(join(dir, ".huginn", "receipts"))).toEqual(["iter-1.json"]);
   });
 });

@@ -1,5 +1,14 @@
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
+import { checkDocPath, NO_FOLLOW } from "../util/docPath";
 
 export interface ServerExitInfo {
   /** Exit code reported by the child (null when it was signalled). */
@@ -30,6 +39,74 @@ const RESTART_BACKOFF_MS = 750;
 const RESTART_HEALTH_TIMEOUT_MS = 15_000;
 /** How much of the log to quote when a restart fails. */
 const LOG_TAIL_BYTES = 2000;
+/** Mode every log file huginn creates is opened with. */
+const LOG_FILE_MODE = 0o600;
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * SEC-101 — prepares `.harness/logs/server.log` for this session, returning the
+ * path to write to, or `undefined` when that is not safe.
+ *
+ * The log path is repository-reachable, and it used to be created and truncated
+ * blind (`mkdirSync(…, {recursive: true})` + `writeFileSync(logFile, "")`): both
+ * follow a symlink, so a cloned project shipping `.harness/logs/server.log` — or
+ * `.harness`/`.harness/logs` themselves — as a link made huginn truncate and fill
+ * a file of the repository's choosing anywhere on the host.
+ *
+ * Every component is therefore screened with the shared doc-path helper *before*
+ * anything is created (a `mkdirSync({recursive})` would already have followed a
+ * linked parent, so the check cannot come after it): a link on the component
+ * itself is refused, and a chain resolving outside the project is refused too.
+ * The truncation then goes through an `O_NOFOLLOW` descriptor, so a link swapped
+ * in between the check and the open fails with `ELOOP` instead of being followed.
+ *
+ * Degrading is deliberate: a log is a convenience, never a reason to fail a run,
+ * so an unsafe path (or a read-only project) warns and the server still starts —
+ * it simply writes no log.
+ */
+function prepareServerLog(projectPath: string): string | undefined {
+  const harnessDir = join(projectPath, ".harness");
+  const logsDir = join(harnessDir, "logs");
+  const logFile = join(logsDir, "server.log");
+  try {
+    const harness = checkDocPath(harnessDir, {
+      projectPath,
+      label: "the .harness directory",
+      action: "write into",
+    });
+    if (!harness.ok) throw new Error(harness.reason);
+    const logs = checkDocPath(logsDir, {
+      projectPath,
+      label: "the .harness/logs directory",
+      action: "write into",
+    });
+    if (!logs.ok) throw new Error(logs.reason);
+    const log = checkDocPath(logFile, {
+      projectPath,
+      label: "the server log",
+      action: "write",
+    });
+    if (!log.ok) throw new Error(log.reason);
+
+    mkdirSync(logs.path, { recursive: true, mode: 0o700 });
+    const fd = openSync(
+      log.path,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NO_FOLLOW,
+      LOG_FILE_MODE,
+    );
+    closeSync(fd);
+    return log.path;
+  } catch (err) {
+    console.error(
+      `[huginn] refusing to write ${logFile}: ${errorMessage(err)}; ` +
+        `server output will not be logged`,
+    );
+    return undefined;
+  }
+}
 
 /** Outcome of a restart attempt: health, a dead replacement, or the deadline. */
 type RestartOutcome =
@@ -86,15 +163,31 @@ export async function startServer(
   timeoutMs: number,
 ): Promise<ServerHandle> {
   console.error(`[huginn] starting opencode server on port ${port}...`);
-  const logFile = join(projectPath, ".harness", "logs", "server.log");
-  mkdirSync(join(projectPath, ".harness", "logs"), { recursive: true });
-  writeFileSync(logFile, "");
+  // SEC-101: `undefined` when the repository ships the log path as a symlink (or
+  // a path escaping the project) — the server still runs, it just writes no log.
+  const logFile = prepareServerLog(projectPath);
 
   const append = (chunk: string) => {
+    if (!logFile) return;
     try {
-      writeFileSync(logFile, chunk, { flag: "a" });
+      // `O_APPEND` + `O_NOFOLLOW`: append through a descriptor that can never
+      // follow a link planted at the log name between the check and here.
+      const fd = openSync(
+        logFile,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND | NO_FOLLOW,
+        LOG_FILE_MODE,
+      );
+      try {
+        const data = Buffer.from(chunk, "utf8");
+        let written = 0;
+        while (written < data.length) {
+          written += writeSync(fd, data, written, data.length - written);
+        }
+      } finally {
+        closeSync(fd);
+      }
     } catch {
-      /* ignore */
+      /* ignore: the log is best-effort, never a reason to fail the run */
     }
   };
 
@@ -126,7 +219,10 @@ export async function startServer(
   } catch (err) {
     const code = await Promise.race([exited, Promise.resolve(undefined)]);
     if (code !== undefined) {
-      const log = existsSync(logFile) ? readFileSync(logFile, "utf8").slice(-LOG_TAIL_BYTES) : "";
+      const log =
+        logFile && existsSync(logFile)
+          ? readFileSync(logFile, "utf8").slice(-LOG_TAIL_BYTES)
+          : "";
       throw new Error(`opencode serve exited with code ${code} before becoming healthy.\n${log}`);
     }
     await proc.kill();

@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import child_process from "node:child_process";
+import { events } from "./engineEvents";
+import { sanitizeTerminalText } from "../util/text";
 
 // ---------------------------------------------------------------------------
 // Hardened git invocation (SEC-001)
@@ -84,13 +86,53 @@ export const SAFE_GIT_SUBCOMMANDS = new Set([
  * resolves those two flags last-one-wins — so an argument later in the argv
  * would otherwise silently undo the hardening huginn inserted after the
  * subcommand. Rejected bare or with an inline `=value`.
+ *
+ * One positional exemption applies (SEC-103): see
+ * {@link firstForbiddenGitArg}/{@link REV_PARSE_QUERY_ARGS} — a bare
+ * `--git-dir`/`--absolute-git-dir` *after* `rev-parse` asks git where the
+ * repository is instead of redirecting it.
  */
 export const FORBIDDEN_GIT_ARG =
   /^(?:-c|--output|--exec-path|--upload-pack|--config-env|--git-dir|--work-tree|--no-index|--ext-diff|--textconv)(?:=|$)|^-O/;
 
-/** The first argument that looks like a write/exec escape hatch, if any. */
+/**
+ * `rev-parse` options that *ask* git where the repository is rather than
+ * redirect it (SEC-103).
+ *
+ * `--git-dir` is on the forbidden list because, for every command that reads or
+ * writes a tree, it points git at a repository the caller chose. For `rev-parse`
+ * it is a **query**: `git rev-parse --git-dir` prints the git directory of the
+ * work tree it is already running in and redirects nothing, and huginn's own
+ * worktree-sandbox detection needs exactly that answer. Screening it blind made
+ * `getDiagnostics().worktreeSandbox` permanently `false` (and warned on every
+ * `/status`), so the screen is positional: the exemption applies only to these
+ * bare tokens, only when they follow a `rev-parse` subcommand, and never to the
+ * `--git-dir=<path>` form that really does redirect.
+ */
+const REV_PARSE_QUERY_ARGS = new Set(["--git-dir", "--absolute-git-dir"]);
+
+/**
+ * The first argument that looks like a write/exec escape hatch, if any.
+ *
+ * The screen is **positional** (SEC-103): `{@link FORBIDDEN_GIT_ARG}` is applied
+ * everywhere except to the read-only `rev-parse` queries in
+ * {@link REV_PARSE_QUERY_ARGS}, which appear *after* the subcommand. Everything
+ * before the subcommand — the global option position, where `-c`/`--git-dir`
+ * actually take effect for the whole invocation — is always screened.
+ */
 export function firstForbiddenGitArg(args: string[]): string | undefined {
-  return args.find((arg) => FORBIDDEN_GIT_ARG.test(arg));
+  const subcommand = subcommandIndex(args);
+  return args.find((arg, index) => {
+    if (!FORBIDDEN_GIT_ARG.test(arg)) return false;
+    if (subcommand === -1 || index < subcommand) return true;
+    return !(args[subcommand] === "rev-parse" && REV_PARSE_QUERY_ARGS.has(arg));
+  });
+}
+
+/** The escape-hatch screen alone, as a rejection reason (`null` when clean). */
+export function forbiddenGitArgRejectionReason(args: string[]): string | null {
+  const forbidden = firstForbiddenGitArg(args);
+  return forbidden ? `forbidden git argument "${forbidden}"` : null;
 }
 
 /**
@@ -99,8 +141,8 @@ export function firstForbiddenGitArg(args: string[]): string | undefined {
  * site is covered, not just the interpolated `!`git …`` ones.
  */
 export function gitArgsRejectionReason(args: string[]): string | null {
-  const forbidden = firstForbiddenGitArg(args);
-  if (forbidden) return `forbidden git argument "${forbidden}"`;
+  const forbidden = forbiddenGitArgRejectionReason(args);
+  if (forbidden) return forbidden;
   const subcommand = gitSubcommand(args);
   if (!subcommand) return "missing git subcommand";
   if (!SAFE_GIT_SUBCOMMANDS.has(subcommand)) {
@@ -252,7 +294,33 @@ export function gitBounded(
   }
 }
 
+/**
+ * Run `git <args>` in `projectPath`, with the global hardening and the
+ * write/exec escape-hatch screen applied.
+ *
+ * L-2: the screen used to live only in {@link gitBounded}, so a call site using
+ * `git()` directly could pass `-c core.hooksPath=…`, `--git-dir`, `--ext-diff`,
+ * `--output=…` and have it run. The forbidden-argument check now applies here
+ * too, and a rejected invocation is a failure (`code: 1`, empty stdout, the
+ * reason on stderr) with a warning, never an execution. It is deliberately
+ * **not** the subcommand allowlist: `git()` is the internal, non-prompt runner and
+ * legitimately drives `init`, `add`, `commit`, `config`, `reset`, `merge`,
+ * `worktree`, `cherry-pick`, `branch` and `symbolic-ref` as well as the read-only
+ * queries — only the escape hatches are refused.
+ *
+ * A clean `-c`-carrying call site must use the flag git provides for it instead
+ * (see `gitRepo`'s `commit --no-gpg-sign`).
+ */
 export function git(projectPath: string, args: string[]): { stdout: string; stderr: string; code: number } {
+  const forbidden = forbiddenGitArgRejectionReason(args);
+  if (forbidden) {
+    events.emit("log", {
+      level: "warn",
+      message: sanitizeTerminalText(`refusing git invocation: ${forbidden}`),
+    });
+    return { stdout: "", stderr: forbidden, code: 1 };
+  }
+
   const safeArgs = safeGitArgs(args);
 
   if (typeof Bun !== "undefined" && typeof Bun.spawnSync === "function") {

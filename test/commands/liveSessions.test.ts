@@ -297,6 +297,10 @@ describe("Phase 4C — --list-sessions", () => {
   });
 
   it("never echoes a hostile id/title to the terminal (SEC-4B-003b)", async () => {
+    // A hand-edited store: the identity is attacker-shaped input like any other. An
+    // id that is not a plain opaque token is discarded (M-3), so it never reaches the
+    // listing at all; a kept record's title is sanitized before it is printed. Either
+    // way no escape sequence is ever echoed.
     mkdirSync(liveDir(dir), { recursive: true });
     writeFileSync(
       liveSessionsPath(dir),
@@ -308,7 +312,15 @@ describe("Phase 4C — --list-sessions", () => {
             createdAt: "2025-01-01T00:00:00.000Z",
             updatedAt: "2025-01-01T00:00:00.000Z",
             runtimeId: "opencode\u001b[31m",
-            title: "a\u001b[2Jb",
+            title: "HOSTILE\u001b[2Jtitle",
+            messages: [{ role: "user", text: "hi" }],
+          },
+          {
+            id: "shown-session",
+            createdAt: "2025-01-02T00:00:00.000Z",
+            updatedAt: "2025-01-02T00:00:00.000Z",
+            runtimeId: "opencode\u001b[31m",
+            title: "SAFE\u001b[2Jtitle",
             messages: [{ role: "user", text: "hi" }],
           },
         ],
@@ -319,9 +331,12 @@ describe("Phase 4C — --list-sessions", () => {
 
     expect(output).not.toContain("\u001b");
     expect(output).not.toContain("\u0007");
-    // the sanitized values are what is shown
-    expect(output).toContain("hostile]0;pwned");
-    expect(output).toContain("ab");
+    // the dropped record's id and title never reach the terminal...
+    expect(output).not.toContain("hostile]0;pwned");
+    expect(output).not.toContain("HOSTILEtitle");
+    // ...and the kept record's sanitized values are what is shown
+    expect(output).toContain("shown-session");
+    expect(output).toContain("SAFEtitle");
   });
 
   it("prints the empty report from the helper itself", () => {

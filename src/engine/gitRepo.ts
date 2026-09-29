@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { lstatSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { git, probeGitRepo } from "./diff";
 
@@ -47,6 +47,29 @@ function ensureCommitIdentity(projectPath: string): void {
 }
 
 /**
+ * Write the default `.gitignore` **only when the name is free** (M-2).
+ *
+ * `existsSync` was the bug: it follows symlinks, so a repository (or a directory
+ * about to become one) shipping a *dangling* `.gitignore -> ~/.bashrc` made
+ * `existsSync` answer `false` and the write create the link target instead of
+ * being refused — onboarding wrote outside the project. The `lstat` below never
+ * follows the final component, a symlink (or any other pre-existing entry) is
+ * left strictly alone, and the write itself uses the exclusive `wx` flag with
+ * mode `0o600`, so a link planted between the check and the write still cannot be
+ * followed or clobbered.
+ */
+function writeDefaultGitignore(path: string): void {
+  let existing: Stats | undefined;
+  try {
+    existing = lstatSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw err;
+  }
+  if (existing !== undefined) return; // a real file or a (possibly dangling) link: keep it
+  writeFileSync(path, `${GITIGNORE_PATTERNS.join("\n")}\n`, { flag: "wx", mode: 0o600 });
+}
+
+/**
  * Make `projectPath` usable as a huginn project (REQ-5).
  *
  * An existing work tree is detected with `git rev-parse --is-inside-work-tree`,
@@ -67,19 +90,19 @@ export function ensureGitRepository(projectPath: string): { initialized: boolean
 
   run(projectPath, ["init", "-b", "main"], "git init -b main");
 
-  const gitignorePath = join(projectPath, ".gitignore");
-  if (!existsSync(gitignorePath)) {
-    writeFileSync(gitignorePath, `${GITIGNORE_PATTERNS.join("\n")}\n`);
-  }
+  writeDefaultGitignore(join(projectPath, ".gitignore"));
 
   ensureCommitIdentity(projectPath);
 
   run(projectPath, ["add", "-f", ".gitignore"], "git add .gitignore");
   // A globally enabled `commit.gpgsign` must not turn onboarding into a fatal
-  // error; the bootstrap commit is huginn's, not the user's signature.
+  // error; the bootstrap commit is huginn's, not the user's signature. The CLI
+  // flag is used rather than `-c commit.gpgsign=false` because `-c` is a
+  // forbidden git argument to `git()` (L-2) — one invocation must not need an
+  // exemption the screen exists to close.
   run(
     projectPath,
-    ["-c", "commit.gpgsign=false", "commit", "-m", "chore: initialize repository"],
+    ["commit", "--no-gpg-sign", "-m", "chore: initialize repository"],
     "git commit",
   );
 

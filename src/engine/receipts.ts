@@ -1,8 +1,10 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { gitBounded, headCommit } from "./diff.js";
 import { profileSpec, type ProfileEvidence, type ProfileName } from "./profiles.js";
+import { assertDocPath } from "../util/docPath.js";
+import { writeFileAtomic } from "../util/atomicWrite.js";
 import type { PhaseName, Verdict } from "./types.js";
 
 /**
@@ -194,16 +196,30 @@ function diffHeaderTouchesIgnoredPath(header: string): boolean {
 /**
  * Write the receipt under `.huginn/receipts/iter-<n>.json` and return its path.
  * Best-effort: a receipt must never fail an otherwise-successful iteration.
+ *
+ * SEC-102: the name is repository-reachable, so the path goes through the shared
+ * doc-path screen first — a cloned repository shipping `.huginn/receipts/iter-1.json`
+ * (or `.huginn` itself) as a symlink must not be able to make huginn overwrite the
+ * link's target. The write is atomic (exclusive temp + `renameSync`), so a crash
+ * cannot leave a half-written receipt either.
+ *
+ * The returned path is the caller-facing one (the receipt's logical location);
+ * the write lands on the screened, canonical path, which resolves to the same
+ * file.
  */
 export function writeIterationReceipt(
   projectPath: string,
   receipt: IterationReceipt,
 ): string | undefined {
   try {
-    const dir = join(projectPath, ".huginn", "receipts");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const path = join(dir, `iter-${receipt.iteration}.json`);
-    writeFileSync(path, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+    const path = join(projectPath, ".huginn", "receipts", `iter-${receipt.iteration}.json`);
+    const target = assertDocPath(path, {
+      projectPath,
+      label: "an iteration receipt",
+      action: "write",
+    });
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    writeFileAtomic(target, `${JSON.stringify(receipt, null, 2)}\n`, 0o600);
     return path;
   } catch {
     return undefined;

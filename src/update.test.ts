@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   compareVersions,
@@ -84,6 +94,38 @@ describe("update cache", () => {
 
     freshCache("2.0.0", UPDATE_CHECK_TTL_MS + 1000);
     expect(isCacheFresh(readUpdateCache()!)).toBe(false);
+  });
+
+  it("writes the cache atomically as 0o600, leaving no temp file behind (SEC-105)", () => {
+    writeUpdateCache("2.0.0");
+
+    expect(readdirSync(configDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect(JSON.parse(readFileSync(join(configDir, "huginn-update-cache.json"), "utf8")).latest).toBe(
+      "2.0.0",
+    );
+    if (process.platform === "win32") return; // no POSIX mode bits to assert
+    expect(statSync(join(configDir, "huginn-update-cache.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("never follows a symlink planted at the cache path (SEC-105)", () => {
+    // The cache lives in a *user* directory, but a same-user attacker (or a stray
+    // link) is exactly the case: the write must replace the name, never the link's
+    // target, and must refuse the path outright when it is a link.
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "huginn-update-victim-"));
+    try {
+      const victim = join(root, "victim.txt");
+      writeFileSync(victim, "keep me\n");
+      symlinkSync(victim, join(configDir, "huginn-update-cache.json"));
+
+      writeUpdateCache("9.9.9");
+
+      expect(readFileSync(victim, "utf8")).toBe("keep me\n");
+      // Nothing was written through the link either: the target is not JSON.
+      expect(readUpdateCache()).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

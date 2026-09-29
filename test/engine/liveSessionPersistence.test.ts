@@ -362,8 +362,10 @@ describe("LiveEngine live-session persistence (Phase 4B)", () => {
 
   it("never echoes a raw session id into the log (SEC-4B-003b)", () => {
     // A hand-edited (or attacker-authored) store whose id carries an OSC sequence
-    // and a bell: neither the handle we are given nor the id we hand back may put
-    // those on the log.
+    // and a bell: once sanitized it is `hijack]0;pwned`, not a plain opaque token, so
+    // M-3 discards the record — it is never looked up, adopted or echoed. Neither the
+    // handle we are given nor the id we would hand back may put a raw escape on the
+    // log.
     const hostileId = "hijack\u001b]0;pwned\u0007";
     mkdirSync(liveDir(dir), { recursive: true });
     writeFileSync(
@@ -382,19 +384,22 @@ describe("LiveEngine live-session persistence (Phase 4B)", () => {
 
     const { messages, off } = warnings();
     try {
-      // the store hands out the sanitized id, and that is the handle that resumes
+      // the record is discarded outright: its id identifies nothing huginn may use
+      expect(loadLiveSessions(dir)).toEqual([]);
+
+      // neither the raw handle nor the sanitized-but-invalid id is adopted
       const clean = sanitizeTerminalText(hostileId);
       expect(clean).toBe("hijack]0;pwned");
-      const resumed = new LiveEngine({ cfg: makeCfg(), runtime: stubRuntime("ok"), resume: { id: clean } });
-      expect(resumed.getLiveSessionId()).toBe(clean);
-      expect(resumed.getTranscript()).toEqual([{ role: "user", text: "hi" }]);
+      const viaClean = new LiveEngine({ cfg: makeCfg(), runtime: stubRuntime("ok"), resume: { id: clean } });
+      expect(viaClean.getLiveSessionId()).not.toBe(clean);
+      expect(viaClean.getTranscript()).toEqual([]);
 
-      // an escape-carrying handle matches nothing, is never adopted, and is
-      // reported sanitized
-      const rejected = new LiveEngine({ cfg: makeCfg(), runtime: stubRuntime("ok"), resume: { id: hostileId } });
-      expect(rejected.getLiveSessionId()).not.toBe(hostileId);
+      const viaRaw = new LiveEngine({ cfg: makeCfg(), runtime: stubRuntime("ok"), resume: { id: hostileId } });
+      expect(viaRaw.getLiveSessionId()).not.toBe(hostileId);
+
+      // the miss is reported — with the *sanitized* handle, never the raw one
       expect(messages.some((m) => m.includes("not found"))).toBe(true);
-
+      expect(messages.some((m) => m.includes("hijack]0;pwned"))).toBe(true);
       for (const message of messages) {
         expect(message).not.toContain("\u001b");
         expect(message).not.toContain("\u0007");
@@ -838,22 +843,25 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     }
   });
 
-  it("sanitizes a hand-edited server-side id before the lookup and the log (SEC-4B-003b)", async () => {
+  it("drops a hand-edited server-side id before the lookup and the log (SEC-4B-003b)", async () => {
     const liveId = await seedWithServerSession("ses_stored");
     // `saveLiveSession` writes the field as it is handed over, so the raw escape
-    // really does land in the file; the *read* path is what cleans it (SEC-4C-001),
-    // and the reattach sanitizes again before the id is used or logged.
+    // really does land in the file; the *read* path is the data boundary (M-3): an
+    // id that sanitizes to anything but a plain token (`ses]0;pwned`) is discarded,
+    // so the reattach never probes the server with it and no raw escape is logged.
     saveLiveSession(dir, {
       ...latestLiveSession(dir)!,
       id: liveId,
       opencodeSessionId: "ses\u001b]0;pwned\u0007",
     });
 
-    const dial = dialClient({ known: [] });
+    // The client *would* recognise the sanitized handle: a lookup would have
+    // reattached. It must never be asked.
+    const dial = dialClient({ known: ["ses]0;pwned"] });
     const { messages, off } = warnings();
     try {
-      // the store is the first line of defense: nothing raw is handed out
-      expect(loadLiveSessions(dir)[0]?.opencodeSessionId).toBe("ses]0;pwned");
+      // the store is the first line of defense: the field is not handed out at all
+      expect(loadLiveSessions(dir)[0]?.opencodeSessionId).toBeUndefined();
 
       const resumed = new LiveEngine({
         cfg: makeCfg(),
@@ -863,7 +871,12 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
 
       await resumed.start();
 
-      expect(messages.some((m) => m.includes("no longer exists"))).toBe(true);
+      // the field was dropped, so no reattach ran: a fresh session was created even
+      // though the client would have recognised the sanitized handle
+      expect(dial.created.length).toBeGreaterThan(0);
+      expect(resumed.getOpencodeSessionId()).not.toBe("ses]0;pwned");
+      // the discarded field is reported — sanitized — and never echoed raw
+      expect(messages.some((m) => m.includes("malformed opencode session id"))).toBe(true);
       for (const message of messages) {
         expect(message).not.toContain("\u001b");
         expect(message).not.toContain("\u0007");

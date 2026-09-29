@@ -684,8 +684,12 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
   });
 
   it("sanitizes the identity fields read from a hand-edited store (SEC-4B-003b)", () => {
-    // The id travels into logs and future listings, and the runtime name and path
-    // are rendered next to it: none of them may carry control sequences.
+    // The id travels into logs and future listings (and an opencode id is sent back
+    // to the server on a reattach), and the runtime name and path are rendered next
+    // to it: none of them may carry control sequences. M-3 tightens the id itself to
+    // a plain `[A-Za-z0-9._:-]` token, so one that sanitizes to anything else is not
+    // "cleaned up" — the whole record is discarded (it identifies nothing), and no
+    // raw escape reaches the log either way.
     const hostileId = "hijack\u001b]0;pwned\u0007";
     mkdirSync(liveDir(dir), { recursive: true });
     writeFileSync(
@@ -693,6 +697,7 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
       JSON.stringify({
         version: 1,
         sessions: [
+          // the hostile id is discarded, so its other fields are never handed out
           {
             id: hostileId,
             createdAt: "2025\u001b[31m-01-01T00:00:00.000Z",
@@ -702,8 +707,18 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
             opencodeSessionId: "ses\u001b]0;pwned\u0007",
             messages: [{ role: "user", text: "hi" }],
           },
-          // an id left empty by sanitization identifies nothing: the record goes
+          // an id left empty by sanitization identifies nothing: the record goes too
           { id: "\u001b[2J", messages: [] },
+          // a plain opaque id is kept, and its other identity fields are sanitized
+          {
+            id: "kept-session_1",
+            createdAt: "2025\u001b[31m-01-01T00:00:00.000Z",
+            updatedAt: "2025-01-01T00:00:00.000Z\u0007",
+            runtimeId: "opencode\u001b[31m",
+            projectPath: "/tmp/\u202Ehidden",
+            opencodeSessionId: "ses\u001b]0;pwned\u0007",
+            messages: [{ role: "user", text: "hi" }],
+          },
         ],
       }),
     );
@@ -711,14 +726,16 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
     const { messages: logs, off } = warnings();
     try {
       const sessions = loadLiveSessions(dir);
-      expect(sessions).toHaveLength(1);
+      // only the record whose id is a plain token survives
+      expect(sessions.map((s) => s.id)).toEqual(["kept-session_1"]);
       const [stored] = sessions;
-      expect(stored.id).toBe("hijack]0;pwned");
       expect(stored.runtimeId).toBe("opencode");
       expect(stored.projectPath).toBe("/tmp/hidden");
       expect(stored.createdAt).toBe("2025-01-01T00:00:00.000Z");
       expect(stored.updatedAt).toBe("2025-01-01T00:00:00.000Z");
-      expect(stored.opencodeSessionId).toBe("ses]0;pwned");
+      // a server-side id is kept only when it sanitizes to a plain token — this one
+      // sanitizes to `ses]0;pwned`, so it is dropped rather than sent to the server
+      expect(stored.opencodeSessionId).toBeUndefined();
       for (const field of [
         stored.id,
         stored.runtimeId,
@@ -731,8 +748,8 @@ describe("live session store — data-boundary hygiene (SEC-4B-003/004)", () => 
         expect(field).not.toContain("\u0007");
         expect(field).not.toContain("\u202E");
       }
-      // the dropped record is reported, not swallowed
-      expect(logs.some((m) => m.includes("1 malformed live session record"))).toBe(true);
+      // the dropped records are reported, not swallowed
+      expect(logs.some((m) => m.includes("2 malformed live session record"))).toBe(true);
     } finally {
       off();
     }

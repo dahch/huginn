@@ -132,6 +132,39 @@ describe("hardened git args (SEC-001)", () => {
     }
   });
 
+  it("still fails closed on the same flags before the subcommand or after another one (SEC-103)", () => {
+    // The screen is positional: the `rev-parse` exemption below must not reopen
+    // the global option position (`git --git-dir=… …`), nor any other subcommand.
+    for (const args of [
+      ["--git-dir=/tmp/elsewhere", "rev-parse", "HEAD"],
+      ["-c", "core.pager=evil", "rev-parse", "HEAD"],
+      ["log", "--git-dir", "HEAD"],
+      ["rev-parse", "--git-dir=/tmp/elsewhere"],
+    ]) {
+      const res = gitBounded(dir, args);
+      expect(res.code).toBe(1);
+      expect(res.stderr).toContain("forbidden git argument");
+    }
+  });
+
+  it("allows the read-only `rev-parse --git-dir` queries huginn needs (SEC-103)", () => {
+    // `git rev-parse --git-dir` *asks git where the repository is*; it redirects
+    // nothing. Screening it blind made `getDiagnostics().worktreeSandbox`
+    // permanently false and warned on every `/status`.
+    const gitDir = git(dir, ["rev-parse", "--git-dir"]);
+    expect(gitDir.code).toBe(0);
+    expect(gitDir.stdout.length).toBeGreaterThan(0);
+    expect(gitDir.stderr).toBe("");
+
+    const absolute = gitBounded(dir, ["rev-parse", "--absolute-git-dir"]);
+    expect(absolute.code).toBe(0);
+    expect(absolute.stdout.trim().length).toBeGreaterThan(0);
+
+    // The exemption is positional, not a hole in the allowlist: the same bare
+    // flag stays refused for every other subcommand.
+    expect(gitBounded(dir, ["log", "--git-dir"]).stderr).toContain("forbidden git argument");
+  });
+
   it("does not run a repository `diff.external` regardless of caller flags (SEC-001b)", () => {
     writeFileSync(join(dir, "f.txt"), "a\n");
     commitAll(dir);

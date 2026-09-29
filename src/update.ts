@@ -1,8 +1,10 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import pkg from "../package.json";
 import { getOpencodeConfigDir } from "./setup/opencodeConfig";
+import { checkDocPath } from "./util/docPath";
+import { writeFileAtomic } from "./util/atomicWrite";
 
 export const UPDATE_CHECK_URL = `https://registry.npmjs.org/${pkg.name}/latest`;
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -85,13 +87,23 @@ export function readUpdateCache(): UpdateCache | null {
   }
 }
 
+/**
+ * SEC-105: the cache is written with the shared atomic writer — an exclusive
+ * temp file in the same directory, `renameSync`d into place — so a symlink
+ * planted at `huginn-update-cache.json` (or at the temp name) is neither
+ * followed nor allowed to clobber its target, and a crash mid-write cannot leave
+ * a half-written cache behind. A symlinked cache path is simply refused: the
+ * write is best-effort anyway.
+ */
 export function writeUpdateCache(latest: string): void {
   try {
+    const check = checkDocPath(cachePath(), { label: "the update cache", action: "write" });
+    if (!check.ok) throw new Error(check.reason);
     mkdirSync(getOpencodeConfigDir(), { recursive: true });
-    writeFileSync(
-      cachePath(),
+    writeFileAtomic(
+      check.path,
       JSON.stringify({ checkedAt: new Date().toISOString(), latest }),
-      "utf8",
+      0o600,
     );
   } catch {
     // best effort — a failed cache write must never break the run

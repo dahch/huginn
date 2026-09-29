@@ -1,4 +1,4 @@
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
   firstForbiddenGitArg,
@@ -7,6 +7,7 @@ import {
   type GitBoundedResult,
 } from "../diff.js";
 import { sanitizeTerminalText } from "../../util/text.js";
+import { checkDocPath, NO_FOLLOW } from "../../util/docPath.js";
 import type { Verdict } from "../types.js";
 import type { StepContext } from "./types.js";
 
@@ -115,10 +116,16 @@ function readFailure(err: unknown): FileRead {
  * Read a file while distinguishing the three failure modes a prompt must not
  * conflate (M-1): a missing file (`ENOENT`), an empty file, and a file that
  * exists but cannot be read. Errors are surfaced, never silently swallowed.
+ *
+ * H-1: the path is screened first — a **symlink** and (for a project-relative
+ * path, when `projectPath` is given) anything resolving outside the project is
+ * reported as unreadable instead of being followed into a prompt.
  */
-export function readFileDetailed(path: string): FileRead {
+export function readFileDetailed(path: string, projectPath?: string): FileRead {
+  const check = checkDocPath(path, { projectPath, label: "file", action: "read" });
+  if (!check.ok) return { kind: "unreadable", reason: sanitizeDerivedText(check.reason) };
   try {
-    const content = readFileSync(path, "utf8");
+    const content = readFileSync(check.path, "utf8");
     if (content.length === 0) return { kind: "empty" };
     return { kind: "ok", content, truncated: false };
   } catch (err) {
@@ -127,30 +134,38 @@ export function readFileDetailed(path: string): FileRead {
 }
 
 /**
- * Bounded read of a **regular file** (SEC-005). The file is stat-ed first — a
- * directory, FIFO, socket or device node is reported as `unreadable` instead of
- * being opened (reading `/dev/zero` or a FIFO would either hang or allocate
- * without bound) — and only the first `max` bytes are read.
+ * Bounded read of a **regular file** (SEC-005). The file is `lstat`ed first — a
+ * symlink is refused outright (H-1: a repository-shipped `spec.md -> /etc/passwd`
+ * must never be read into a prompt) and a directory, FIFO, socket or device node
+ * is reported as `unreadable` instead of being opened (reading `/dev/zero` or a
+ * FIFO would either hang or allocate without bound) — and only the first `max`
+ * bytes are read.
+ *
+ * The descriptor is opened `O_NOFOLLOW` and the open file is `fstat`ed, so a link
+ * swapped in between the check and the open is refused by `open(2)` (ELOOP)
+ * rather than followed, and the size that bounds the read is the one the
+ * descriptor actually has rather than the one the earlier stat reported.
  *
  * `readFileSync` would slurp the whole file *before* the caller could truncate
  * it, so a multi-gigabyte doc in a repository huginn reads would be a memory
  * bomb regardless of {@link boundEmbedded}. `truncated` tells the caller the
  * read was cut, so it can say so explicitly.
  */
-export function readFileBounded(path: string, max = MAX_EMBEDDED_OUTPUT): FileRead {
-  let size: number;
-  try {
-    const stat = statSync(path);
-    if (!stat.isFile()) return { kind: "unreadable", reason: "not a regular file" };
-    size = stat.size;
-  } catch (err) {
-    return readFailure(err);
-  }
-  if (size === 0) return { kind: "empty" };
+export function readFileBounded(
+  path: string,
+  max = MAX_EMBEDDED_OUTPUT,
+  projectPath?: string,
+): FileRead {
+  const check = checkDocPath(path, { projectPath, label: "file", action: "read" });
+  if (!check.ok) return { kind: "unreadable", reason: sanitizeDerivedText(check.reason) };
 
   let fd: number | undefined;
   try {
-    fd = openSync(path, "r");
+    fd = openSync(check.path, fsConstants.O_RDONLY | NO_FOLLOW);
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return { kind: "unreadable", reason: "not a regular file" };
+    const size = stat.size;
+    if (size === 0) return { kind: "empty" };
     const wanted = Math.min(size, Math.max(0, max));
     const buffer = Buffer.allocUnsafe(wanted);
     let read = 0;
@@ -179,8 +194,8 @@ export function readFileBounded(path: string, max = MAX_EMBEDDED_OUTPUT): FileRe
 }
 
 /** Back-compat helper: the file content, or `""` when missing/empty/unreadable. */
-export function readOptional(path: string): string {
-  const read = readFileDetailed(path);
+export function readOptional(path: string, projectPath?: string): string {
+  const read = readFileDetailed(path, projectPath);
   return read.kind === "ok" ? read.content : "";
 }
 
@@ -189,9 +204,14 @@ export function readOptional(path: string): string {
  * untrusted data. Distinguishes "not found", "empty" and "unreadable" so an
  * unreadable doc is never mistaken for an absent one (M-1), and reads at most
  * {@link MAX_EMBEDDED_OUTPUT} bytes rather than the whole file (SEC-005).
+ *
+ * `projectPath` is the iteration's working tree: when the doc path is inside it,
+ * the read must resolve inside it too (H-1), so a symlinked doc — or a symlinked
+ * `docs/` directory — can neither be read nor leak an out-of-project file into
+ * the prompt.
  */
-export function embedFile(path: string, label: string): string {
-  const read = readFileBounded(path);
+export function embedFile(path: string, label: string, projectPath?: string): string {
+  const read = readFileBounded(path, MAX_EMBEDDED_OUTPUT, projectPath);
   if (read.kind === "missing") return `(${label} not found at ${path})`;
   if (read.kind === "empty") return `(${label} empty at ${path})`;
   if (read.kind === "unreadable") return `(${label} unreadable at ${path}: ${read.reason})`;

@@ -45,6 +45,7 @@ import { handleInitCommand, printInitUsage } from "./commands/init.js";
 import { handleInstallCommand } from "./commands/install";
 import { latestLiveSession, listLiveSessions, type LiveSession } from "./state/liveSession";
 import { sanitizeTerminalText } from "./util/text";
+import { checkDocPath } from "./util/docPath";
 
 /**
  * Concise two-tier help (REQ-26 / AC-26.2): the Core commands and the flags a
@@ -317,6 +318,29 @@ export function canonicalize(p: string): string {
   } catch {
     return resolve(p);
   }
+}
+
+/**
+ * `canonicalize` for the tracked documents (`--spec`/`--adr`/`--plan`) — H-1.
+ *
+ * Same job — the path huginn embeds in a prompt must be the canonical one the
+ * opencode server resolves — but the **final component is never followed**: a
+ * repository can ship `spec.md -> ~/.aws/credentials`, and both the read (into the
+ * architect prompt) and the draft write (clobbering the target) would otherwise
+ * use it. A symlink there is a clear, fatal error; a path that resolves outside
+ * the project (only possible for a project-relative doc through a symlinked parent
+ * directory) is refused too. A doc path named explicitly outside the project keeps
+ * working, since only its last component is screened (see `util/docPath`).
+ *
+ * A document that does not exist yet is fine — plan mode creates it.
+ */
+export function canonicalizeDocPath(p: string, projectPath?: string): string {
+  const check = checkDocPath(p, { projectPath, label: "document", action: "read or write" });
+  if (!check.ok) {
+    console.error(chalk.red(`[huginn] ${check.reason}`));
+    process.exit(1);
+  }
+  return check.path;
 }
 
 /**
@@ -631,9 +655,9 @@ export async function main(argv: string[]): Promise<void> {
 
   const cfg: RunConfig = {
     projectPath,
-    planPath: canonicalize(resolve(join(projectPath, String(args["--plan"] ?? "plan.md")))),
-    specPath: canonicalize(resolve(join(projectPath, String(args["--spec"] ?? "spec.md")))),
-    adrPath: canonicalize(resolve(join(projectPath, String(args["--adr"] ?? "adr.md")))),
+    planPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath),
+    specPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--spec"] ?? "spec.md"))), projectPath),
+    adrPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--adr"] ?? "adr.md"))), projectPath),
     thinker,
     executor,
     agent: resolvedAgent,
@@ -843,9 +867,9 @@ async function runPlan(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  const specPath = canonicalize(resolve(join(projectPath, String(args["--spec"] ?? "spec.md"))));
-  const adrPath = canonicalize(resolve(join(projectPath, String(args["--adr"] ?? "adr.md"))));
-  const planPath = canonicalize(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))));
+  const specPath = canonicalizeDocPath(resolve(join(projectPath, String(args["--spec"] ?? "spec.md"))), projectPath);
+  const adrPath = canonicalizeDocPath(resolve(join(projectPath, String(args["--adr"] ?? "adr.md"))), projectPath);
+  const planPath = canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath);
 
   const force = Boolean(args["--force"]);
   const existing = [
@@ -1048,9 +1072,9 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
 
   const cfg: RunConfig = {
     projectPath,
-    planPath: canonicalize(resolve(join(projectPath, String(args["--plan"] ?? "plan.md")))),
-    specPath: canonicalize(resolve(join(projectPath, String(args["--spec"] ?? "spec.md")))),
-    adrPath: canonicalize(resolve(join(projectPath, String(args["--adr"] ?? "adr.md")))),
+    planPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath),
+    specPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--spec"] ?? "spec.md"))), projectPath),
+    adrPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--adr"] ?? "adr.md"))), projectPath),
     thinker,
     executor,
     agent: resolvedAgent,

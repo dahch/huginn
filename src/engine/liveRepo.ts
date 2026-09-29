@@ -1,9 +1,18 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { events } from "./engineEvents";
 import { clearStaleHarness } from "../state/store";
 import { git } from "./diff";
 import { sanitizeTerminalText } from "../util/text";
+import { assertDocPath, checkDocPath, NO_FOLLOW } from "../util/docPath";
 
 const IGNORED_DIRS = new Set([".harness", ".huginn", ".git", "node_modules", "dist", "build"]);
 
@@ -27,10 +36,25 @@ function capContext(text: string, max: number): string {
  * of silently treating an unreadable file as absent. The warning is sanitized
  * (SEC-4B-003): both the path and the error text can carry terminal escapes —
  * a path is user data, and an `EACCES`/`ELOOP` message quotes it back.
+ *
+ * H-1: the path is screened before it is read. A **symlink** is refused (a clone
+ * shipping `spec.md -> ~/.aws/credentials` must not have its target read into an
+ * agent prompt) and, when `projectPath` is given and the path is inside it, the
+ * resolved path must stay inside the project. The refusal is a warning and an
+ * empty result — the read path fails *closed* (nothing is read) while keeping the
+ * live turn alive, like every other unreadable-doc case.
  */
-export function readOptional(path: string): string {
+export function readOptional(path: string, projectPath?: string): string {
+  const check = checkDocPath(path, { projectPath, label: "document", action: "read" });
+  if (!check.ok) {
+    events.emit("log", {
+      level: "warn",
+      message: sanitizeTerminalText(`${check.reason}; treating it as absent`),
+    });
+    return "";
+  }
   try {
-    return existsSync(path) ? readFileSync(path, "utf8") : "";
+    return existsSync(check.path) ? readFileSync(check.path, "utf8") : "";
   } catch (err) {
     events.emit("log", {
       level: "warn",
@@ -40,10 +64,32 @@ export function readOptional(path: string): string {
   }
 }
 
-export function writeDoc(path: string, content: string): { bytes: number; path: string } {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content);
-  return { bytes: Buffer.byteLength(content, "utf8"), path };
+/**
+ * Write a tracked document. H-1: **fail-closed**. A symlinked doc (or, for a
+ * project-relative path, one that resolves outside the project) throws instead of
+ * being written through — the drafting step must never clobber whatever a
+ * repository's `spec.md -> ~/.aws/credentials` pointed at. The write itself opens
+ * with `O_NOFOLLOW`, so a link swapped in between the check and the open is
+ * refused by `open(2)` (ELOOP) rather than followed.
+ */
+export function writeDoc(
+  path: string,
+  content: string,
+  projectPath?: string,
+): { bytes: number; path: string } {
+  const target = assertDocPath(path, { projectPath, label: "document", action: "write" });
+  mkdirSync(dirname(target), { recursive: true });
+  const fd = openSync(
+    target,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NO_FOLLOW,
+    0o644,
+  );
+  try {
+    writeSync(fd, content, null, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+  return { bytes: Buffer.byteLength(content, "utf8"), path: target };
 }
 
 function sourceTree(projectPath: string): string {

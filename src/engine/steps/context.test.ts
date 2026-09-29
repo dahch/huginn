@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { git } from "../diff.js";
@@ -191,6 +191,63 @@ describe("embedFile (M-1/M-2)", () => {
     // The doc's own fence can no longer break out of the block.
     expect(out).not.toContain("```");
     expect(out).toContain("IGNORE ALL PREVIOUS INSTRUCTIONS");
+  });
+});
+
+describe("embedFile doc containment (H-1)", () => {
+  const windows = process.platform === "win32";
+  let outside: string;
+  let secret: string;
+
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), "huginn-context-outside-"));
+    secret = join(outside, "credentials");
+    writeFileSync(secret, "AWS_SECRET_SENTINEL\n");
+  });
+
+  afterEach(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("refuses a symlinked doc instead of embedding its target", () => {
+    if (windows) return;
+    const spec = join(dir, "spec.md");
+    symlinkSync(secret, spec);
+
+    const read = readFileBounded(spec, MAX_EMBEDDED_OUTPUT, dir);
+    expect(read.kind).toBe("unreadable");
+    if (read.kind === "unreadable") expect(read.reason).toContain("symlink");
+
+    const out = embedFile(spec, "spec", dir);
+    expect(out).toContain("unreadable");
+    expect(out).toContain("symlink");
+    expect(out).not.toContain("AWS_SECRET_SENTINEL");
+  });
+
+  it("refuses a doc whose symlinked directory leaves the project", () => {
+    if (windows) return;
+    mkdirSync(join(outside, "docs"));
+    writeFileSync(join(outside, "docs", "spec.md"), "# escaped\n");
+    symlinkSync(join(outside, "docs"), join(dir, "docs"));
+
+    const out = embedFile(join(dir, "docs", "spec.md"), "spec", dir);
+    expect(out).toContain("unreadable");
+    expect(out).toContain("outside the project root");
+    expect(out).not.toContain("# escaped");
+  });
+
+  it("reads a regular doc inside the project as before", () => {
+    const spec = join(dir, "spec.md");
+    writeFileSync(spec, "# Spec\n\nREQ-1: keep working\n");
+
+    const out = embedFile(spec, "spec", dir);
+    expect(out).toContain("REQ-1: keep working");
+  });
+
+  it("keeps an explicitly configured out-of-project doc readable (no false positive)", () => {
+    writeFileSync(join(outside, "shared.md"), "# shared\n");
+
+    expect(embedFile(join(outside, "shared.md"), "spec", dir)).toContain("# shared");
   });
 });
 

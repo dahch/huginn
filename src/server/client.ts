@@ -164,6 +164,20 @@ function getClientBaseUrl(client: OpencodeClient): string {
   return c._client?.getConfig?.()?.baseUrl || c._client?.baseUrl || c.baseUrl || "http://127.0.0.1:4096";
 }
 
+/**
+ * Path parameters of the two question endpoints, percent-encoded (M-3).
+ *
+ * The SDK path (`_client.post({ path: { … } })`) encodes its parameters itself,
+ * but the plain-`fetch` fallback interpolated them straight into the URL: a
+ * session or request id carrying `/`, `?` or `#` (a hand-edited session store,
+ * or whatever a server hands back) could then address a *different* endpoint of
+ * the opencode server. Both ids go through `encodeURIComponent` here, so the
+ * request always names the id it was given.
+ */
+function questionPath(sessionID: string, requestID: string, action: "reply" | "reject"): string {
+  return `/session/${encodeURIComponent(sessionID)}/question/${encodeURIComponent(requestID)}/${action}`;
+}
+
 export async function respondQuestion(
   client: OpencodeClient,
   sessionID: string,
@@ -180,7 +194,7 @@ export async function respondQuestion(
     return;
   }
   const baseUrl = getClientBaseUrl(client);
-  await fetch(`${baseUrl}/session/${sessionID}/question/${requestID}/reply`, {
+  await fetch(`${baseUrl}${questionPath(sessionID, requestID, "reply")}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ answers }),
@@ -201,7 +215,7 @@ export async function rejectQuestion(
     return;
   }
   const baseUrl = getClientBaseUrl(client);
-  await fetch(`${baseUrl}/session/${sessionID}/question/${requestID}/reject`, {
+  await fetch(`${baseUrl}${questionPath(sessionID, requestID, "reject")}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
   });
