@@ -42,8 +42,25 @@ import { WorktreeManager, type Sandbox } from "./worktree";
 import { resolveDatabasePath } from "../muninn/db/client.js";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
 import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
+import { sanitizeTerminalText } from "../util/text.js";
 
-type PhaseFn = (ctx: PhaseContext) => Promise<{ text: string; messageId: string }>;
+/**
+ * A phase's result as the engine consumes it: its report text plus, for phases
+ * whose verdict huginn computes itself, the structured verdict (REV-101) and,
+ * for a read-only phase that mutated the tree, huginn's forced BLOCKED.
+ */
+type PhaseFn = (ctx: PhaseContext) => Promise<{
+  text: string;
+  messageId: string;
+  authoritativeVerdict?: Verdict;
+}>;
+
+/** A phase result plus the verdict fields the engine may have attached to it. */
+type GatedPhaseResult = PhaseResult & {
+  raw: string;
+  forcedVerdict?: Verdict;
+  authoritativeVerdict?: Verdict;
+};
 
 interface PipelineStep {
   phase: PhaseName;
@@ -52,6 +69,46 @@ interface PipelineStep {
   fixPhase: PhaseName | null;
   fixLabel: string;
   blocking: boolean;
+  /**
+   * Auditor phases must not mutate the repository (REV-001). Enforced at
+   * runtime by comparing a working-tree hash before and after the step, so the
+   * guarantee does not depend on the agent's own permission configuration.
+   */
+  readOnly?: boolean;
+}
+
+/**
+ * Whether a read-only phase's tree signature proves it did not write.
+ *
+ * Fail-closed on purpose (REV-103): a missing signature (`undefined` — git
+ * failed, or the path is not a work tree) means "cannot prove nothing changed",
+ * which must block, not pass. See {@link treeHash} for what the signature can
+ * and cannot see: this guard is best-effort (a write-and-restore, or a write
+ * outside the hashed work tree, is invisible to it) and is a backstop for the
+ * sandboxed worktree, not a replacement for it.
+ */
+export function readOnlyTreeViolation(
+  before: string | undefined,
+  after: string | undefined,
+): boolean {
+  if (before === undefined || after === undefined) return true;
+  return before !== after;
+}
+
+/**
+ * huginn's own verdict for a phase result, or `undefined` when the engine has
+ * no structural answer and must fall back to reading the report's markers
+ * (REV-101).
+ *
+ * A read-only violation (REV-001) outranks the phase's own structured verdict:
+ * the phase's report is discarded in that case, so its verdict cannot be
+ * trusted either.
+ */
+export function resolveStructuralVerdict(result: {
+  forcedVerdict?: Verdict;
+  authoritativeVerdict?: Verdict;
+}): Verdict | undefined {
+  return result.forcedVerdict ?? result.authoritativeVerdict;
 }
 
 /**
@@ -61,12 +118,12 @@ interface PipelineStep {
  * first, then the gate) — without touching the engine.
  */
 const STEP_BY_PHASE: Partial<Record<PhaseName, PipelineStep>> = {
-  SPEC_AUDIT: { phase: "SPEC_AUDIT", fn: specAudit, gate: "spec-audit", fixPhase: "FIX_SPEC", fixLabel: "spec audit", blocking: true },
+  SPEC_AUDIT: { phase: "SPEC_AUDIT", fn: specAudit, gate: "spec-audit", fixPhase: "FIX_SPEC", fixLabel: "spec audit", blocking: true, readOnly: true },
   EXECUTE: { phase: "EXECUTE", fn: execute, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
-  VALIDATE_STEP: { phase: "VALIDATE_STEP", fn: validateStep, gate: "validate-step", fixPhase: "FIX_VALIDATE", fixLabel: "validation gate", blocking: true },
+  VALIDATE_STEP: { phase: "VALIDATE_STEP", fn: validateStep, gate: "validate-step", fixPhase: "FIX_VALIDATE", fixLabel: "validation gate", blocking: true, readOnly: true },
   TEST_MODULE: { phase: "TEST_MODULE", fn: testModule, gate: "judge", fixPhase: "FIX_TEST", fixLabel: "test failures", blocking: true },
-  SECURE_CHECK: { phase: "SECURE_CHECK", fn: secureCheck, gate: "judge", fixPhase: "FIX_SECURITY", fixLabel: "security audit", blocking: true },
-  REVIEW: { phase: "REVIEW", fn: review, gate: "judge", fixPhase: "FIX_REVIEW", fixLabel: "code review", blocking: true },
+  SECURE_CHECK: { phase: "SECURE_CHECK", fn: secureCheck, gate: "judge", fixPhase: "FIX_SECURITY", fixLabel: "security audit", blocking: true, readOnly: true },
+  REVIEW: { phase: "REVIEW", fn: review, gate: "judge", fixPhase: "FIX_REVIEW", fixLabel: "code review", blocking: true, readOnly: true },
   DOC_SYNC: { phase: "DOC_SYNC", fn: docSync, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
   COMMIT_ALL: { phase: "COMMIT_ALL", fn: commitAll, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
 };
@@ -356,15 +413,19 @@ export class CycleEngine {
       if (iteration.index < this.state.currentIteration) continue;
       if (this.abortRequested) return;
 
+      // The title comes from the user's plan file, so it is sanitized before it
+      // reaches any UI/log consumer (SEC-004): terminal escapes in it must never
+      // reach the terminal.
+      const safeTitle = sanitizeTerminalText(iteration.title);
       events.emit("iterationStart", {
         iteration: iteration.index,
         totalIterations: iterations.length,
-        title: iteration.title,
+        title: safeTitle,
         modules: iteration.modules,
       });
       events.emit("log", {
         level: "info",
-        message: `▶ Iteration ${iteration.index}/${iterations.length} — ${iteration.title}`,
+        message: `▶ Iteration ${iteration.index}/${iterations.length} — ${safeTitle}`,
         timestamp: new Date().toISOString(),
       });
       await this.runIteration(iteration);
@@ -375,7 +436,7 @@ export class CycleEngine {
 
       events.emit("iterationEnd", {
         iteration: iteration.index,
-        title: iteration.title,
+        title: safeTitle,
       });
 
       if (this.cfg.onlyPhase) {
@@ -513,11 +574,28 @@ export class CycleEngine {
         preExecuteTree,
       });
       if (receipt) {
+        // A missing working-tree signature is the condition the read-only guard
+        // fails closed on: the receipt is then no evidence at all, so say so
+        // instead of writing a receipt that quietly omits `treeHash` (REV-103).
+        if (receipt.treeHash === undefined) {
+          events.emit("log", {
+            level: "warn",
+            message: `[huginn] iteration ${iteration.index}: no working-tree signature available — the receipt records no treeHash and cannot evidence the verified tree`,
+            timestamp: new Date().toISOString(),
+          });
+        }
         const path = writeIterationReceipt(this.cfg.projectPath, receipt);
         if (path) {
           events.emit("log", {
             level: "info",
             message: `[huginn] receipt written: ${relative(this.cfg.projectPath, path)}`,
+            timestamp: new Date().toISOString(),
+          });
+        } else {
+          // Best effort must not be silent: the iteration has no frozen evidence.
+          events.emit("log", {
+            level: "warn",
+            message: `[huginn] receipt could not be written (iteration ${iteration.index})`,
             timestamp: new Date().toISOString(),
           });
         }
@@ -579,7 +657,7 @@ export class CycleEngine {
       return existing;
     }
     const session = await this.runtime.createSession({
-      title: `iter ${iteration.index}: ${iteration.title}`,
+      title: `iter ${iteration.index}: ${sanitizeTerminalText(iteration.title)}`,
       directory,
     });
     this.activeSession = session;
@@ -606,7 +684,7 @@ export class CycleEngine {
     events.emit("phaseStart", {
       iteration: iteration.index,
       totalIterations: this.plan.iterations.length,
-      iterationTitle: iteration.title,
+      iterationTitle: sanitizeTerminalText(iteration.title),
       phase: step.phase,
       attempt,
       model: formatModel(this.models.executor),
@@ -620,7 +698,7 @@ export class CycleEngine {
       const curAttempt = attempts + 1 + attemptRun;
       const model = this.models.executor;
 
-      let result: PhaseResult & { raw: string };
+      let result: GatedPhaseResult;
       try {
         result = await this.runOnce(step, ctx, sessionId, iteration, curAttempt, model);
       } catch (err) {
@@ -655,8 +733,14 @@ export class CycleEngine {
         continue;
       }
 
+      // huginn's own verdicts decide the gate: a read-only violation (REV-001)
+      // or a verdict the phase computed structurally (REV-101). Only a phase
+      // without one falls back to reading the report's markers.
+      const structural = resolveStructuralVerdict(result);
       let verdict: Verdict | undefined;
-      if (step.gate === "spec-audit") {
+      if (structural) {
+        verdict = structural;
+      } else if (step.gate === "spec-audit") {
         verdict = this.gatedVerdict(step.phase, result, parseSpecAuditVerdict(result.raw));
       } else if (step.gate === "validate-step") {
         verdict = this.gatedVerdict(step.phase, result, parseValidateStepVerdict(result.raw));
@@ -713,7 +797,7 @@ export class CycleEngine {
         events.emit("phaseStart", {
           iteration: iteration.index,
           totalIterations: this.plan.iterations.length,
-          iterationTitle: iteration.title,
+          iterationTitle: sanitizeTerminalText(iteration.title),
           phase: step.fixPhase,
           attempt: curAttempt,
           model: formatModel(this.models.thinker),
@@ -798,9 +882,20 @@ export class CycleEngine {
     iteration: Iteration,
     attempt: number,
     model: Models[keyof Models],
-  ): Promise<PhaseResult & { raw: string }> {
+  ): Promise<GatedPhaseResult> {
     const startedAt = new Date().toISOString();
+    // REV-001: a read-only phase must not touch the repository. Snapshot a hash
+    // of the working tree around the step and fail closed if it moved — the
+    // guarantee is enforced here, not by the agent's own permission
+    // configuration. Best-effort by construction: see `treeHash` for what the
+    // signature cannot see (write-and-restore, writes outside the hashed work
+    // tree, ignored paths) and {@link readOnlyTreeViolation} for why a missing
+    // signature blocks instead of passing.
+    const before = step.readOnly ? treeHash(ctx.projectPath) : undefined;
     const res = await step.fn(ctx);
+    const readOnlyViolation =
+      step.readOnly === true &&
+      readOnlyTreeViolation(before, treeHash(ctx.projectPath));
     // Fail closed on an empty EXECUTE result: `session.prompt` can resolve on
     // a step boundary (e.g. a reasoning-only turn) while the build agent is
     // still working, yielding a report with no output. That must never count
@@ -811,22 +906,63 @@ export class CycleEngine {
     const finishedAt = new Date().toISOString();
     const durationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
 
-    const reportPath = writeReport(this.cfg.projectPath, iteration.index, step.phase, attempt, res.text);
-    const result: PhaseResult = {
+    const reportText = readOnlyViolation
+      ? this.readOnlyViolationReport(step.phase, res.text)
+      : res.text;
+    // Phase output is model output that echoes repository content: strip terminal
+    // escapes at the boundary where it is persisted in `.harness` (and rendered
+    // from there into PROGRESS.md) so nothing reachable from here can control a
+    // terminal (SEC-004).
+    const persistedText = sanitizeTerminalText(reportText);
+    const reportPath = writeReport(this.cfg.projectPath, iteration.index, step.phase, attempt, persistedText);
+    const result: GatedPhaseResult = {
       iteration: iteration.index,
       phase: step.phase,
       attempt,
       model: formatModel(model),
       sessionId,
       messageId: res.messageId,
-      summary: res.text.slice(0, SUMMARY_MAX_LENGTH),
-      raw: res.text,
+      summary: persistedText.slice(0, SUMMARY_MAX_LENGTH),
+      raw: reportText,
       reportPath,
       startedAt,
       finishedAt,
+      // A read-only violation wins over the phase's own structured verdict.
+      ...(readOnlyViolation
+        ? { forcedVerdict: "blocked" as Verdict }
+        : res.authoritativeVerdict
+          ? { authoritativeVerdict: res.authoritativeVerdict }
+          : {}),
     };
     events.emit("phaseEnd", { result, durationMs });
     return result;
+  }
+
+  /**
+   * A read-only phase mutated the working tree (REV-001). Log the violation and
+   * build the fail-closed report huginn records instead of the phase's output.
+   * Nothing is reverted — blocking is the whole response, so the caller's own
+   * edits are never destroyed.
+   */
+  private readOnlyViolationReport(phase: PhaseName, output: string): string {
+    const message = `[${phase}] read-only phase modified the working tree; fail-closed → BLOCKED`;
+    events.emit("log", {
+      level: "warn",
+      message,
+      timestamp: new Date().toISOString(),
+    });
+    return [
+      `# ${phase} — read-only violation`,
+      "",
+      message,
+      "",
+      "This phase is read-only (REV-001): it must not create, modify or delete",
+      "repository files. The working tree changed while it ran, so its output is",
+      "discarded and the phase is treated as BLOCKED. No changes were reverted.",
+      "",
+      "## Phase output (untrusted, discarded)",
+      output,
+    ].join("\n");
   }
 
   private record(
@@ -844,7 +980,9 @@ export class CycleEngine {
       model: result.model,
       sessionId: result.sessionId,
       messageId: result.messageId,
-      summary: result.summary,
+      // The summary is persisted in `.harness/state.json` and rendered into
+      // PROGRESS.md, so model-derived text is sanitized here too (SEC-004).
+      summary: sanitizeTerminalText(result.summary),
       reportPath: result.reportPath,
       startedAt: result.startedAt,
       finishedAt: result.finishedAt,
@@ -919,7 +1057,7 @@ export class CycleEngine {
       model: formatModel(this.models.thinker),
       sessionId: "",
       messageId: res.messageId,
-      summary: res.text.slice(0, SUMMARY_MAX_LENGTH),
+      summary: sanitizeTerminalText(res.text).slice(0, SUMMARY_MAX_LENGTH),
       startedAt: now,
       finishedAt: now,
     };
@@ -953,12 +1091,13 @@ export class CycleEngine {
     message: string,
   ): void {
     const now = new Date().toISOString();
+    const reason = sanitizeTerminalText(message);
     const reportPath = writeReport(
       this.cfg.projectPath,
       iteration,
       step.phase,
       attempt,
-      `# ${step.phase} — attempt ${attempt} (error)\n\n${message}\n`,
+      `# ${step.phase} — attempt ${attempt} (error)\n\n${reason}\n`,
     );
     const entry: HistoryEntry = {
       iteration,
@@ -968,7 +1107,10 @@ export class CycleEngine {
       model,
       sessionId,
       messageId: "",
-      summary: `Phase ${step.phase} errored: ${message}`.slice(0, SUMMARY_MAX_LENGTH),
+      summary: sanitizeTerminalText(`Phase ${step.phase} errored: ${message}`).slice(
+        0,
+        SUMMARY_MAX_LENGTH,
+      ),
       reportPath,
       startedAt: now,
       finishedAt: now,

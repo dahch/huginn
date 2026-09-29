@@ -1,11 +1,10 @@
-import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
+import { existsSync, statSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
-import type { Iteration } from "../plan/types";
 import { formatModel, type Models } from "./modelRouter";
-import { prompt, runCommand } from "../server/client";
+import { prompt } from "../server/client";
 import type { IAgentSession, PromptResult } from "./agent/types.js";
-import { git, pendingChanges, changedFilesSince } from "./diff";
+import { pendingChanges, changedFilesSince } from "./diff";
 import {
   verifyTypeScriptContracts,
   formatDiagnosticsReport,
@@ -13,29 +12,42 @@ import {
 import { indexFilesIntoMuninn } from "../muninn/indexer/ast-indexer.js";
 import { MemoryService } from "../muninn/service/memory-service.js";
 import { resolveDatabasePath } from "../muninn/db/client.js";
+import {
+  type StepContext,
+  specAuditPrompt,
+  executePrompt,
+  testModulePrompt,
+  secureCheckPrompt,
+  reviewPrompt,
+  docSyncPrompt,
+  commitAllPrompt,
+  fixFindingsPrompt,
+  validateStepSubPrompts,
+  validateStepSynthesisPrompt,
+  parseAuditStatus,
+  type ValidateStepReports,
+} from "./steps/index.js";
+import { parseSpecAuditVerdict } from "./gate";
+import type { Verdict } from "./types";
 
-export interface PhaseContext {
+/**
+ * What a phase returns to the engine: the `text` for the human report plus,
+ * where huginn computes it itself, a **structured** verdict.
+ *
+ * `authoritativeVerdict` exists so the engine never has to re-derive a gate
+ * decision from the model's prose (REV-101): `CycleEngine.runPhase` prefers this
+ * field over parsing the report text, so a report whose wording contradicts its
+ * own gate line cannot change the effective verdict.
+ */
+export interface PhaseOutput extends PromptResult {
+  authoritativeVerdict?: GateVerdict;
+}
+
+export interface PhaseContext extends StepContext {
   client?: OpencodeClient;
   session?: IAgentSession;
   sessionId: string;
   models: Models;
-  projectPath: string;
-  /**
-   * Directory the server-side agent session is scoped to (REQ-17). When
-   * sandboxing is enabled this is the worktree path, so the agent's tools edit
-   * the sandbox rather than the primary working tree. Falls back to
-   * {@link projectPath} when omitted.
-   */
-  directory?: string;
-  iteration: Iteration;
-  specPath: string;
-  adrPath: string;
-  planPath: string;
-  modules: string[];
-  baseCommit?: string;
-  /** The active profile's methodology instruction for `EXECUTE` (REQ-36). */
-  profilePreamble?: string;
-  phaseTimeoutMs: number;
   /**
    * Explicit SQLite database path for Muninn persistence. When sandboxing,
    * callers pass the PRIMARY project database so indexed symbols survive
@@ -51,13 +63,21 @@ export interface PhaseContext {
    * {@link projectPath} when omitted.
    */
   primaryProjectRoot?: string;
+  phaseTimeoutMs: number;
 }
 
-/** The sandbox-scoped directory every prompt/command should run against. */
+/** The sandbox-scoped directory every prompt should run against. */
 function agentDirectory(ctx: PhaseContext): string {
   return ctx.directory ?? ctx.projectPath;
 }
 
+/**
+ * The single seam every step's prompt goes through (REQ-7): huginn composes the
+ * instruction text itself (see `./steps`) and sends it as a **prompt**. Subprocess
+ * runtimes get a plain prompt, and the opencode SDK path only ever carries an
+ * optional `agent` (used for the built-in `build` agent's tooling) — never a
+ * slash command resolved from `~/.config/opencode`.
+ */
 async function promptWithContext(
   ctx: PhaseContext,
   opts: {
@@ -82,85 +102,26 @@ async function promptWithContext(
   return prompt(ctx.client, ctx.sessionId, opts);
 }
 
-async function runCommandWithContext(
-  ctx: PhaseContext,
-  opts: {
-    command: string;
-    arguments: string;
-    agent?: string;
-    model?: string;
-    timeoutMs?: number;
-    directory?: string;
-  },
-): Promise<PromptResult> {
-  if (ctx.session) {
-    if (typeof ctx.session.runCommand === "function") {
-      return ctx.session.runCommand(opts.command, opts.arguments, opts);
-    }
-    const text = `/${opts.command}${opts.arguments ? ` ${opts.arguments}` : ""}`;
-    return ctx.session.prompt(text, {
-      agent: opts.agent,
-      model: opts.model,
-      timeoutMs: opts.timeoutMs,
-      directory: opts.directory,
-    });
-  }
-  if (!ctx.client) {
-    throw new Error("No agent session or OpenCode client available for command");
-  }
-  return runCommand(ctx.client, ctx.sessionId, opts);
-}
-
-function readOptional(path: string): string {
-  try {
-    return existsSync(path) ? readFileSync(path, "utf8") : "";
-  } catch {
-    return "";
-  }
-}
-
-function embedFile(path: string, label: string): string {
-  const content = readOptional(path);
-  if (!content) return `(${label} not found at ${path})`;
-  return `\`\`\`markdown\n${content}\n\`\`\``;
-}
-
 export async function specAudit(ctx: PhaseContext): Promise<PromptResult> {
-  const status = git(ctx.projectPath, ["status", "--short"]).stdout || "(clean working tree)";
-  const text = [
-    `Act as the spec auditor. Audit semantic alignment between the spec and the current implementation.`,
-    ``,
-    `## Spec`,
-    embedFile(ctx.specPath, "spec"),
-    ``,
-    `## ADR`,
-    embedFile(ctx.adrPath, "adr"),
-    ``,
-    `## Plan (full)`,
-    embedFile(ctx.planPath, "plan"),
-    ``,
-    `## Current iteration to consider`,
-    `Iteration ${ctx.iteration.index} — ${ctx.iteration.title}`,
-    ``,
-    `## Current repository state`,
-    status,
-    ``,
-    `Produce the full Spec Audit Report as defined in your system prompt, ending with the "Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION" line.`,
-  ].join("\n");
-  return promptWithContext(ctx, { text, agent: "spec-auditor", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
+  return promptWithContext(ctx, {
+    text: specAuditPrompt(ctx),
+    model: ctx.models.executor,
+    timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
+  });
 }
 
 export async function execute(ctx: PhaseContext): Promise<PromptResult> {
-  const text = [
-    `Execute the following iteration of the plan. Follow it exactly.`,
-    ``,
-    // The active profile's methodology instruction, when it has one (REQ-36).
-    ...(ctx.profilePreamble ? [ctx.profilePreamble.trimEnd(), ``] : []),
-    `## Iteration ${ctx.iteration.index} — ${ctx.iteration.title}`,
-    ``,
-    ctx.iteration.prompt,
-  ].join("\n");
-  return promptWithContext(ctx, { text, agent: "build", model: ctx.models.executor, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
+  // `agent: "build"` is opencode's built-in coding agent: keeping it lets the
+  // SDK session use the build agent's tools. Subprocess runtimes ignore `agent`
+  // and receive the same prompt text.
+  return promptWithContext(ctx, {
+    text: executePrompt(ctx),
+    agent: "build",
+    model: ctx.models.executor,
+    timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
+  });
 }
 
 const EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build"]);
@@ -242,81 +203,314 @@ export function getIterationFiles(projectPath: string, modules: string[]): strin
   return Array.from(fileSet);
 }
 
-export async function validateStep(ctx: PhaseContext): Promise<PromptResult> {
-  // 1. Contract verification: Check for TypeScript compiler contract violations
-  try {
-    const iterationFiles = getIterationFiles(ctx.projectPath, ctx.modules);
-    if (iterationFiles.length > 0) {
-      const contractResult = verifyTypeScriptContracts(ctx.projectPath, iterationFiles);
-      if (!contractResult.valid && contractResult.errorsCount > 0) {
-        const report = formatDiagnosticsReport(contractResult);
-        return {
-          messageId: "contract-compiler-failure",
-          text: report,
-          raw: {
-            info: { id: "contract-compiler-failure" },
-            parts: [{ type: "text", text: report }],
-          },
-        };
-      }
-    }
-  } catch {
-    // Contract verification failure should not crash harness; fallback to standard validate-step command
-  }
+// ---------------------------------------------------------------------------
+// VALIDATE_STEP verdict — computed deterministically by huginn (REV-003 / M-4)
+// ---------------------------------------------------------------------------
 
-  // 2. Standard validation slash command
-  const args = [...ctx.modules, ctx.specPath].join(" ");
-  return runCommandWithContext(ctx, {
-    command: "validate-step",
-    arguments: args,
-    model: formatModel(ctx.models.executor),
+/** A gate verdict is a {@link Verdict} that is never "skipped". */
+type GateVerdict = Exclude<Verdict, "skipped">;
+
+const GATE_LINES: Record<GateVerdict, string> = {
+  pass: "### Overall gate: 🟢 PASS",
+  warning: "### Overall gate: 🟡 PASS WITH WARNINGS",
+  blocked: "### Overall gate: 🔴 BLOCKED",
+};
+
+const HANDOFF_LINES: Record<GateVerdict, string> = {
+  pass: "✅ AUTO-APPROVED — no action required, continuing to next step.",
+  warning: "⚠️ REVIEW REQUESTED — address the items above before continuing.",
+  blocked: "🛑 BLOCKED — do not proceed until issues are resolved and /validate-step is re-run.",
+};
+
+const GATE_SEVERITY: Record<GateVerdict, number> = { pass: 1, warning: 2, blocked: 3 };
+
+function severest(a: GateVerdict, b: GateVerdict): GateVerdict {
+  return GATE_SEVERITY[a] >= GATE_SEVERITY[b] ? a : b;
+}
+
+const VERDICT_BY_MARKER: Record<string, GateVerdict> = {
+  "🔴": "blocked",
+  "🟡": "warning",
+  "🟢": "pass",
+};
+
+/**
+ * The canonical marker lines huginn's own contracts mandate, anchored at the
+ * start of a line (optionally after markdown decoration). Leading `#`/`>`/`*`/`-`
+ * are tolerated, an inline code span or prose mention is not.
+ */
+const CANONICAL_GATE_LINE_RE = /^[ \t>*#-]*###[ \t]*Overall gate:[ \t]*(🔴|🟡|🟢)/gim;
+const CANONICAL_FIDELITY_LINE_RE = /^[ \t>*#-]*###[ \t]*Overall fidelity:[ \t]*(🔴|🟡|🟢)/gim;
+
+/**
+ * The verdict carried by the **last** canonical marker line of `text`, or `null`
+ * when the report has none.
+ *
+ * `parseValidateStepVerdict`/`parseSpecAuditVerdict` (gate.ts, unchanged) merge
+ * *every* severity emoji anywhere in the body, so the `🟢 … / 🟡 … / 🔴 …`
+ * skeletons huginn's own prompts carry — and any 🔴 bullet in the prose — would
+ * escalate an otherwise-green report forever (REV-101/REV-102). Only the report's
+ * own conclusion line, the last one it emitted, may decide, and only via its
+ * leading marker (never a later emoji in the same line).
+ */
+function lastCanonicalMarkerVerdict(text: string, pattern: RegExp): GateVerdict | null {
+  pattern.lastIndex = 0;
+  let marker: string | undefined;
+  for (const match of text.matchAll(pattern)) marker = match[1];
+  return marker ? VERDICT_BY_MARKER[marker] ?? null : null;
+}
+
+/** The verdict of the last canonical `### Overall gate:` line, if any (REV-101). */
+export function parseCanonicalGateLineVerdict(text: string): GateVerdict | null {
+  return lastCanonicalMarkerVerdict(text, CANONICAL_GATE_LINE_RE);
+}
+
+/** The verdict of the last canonical `### Overall fidelity:` line, if any (REV-102). */
+export function parseCanonicalFidelityVerdict(text: string): GateVerdict | null {
+  return lastCanonicalMarkerVerdict(text, CANONICAL_FIDELITY_LINE_RE);
+}
+
+/**
+ * Deterministic, fail-closed verdict from the three sub-reports (REV-003 / M-4):
+ * an empty or unreadable (no parseable marker) sub-report, or any blocked signal
+ * from spec/qa/security, is `blocked`; any warning signal is `warning`; all green
+ * is `pass`.
+ *
+ * The spec sub-report is read from its canonical
+ * `### Overall fidelity:` line when it has one (REV-102): the spec-auditor role
+ * instructions' illustrative skeleton carries all three emoji, and the
+ * whole-body parser in gate.ts would read it as a MAJOR DEVIATION. The
+ * whole-body parser is kept as the fallback for a report that omits the line.
+ */
+export function computeSubReportVerdict(reports: ValidateStepReports): GateVerdict {
+  if (reports.qa.trim() === "" || reports.spec.trim() === "" || reports.security.trim() === "") {
+    return "blocked";
+  }
+  const qa = parseAuditStatus(reports.qa);
+  const spec = parseCanonicalFidelityVerdict(reports.spec) ?? parseSpecAuditVerdict(reports.spec);
+  const security = parseAuditStatus(reports.security);
+  // A report with no parseable status marker is unreadable → fail closed.
+  if (qa === null || spec === null || security === null) return "blocked";
+  if (qa === "blocked" || spec === "blocked" || security === "blocked") return "blocked";
+  if (qa === "warning" || spec === "warning" || security === "warning") return "warning";
+  return "pass";
+}
+
+/**
+ * Merged `VALIDATE_STEP` verdict (REV-003 / M-4). The deterministic sub-report
+ * verdict (see {@link computeSubReportVerdict}) is authoritative and fail-closed;
+ * the synthesis is advisory and may only *escalate* it (e.g. a cross-phase
+ * contradiction the reviewer spotted), never downgrade it. So a synthesis that
+ * says 🟢 while security reports 🔴 stays blocked, but a 🟡 synthesis raises an
+ * otherwise-green result to warning.
+ *
+ * Only the synthesis' **canonical `### Overall gate:` line** is read (REV-101):
+ * the consolidation template huginn itself sends contains the three-emoji gate
+ * skeleton and 🔴/🛑 bullets, so escalating on any emoji in the body would turn a
+ * model that echoes the template into a spurious BLOCKED.
+ */
+export function computeValidateVerdict(
+  reports: ValidateStepReports,
+  synthesis = "",
+): GateVerdict {
+  const subVerdict = computeSubReportVerdict(reports);
+  const synthVerdict = parseCanonicalGateLineVerdict(synthesis);
+  if (synthVerdict === null) return subVerdict;
+  return severest(subVerdict, synthVerdict);
+}
+
+const GATE_LINE_RE = /^[#>\s]*Overall gate:.*$/gim;
+const HANDOFF_LINE_RE = /^[#>\s]*(?:✅|⚠️|🛑).*$/gim;
+
+/**
+ * Overwrite the synthesis output's verdict lines with huginn's computed verdict
+ * (REV-003 / M-4). The synthesis is kept for the human report, but every
+ * pre-existing `### Overall gate:` line and handoff marker is stripped and the
+ * canonical lines for `verdict` appended, so the engine — not the model —
+ * decides and `parseValidateStepVerdict` (gate.ts, unchanged) reads it back.
+ */
+export function enforceValidateVerdict(text: string, verdict: GateVerdict): string {
+  const body = text
+    .replace(GATE_LINE_RE, "")
+    .replace(HANDOFF_LINE_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const trailer = `${GATE_LINES[verdict]}\n${HANDOFF_LINES[verdict]}`;
+  return body.length > 0 ? `${body}\n\n${trailer}` : trailer;
+}
+
+/**
+ * `VALIDATE_STEP` — huginn-orchestrated gate (REQ-7).
+ *
+ * Instead of delegating to the installed `/validate-step` slash command (which
+ * opencode resolved through the Task tool and subprocess runtimes degraded to
+ * literal text), huginn runs the three audits itself and then synthesizes the
+ * consolidated report:
+ *
+ *   1. qa in `AUDIT-ONLY MODE`
+ *   2. spec-auditor
+ *   3. security
+ *   4. a synthesis prompt that receives the three reports and emits the
+ *      `### Overall gate:` line plus the trailing handoff marker.
+ *
+ * The returned text is the synthesis output with huginn's canonical gate line
+ * and handoff marker imposed on it (see {@link enforceValidateVerdict}), so the
+ * model's own verdict wording survives only as prose. The effective verdict
+ * travels as the structural `authoritativeVerdict` huginn computed itself
+ * (REV-101), and the engine gates on that field — never on the text.
+ */
+export async function validateStep(ctx: PhaseContext): Promise<PhaseOutput> {
+  // 1. Contract verification (fail closed — REV-114): a real violation, or a
+  // verifier that could not run, short-circuits the whole sub-gate.
+  const contractFailure = verifyContractsOrFail(ctx.projectPath, ctx.modules);
+  if (contractFailure) return contractFailure;
+
+  // 2. The three audits, then a synthesis that consolidates them.
+  const [qaPrompt, specPrompt, securityPrompt] = validateStepSubPrompts(ctx);
+  const subOpts = {
+    model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
+  };
+  const qa = await promptWithContext(ctx, { text: qaPrompt, ...subOpts });
+  const spec = await promptWithContext(ctx, { text: specPrompt, ...subOpts });
+  const security = await promptWithContext(ctx, { text: securityPrompt, ...subOpts });
+
+  const synthesis = validateStepSynthesisPrompt(ctx, {
+    qa: qa.text,
+    spec: spec.text,
+    security: security.text,
   });
+  const synthesisResult = await promptWithContext(ctx, { text: synthesis, ...subOpts });
+
+  // huginn computes the gate verdict deterministically from the three reports
+  // (REV-003 / M-4) — it is never left to the synthesis model. The synthesis is
+  // advisory: it may escalate but never downgrade the fail-closed result.
+  const verdict = computeValidateVerdict(
+    { qa: qa.text, spec: spec.text, security: security.text },
+    synthesisResult.text,
+  );
+
+  // The synthesis is produced for the human report, but huginn imposes the
+  // result: the returned text carries exactly one coherent `### Overall gate:`
+  // line and one handoff marker, so the engine (not the model) decides. The
+  // effective verdict travels as a structured field (REV-101).
+  return {
+    ...synthesisResult,
+    text: enforceValidateVerdict(synthesisResult.text, verdict),
+    authoritativeVerdict: verdict,
+  };
+}
+
+/**
+ * The fail-closed output for a `VALIDATE_STEP` short-circuit (compiler contract
+ * violation, or verification that could not run): a report the human can read
+ * plus the structural verdict the engine gates on.
+ */
+function contractFailureOutput(report: string): PhaseOutput {
+  return {
+    messageId: "contract-compiler-failure",
+    text: report,
+    raw: {
+      info: { id: "contract-compiler-failure" },
+      parts: [{ type: "text", text: report }],
+    },
+    authoritativeVerdict: "blocked",
+  };
+}
+
+/**
+ * Runs the TypeScript contract verification for one iteration and returns the
+ * fail-closed output when it cannot pass — a real violation, or a verifier that
+ * threw. `null` means "nothing to report" (nothing to check, or valid).
+ *
+ * The verifier is injectable so this failure path is testable without module
+ * mocking (both test runners reject `vi.mock` factory signatures — REV-114).
+ */
+export function verifyContractsOrFail(
+  projectPath: string,
+  modules: string[],
+  verify: typeof verifyTypeScriptContracts = verifyTypeScriptContracts,
+): PhaseOutput | null {
+  try {
+    const iterationFiles = getIterationFiles(projectPath, modules);
+    if (iterationFiles.length > 0) {
+      const contractResult = verify(projectPath, iterationFiles);
+      if (!contractResult.valid && contractResult.errorsCount > 0) {
+        return contractFailureOutput(formatDiagnosticsReport(contractResult));
+      }
+    }
+  } catch (err) {
+    // Contract verification failing is not the model's call to make: report it
+    // (HUGINN_DEBUG) and fail closed, instead of silently degrading the gate to
+    // an agent-judged pass (REV-114).
+    if (process.env.HUGINN_DEBUG) {
+      console.error(
+        "[huginn] TypeScript contract verification failed (non-fatal, fail-closed):",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return contractFailureOutput(
+      formatDiagnosticsReport({
+        valid: false,
+        errorsCount: 1,
+        diagnostics: [
+          {
+            filePath: "tsconfig.json",
+            line: 1,
+            character: 1,
+            code: "TS0000",
+            category: "error",
+            message: `TypeScript contract verification could not run: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          },
+        ],
+      }),
+    );
+  }
+  return null;
 }
 
 export async function testModule(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommandWithContext(ctx, {
-    command: "test-module",
-    arguments: ctx.modules.join(" "),
-    model: formatModel(ctx.models.executor),
+  return promptWithContext(ctx, {
+    text: testModulePrompt(ctx),
+    model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
 }
 
 export async function secureCheck(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommandWithContext(ctx, {
-    command: "secure-check",
-    arguments: "",
-    model: formatModel(ctx.models.executor),
+  return promptWithContext(ctx, {
+    text: secureCheckPrompt(ctx),
+    model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
 }
 
 export async function review(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommandWithContext(ctx, {
-    command: "review",
-    arguments: "",
-    model: formatModel(ctx.models.executor),
+  return promptWithContext(ctx, {
+    text: reviewPrompt(ctx),
+    model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
 }
 
 export async function docSync(ctx: PhaseContext): Promise<PromptResult> {
-  return runCommandWithContext(ctx, {
-    command: "doc-sync",
-    arguments: "",
-    model: formatModel(ctx.models.executor),
+  return promptWithContext(ctx, {
+    text: docSyncPrompt(ctx),
+    model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
 }
 
 export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
-  // Capture modified files before running commit-all, because commit-all will clean the working tree (REV-008)
+  // Capture modified files before committing, because the commit step cleans the
+  // working tree (REV-008)
   let preModified: string[] = [];
   try {
     preModified = ctx.baseCommit
@@ -326,10 +520,9 @@ export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
     // ignore git error
   }
 
-  const result = await runCommandWithContext(ctx, {
-    command: "commit-all",
-    arguments: "",
-    model: formatModel(ctx.models.executor),
+  const result = await promptWithContext(ctx, {
+    text: commitAllPrompt(ctx),
+    model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
@@ -393,18 +586,13 @@ export async function fixFindings(
   report: string,
   extraInstructions?: string,
 ): Promise<PromptResult> {
-  const text = [
-    `The following "${label}" findings were flagged as BLOCKING. Fix ALL of them in the codebase now.`,
-    extraInstructions ?? "",
-    ``,
-    `## Findings report`,
-    `\`\`\`markdown`,
-    report,
-    `\`\`\``,
-    ``,
-    `Apply the fixes, then summarize exactly what you changed and why.`,
-  ].join("\n");
-  return promptWithContext(ctx, { text, agent: "build", model: ctx.models.thinker, timeoutMs: ctx.phaseTimeoutMs, directory: agentDirectory(ctx) });
+  return promptWithContext(ctx, {
+    text: fixFindingsPrompt(ctx, label, report, extraInstructions),
+    agent: "build",
+    model: ctx.models.thinker,
+    timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
+  });
 }
 
 export async function fixSpec(ctx: PhaseContext, report: string): Promise<PromptResult> {

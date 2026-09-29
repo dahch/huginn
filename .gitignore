@@ -13,3 +13,5 @@ coverage/
 GEMINI.md
 opencode.jsonc
 .agents/
+.env
+.env.*
