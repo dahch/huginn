@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { OpencodeClient } from "@opencode-ai/sdk";
@@ -1096,5 +1103,43 @@ describe("Phase 4A · live context on runtimes without session history", () => {
     await engine.switchRuntime("codex");
     await engine.chat("three");
     expect(second.prompts[0]).toContain("SENTINEL-MID");
+  });
+});
+
+/**
+ * REQ-54 / ADR-53 — the methodology profile is selectable in-session. Before
+ * Phase 8 it could only be fixed before the run, and the console merely displayed
+ * the resolved value.
+ */
+describe("LiveEngine methodology profiles (REQ-54)", () => {
+  function idleClient(): OpencodeClient {
+    return makeClient(async () => ({ parts: [{ type: "text", text: "ok" }] }));
+  }
+
+  it("reports the active profile and fails closed on an unknown id (AC-54.2)", () => {
+    const engine = new LiveEngine({ cfg: makeCfg({ profile: "sdd" }), client: idleClient(), idea: "x" });
+
+    expect(engine.getProfile().id).toBe("sdd");
+    expect(engine.getProfile().name).toBe("Spec-Driven Development");
+    expect(engine.getProfile().description.length).toBeGreaterThan(0);
+
+    expect(() => engine.updateProfile("no-such-profile")).toThrow(/Unknown profile/);
+    // Fail closed: the active profile is unchanged.
+    expect(engine.getProfile().id).toBe("sdd");
+  });
+
+  it("keeps a session change in memory and persists a project change (AC-54.3)", () => {
+    const engine = new LiveEngine({ cfg: makeCfg(), client: idleClient(), idea: "x" });
+
+    const session = engine.updateProfile("odd", "session");
+    expect(session.id).toBe("odd");
+    expect(session.persisted).toBe(false);
+    expect(engine.getProfile().id).toBe("odd");
+    expect(existsSync(join(dir, ".huginn", "config.json"))).toBe(false);
+
+    const project = engine.updateProfile("rdd", "project");
+    expect(project.persisted).toBe(true);
+    expect(engine.getProfile().id).toBe("rdd");
+    expect(readFileSync(join(dir, ".huginn", "config.json"), "utf8")).toContain("rdd");
   });
 });

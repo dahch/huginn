@@ -145,6 +145,8 @@ async function run(stdin: PassThrough, line: string, charDelay = 10): Promise<vo
 const DISPATCH: Record<string, string> = {
   "/help": "/help",
   "/agent": "/agent claude",
+  // A bogus id exercises the fail-closed path, which acknowledges with a warning.
+  "/profile": "/profile bogus-profile",
   "/model": "/model anthropic/claude-3-7-sonnet",
   "/mcp": "/mcp",
   "/skills": "/skills audit",

@@ -83,7 +83,7 @@ describe("CommandSuggestions (AC-28.2, AC-28.4)", () => {
     expect(matches.length).toBeGreaterThan(MAX_SUGGESTION_ROWS);
 
     const output = await renderSuggestions(matches, 0);
-    expect(output).toContain("▼ 4 more below");
+    expect(output).toContain(`▼ ${matches.length - MAX_SUGGESTION_ROWS + 1} more below`);
     expect(output).not.toContain("/status");
     expect(suggestionOverlayHeight(buildSuggestionRows(matches, 0))).toBe(MAX_SUGGESTION_ROWS + 2);
   });
@@ -107,7 +107,12 @@ describe("buildSuggestionRows windowing", () => {
     const middle = buildSuggestionRows(matches, 4);
     expect(middle.length).toBe(MAX_SUGGESTION_ROWS);
     expect(middle[0]).toEqual({ kind: "up", hidden: 3 });
-    expect(middle[middle.length - 1]).toEqual({ kind: "down", hidden: 2 });
+    // The window shows commands 3–6 (up marker + 4 rows + ▼ marker), so the rows
+    // below it are everything after index 6, minus the ▼ marker's own row.
+    expect(middle[middle.length - 1]).toEqual({
+      kind: "down",
+      hidden: matches.length - 7,
+    });
     expect(middle.filter((row) => row.kind === "command").length).toBe(4);
   });
 

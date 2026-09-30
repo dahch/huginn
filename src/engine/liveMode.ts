@@ -1,5 +1,13 @@
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { RunConfig } from "../config";
+import { saveGlobalUserConfig, saveUserConfig } from "../config";
+import {
+  DEFAULT_PROFILE,
+  PROFILE_NAMES,
+  isProfileName,
+  profileSpec,
+  type ProfileName,
+} from "./profiles.js";
 import { createClient, prompt, abortSession, probeSession } from "../server/client";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
 import { OpencodeRuntimeAdapter, OpencodeSession } from "./agent/adapters/opencode.js";
@@ -549,6 +557,48 @@ export class LiveEngine {
     this.cfg.thinker = newThinker;
     this.cfg.executor = newExecutor;
     return this.models;
+  }
+
+  /**
+   * The active methodology profile (REQ-54). Before Phase 8 the profile could
+   * only be fixed before the run (`--profile` / `huginn config set --profile`),
+   * and the console merely displayed it.
+   */
+  getProfile(): { id: ProfileName; name: string; description: string } {
+    const spec = profileSpec(this.cfg.profile ?? DEFAULT_PROFILE);
+    return { id: spec.id, name: spec.name, description: spec.description };
+  }
+
+  /**
+   * Change the methodology profile (REQ-54 / AC-54.1–AC-54.3).
+   *
+   * Validates against {@link PROFILE_NAMES} and **fails closed** on an unknown id
+   * (the config is untouched). `scope` decides persistence: `session` keeps it in
+   * memory, `project` writes `<project>/.huginn/config.json`, `global` writes
+   * `~/.huginn/config.json`.
+   *
+   * The pipeline is chosen when a cycle starts, so a change made after the build
+   * has handed off applies to the **next** cycle — the caller states that, never a
+   * silent no-op (AC-54.4).
+   */
+  updateProfile(
+    name: string,
+    scope: "session" | "project" | "global" = "session",
+  ): { id: ProfileName; name: string; persisted: boolean } {
+    const candidate = name.trim().toLowerCase();
+    if (!isProfileName(candidate)) {
+      throw new Error(
+        `Unknown profile "${sanitizeTerminalText(candidate)}" — valid: ${PROFILE_NAMES.join(", ")}`,
+      );
+    }
+    if (scope === "project") {
+      saveUserConfig(this.cfg.projectPath, { profile: candidate });
+    } else if (scope === "global") {
+      saveGlobalUserConfig({ profile: candidate });
+    }
+    this.cfg.profile = candidate;
+    const spec = profileSpec(candidate);
+    return { id: candidate, name: spec.name, persisted: scope !== "session" };
   }
 
   async switchRuntime(agentId: string): Promise<IAgentRuntime> {

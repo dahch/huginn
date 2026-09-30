@@ -54,6 +54,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     takesArgs: true,
   },
   {
+    id: "/profile",
+    aliases: ["/profile"],
+    argHint: "[id]",
+    description: "Open the methodology-profile picker, or set one by id (huginn, sdd, odd, rdd, strict-tdd)",
+    category: "config",
+    takesArgs: true,
+  },
+  {
     id: "/mcp",
     aliases: ["/mcp"],
     argHint: "[id]",

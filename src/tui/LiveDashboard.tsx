@@ -21,8 +21,9 @@ import { McpInspectorModal } from "./McpInspectorModal";
 import { HelpModal } from "./HelpModal";
 import { SkillsModal } from "./SkillsModal";
 import { AgentPickerModal } from "./AgentPickerModal";
+import { ProfilePickerModal, type ProfileScope } from "./ProfilePickerModal";
 import { findCommand, matchCommands, type SlashCommand } from "./commandRegistry.js";
-import { profileSpec } from "../engine/profiles.js";
+import { profileSpec, type ProfileName } from "../engine/profiles.js";
 import {
   NEXT_STEP,
   busyFeedback,
@@ -412,6 +413,7 @@ function RefineView({
   const [showHelp, setShowHelp] = useState<boolean>(false);
   const [showSkills, setShowSkills] = useState<boolean>(false);
   const [showAgentPicker, setShowAgentPicker] = useState<boolean>(false);
+  const [showProfilePicker, setShowProfilePicker] = useState<boolean>(false);
   const [currentRuntimeName, setCurrentRuntimeName] = useState<string>(live.runtime.name);
   const [availableSkills, setAvailableSkills] = useState<Skill[]>(() => loadSkills(cfg.projectPath));
   const [confirmQuit, setConfirmQuit] = useState(false);
@@ -657,7 +659,7 @@ function RefineView({
   // While the palette or the agent picker is open it owns the row budget: the log
   // tail steps aside so neither can push the input row or the frame off-screen
   // (AC-28.4 / REV-303).
-  if (suggestionsOpen || showAgentPicker) maxLogsAllowed = 0;
+  if (suggestionsOpen || showAgentPicker || showProfilePicker) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
   const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
@@ -1114,6 +1116,24 @@ function RefineView({
         setShowMcpInspector(true);
         return;
       }
+      case "/profile": {
+        if (!args) {
+          // AC-54.1: selectable, not memorised.
+          setShowProfilePicker(true);
+          return;
+        }
+        try {
+          const result = live.updateProfile(args, "session");
+          emitSystem(
+            okFeedback(
+              `Profile set to ${result.name} (${result.id}) for this session — it applies to the next cycle.`,
+            ),
+          );
+        } catch (err) {
+          emitSystem(warnFeedback((err as Error).message));
+        }
+        return;
+      }
       case "/agent": {
         if (!args) {
           // AC-33.1: selectable, not memorised — the picker replaces the old list.
@@ -1142,6 +1162,30 @@ function RefineView({
       }
     }
   };
+
+  /**
+   * Apply a profile chosen in the picker (REQ-54). The scope says whether it is
+   * kept for the session, the project or globally; either way the console states
+   * that the pipeline is chosen when a cycle starts.
+   */
+  const handleProfileSelect = useCallback(
+    (id: ProfileName, scope: ProfileScope) => {
+      try {
+        const result = live.updateProfile(id, scope);
+        setShowProfilePicker(false);
+        emitSystem(
+          okFeedback(
+            `Profile set to ${result.name} (${result.id})${
+              result.persisted ? ` — saved for the ${scope}` : " for this session"
+            } — it applies to the next cycle.`,
+          ),
+        );
+      } catch (err) {
+        emitSystem(warnFeedback((err as Error).message));
+      }
+    },
+    [live, emitSystem],
+  );
 
   const handleModelSelect = useCallback(
     (result: ModelPickerResult) => {
@@ -1328,7 +1372,14 @@ function RefineView({
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
 
   useInput((input, key) => {
-    if (showModelPicker || showMcpInspector || showHelp || showSkills || showAgentPicker) {
+    if (
+      showModelPicker ||
+      showMcpInspector ||
+      showHelp ||
+      showSkills ||
+      showAgentPicker ||
+      showProfilePicker
+    ) {
       return;
     }
     if (decision) {
@@ -1636,6 +1687,12 @@ function RefineView({
           }}
           onCancel={() => setShowAgentPicker(false)}
         />
+      ) : showProfilePicker ? (
+        <ProfilePickerModal
+          currentProfileId={live.getProfile().id}
+          onSelect={(id, scope) => handleProfileSelect(id, scope)}
+          onCancel={() => setShowProfilePicker(false)}
+        />
       ) : (
         // The main row (REQ-12): the cards keep `cardsWidth` columns and the side
         // panel takes the rest. Without a panel `cardsWidth` is the whole content
@@ -1681,7 +1738,12 @@ function RefineView({
 
       {decision ? <DecisionModal req={decision} /> : null}
 
-      {!showModelPicker && !showMcpInspector && !showHelp && !showSkills && !showAgentPicker && (
+      {!showModelPicker &&
+        !showMcpInspector &&
+        !showHelp &&
+        !showSkills &&
+        !showAgentPicker &&
+        !showProfilePicker && (
         <>
           <ChatInputRow
             value={draftInput}
