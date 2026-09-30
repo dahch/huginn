@@ -114,6 +114,88 @@ describe("harness state store", () => {
     expect(content).toContain("Mode**: supervised");
   });
 
+  it("reports a promotion failure as itself, naming the preserved branch (AC-49.3)", () => {
+    const s = freshState({
+      planHash: "x",
+      planPath: join(dir, "plan.md"),
+      specPath: join(dir, "spec.md"),
+      adrPath: join(dir, "adr.md"),
+      thinker: "p/x",
+      executor: "e/y",
+      mode: "auto",
+    });
+    s.finishedAt = new Date().toISOString();
+    s.promotion = {
+      status: "conflict",
+      branch: "huginn/task-iter-1",
+      backups: ["/tmp/x/.huginn/promotion-backup/stamp"],
+    };
+    const content = readFileSync(renderProgressMarkdown(dir, s), "utf8");
+    expect(content).toContain("PROMOTION FAILED");
+    expect(content).toContain("huginn/task-iter-1");
+    expect(content).toContain("promotion-backup");
+    // A strand is not an abort: `ABORTED` stays reserved for the user stopping.
+    expect(content).not.toContain("ABORTED");
+  });
+
+  it("still reports a genuine abort as ABORTED", () => {
+    const s = freshState({
+      planHash: "x",
+      planPath: join(dir, "plan.md"),
+      specPath: join(dir, "spec.md"),
+      adrPath: join(dir, "adr.md"),
+      thinker: "p/x",
+      executor: "e/y",
+      mode: "auto",
+    });
+    s.finishedAt = new Date().toISOString();
+    s.aborted = true;
+    const content = readFileSync(renderProgressMarkdown(dir, s), "utf8");
+    expect(content).toContain("ABORTED");
+    expect(content).not.toContain("PROMOTION FAILED");
+  });
+
+  it("renders a failed promotion that parked nothing without a backup note", () => {
+    const s = freshState({
+      planHash: "x",
+      planPath: join(dir, "plan.md"),
+      specPath: join(dir, "spec.md"),
+      adrPath: join(dir, "adr.md"),
+      thinker: "p/x",
+      executor: "e/y",
+      mode: "auto",
+    });
+    s.promotion = { status: "failed", branch: "huginn/task-iter-2", detail: "refused" };
+    const content = readFileSync(renderProgressMarkdown(dir, s), "utf8");
+    expect(content).toContain("PROMOTION FAILED");
+    expect(content).toContain("huginn/task-iter-2");
+    expect(content).not.toContain("backed up under");
+  });
+
+  it("round-trips the promotion record through save/load (AC-49.3)", () => {
+    const s = freshState({
+      planHash: "x",
+      planPath: join(dir, "plan.md"),
+      specPath: join(dir, "spec.md"),
+      adrPath: join(dir, "adr.md"),
+      thinker: "p/x",
+      executor: "e/y",
+      mode: "auto",
+    });
+    s.promotion = {
+      status: "failed",
+      branch: "huginn/task-iter-2",
+      detail: "could not park untracked file(s)",
+    };
+    saveState(dir, s);
+    const loaded = loadState(dir);
+    expect(loaded?.promotion).toEqual({
+      status: "failed",
+      branch: "huginn/task-iter-2",
+      detail: "could not park untracked file(s)",
+    });
+  });
+
   it("progress excludes FIX_* entries so it never exceeds the main phase count", () => {
     const s = freshState({
       planHash: "x",

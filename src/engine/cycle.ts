@@ -36,7 +36,7 @@ import {
   renderProgressMarkdown,
   computePlanHash,
 } from "../state/store";
-import type { HarnessState, HistoryEntry } from "../state/schema";
+import type { HarnessState, HistoryEntry, PromotionRecord } from "../state/schema";
 import { createClient, createSession, sessionExists, abortSession } from "../server/client";
 import { WorktreeManager, type Sandbox } from "./worktree";
 import { resolveDatabasePath } from "../muninn/db/client.js";
@@ -189,6 +189,12 @@ export class CycleEngine {
   private abortRequested = false;
   private worktrees?: WorktreeManager;
   private sandboxEnabledCache?: boolean;
+  /**
+   * Set when an iteration's sandbox could not be integrated into the primary
+   * branch (ADR-48). The run then finishes as a promotion failure — with the
+   * preserved branch recorded — instead of being reported as an abort.
+   */
+  private promotionFailure?: PromotionRecord;
   private outcome: { reason: "completed" | "aborted" | "error"; error?: string } = { reason: "completed" };
 
   constructor(opts: CycleEngineOptions) {
@@ -342,6 +348,21 @@ export class CycleEngine {
     // previous interrupted run before creating this run's sandboxes.
     if (this.sandboxingEnabled()) {
       try {
+        // A branch a failed promotion preserved holds the only copy of that
+        // iteration's commits: rename it out of the reclaim namespace before the
+        // sweep, so a plain re-run can neither delete it nor be blocked by it
+        // (REV-001).
+        const preserved = this.state.promotion;
+        if (preserved && (preserved.status === "conflict" || preserved.status === "failed")) {
+          const kept = this.getWorktrees().preserveOrphanBranch(preserved.branch);
+          if (kept) {
+            events.emit("log", {
+              level: "info",
+              message: `[sandbox] preserved branch ${preserved.branch} renamed to ${kept} for manual recovery`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
         const reclaimed = this.getWorktrees().cleanupAll();
         if (reclaimed > 0) {
           events.emit("log", {
@@ -369,6 +390,19 @@ export class CycleEngine {
       // silently swallowed.
       if (this.abortRequested) return this.finishAborted((err as Error).message);
       this.decisions.resolveAll("abort");
+
+      // A promotion failure is not an abort (ADR-48 / AC-49.3): the iteration's
+      // commits are preserved on their sandbox branch, so the run finishes as an
+      // *error* carrying a structured promotion record — never as `aborted`.
+      if (this.promotionFailure) {
+        this.state.promotion = this.promotionFailure;
+        this.outcome = { reason: "error", error: (err as Error).message };
+        this.state.finishedAt = new Date().toISOString();
+        this.persist();
+        events.emit("done", { reason: "error", error: (err as Error).message });
+        return this.outcome;
+      }
+
       this.outcome = { reason: "error", error: (err as Error).message };
       this.state.finishedAt = new Date().toISOString();
       this.state.aborted = true;
@@ -383,6 +417,10 @@ export class CycleEngine {
     if (!this.cfg.onlyPhase) {
       // debug mode (--only-phase) keeps state resumable
       this.state.finishedAt = new Date().toISOString();
+      // A resumed run that now completes is not an aborted run: clear the sticky
+      // flag so `PROGRESS.md` cannot report ABORTED beside a successful exit
+      // (REV-004, AC-49.3).
+      this.state.aborted = false;
     }
     this.persist();
     events.emit("done", { reason: "completed" });
@@ -460,6 +498,11 @@ export class CycleEngine {
       ? this.getWorktrees().createSandbox(this.cfg.projectPath, iteration.index)
       : undefined;
     const workPath = sandbox?.path ?? this.cfg.projectPath;
+
+    // Each iteration starts with a clean promotion record so a previous
+    // iteration's outcome can never be read as this one's.
+    this.promotionFailure = undefined;
+    this.state.promotion = undefined;
 
     // Muninn memory is durable state that must outlive an ephemeral sandbox:
     // always resolve the database from the PRIMARY project root so the
@@ -608,32 +651,60 @@ export class CycleEngine {
         // conflict), so the sandbox is settled the moment it returns; the
         // finally must not double-clean (which would drop a preserved branch).
         settled = true;
-        if (result.method === "none") {
+        const backupNote =
+          result.backups && result.backups.length > 0
+            ? ` (untracked file(s) parked under ${result.backups.join(", ")})`
+            : "";
+        if (result.promoted) {
+          this.state.promotion = {
+            status: "promoted",
+            branch: sandbox.branch,
+            backups: result.backups,
+          };
+          events.emit("log", {
+            level: "info",
+            message: `[sandbox] iteration ${iteration.index}: promoted via ${result.method} (${result.commits.length} commit(s))${backupNote}`,
+            timestamp: new Date().toISOString(),
+          });
+        } else if (result.failure ?? result.method !== "none") {
+          // `promoteSandbox` distinguishes an integration *conflict* from a
+          // *failed* promotion (it could not even attempt the merge). Either way
+          // the primary tree is intact and the branch is preserved; fail closed so
+          // the run finishes as a *promotion failure* rather than silently
+          // reporting success, and record it structurally so `run()` never
+          // flattens it into an abort (REQ-17, AC-17.4, AC-49.3).
+          // `failure` is authoritative; a non-"none" method that did not promote
+          // is the pre-existing "integration conflicted" case.
+          const kind = result.failure ?? "conflict";
+          const reason = result.detail ? ` Reason: ${result.detail}` : "";
+          const failure: PromotionRecord = {
+            status: kind,
+            branch: sandbox.branch,
+            backups: result.backups,
+            detail: result.detail,
+          };
+          this.promotionFailure = failure;
+          this.state.promotion = failure;
+          events.emit("log", {
+            level: "warn",
+            message: `[sandbox] iteration ${iteration.index}: promotion ${
+              kind === "failed" ? "failed" : "conflicted"
+            }; branch ${sandbox.branch} preserved for recovery${backupNote}${reason}`,
+            timestamp: new Date().toISOString(),
+          });
+          throw new Error(
+            `Sandbox promotion for iteration ${iteration.index} ${
+              kind === "failed" ? "failed" : "conflicted"
+            }. The primary tree is intact and branch ${sandbox.branch} holds the iteration's work; ` +
+              `recover it with \`git log ${sandbox.branch}\` (a re-run renames it under huginn/preserved/ rather than deleting it).${reason}`,
+          );
+        } else {
+          this.state.promotion = { status: "none", branch: sandbox.branch };
           events.emit("log", {
             level: "info",
             message: `[sandbox] iteration ${iteration.index}: no changes to promote`,
             timestamp: new Date().toISOString(),
           });
-        } else if (result.promoted) {
-          events.emit("log", {
-            level: "info",
-            message: `[sandbox] iteration ${iteration.index}: promoted via ${result.method} (${result.commits.length} commit(s))`,
-            timestamp: new Date().toISOString(),
-          });
-        } else {
-          // Conflict: the primary tree was restored and the branch preserved by
-          // `promoteSandbox`. Fail closed so the run finishes as an error rather
-          // than silently reporting success (REQ-17, AC-17.4).
-          events.emit("log", {
-            level: "warn",
-            message: `[sandbox] iteration ${iteration.index}: promotion (${result.method}) conflicted; branch ${sandbox.branch} preserved for recovery`,
-            timestamp: new Date().toISOString(),
-          });
-          throw new Error(
-            `Sandbox promotion for iteration ${iteration.index} conflicted (method: ${result.method}). ` +
-              `The primary tree is intact and branch ${sandbox.branch} was preserved for manual recovery; ` +
-              `resolve or delete that branch, then re-run.`,
-          );
         }
       }
     } finally {

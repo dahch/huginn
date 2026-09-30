@@ -2,8 +2,12 @@ import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "ink";
-import { StreamCard } from "../../src/tui/Dashboard";
+import { Dashboard, StreamCard } from "../../src/tui/Dashboard";
 import { runLiveTui, runTui } from "../../src/tui/app";
+import { events } from "../../src/engine/engineEvents";
+import type { CycleEngine } from "../../src/engine/cycle";
+import type { RunConfig } from "../../src/config";
+import type { HarnessState } from "../../src/state/schema";
 
 describe("TUI Dashboard & StreamCard", () => {
   it("exports runTui and runLiveTui from src/tui/app.tsx (REV-010)", () => {
@@ -57,6 +61,91 @@ describe("TUI Dashboard & StreamCard", () => {
     instance.unmount();
 
     expect(output).toContain("waiting for agent stream");
+  });
+});
+
+/**
+ * ADR-48 / AC-49.3 — a failed promotion must be visible, naming the branch that
+ * holds the finished iteration, instead of ending on a generic state.
+ */
+/** A stdin Ink can put in raw mode, so `useInput` does not refuse to mount. */
+function createMockStdin(): PassThrough & {
+  isTTY: boolean;
+  setRawMode: () => PassThrough;
+  ref: () => PassThrough;
+  unref: () => PassThrough;
+} {
+  const stdin = new PassThrough() as any;
+  stdin.isTTY = true;
+  stdin.setRawMode = () => stdin;
+  stdin.ref = () => stdin;
+  stdin.unref = () => stdin;
+  return stdin;
+}
+
+describe("Dashboard promotion notice (AC-49.3)", () => {
+  it("names the preserved branch when a promotion failed", async () => {
+    const stdout = new PassThrough() as any;
+    stdout.columns = 120;
+    stdout.rows = 40;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+
+    const state = {
+      currentIteration: 1,
+      currentPhase: "COMMIT_ALL",
+      promotion: {
+        status: "conflict",
+        branch: "huginn/task-iter-1",
+        backups: ["/tmp/p/.huginn/promotion-backup/s"],
+      },
+    } as unknown as HarnessState;
+
+    const engine = {
+      getState: () => state,
+      runtime: {
+        id: "commandcode",
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+      },
+      resolveDecision: () => {},
+      pause: () => {},
+      resume: () => {},
+      requestAbort: () => {},
+    } as unknown as CycleEngine;
+
+    const cfg = {
+      projectPath: "/tmp/p",
+      planPath: "/tmp/p/plan.md",
+      specPath: "/tmp/p/spec.md",
+      adrPath: "/tmp/p/adr.md",
+      thinker: "a/b",
+      executor: "c/d",
+      mode: "auto",
+      permissions: "auto",
+      maxRetries: 1,
+      tui: false,
+      port: 0,
+      serverTimeoutMs: 1000,
+      phaseTimeoutMs: 0,
+      ignorePlanChanges: false,
+      sandbox: false,
+    } as unknown as RunConfig;
+
+    const instance = render(React.createElement(Dashboard, { engine, cfg, autoExit: false }), {
+      stdout,
+      stdin: createMockStdin(),
+      patchConsole: false,
+    });
+    // Let the events effect subscribe before the run ends.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    events.emit("done", { reason: "error" });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    instance.unmount();
+
+    expect(output).toContain("PROMOTION FAILED");
+    expect(output).toContain("huginn/task-iter-1");
   });
 });
 

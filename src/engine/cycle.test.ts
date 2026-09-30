@@ -257,6 +257,32 @@ describe("CycleEngine run loop", () => {
     expect(state.history.some((h) => h.phase === "SPEC_AUDIT" && h.verdict === "skipped")).toBe(true);
   });
 
+  it("clears a stale aborted flag when a resumed run completes (REV-004)", async () => {
+    const client = makeClient(async () => ({
+      info: { id: "msg", error: undefined },
+      parts: [{ type: "text", text: '{"status":"pass","summary":"ok","actionItems":[]}' }],
+    }));
+    const cfg = makeCfg();
+    const state = freshState({
+      planHash: "resume-aborted",
+      planPath: cfg.planPath,
+      specPath: cfg.specPath,
+      adrPath: cfg.adrPath,
+      thinker: cfg.thinker,
+      executor: cfg.executor,
+      mode: cfg.mode,
+    });
+    // The prior run was aborted; this resume finishes the plan.
+    state.aborted = true;
+
+    const engine = new CycleEngine({ cfg, client, plan: makePlan(), state });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    // ASSERTED ABORTED ONLY FOR A GENUINE ABORT (AC-49.3).
+    expect(engine.getState().aborted).not.toBe(true);
+  });
+
   it("advances currentIteration after a normally completed iteration", async () => {
     // prompt feeds EXECUTE (gate none) and the judge passes (TEST_MODULE /
     // SECURE_CHECK / REVIEW); command feeds VALIDATE_STEP, which needs the
@@ -885,6 +911,58 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     expect(promotedCount).toBe(1);
     // The run is an error, so the iteration is not marked complete.
     expect(engine.getState().currentIteration).toBe(1);
+    // ADR-48 / AC-49.3: a promotion failure is recorded as itself — the preserved
+    // branch is named and the run is NOT reported as an abort.
+    expect(engine.getState().aborted).not.toBe(true);
+    expect(engine.getState().promotion).toEqual({
+      status: "conflict",
+      branch: "huginn/task-iter-1",
+    });
+  });
+
+  it("records a *failed* promotion and never discards the sandbox (AC-49.2/AC-49.3, NFR-15)", async () => {
+    commitEmpty(dir);
+    let discarded = 0;
+    const real = new WorktreeManager(dir);
+    const manager = {
+      createSandbox: (root: string, iteration: number): Sandbox => real.createSandbox(root, iteration),
+      // huginn could not park a colliding file: it must report a failure, keep
+      // the branch, and never discard the iteration's commits.
+      promoteSandbox: (): PromoteResult => ({
+        promoted: false,
+        method: "cherry-pick",
+        commits: ["deadbeef"],
+        failure: "failed",
+        detail: "could not park untracked file(s)",
+      }),
+      discardSandbox: () => {
+        discarded++;
+      },
+      cleanupAll: () => 0,
+    } as unknown as WorktreeManager;
+
+    const client = makeClient(async () => ({
+      info: { id: "msg", error: undefined },
+      parts: [{ type: "text", text: '{"status":"pass","summary":"ok","actionItems":[]}' }],
+    }));
+
+    const engine = new CycleEngine({
+      cfg: makeCfg({ sandbox: true }),
+      client,
+      plan: makePlan(),
+      worktrees: manager,
+    });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("error");
+    expect(engine.getState().aborted).not.toBe(true);
+    expect(engine.getState().promotion).toEqual({
+      status: "failed",
+      branch: "huginn/task-iter-1",
+      detail: "could not park untracked file(s)",
+    });
+    // The preserved branch is never deleted by the engine's cleanup.
+    expect(discarded).toBe(0);
   });
 
   it("runs in-place (no sandbox) when the repo has no HEAD and sandbox is requested", async () => {

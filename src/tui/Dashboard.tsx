@@ -7,6 +7,8 @@ import type { PhaseResult, DecisionRequest, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, verdictIcon, verdictToken } from "../format";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
+import type { PromotionRecord } from "../state/schema";
+import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
@@ -45,6 +47,8 @@ const LOGS_MAX_ROWS = 5;
 /** The decision modal, and the last-report pill. */
 const DECISION_HEIGHT = 6;
 const REPORT_HEIGHT = 1;
+/** The promotion-failure notice row, shown only when an integration failed. */
+const PROMOTION_HEIGHT = 1;
 
 /**
  * Rows the header may not spend: the middle cards' floor, the footer, the
@@ -52,7 +56,12 @@ const REPORT_HEIGHT = 1;
  * added when the plan is derived (REQ-29 / AC-29.3).
  */
 const VIEWPORT_RESERVED_ROWS =
-  MIDDLE_MIN_ROWS + FOOTER_HEIGHT + LOGS_MAX_ROWS + DECISION_HEIGHT + REPORT_HEIGHT;
+  MIDDLE_MIN_ROWS +
+  FOOTER_HEIGHT +
+  LOGS_MAX_ROWS +
+  DECISION_HEIGHT +
+  REPORT_HEIGHT +
+  PROMOTION_HEIGHT;
 
 interface PhaseStatus {
   verdict?: Verdict;
@@ -75,6 +84,8 @@ interface UiState {
   logs: Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>;
   decision?: DecisionRequest;
   lastReport?: PhaseResult;
+  /** Outcome of integrating the iteration's sandbox (ADR-48); shown when it failed. */
+  promotion?: PromotionRecord;
   verbose: boolean;
 }
 
@@ -282,6 +293,10 @@ export function Dashboard({
       }),
       events.on("done", () => {
         flushStream();
+        // A failed promotion strands the iteration on its sandbox branch; name it
+        // instead of leaving only a generic end state (AC-49.3).
+        const promotion = engine.getState().promotion;
+        if (promotion) setUi((s) => ({ ...s, promotion }));
         if (autoExit) {
           if (exitTimer) clearTimeout(exitTimer);
           exitTimer = setTimeout(() => exit(), 500);
@@ -314,6 +329,9 @@ export function Dashboard({
   const footerHeight = FOOTER_HEIGHT;
   const reportHeight = ui.lastReport && !ui.decision ? REPORT_HEIGHT : 0;
   const decisionHeight = ui.decision ? DECISION_HEIGHT : 0;
+  const promotionFailed =
+    ui.promotion?.status === "conflict" || ui.promotion?.status === "failed";
+  const promotionHeight = promotionFailed && !ui.decision ? PROMOTION_HEIGHT : 0;
 
   // Dynamically allocate log count to ensure middle cards remain comfortably visible
   let maxLogsAllowed = 0;
@@ -327,7 +345,14 @@ export function Dashboard({
 
   const middleHeight = Math.max(
     MIDDLE_MIN_ROWS,
-    terminalSize.rows - headerHeight - footerHeight - logsHeight - decisionHeight - reportHeight - 1,
+    terminalSize.rows -
+      headerHeight -
+      footerHeight -
+      logsHeight -
+      decisionHeight -
+      reportHeight -
+      promotionHeight -
+      1,
   );
   const streamLinesCount = Math.max(1, middleHeight - 3);
   const maxStreamScroll = Math.max(0, streamLines.length - streamLinesCount);
@@ -435,6 +460,18 @@ export function Dashboard({
       </Box>
 
       {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
+
+      {promotionHeight > 0 && ui.promotion ? (
+        <Box paddingX={1}>
+          <Text color={THEME.danger} wrap="truncate">
+            🔴 PROMOTION FAILED — branch{" "}
+            <Text bold>{sanitizeTerminalText(ui.promotion.branch)}</Text> preserved
+            {ui.promotion.backups && ui.promotion.backups.length > 0
+              ? ` · backups: ${ui.promotion.backups.map(sanitizeTerminalText).join(", ")}`
+              : ""}
+          </Text>
+        </Box>
+      ) : null}
 
       {ui.decision ? <DecisionModal req={ui.decision} /> : null}
 

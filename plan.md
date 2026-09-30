@@ -551,3 +551,198 @@ Implements REQ-38.
 6. Doc-sync README/DESIGN/SPEC/AGENTS for Phase 7.
 7. Final quality gate: `bun run typecheck` zero errors, `npm test` green, `bun run build` succeeds; verify the real flows end-to-end (MCP listing per agent, Muninn registration on a temp fake agent config, profile selection).
 
+---
+
+# Plan: Run Integrity, Honest Surfaces & a Coherent Terminal Language (Phase 8)
+
+Implements REQ-49…REQ-54 (SPEC.md §19–21). Origin: a real `huginn run` on a five-iteration
+project completed iteration 1, produced four commits, reported `🛑 ABORTED`, and left the project
+directory **empty**; the same run left a foreign `projects` row (huginn itself) in the project's
+Muninn database; the run dashboard's output panel stayed at `(waiting for agent stream / tool
+executions...)` for the whole run; and no in-session surface could select a methodology profile.
+
+Repo facts for every iteration: Bun/TypeScript CLI, bin `src/cli.ts`; `src/**/*.test.ts` run under
+`bun test`, `test/**/*.test.ts` under `vitest run`; strict TS, ESM, `.js` extension on relative
+imports, no `any`; every externally-sourced display string passes through `sanitizeTerminalText`
+(`src/util/text.ts`). **The gate marker literals** (`### Overall gate: 🟢/🟡/🔴`,
+`### Overall fidelity: …`) are a three-way contract between `src/engine/steps/instructions.ts` +
+`src/engine/phases.ts` + `src/engine/gate.ts`; **never** change them when touching display glyphs.
+
+## Iteration 37 — Sandbox Promotion Integrity & Honest Outcomes
+modules: src/engine/worktree.ts, src/engine/cycle.ts, src/state/schema.ts, src/state/store.ts, src/tui/Dashboard.tsx, test/engine/
+
+Implements REQ-49. Verified root cause (reproduced in an isolated clone): `git merge --ff-only`
+refuses when the primary tree holds an **untracked** file the sandbox branch also adds
+(`error: The following untracked working tree files would be overwritten by merge: AGENTS.md`); the
+`cherry-pick` fallback hits the same collision; `promoteSandbox` runs `cherry-pick --abort`, removes
+the worktree, **keeps the branch**, and returns `{ promoted:false, method:"cherry-pick" }`;
+`runIteration` throws and `run()` records `aborted: true`, so `.harness/PROGRESS.md` and the TUI
+report `🛑 ABORTED` while the primary branch is untouched and the iteration's commits are stranded
+on `huginn/task-iter-N`. (The colliding file is often huginn's own: `injectRulesForTarget` writes
+`<project>/AGENTS.md` after the bootstrap commit, so it is untracked and collides with the
+doc-writer's `AGENTS.md` in the sandbox.)
+
+1. `WorktreeManager.promoteSandbox` (`src/engine/worktree.ts`) — resolve collisions **before**
+   integrating, never destroy user data:
+   - `untrackedCollisions(root, sandbox)`: `git ls-files --others --exclude-standard` in the primary
+     root ∩ `git diff --name-only <baseCommit>..<branch>` → the paths the integration would
+     overwrite.
+   - Back each collision up to `<root>/.huginn/promotion-backup/<stamp>/<relPath>` preserving content
+     and mode (`copyFileSync` + `chmodSync`), then remove the working-tree copy so integration can
+     proceed. `<stamp>` is filesystem-safe (ISO-8601 with `:`/`.` replaced).
+   - Retry `git merge --ff-only`; on failure `git cherry-pick <baseCommit>..<branch>`; on failure
+     `git cherry-pick --abort`, **restore every backed-up file to its original path**, keep the
+     branch (do not `git branch -D`) and return
+     `{ promoted:false, method:"cherry-pick", commits, backups, detail }`. The zero-commit path stays
+     `method:"none"`.
+   - Extend `PromoteResult` with `backups?: string[]` and `detail?: string`; the successful ff /
+     cherry-pick paths report the backup directory too.
+2. `CycleEngine` (`src/engine/cycle.ts`) — a promotion failure is not an abort:
+   - Add `promotion?: { status: "promoted" | "none" | "conflict" | "failed"; branch: string;
+     backups?: string[]; detail?: string }` to the engine, persisted on the state.
+   - On a promotion error set `outcome.reason = "error"` with the structured `promotion` record and
+     the error message; **do not** set `state.aborted`. Log a single line naming the branch and the
+     backup directory when one exists.
+   - The `finally` must keep discarding an unsettled sandbox exactly once (unchanged), but must not
+     delete a branch `promoteSandbox` deliberately preserved.
+3. `src/state/schema.ts` + `src/state/store.ts`:
+   - Add an optional `promotion` object to `stateSchema` so pre-Phase-8 state files still parse.
+   - `renderProgressMarkdown` renders `🔴 PROMOTION FAILED — branch <b> preserved (backups: <dir>)`
+     when `state.promotion?.status` is `conflict`/`failed`, and `🛑 ABORTED` only for a genuine abort.
+4. `src/tui/Dashboard.tsx`: when the run ends with a failed promotion, surface the branch (and backup
+   directory) in a visible line instead of only a generic end state.
+5. Tests (`test/engine/worktree.test.ts`, `test/engine/cycle.test.ts`, state rendering): an untracked
+   collision is backed up and the merge lands on the primary branch; an unresolvable collision
+   restores the originals and leaves the primary tree byte-identical with the branch preserved; a
+   promotion failure never renders as ABORTED.
+6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 38 — Muninn: One Root for the Database and the Project Record
+modules: src/muninn/db/client.ts, src/muninn/service/memory-service.ts, src/commands/memory.ts, src/commands/doctor.ts, test/muninn/
+
+Implements REQ-50. Verified root cause: the database **file** is resolved from `process.cwd()`
+(`getDatabase` → `resolveDatabasePath(dbPath)` never receives a start directory) while the project
+**row** is resolved from `--project` (`ensureProject({ rootPath })`), so
+`huginn mcp run --project X` executed with a cwd inside `Y` writes X's project row — and, via
+`muninn_save`/`memory index`, X's entities and observations — into **Y's** `muninn.db`. That is how a
+`huginn` project row (root `/Users/dahch/Documents/Projects/huginn`) appeared inside a test project's
+database.
+
+1. `src/muninn/db/client.ts`:
+   - `getDatabase(dbPath?: string, startDir?: string)` forwards `startDir` to
+     `resolveDatabasePath(dbPath, startDir ?? process.cwd())`.
+   - `ensureProject` keeps `options.rootPath`, but its **fallback** must be the same root the caller
+     used for the database (accept an explicit `startDir`/`defaultRoot`) instead of an independent
+     `findGitRoot()` of the cwd.
+2. `src/muninn/service/memory-service.ts`: the constructor opens the database with the project root
+   (`getDatabase(options?.dbPath, options?.projectRoot)`) and creates the row from the same root, so
+   the two can never diverge. Document the invariant.
+3. `src/commands/memory.ts` (`memory index/search/sync`, `mcp run`): resolve `--project` once and pass
+   it as `projectRoot` so the database lives at `<project>/.huginn/muninn.db` regardless of cwd. Warn
+   (dim, non-fatal) when the resolved database's git root differs from `--project`.
+4. `src/commands/doctor.ts`: add a check that lists foreign `projects` rows in the project's database
+   (root_path ≠ the project root) and prints the exact fix, **without deleting anything**.
+5. Tests (`test/muninn/`): the database path follows `--project` from any cwd; running `--project X`
+   from a cwd inside `Y` creates only X's row and writes nothing into `Y`'s database; `doctor` flags a
+   foreign row.
+6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 39 — The Run Output Panel Is Never Dead
+modules: src/tui/Dashboard.tsx, src/tui/feedback.ts, src/brand.ts, src/engine/agent/types.ts, test/tui/
+
+Implements REQ-51. Verified: `phaseStream` is emitted **only** by `subscribeToEvents`
+(`src/engine/permissions.ts`, wired in `src/cli.ts` when `runtime.id === "opencode"`). Every
+subprocess runtime (`commandcode`, `claude`, `codex`, …) emits nothing, so `StreamCard` renders
+`(waiting for agent stream / tool executions...)` for the entire run — and the phase's real
+`PhaseResult.text` is never shown as body text, only as a one-line `ReportPill`.
+
+1. `src/engine/agent/types.ts`: add a capability flag to `IAgentRuntime` (e.g.
+   `readonly streamsOutput: boolean`), `true` for `opencode` and `false` for the generic subprocess
+   adapter (and every adapter that inherits it). Use it to choose what the panel claims.
+2. `src/tui/Dashboard.tsx` `StreamCard` — mirror the live console's adaptive rule (REQ-35.1/35.2):
+   - `streamLines` empty **and** a phase has finished → render the **tail of `ui.lastReport.text`**
+     (the real agent report) clipped to the card's rows, instead of the waiting copy.
+   - `streamLines` empty and nothing finished yet → render an **idle raven state**: a small
+     two-raven ASCII composition (Huginn + Muninn) built in `src/brand.ts` next to a rotating
+     raven-voiced phrase, centred and clipped to the card.
+   - One line names the active runtime and states that live streaming depends on it (only runtimes
+     with an event channel stream; the rest report once per phase). Only shown when
+     `streamsOutput === false`.
+3. `src/tui/feedback.ts`: add the idle phrases (bounded, sanitized) so the copy lives with the
+   console's other voice.
+4. Layout: the card keeps its allocated height; the idle/report bodies are clipped to the available
+   rows and never overflow at 80×24 (same discipline as `LiveHero`).
+5. Tests (`test/tui/`): empty-with-report renders the report tail; empty-without-report renders the
+   raven idle state and **not** `(waiting …)`; the runtime note appears only for non-streaming
+   runtimes; the card never exceeds its row budget.
+6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 40 — A Single Semantic Glyph Language for Phase Status
+modules: src/tui/glyphs.ts, src/format.ts, src/state/store.ts, src/tui/Dashboard.tsx, src/tui/LiveDashboard.tsx, src/tui/HelpModal.tsx, src/tui/SkillsModal.tsx, test/tui/
+
+Implements REQ-52. Verified: the pipeline column renders `⏳` plus `verdictIcon()`'s `✅ 🟡 🔴 ⏭️`
+(`src/format.ts`), `ReportPill` falls back to `🔴`, `PROGRESS.md` uses its own emoji map
+(`🔍 ⚡ 🚦 🧪 🔐 👀 📝 🧠`), and the stream panel sniffs `⚡ ✓ ✗ 💭` — double-width emoji that break the
+Ink grid.
+
+1. New `src/tui/glyphs.ts`: the one semantic table, all printable single-width ASCII/box-drawing.
+   - Status: pending `·`, running the existing braille spinner, pass `✓`, warning `!`, blocked `✕`,
+     skipped `–`.
+   - Phase kind (for `PROGRESS.md`): SPEC_AUDIT `?`, EXECUTE `>`, VALIDATE_STEP `=`, TEST_MODULE `%`,
+     SECURE_CHECK `#`, REVIEW `@`, DOC_SYNC `~`, COMMIT_ALL `.`; `FIX_*` keep the ` └─ ` indent.
+   - Exported as pure functions/data plus a `verdictGlyph(v)` used everywhere.
+2. `src/format.ts`: `verdictIcon`/`verdictToken` return the new glyphs/tokens (keep `verdictToken`
+   semantics; the TUI still resolves the token to a colour).
+3. Replace every emoji display glyph: `Dashboard.tsx` (`PipelineCard` `⏳`, `verdictIcon`,
+   `ReportPill` `🔴`, stream prefixes `⚡ ✓ ✗ 💭`), `LiveDashboard.tsx` equivalents, `store.ts`
+   (`PHASE_META` icons + the status emoji), `HelpModal.tsx`/`SkillsModal.tsx` section headers.
+4. **Do not** touch the gate marker literals or the `ping`/decision emoji inside prompt text; only
+   rendered TUI/markdown display glyphs change.
+5. Drift-guard test (`test/tui/`): the rendered pipeline/status strings contain no emoji while the
+   gate literals remain present in the engine sources.
+6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 41 — Sessions Are a Documented Surface in `--help`
+modules: src/cli.ts, src/state/liveSession.ts, test/commands/
+
+Implements REQ-53. Verified: `--continue`/`-c`, `--session <id>` and `--list-sessions`/`-sl` are
+listed as flags but `huginn --help` never explains the session store, the resume precedence or the
+reattach semantics.
+
+1. `usage()` (`src/cli.ts`): add a **Sessions** section documenting the store
+   (`<project>/.huginn/live/sessions.json`, owner-only, atomic, never in `git status`), the three
+   flags, and the semantics: `--session <id>` is the strongest request and wins over `--continue`,
+   which adopts the project's most recently updated session; a `--continue` with nothing to continue
+   starts a fresh session with a notice; a bare `--session` fails closed. State the exact scope (live
+   mode).
+2. `usageCore()`: add a one-line pointer to the Sessions section beside the existing session flags.
+3. Keep the drift guard green and extend it (`test/commands/init.test.ts`) so every token in the new
+   section is also present in `usage()`.
+4. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+
+## Iteration 42 — Interactive Methodology Profile Selection
+modules: src/tui/ProfilePickerModal.tsx, src/tui/commandRegistry.ts, src/tui/LiveDashboard.tsx, src/tui/HelpModal.tsx, src/tui/InfoPanel.tsx, src/engine/liveMode.ts, test/tui/
+
+Implements REQ-54. Verified gap: the profile is resolved from `--profile` or
+`huginn config set --profile` only; `src/engine/liveMode.ts` has **no** `profile` reference, there is
+no `/profile` command in `src/tui/commandRegistry.ts`, and the cheat sheet never lists it — the header
+merely displays `profile:huginn`.
+
+1. New `src/tui/ProfilePickerModal.tsx`: rows from `PROFILE_NAMES`/`PROFILES` showing the display
+   name, the one-line description and an active marker; `↑/↓`/`j`/`k` move, `Enter` confirms, `Esc`
+   cancels. Mirror `AgentPickerModal`'s layout and key handling.
+2. `src/tui/commandRegistry.ts` + `HelpModal.tsx`: register `/profile` (argHint `[id]`) with its
+   description so the palette and the cheat sheet include it.
+3. `src/engine/liveMode.ts`: add `getProfile()` and `updateProfile(name, scope)` where scope is
+   `session` | `project` | `global`; validate against `PROFILE_NAMES` and **fail closed** with an
+   actionable message on an unknown id; persist through the existing config writers
+   (`saveUserConfig`/`saveGlobalUserConfig`). The change is reflected in the header and `/status`.
+4. `src/tui/LiveDashboard.tsx`: `/profile` opens the picker, `/profile <id>` applies directly; after a
+   handoff to the `CycleEngine` the new profile applies to the **next** cycle and the console says so
+   explicitly (never a silent no-op).
+5. `src/tui/InfoPanel.tsx`: the live context panel shows the active profile's display name.
+6. Tests (`test/tui/`): the picker lists the five profiles and marks the active one; `Enter` changes
+   it and the change is reflected; an invalid id fails closed without changing anything; `Esc`
+   cancels; the registry and cheat sheet include `/profile` (drift guard).
+7. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+

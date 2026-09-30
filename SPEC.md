@@ -826,3 +826,116 @@ Nothing a repository controls may reach a file, a program or an instruction chan
   atomically with owner-only permissions, are capped in messages/sessions/characters/bytes on both the
   read and the write path, are refused through a symlinked path, and never appear in `git status`.
 
+---
+
+# Spec: Run Integrity, Honest Surfaces & a Coherent Terminal Language (Phase 8)
+
+## 19. Executive Summary & Goals
+
+A real `huginn run` on a five-iteration project completed iteration 1, produced four commits in its
+sandbox, then reported `🛑 ABORTED` with an **empty project directory**. The work was neither lost nor
+incomplete — it was stranded on `huginn/task-iter-1` by a promotion failure the run surfaced as an
+abort. The same run left a `projects` row for *huginn itself* in the project's Muninn database, and
+the dashboard's output panel stayed at `(waiting for agent stream / tool executions...)` for the whole
+run because the active runtime has no event channel. Phase 8 fixes the integrity bugs first, then
+makes every surface tell the truth.
+
+### Goals
+- A completed iteration's work is never silently stranded or discarded: a failed integration is
+  recoverable, non-destructive, and reported as what it is.
+- One project root governs Muninn — the `--project` root selects both the database file and the
+  project record, so a runtime can never attribute one project's data to another.
+- The run dashboard never shows a dead panel: a runtime that cannot stream shows the phase's real
+  report, and an idle raven state otherwise.
+- One semantic, single-width glyph language for phase status across the TUI and `.harness/PROGRESS.md`.
+- Sessions and methodology profiles are discoverable and selectable in-session.
+
+### Non-Goals
+- Real-time token streaming from subprocess runtimes (a PTY/incremental channel); the fallback is the
+  per-phase report, not live tokens.
+- Changing the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) — they are a three-way contract.
+- Retroactively repairing mis-attributed databases; the fix prevents the mis-attribution and `doctor`
+  reports it.
+
+## 20. Functional Requirements (Phase 8)
+
+### REQ-49: A completed iteration is never stranded or silently discarded
+- **AC-49.1 (Collision resolution, non-destructive)**: before integrating a sandbox,
+  `promoteSandbox` (`src/engine/worktree.ts`) detects the paths that would be overwritten because they
+  are **untracked in the primary tree** (`git ls-files --others --exclude-standard` ∩
+  `git diff --name-only <base>..<branch>`) and backs each one up to
+  `<project>/.huginn/promotion-backup/<stamp>/<relPath>` (content and mode preserved) before removing
+  the working-tree copy so the integration can proceed.
+- **AC-49.2 (Recoverable failure)**: when neither `merge --ff-only` nor `cherry-pick` integrates the
+  branch, the primary tree is restored to its pre-promotion state — every backed-up file is put back —
+  and the branch `huginn/task-iter-<N>` is **preserved** (never deleted) for manual recovery.
+- **AC-49.3 (Honest outcome)**: a promotion failure is recorded structurally as
+  `state.promotion = { status: "conflict" | "failed", branch, backups?, detail? }` and is **not**
+  reported as an abort; `renderProgressMarkdown` renders a promotion failure distinctly and names the
+  preserved branch, and `🛑 ABORTED` is reserved for a genuine abort.
+- **AC-49.4 (Backups reported)**: a successful integration that moved untracked files aside returns
+  the backup directory in `PromoteResult.backups` and logs it, so the files are discoverable.
+
+### REQ-50: One root for Muninn — the database and the project record agree
+- **AC-50.1 (One root)**: the database file and the project row are resolved from the same root: the
+  `--project` root when given, otherwise the git root of the process's start directory.
+  `getDatabase(dbPath?, startDir?)` forwards `startDir` to `resolveDatabasePath`, and `MemoryService`
+  opens the database with the same `projectRoot` it uses for `ensureProject`.
+- **AC-50.2 (No cross-project writes)**: running a Muninn command (`mcp run`, `memory index/search/
+  sync`) with `--project X` from a working directory inside `Y` writes to `X/.huginn/muninn.db` and
+  creates only `X`'s project row; nothing is written into `Y`'s database.
+- **AC-50.3 (Diagnosis, not destruction)**: `huginn doctor` reports foreign `projects` rows in the
+  project's database (a `root_path` that is not the project root) with the exact fix, and deletes
+  nothing.
+
+### REQ-51: The run output panel is never dead
+- **AC-51.1 (Report fallback)**: when no stream content has arrived and a phase has finished, the
+  `run` dashboard renders the tail of that phase's real report text instead of a waiting placeholder.
+- **AC-51.2 (Idle raven state)**: when nothing has arrived and no phase has finished, the panel renders
+  a small two-raven ASCII composition (Huginn and Muninn) beside a rotating raven-voiced phrase,
+  clipped to the card's rows.
+- **AC-51.3 (Honest capability)**: the panel states the active runtime and that live streaming depends
+  on it — the note appears only for runtimes that cannot stream, driven by a capability flag on
+  `IAgentRuntime` rather than a hardcoded id list.
+- **AC-51.4 (Layout discipline)**: the idle/report body never exceeds the card's allocated rows at
+  80×24; nothing is fabricated to fill a row.
+
+### REQ-52: A single semantic glyph language for phase status
+- **AC-52.1 (One table)**: every phase/status glyph is defined once (`src/tui/glyphs.ts`) and consumed
+  by both the TUI and `.harness/PROGRESS.md`.
+- **AC-52.2 (Single width)**: the glyphs are printable, single-width characters (ASCII/box-drawing) —
+  no emoji in the pipeline grid, the status column, the last-result pill or the phase rows of
+  `PROGRESS.md`.
+- **AC-52.3 (Contract preserved)**: the gate marker literals and the verdict parsers are untouched; a
+  drift-guard test asserts the rendered display strings contain no emoji while the gate literals remain
+  present in the engine sources.
+- **AC-52.4 (Theme intact)**: glyph colour still resolves through the semantic theme tokens, and
+  `NO_COLOR` behaviour is unchanged.
+
+### REQ-53: Sessions are a documented surface in `--help`
+- **AC-53.1 (A Sessions section)**: `huginn --help` explains the live-session store
+  (`<project>/.huginn/live/sessions.json`), the three flags (`--continue`/`-c`, `--session <id>`,
+  `--list-sessions`/`-sl`) and their precedence, and the reattach semantics.
+- **AC-53.2 (Concise help points to it)**: `huginn --help` (concise) names the section, and the
+  drift guard asserts every token it advertises exists in the full reference.
+
+### REQ-54: Methodology profiles are selectable in-session
+- **AC-54.1 (Picker)**: `/profile` opens a picker listing every profile from `PROFILES` with its
+  display name, one-line description and an active marker; `↑/↓`/`j`/`k`, `Enter`, `Esc`.
+- **AC-54.2 (Direct set, fail closed)**: `/profile <id>` validates against `PROFILE_NAMES` and fails
+  closed with an actionable message on an unknown id, changing nothing.
+- **AC-54.3 (Persisted scope)**: a change can be kept for the session, the project
+  (`.huginn/config.json`) or globally (`~/.huginn/config.json`), through the existing config writers.
+- **AC-54.4 (No silent no-op)**: after the build has handed off to the cycle, the console states that
+  the new profile applies to the next cycle.
+- **AC-54.5 (Discoverable)**: the command registry, the cheat sheet and the live context panel all
+  surface the profile.
+
+## 21. Non-Functional Requirements (Phase 8)
+- **NFR-15 (Never destroy uncommitted work)**: no promotion or cleanup path may delete a user file, an
+  iteration's commits, or a preserved branch without an explicit, reported backup.
+- **NFR-16 (Attribution integrity)**: a Muninn database may contain rows only for the projects that
+  resolved to it; a foreign row is a diagnosed defect, never a silent side effect.
+- **NFR-17 (Honest surfaces)**: no surface reports a success, an abort, or an emptiness the engine did
+  not actually produce — a stranded iteration, a foreign row and a dead panel are all named.
+

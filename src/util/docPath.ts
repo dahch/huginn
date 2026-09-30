@@ -73,7 +73,7 @@ export function isInside(child: string, root: string): boolean {
 }
 
 /** `lstat` without treating "does not exist" as a failure. */
-function lstatOrUndefined(path: string): Stats | undefined {
+export function lstatOrUndefined(path: string): Stats | undefined {
   try {
     return lstatSync(path);
   } catch (err) {

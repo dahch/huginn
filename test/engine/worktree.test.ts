@@ -5,6 +5,7 @@ import path from "node:path";
 import { git, headCommit } from "../../src/engine/diff.js";
 import {
   WorktreeManager,
+  promotionBackupDir,
   sandboxBranch,
   sandboxPath,
 } from "../../src/engine/worktree.js";
@@ -94,6 +95,23 @@ describe("WorktreeManager — sandbox creation (AC-17.2, AC-17.3)", () => {
 
     expect(fs.existsSync(path.join(sandbox.path, "node_modules"))).toBe(false);
     expect(fs.existsSync(path.join(sandbox.path, ".env"))).toBe(false);
+  });
+
+  /**
+   * SEC-104 — a cloned repository can commit `.huginn` as a symlink. Creating the
+   * worktree through it would put the whole checkout (and the `.env`/`node_modules`
+   * links) outside the project, so `createSandbox` refuses it.
+   */
+  it("refuses to create a sandbox through a repository-shipped .huginn symlink (SEC-104)", () => {
+    const root = freshRepo();
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "huginn-outside-")));
+    repos.push(outside);
+    fs.symlinkSync(outside, path.join(root, ".huginn"), "dir");
+
+    const mgr = new WorktreeManager(root);
+    expect(() => mgr.createSandbox(root, 18)).toThrow(/Cannot create sandbox/);
+    // Nothing was created outside the project.
+    expect(fs.readdirSync(outside)).toEqual([]);
   });
 
   it("fails closed when the branch or path already exists (AC-17.2)", () => {
@@ -200,6 +218,248 @@ describe("WorktreeManager — promotion (AC-17.4)", () => {
     expect(headCommit(root)).toBe(before);
     expect(fs.existsSync(sandbox.path)).toBe(false);
     expect(branchExists(root, sandbox.branch)).toBe(false);
+  });
+
+  /**
+   * ADR-48 / REQ-49 — a completed iteration must never be stranded by a `git
+   * merge` that refuses to overwrite an *untracked* file. This is the exact
+   * scenario that reported `🛑 ABORTED` with an empty project directory.
+   */
+  it("parks an untracked collision, integrates, and reports the backup (AC-49.1)", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    // The primary tree holds an untracked rules file (huginn's own `setup` writes
+    // `AGENTS.md` after the bootstrap commit)...
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "the user's own agents\n");
+    const sandbox = mgr.createSandbox(root, 12);
+    // ...and the iteration's doc-writer creates the same path in the sandbox.
+    fs.writeFileSync(path.join(sandbox.path, "AGENTS.md"), "sandbox agents\n");
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "docs + edit");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    // The integration now succeeds instead of aborting.
+    expect(res.promoted).toBe(true);
+    expect(res.method).toBe("ff");
+    expect(headCommit(root)).toBe(res.commits[0]);
+    // The branch's version is on the primary branch...
+    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8")).toBe("sandbox agents\n");
+    // ...and the user's file is preserved in the reported backup directory.
+    expect(res.backups).toBeDefined();
+    expect(res.backups).toHaveLength(1);
+    expect(fs.readFileSync(path.join(res.backups![0], "AGENTS.md"), "utf8")).toBe(
+      "the user's own agents\n",
+    );
+    expect(statusClean(root)).toBe(true);
+    expect(fs.existsSync(sandbox.path)).toBe(false);
+    expect(branchExists(root, sandbox.branch)).toBe(false);
+  });
+
+  it("restores parked files and preserves the branch when integration still conflicts (AC-49.2)", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "the user's own agents\n");
+    const sandbox = mgr.createSandbox(root, 13);
+
+    fs.writeFileSync(path.join(sandbox.path, "AGENTS.md"), "sandbox agents\n");
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "docs + edit");
+
+    // Diverge the primary on the same *tracked* file (without staging the
+    // untracked rules file) so the integration conflicts.
+    fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
+    expect(git(root, ["add", "file.txt"]).code).toBe(0);
+    expect(git(root, ["commit", "-m", "primary edit"]).code).toBe(0);
+    const primaryHead = headCommit(root);
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(false);
+    expect(res.method).toBe("cherry-pick");
+    expect(res.detail).toBeTruthy();
+    // The user's untracked file is back, byte for byte...
+    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8")).toBe("the user's own agents\n");
+    // ...nothing is left parked in a backup directory, and no phantom path is
+    // reported for a directory the rollback has just removed (NFR-17)...
+    const backupRoot = path.join(root, ".huginn", "promotion-backup");
+    expect(fs.existsSync(backupRoot) ? fs.readdirSync(backupRoot).length : 0).toBe(0);
+    expect(res.backups).toBeUndefined();
+    // ...the primary tracked file is untouched and the branch is preserved.
+    expect(headCommit(root)).toBe(primaryHead);
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("primary\n");
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+    expect(fs.existsSync(sandbox.path)).toBe(false);
+  });
+
+  it("restores a parked file with its original mode (AC-49.1)", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const secret = path.join(root, "AGENTS.md");
+    fs.writeFileSync(secret, "private\n");
+    fs.chmodSync(secret, 0o600);
+    const sandbox = mgr.createSandbox(root, 19);
+    fs.writeFileSync(path.join(sandbox.path, "AGENTS.md"), "sandbox agents\n");
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "docs + edit");
+
+    // Diverge on the tracked file so the integration conflicts and rolls back.
+    fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
+    expect(git(root, ["add", "file.txt"]).code).toBe(0);
+    expect(git(root, ["commit", "-m", "primary edit"]).code).toBe(0);
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(false);
+    expect(res.backups).toBeUndefined();
+    // The restored file kept its private mode, not the ambient umask's.
+    expect(fs.statSync(secret).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(secret, "utf8")).toBe("private\n");
+  });
+
+  it("derives the backup directory under .huginn/promotion-backup (AC-49.1)", () => {
+    const root = path.join(path.sep, "tmp", "proj");
+    expect(promotionBackupDir(root, "stamp")).toBe(
+      path.join(root, ".huginn", "promotion-backup", "stamp"),
+    );
+    const prefix = path.join(root, ".huginn", "promotion-backup") + path.sep;
+    const auto = promotionBackupDir(root);
+    expect(auto.startsWith(prefix)).toBe(true);
+    // The default stamp must be filesystem-safe (`:`/`.` are not).
+    expect(auto.slice(prefix.length)).not.toMatch(/[:.]/);
+  });
+
+  /**
+   * REV-001 — the next run's pre-run sweep must not delete the only copy of a
+   * preserved iteration's commits, nor be blocked from re-sandboxing it.
+   */
+  it("renames a preserved branch out of the reclaim namespace (REV-001)", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 20);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "sandbox edit");
+    fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
+    commitAll(root, "primary edit");
+
+    const res = mgr.promoteSandbox(sandbox);
+    expect(res.promoted).toBe(false);
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+
+    const kept = mgr.preserveOrphanBranch(sandbox.branch);
+
+    expect(kept).toMatch(/^huginn\/preserved\//);
+    expect(branchExists(root, sandbox.branch)).toBe(false);
+    expect(git(root, ["rev-parse", kept!]).code).toBe(0);
+    // The sweep can no longer see it, so the iteration can be sandboxed again
+    // while the preserved commits stay reachable.
+    mgr.cleanupAll();
+    expect(git(root, ["rev-parse", kept!]).code).toBe(0);
+    expect(mgr.createSandbox(root, 20).branch).toBe("huginn/task-iter-20");
+  });
+
+  it("parks every colliding untracked file, not just the first (AC-49.1)", () => {
+    const root = freshRepo();
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "user agents\n");
+    fs.writeFileSync(path.join(root, "CLAUDE.md"), "user claude\n");
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 16);
+    fs.writeFileSync(path.join(sandbox.path, "AGENTS.md"), "sandbox agents\n");
+    fs.writeFileSync(path.join(sandbox.path, "CLAUDE.md"), "sandbox claude\n");
+    commitAll(sandbox.path, "docs");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(true);
+    expect(res.backups).toHaveLength(1);
+    expect(fs.readFileSync(path.join(res.backups![0], "AGENTS.md"), "utf8")).toBe("user agents\n");
+    expect(fs.readFileSync(path.join(res.backups![0], "CLAUDE.md"), "utf8")).toBe("user claude\n");
+    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8")).toBe("sandbox agents\n");
+    expect(fs.readFileSync(path.join(root, "CLAUDE.md"), "utf8")).toBe("sandbox claude\n");
+  });
+
+  it("backs up an untracked symlink as a link, never following it (SEC-002)", () => {
+    const root = freshRepo();
+    const target = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "huginn-target-")));
+    repos.push(target);
+    const secret = path.join(target, "credentials");
+    fs.writeFileSync(secret, "AWS_SECRET=shhh\n");
+
+    const mgr = new WorktreeManager(root);
+    fs.symlinkSync(secret, path.join(root, "AGENTS.md"));
+    const sandbox = mgr.createSandbox(root, 15);
+    fs.writeFileSync(path.join(sandbox.path, "AGENTS.md"), "sandbox agents\n");
+    commitAll(sandbox.path, "docs");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(true);
+    const backup = path.join(res.backups![0], "AGENTS.md");
+    // The link itself is preserved — its target was never read or copied.
+    expect(fs.lstatSync(backup).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(backup)).toBe(secret);
+  });
+
+  /**
+   * SEC-001 — a cloned repository can ship `.huginn/promotion-backup` as a
+   * symlink. The destination is screened like every other `.huginn` writer, so
+   * huginn must refuse it (and must not lose the iteration's work either).
+   */
+  it("refuses a repository-shipped symlink as the backup destination (SEC-001)", () => {
+    const root = freshRepo();
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "huginn-outside-")));
+    repos.push(outside);
+    fs.mkdirSync(path.join(root, ".huginn"), { recursive: true });
+    fs.symlinkSync(outside, path.join(root, ".huginn", "promotion-backup"), "dir");
+
+    const mgr = new WorktreeManager(root);
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "the user's own agents\n");
+    const sandbox = mgr.createSandbox(root, 14);
+    fs.writeFileSync(path.join(sandbox.path, "AGENTS.md"), "sandbox agents\n");
+    commitAll(sandbox.path, "docs");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(false);
+    expect(res.failure).toBe("failed");
+    expect(res.detail).toMatch(/refused/i);
+    // No phantom backup path is reported when nothing is parked there.
+    expect(res.backups).toBeUndefined();
+    // Nothing was written through the link, and the user's file is untouched.
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8")).toBe("the user's own agents\n");
+    // The finished work is preserved on its branch, never discarded.
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+    expect(fs.existsSync(sandbox.path)).toBe(false);
+  });
+
+  /**
+   * SEC-003 / NFR-15 — a parking failure used to throw, which made the engine's
+   * `finally` discard the sandbox and delete the branch. It must now be a reported
+   * failure that preserves the finished iteration.
+   */
+  it("reports a failed promotion — never discards — when a collision cannot be parked (SEC-003)", () => {
+    const root = freshRepo();
+    // A repository-shipped *file* where the backup directory belongs.
+    fs.mkdirSync(path.join(root, ".huginn"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".huginn", "promotion-backup"), "not a directory\n");
+
+    const mgr = new WorktreeManager(root);
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "the user's own agents\n");
+    const sandbox = mgr.createSandbox(root, 17);
+    fs.writeFileSync(path.join(sandbox.path, "AGENTS.md"), "sandbox agents\n");
+    commitAll(sandbox.path, "docs");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(false);
+    expect(res.failure).toBe("failed");
+    expect(res.detail).toBeTruthy();
+    // Nothing was parked, so no backup path is reported.
+    expect(res.backups).toBeUndefined();
+    // The user's file is untouched and the finished work survives on its branch.
+    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8")).toBe("the user's own agents\n");
+    expect(branchExists(root, sandbox.branch)).toBe(true);
   });
 });
 

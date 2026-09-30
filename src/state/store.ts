@@ -4,6 +4,7 @@ import { join, dirname, basename } from "node:path";
 import { stateSchema, type HarnessState, type HistoryEntry } from "./schema";
 import { MAIN_PHASES, type PhaseName } from "../engine/types";
 import { assertDocPath } from "../util/docPath";
+import { sanitizeTerminalText } from "../util/text";
 import { writeFileAtomic } from "../util/atomicWrite";
 
 export function harnessDir(projectPath: string): string {
@@ -153,10 +154,27 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
   lines.push(`- **Last update**: ${state.updatedAt}`);
   lines.push(`- **Models**: thinker \`${state.models.thinker}\`, executor \`${state.models.executor}\``);
   lines.push(`- **Mode**: ${state.mode}`);
+  // A promotion failure is reported as itself, with the preserved branch and the
+  // backup directory — never as an abort (AC-49.3). `🛑 ABORTED` stays reserved
+  // for a run the user actually stopped.
+  const promotion = state.promotion;
+  const promotionFailed = promotion?.status === "conflict" || promotion?.status === "failed";
+  const backupNote =
+    promotion?.backups && promotion.backups.length > 0
+      ? ` (untracked file(s) backed up under \`${promotion.backups
+          .map((dir) => sanitizeTerminalText(dir))
+          .join(", ")}\`)`
+      : "";
   lines.push(
-    state.finishedAt
-      ? `- **Status**: ${state.aborted ? "🛑 ABORTED" : "✅ COMPLETED"} (${state.finishedAt})`
-      : `- **Status**: ▶ RUNNING — current iteration ${state.currentIteration}, phase \`${state.currentPhase}\``,
+    promotionFailed && promotion
+      ? `- **Status**: 🔴 PROMOTION FAILED — branch \`${sanitizeTerminalText(
+          promotion.branch,
+        )}\` preserved${backupNote}${
+          state.finishedAt ? ` (${state.finishedAt})` : ""
+        }`
+      : state.finishedAt
+        ? `- **Status**: ${state.aborted ? "🛑 ABORTED" : "✅ COMPLETED"} (${state.finishedAt})`
+        : `- **Status**: ▶ RUNNING — current iteration ${state.currentIteration}, phase \`${state.currentPhase}\``,
   );
   lines.push("");
 

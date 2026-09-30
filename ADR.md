@@ -1334,3 +1334,139 @@ avoids. They are ordered by how central the decision is to the design.
     multiply the render paths that must be tested at 80×24 and at 100+ columns; `↑`/`↓` now carry
     four meanings (palette, history, scroll, caret row) distinguished solely by mode, so the
     precedence rules stay load-bearing.
+
+## ADR-48: Sandbox promotion never strands or silently discards completed work
+
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: a real run completed iteration 1 with four commits in its sandbox and then reported
+  `🛑 ABORTED` with an empty project directory. Verified in an isolated clone: `git merge --ff-only`
+  refuses when the primary tree holds an **untracked** file the branch also adds
+  (`error: The following untracked working tree files would be overwritten by merge`); the
+  `cherry-pick` fallback collides on the same path; `promoteSandbox` aborts the cherry-pick, removes
+  the worktree and **keeps the branch**, and `runIteration` throws — which `run()` recorded as
+  `aborted: true`. The iteration's work was never lost, but nothing said so, and the default view was
+  an empty folder. The colliding file was huginn's own: `injectRulesForTarget` writes
+  `<project>/AGENTS.md` after the bootstrap commit, so it is untracked and collides with the
+  doc-writer's `AGENTS.md`. Integration only ever handled *committed* work; it had no notion of a
+  working-tree collision it could not overwrite.
+- **Decision**:
+  1. **Resolve collisions before integrating, non-destructively.** `promoteSandbox` detects the paths
+     it would overwrite (untracked in the primary tree ∩ added/changed by the branch), backs each one
+     up under `<project>/.huginn/promotion-backup/<stamp>/` with its mode preserved, removes the
+     working-tree copy, and then integrates. The backup directory is part of the result.
+  2. **Fail recoverable.** If integration still fails, the primary tree is restored to its
+     pre-promotion state (every backup put back), the branch is preserved for manual recovery, and the
+     manager returns `promoted:false` with the detail — never a silent discard.
+  3. **Report the outcome, do not overload it.** The engine records
+     `state.promotion = { status, branch, backups?, detail? }`; a promotion failure is an
+     `error`/`conflict`, not an abort. `renderProgressMarkdown` and the TUI name the preserved branch.
+- **Consequences**:
+  - *Positive*: a completed iteration's work is always reachable — either on the primary branch or on
+    a named branch with a backup of anything that had to move; `ABORTED` regains its meaning (the user
+    stopped the run).
+  - *Negative*: promotion now writes to `.huginn/promotion-backup/` (which is gitignored), and the
+    state schema grows an optional `promotion` field that the renderer must handle for old state files.
+
+## ADR-49: One root for Muninn — the `--project` root governs the database and the project record
+
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: a test project's `muninn.db` contained a `projects` row for huginn itself. The database
+  **file** was resolved from `process.cwd()` (`getDatabase` never received a start directory) while the
+  project **row** was resolved from `--project` (`ensureProject({ rootPath })`). Running
+  `huginn mcp run --project X` from a working directory inside `Y` therefore labelled X's row inside
+  **Y's** database, and (through `muninn_save`/`memory index`) wrote X's data there — a
+  cross-project attribution bug. `run`/`live` happened to pass a consistent root; the MCP server and
+  the `memory` CLI did not.
+- **Decision**: the database file and the project row are resolved from **one** root — `--project`
+  when given, otherwise the git root of the process's start directory. `getDatabase(dbPath?, startDir?)`
+  forwards `startDir` to `resolveDatabasePath`, `MemoryService` opens the database with the same
+  `projectRoot` it uses for `ensureProject`, and `ensureProject`'s fallback uses the same start
+  directory rather than an independent `findGitRoot()` of the cwd. `huginn doctor` reports foreign
+  rows in a project's database and names the fix; it deletes nothing.
+- **Consequences**:
+  - *Positive*: a runtime can never attribute one project's symbols or observations to another; the
+    invariant is one line to state and testable from any cwd.
+  - *Negative*: `getDatabase` grows a second parameter (kept optional so existing callers are
+    unchanged), and the non-git fallback (`~/.huginn/muninn.db`) remains shared — a diagnosed state,
+    not a silent one.
+
+## ADR-50: No dead panels — the run dashboard shows the phase report, or an idle raven state
+
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: `phaseStream` is emitted only by `subscribeToEvents` (the opencode SSE channel), wired
+  only when `runtime.id === "opencode"`. Every subprocess runtime therefore emits nothing, and the
+  `run` dashboard's `StreamCard` rendered `(waiting for agent stream / tool executions...)` for the
+  entire run — while the phase's real `PhaseResult.text` was discarded down to a one-line
+  `ReportPill`. The user read this, correctly, as a dead console.
+- **Decision**: the panel always has something true to show. When no stream content has arrived and a
+  phase has finished, it renders the tail of that phase's real report. When nothing has arrived at all,
+  it renders an idle raven state — a small two-raven ASCII composition (Huginn and Muninn) beside a
+  rotating raven-voiced phrase — and, for runtimes that cannot stream, one honest line naming the
+  runtime and the reason. The capability is a flag on `IAgentRuntime`, not a hardcoded id list, so a
+  future streaming adapter is described correctly without a second edit.
+- **Consequences**:
+  - *Positive*: the panel never looks broken; the agent's actual output is visible with every runtime;
+    the live console's adaptive rule (REQ-35.1/35.2) is now shared behaviour rather than a live-only
+    quirk.
+  - *Negative*: the panel has three body modes (stream / report / idle) that must each fit the card's
+    row budget at 80×24, and the idle copy is one more string to keep sanitized.
+
+## ADR-51: One semantic glyph table for phase status
+
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: the pipeline column rendered `⏳` and `verdictIcon()`'s `✅ 🟡 🔴 ⏭️`, the last-result
+  pill fell back to `🔴`, `.harness/PROGRESS.md` used its own emoji map (`🔍 ⚡ 🚦 🧪 🔐 👀 📝 🧠`) and the
+  stream panel sniffed `⚡ ✓ ✗ 💭`. Emoji are double-width and multi-toned: they break the monospace
+  grid the rest of the theme is built on, and they live in several places that can drift.
+- **Decision**: one table (`src/tui/glyphs.ts`) of printable, single-width ASCII/box-drawing glyphs —
+  status `·` pending, the braille spinner running, `✓` pass, `!` warning, `✕` blocked, `–` skipped; and
+  a phase-kind set for `PROGRESS.md` (`? > = % # @ ~ .`). Both surfaces read it, colour still resolves
+  through the semantic theme tokens, and the gate marker literals (`🟢/🟡/🔴`) — which are a three-way
+  contract between instructions, enforcement and parsers — are explicitly out of scope and unchanged.
+- **Consequences**:
+  - *Positive*: the pipeline grid is aligned and monochrome at any width; a glyph changes in one place;
+    a drift-guard test keeps the display surfaces emoji-free while the gate literals stay present.
+  - *Negative*: any doc or test that asserted an emoji must move to the glyph table; the two glyph
+    vocabularies (status, phase kind) must stay visually distinguishable without colour.
+
+## ADR-52: Sessions are a documented surface in the CLI help
+
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: `--continue`/`-c`, `--session <id>` and `--list-sessions`/`-sl` were listed as flags but
+  `huginn --help` never explained the session store, the resume precedence or the reattach semantics,
+  so a developer could not discover where their own sessions lived or how resuming resolved an id.
+- **Decision**: the full reference (`usage()`) gains a **Sessions** section documenting the store
+  (`<project>/.huginn/live/sessions.json`, owner-only, atomic, never in `git status`), the three flags
+  and their precedence (`--session <id>` wins over `--continue`, which adopts the most recently updated
+  session; a `--continue` with nothing to continue starts fresh with a notice; a bare `--session` fails
+  closed). The concise help points to it, and the existing drift guard keeps the two consistent.
+- **Consequences**:
+  - *Positive*: the session store and its flags become discoverable from the one place a developer
+    looks, and the concise/advanced split stays enforced by a test.
+  - *Negative*: the help text grows a section that must be kept true if the session semantics change.
+
+## ADR-53: Methodology profiles are selectable in-session
+
+- **Date**: 2026-09-30
+- **Status**: Accepted
+- **Context**: profiles exist (`src/engine/profiles.ts`: `huginn`, `sdd`, `odd`, `rdd`, `strict-tdd`)
+  but could only be fixed before the run — `--profile` or `huginn config set --profile`. The live
+  engine had no profile reference at all, there was no `/profile` command, and the cheat sheet never
+  listed one; the header merely displayed the resolved value. This is the same gap `/agent` and
+  `/models` already closed with a picker.
+- **Decision**: `/profile` opens a picker over `PROFILES` (name, one-line description, active marker;
+  `↑/↓`/`j`/`k`, `Enter`, `Esc`), and `/profile <id>` sets directly, validated against `PROFILE_NAMES`
+  and failing closed on an unknown id. `LiveEngine` gains `getProfile()`/`updateProfile(name, scope)`
+  with scope `session | project | global`, persisted through the existing config writers. Because the
+  pipeline is chosen when the cycle starts, a change after handoff applies to the **next** cycle and
+  the console says so — never a silent no-op.
+- **Consequences**:
+  - *Positive*: the methodology is discoverable and switchable like the runtime and the models, and the
+    registry/cheat sheet/context panel all surface it.
+  - *Negative*: the "applies to the next cycle" rule must be stated in the UI and tested, and the live
+    engine now holds one more settable field that the header and `/status` must reflect.
