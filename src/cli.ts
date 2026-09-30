@@ -85,6 +85,7 @@ Common flags:
   --continue, -c       resume the latest live session             (live mode)
   --session <id>       resume the live session with this id       (live mode)
   --list-sessions, -sl list the persisted live sessions and exit  (live mode)
+                       store + resume rules: huginn --help --all, "Sessions (live)"
   --force              overwrite existing documents/files
   --yes                accept defaults and never prompt (non-interactive / CI)
   --no-git-init        fail instead of initializing a missing git repository
@@ -153,6 +154,20 @@ Model resolution (run/live):
     4. environment       HUGINN_THINKER_MODEL / HUGINN_EXECUTOR_MODEL
     5. defaults          thinker: anthropic/claude-opus-4-5
                          executor: opencode/gpt-5.1-codex
+
+Sessions (live):
+  A live session is persisted after every turn, so a refinement you stopped can be
+  picked up later with its conversation intact. Sessions live in
+  <project>/.huginn/live/sessions.json (owner-only, written atomically, and never
+  tracked by git).
+    huginn live --continue, -c      resume this project's most recently updated session
+    huginn live --session <id>      resume one specific session (the strongest request,
+                                    it wins over --continue)
+    huginn live --list-sessions, -sl  list the persisted sessions and exit 0
+
+  --continue with nothing to continue starts a fresh session and says so; a bare
+  --session (no id) fails closed. Sessions are a live-mode surface only: \`run\`
+  neither reads nor writes them.
 
 Git repository (run/plan/live):
   The project may be any directory inside a git work tree — a subdirectory and a

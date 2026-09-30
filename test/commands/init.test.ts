@@ -1489,6 +1489,21 @@ describe("huginn init routing & help hierarchy (AC-26.2)", () => {
     }
   });
 
+  it("documents the live-session store, its flags and its rules (REQ-53)", () => {
+    const full = usage();
+    // The store, the three flags, the precedence and the fail-closed rules.
+    expect(full).toContain("Sessions (live):");
+    expect(full).toContain(".huginn/live/sessions.json");
+    expect(full).toContain("huginn live --continue, -c");
+    expect(full).toContain("huginn live --session <id>");
+    expect(full).toContain("huginn live --list-sessions, -sl");
+    expect(full).toContain("wins over --continue");
+    expect(full).toContain("starts a fresh session and says so");
+    expect(full).toContain("fails closed");
+    // The concise help points at the section instead of leaving it undiscoverable.
+    expect(usageCore()).toContain("Sessions (live)");
+  });
+
   it("prints the concise view for --help and the full reference for --all", async () => {
     const concise = await captureMain(["--help"]);
     expect(concise).toContain("Core commands");
