@@ -12,6 +12,7 @@ import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
 import { TWO_RAVENS } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
+import { STATUS_GLYPHS } from "./glyphs.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
   MCP_STATUS_POLL_TIMEOUT_MS,
@@ -469,7 +470,7 @@ export function Dashboard({
       {promotionHeight > 0 && ui.promotion ? (
         <Box paddingX={1}>
           <Text color={THEME.danger} wrap="truncate">
-            🔴 PROMOTION FAILED — branch{" "}
+            {STATUS_GLYPHS.blocked} PROMOTION FAILED — branch{" "}
             <Text bold>{sanitizeTerminalText(ui.promotion.branch)}</Text> preserved
             {ui.promotion.backups && ui.promotion.backups.length > 0
               ? ` · backups: ${ui.promotion.backups.map(sanitizeTerminalText).join(", ")}`
@@ -526,7 +527,7 @@ function HeaderCard({
   // costs exactly the one line the layout budgeted for it (AC-29.3).
   const rowWidth = plan.contentWidth;
   const gap = 2;
-  const statusLabel = paused ? "[⏸ PAUSED]" : `[${spinner} RUNNING]`;
+  const statusLabel = paused ? "[PAUSED]" : `[${spinner} RUNNING]`;
   const modeLabel = "mode: ";
   const modeBudget = Math.max(4, Math.min(14, rowWidth - statusLabel.length - modeLabel.length - 20));
   const safeMode = headerValue(cfg.mode, modeBudget);
@@ -692,7 +693,7 @@ function PipelineCard({
         const isCurrent = name === currentPhase;
         const isFix = name.startsWith("FIX");
 
-        let icon = "⏳";
+        let icon: string = STATUS_GLYPHS.pending;
         let color: string | undefined = THEME.muted;
         let badge = "";
 
@@ -886,7 +887,7 @@ export function LogsCard({
 function ReportPill({ report }: { report: PhaseResult }) {
   const v = report.verdict;
   const color = v ? THEME[verdictToken(v)] : THEME.danger;
-  const mark = v ? verdictIcon(v) : "🔴";
+  const mark = v ? verdictIcon(v) : STATUS_GLYPHS.blocked;
   return (
     <Box marginTop={0} paddingX={1}>
       <Text color={THEME.muted}>Last result: </Text>

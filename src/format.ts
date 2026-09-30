@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import type { Verdict } from "./engine/types";
 import type { ThemeToken } from "./tui/theme";
+import { verdictGlyph } from "./tui/glyphs.js";
 
 /** Human-readable duration, e.g. `0s`, `3.2s`, `12m 3s` (headless summaries). */
 export function formatDuration(ms?: number): string {
@@ -47,17 +48,12 @@ export function verdictToken(v: Verdict): ThemeToken {
   }
 }
 
+/**
+ * The single-width glyph for a verdict (REQ-52 / ADR-51). Delegates to the shared
+ * table so the TUI and `.harness/PROGRESS.md` cannot drift.
+ */
 export function verdictIcon(v: Verdict): string {
-  switch (v) {
-    case "pass":
-      return "✅";
-    case "warning":
-      return "🟡";
-    case "blocked":
-      return "🔴";
-    case "skipped":
-      return "⏭️";
-  }
+  return verdictGlyph(v);
 }
 
 export function verdictBadge(v: Verdict): string {

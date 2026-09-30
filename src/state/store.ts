@@ -5,6 +5,7 @@ import { stateSchema, type HarnessState, type HistoryEntry } from "./schema";
 import { MAIN_PHASES, type PhaseName } from "../engine/types";
 import { assertDocPath } from "../util/docPath";
 import { sanitizeTerminalText } from "../util/text";
+import { STATUS_GLYPHS, phaseGlyph, verdictGlyph } from "../tui/glyphs.js";
 import { writeFileAtomic } from "../util/atomicWrite";
 
 export function harnessDir(projectPath: string): string {
@@ -122,20 +123,20 @@ export function writeReport(
   return p;
 }
 
-const PHASE_LABEL: Record<string, { label: string; icon: string }> = {
-  SPEC_AUDIT: { label: "Spec Audit", icon: "🔍" },
-  FIX_SPEC: { label: "Fix Spec deviations", icon: "🧠" },
-  EXECUTE: { label: "Execute iteration", icon: "⚡" },
-  VALIDATE_STEP: { label: "Validate step", icon: "🚦" },
-  FIX_VALIDATE: { label: "Fix validation findings", icon: "🧠" },
-  TEST_MODULE: { label: "Test module", icon: "🧪" },
-  FIX_TEST: { label: "Fix test failures", icon: "🧠" },
-  SECURE_CHECK: { label: "Secure check", icon: "🔐" },
-  FIX_SECURITY: { label: "Fix security findings", icon: "🧠" },
-  REVIEW: { label: "Code review", icon: "👀" },
-  FIX_REVIEW: { label: "Fix review findings", icon: "🧠" },
-  DOC_SYNC: { label: "Doc sync", icon: "📝" },
-  COMMIT_ALL: { label: "Commit all", icon: "📦" },
+const PHASE_LABEL: Record<string, { label: string }> = {
+  SPEC_AUDIT: { label: "Spec Audit" },
+  FIX_SPEC: { label: "Fix Spec deviations" },
+  EXECUTE: { label: "Execute iteration" },
+  VALIDATE_STEP: { label: "Validate step" },
+  FIX_VALIDATE: { label: "Fix validation findings" },
+  TEST_MODULE: { label: "Test module" },
+  FIX_TEST: { label: "Fix test failures" },
+  SECURE_CHECK: { label: "Secure check" },
+  FIX_SECURITY: { label: "Fix security findings" },
+  REVIEW: { label: "Code review" },
+  FIX_REVIEW: { label: "Fix review findings" },
+  DOC_SYNC: { label: "Doc sync" },
+  COMMIT_ALL: { label: "Commit all" },
 };
 
 export function renderProgressMarkdown(projectPath: string, state: HarnessState): string {
@@ -167,14 +168,14 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
       : "";
   lines.push(
     promotionFailed && promotion
-      ? `- **Status**: 🔴 PROMOTION FAILED — branch \`${sanitizeTerminalText(
+      ? `- **Status**: ${STATUS_GLYPHS.blocked} PROMOTION FAILED — branch \`${sanitizeTerminalText(
           promotion.branch,
-        )}\` preserved${backupNote}${
-          state.finishedAt ? ` (${state.finishedAt})` : ""
-        }`
+        )}\` preserved${backupNote}${state.finishedAt ? ` (${state.finishedAt})` : ""}`
       : state.finishedAt
-        ? `- **Status**: ${state.aborted ? "🛑 ABORTED" : "✅ COMPLETED"} (${state.finishedAt})`
-        : `- **Status**: ▶ RUNNING — current iteration ${state.currentIteration}, phase \`${state.currentPhase}\``,
+        ? `- **Status**: ${
+            state.aborted ? `${STATUS_GLYPHS.blocked} ABORTED` : `${STATUS_GLYPHS.pass} COMPLETED`
+          } (${state.finishedAt})`
+        : `- **Status**: > RUNNING — current iteration ${state.currentIteration}, phase \`${state.currentPhase}\``,
   );
   lines.push("");
 
@@ -182,7 +183,7 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
     const entries = byIteration.get(i) ?? [];
     lines.push(`## Iteration ${i}`);
     if (entries.length === 0) {
-      lines.push("- ⏳ pending");
+      lines.push(`- ${STATUS_GLYPHS.pending} pending`);
       continue;
     }
     const mainPhaseSet = new Set<string>(MAIN_PHASES);
@@ -194,18 +195,12 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
     const phaseCount = MAIN_PHASES.length;
     lines.push(`- Phase progress: ${done}/${phaseCount}`);
     for (const e of entries) {
-      const meta = PHASE_LABEL[e.phase] ?? { label: e.phase, icon: "•" };
-      const mark =
-        e.verdict === "pass"
-          ? "✅"
-          : e.verdict === "warning"
-            ? "🟡"
-            : e.verdict === "blocked"
-              ? "🔴"
-              : e.verdict === "skipped"
-                ? "⏭️"
-                : "🔵";
-      lines.push(`- ${mark} ${meta.icon} **${meta.label}** (attempt ${e.attempt}, ${e.model}) — ${e.summary}`);
+      const meta = PHASE_LABEL[e.phase] ?? { label: e.phase };
+      // Single-width glyphs, shared with the TUI (REQ-52 / ADR-51).
+      const mark = e.verdict ? verdictGlyph(e.verdict) : STATUS_GLYPHS.running;
+      lines.push(
+        `- ${mark} ${phaseGlyph(e.phase)} **${meta.label}** (attempt ${e.attempt}, ${e.model}) — ${e.summary}`,
+      );
       if (e.reportPath) lines.push(`  - report: \`${e.reportPath}\``);
     }
     lines.push("");

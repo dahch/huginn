@@ -124,7 +124,7 @@ export const SkillsModal = React.memo(function SkillsModal({
       {/* Header */}
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={THEME.executor}>
-          ⚡ PROJECT SKILLS BROWSER
+          PROJECT SKILLS BROWSER
         </Text>
         <Text color={THEME.muted}>
           Focus: <Text bold color={THEME.text}>{focusPane.toUpperCase()}</Text> (Tab to switch · Esc to cancel)

@@ -124,7 +124,7 @@ export const HelpModal = React.memo(function HelpModal({
       {/* Slash Commands */}
       <Box flexDirection="column" marginTop={0}>
         <Text bold color={THEME.accent}>
-          ⚡ Slash Commands:
+          Slash Commands:
         </Text>
         {SLASH_COMMANDS.map((cmd) => (
           <Box key={cmd.command} marginY={0} flexDirection="row">

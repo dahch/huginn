@@ -699,11 +699,14 @@ Ink grid.
    - Exported as pure functions/data plus a `verdictGlyph(v)` used everywhere.
 2. `src/format.ts`: `verdictIcon`/`verdictToken` return the new glyphs/tokens (keep `verdictToken`
    semantics; the TUI still resolves the token to a colour).
-3. Replace every emoji display glyph: `Dashboard.tsx` (`PipelineCard` `⏳`, `verdictIcon`,
-   `ReportPill` `🔴`, stream prefixes `⚡ ✓ ✗ 💭`), `LiveDashboard.tsx` equivalents, `store.ts`
-   (`PHASE_META` icons + the status emoji), `HelpModal.tsx`/`SkillsModal.tsx` section headers.
-4. **Do not** touch the gate marker literals or the `ping`/decision emoji inside prompt text; only
-   rendered TUI/markdown display glyphs change.
+3. Replace every emoji **display** glyph: `Dashboard.tsx` (`PipelineCard`'s `⏳`, `verdictIcon`'s
+   `✅🟡🔴⏭️`, `ReportPill`'s `🔴`, the `[⏸ PAUSED]` label, the promotion notice), `store.ts` (the
+   phase-icon map, the status emoji and the promotion line) and the modal section headers
+   (`HelpModal`, `SkillsModal`, `ModelPickerModal`). The **stream-panel prefixes** (`⚡ ✓ ✗ 💭`) are
+   left as they are: they are markers a *runtime* emits (`src/engine/permissions.ts`), not huginn's
+   own display glyphs, and rewriting them would be a producer change, not a theme one.
+4. **Do not** touch the gate marker literals or the decision/permission prompt text; only rendered
+   TUI/markdown display glyphs change.
 5. Drift-guard test (`test/tui/`): the rendered pipeline/status strings contain no emoji while the
    gate literals remain present in the engine sources.
 6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.

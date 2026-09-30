@@ -344,10 +344,10 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
       <Box justifyContent="space-between" marginBottom={0}>
         <Text bold color={THEME.accent}>
           {step === "thinker"
-            ? "🤖 MODEL SELECTOR · Step 1/3: Choose Thinker (Architect & Fixes)"
+            ? "MODEL SELECTOR · Step 1/3: Choose Thinker (Architect & Fixes)"
             : step === "executor"
-              ? "⚡ MODEL SELECTOR · Step 2/3: Choose Executor (Coder & Gates)"
-              : "💾 PERSISTENCE · Step 3/3: Save Model Preferences"}
+              ? "MODEL SELECTOR · Step 2/3: Choose Executor (Coder & Gates)"
+              : "MODEL SELECTOR · Step 3/3: Save Model Preferences"}
         </Text>
         <Text color={THEME.muted}>Runtime: {safeRuntimeName} (Esc to cancel)</Text>
       </Box>
