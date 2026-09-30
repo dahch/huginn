@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -1642,5 +1643,94 @@ describe("Muninn MemoryService & Persistence Engine", () => {
         writeSpy.mockRestore();
       }
     });
+  });
+});
+
+/**
+ * ADR-49 / AC-50.2 — `projectRoot` alone decides where the database lives and
+ * which project the row belongs to. The bug: the database came from the process
+ * cwd while the row came from `--project`, so running against project X from a cwd
+ * inside Y wrote X's row into Y's database.
+ */
+describe("MemoryService one-root attribution (ADR-49)", () => {
+  const roots: string[] = [];
+
+  function gitRepo(name: string): string {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `muninn-svc-${name}-`)));
+    roots.push(dir);
+    spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+    return dir;
+  }
+
+  afterEach(() => {
+    while (roots.length > 0) {
+      fs.rmSync(roots.pop()!, { recursive: true, force: true });
+    }
+  });
+
+  it("opens the database under projectRoot and never the cwd", () => {
+    const project = gitRepo("root");
+    const service = new MemoryService({ projectRoot: project });
+    try {
+      expect(service.db.name).toBe(path.join(project, ".huginn", "muninn.db"));
+      expect(service.currentProject.root_path).toBe(project);
+      // The database is not the one the process cwd would resolve to.
+      expect(service.db.name).not.toBe(clientModule.resolveDatabasePath(undefined));
+    } finally {
+      service.close?.();
+    }
+  });
+
+  it("refuses a repository-shipped symlink for the memory export, both ways (SEC-006)", () => {
+    const project = gitRepo("export");
+    fs.mkdirSync(path.join(project, ".huginn"), { recursive: true });
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "muninn-export-")));
+    roots.push(outside);
+    const victim = path.join(outside, "memories.jsonl");
+    fs.writeFileSync(victim, '{"id":"outside"}\n');
+    fs.symlinkSync(victim, path.join(project, ".huginn", "memories.jsonl"));
+
+    const service = new MemoryService({ projectRoot: project });
+    try {
+      service.saveObservation({ category: "decision", title: "t", content: "c" });
+      // Neither direction may travel through the link.
+      expect(() => service.syncToDisk()).toThrow(/symlink/i);
+      expect(() => service.importFromDisk()).toThrow(/symlink/i);
+      expect(fs.readFileSync(victim, "utf8")).toBe('{"id":"outside"}\n');
+      expect(fs.readdirSync(outside)).toEqual(["memories.jsonl"]);
+    } finally {
+      service.close?.();
+    }
+  });
+
+  it("writes nothing into another project's database", () => {
+    const target = gitRepo("target");
+    const other = gitRepo("other");
+    // The other project has its own database...
+    const otherService = new MemoryService({ projectRoot: other });
+    otherService.saveObservation({ category: "decision", title: "keep", content: "keep" });
+    otherService.close?.();
+
+    // ...and a run against `target` must not add a row to it.
+    const service = new MemoryService({ projectRoot: target });
+    try {
+      service.saveObservation({ category: "decision", title: "mine", content: "mine" });
+      const targetRows = service.db
+        .prepare("SELECT name FROM projects")
+        .all() as Array<{ name: string }>;
+      expect(targetRows.map((r) => r.name)).toEqual([path.basename(target)]);
+    } finally {
+      service.close?.();
+    }
+
+    const reopened = new MemoryService({ projectRoot: other });
+    try {
+      const otherRows = reopened.db
+        .prepare("SELECT name FROM projects")
+        .all() as Array<{ name: string }>;
+      expect(otherRows.map((r) => r.name)).toEqual([path.basename(other)]);
+    } finally {
+      reopened.close?.();
+    }
   });
 });

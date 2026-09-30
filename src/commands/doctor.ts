@@ -7,7 +7,7 @@
  * Muninn DB are **critical** (AC-16.2); everything else degrades to a warning.
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import chalk from "chalk";
@@ -222,6 +222,59 @@ function muninnCheck(projectPath: string, dbPath: string): DoctorCheck {
 }
 
 /**
+ * REQ-50 / AC-50.3 — report project rows that belong to another root. It is the
+ * signature of the attribution bug ADR-49 fixes (a command whose `--project`
+ * disagreed with its working directory), it is diagnosed rather than repaired,
+ * and nothing is ever deleted.
+ */
+function realOrResolved(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function muninnAttributionCheck(projectPath: string, dbPath: string): DoctorCheck {
+  let status: DoctorCheck["status"] = "warn";
+  let detail: string;
+  try {
+    const service = new MemoryService({ projectRoot: projectPath, dbPath });
+    try {
+      // Compare canonical paths: the same project reached through a symlink
+      // alias (or macOS `/tmp` vs `/private/tmp`) is the same project, not a
+      // foreign row (L-2).
+      const expected = realOrResolved(projectPath);
+      const rows = service.db
+        .prepare("SELECT name, root_path FROM projects")
+        .all() as Array<{ name: string; root_path: string }>;
+      const foreign = rows.filter((row) => realOrResolved(row.root_path) !== expected);
+      if (foreign.length === 0) {
+        status = "ok";
+        detail = "every project row in this database matches the project root";
+      } else {
+        const first = foreign[0]!;
+        detail =
+          `${foreign.length} project row(s) belong to another root (e.g. "${first.name}" at ${first.root_path}) — ` +
+          `this database was written by a command whose --project did not match its working directory. ` +
+          `Re-run it with --project <this project>, or move the database aside. Nothing was deleted.`;
+      }
+    } finally {
+      service.close?.();
+    }
+  } catch (err) {
+    detail = `could not inspect the Muninn project rows: ${(err as Error).message}`;
+  }
+  return {
+    id: "muninn-attribution",
+    label: "Muninn attribution",
+    status,
+    detail,
+    critical: false,
+  };
+}
+
+/**
  * Structured diagnostics independent of console output (AC-16.3). `ok` is true
  * only when every **critical** check passed.
  */
@@ -246,6 +299,7 @@ export function runDoctorChecks(opts: DoctorOptions): DoctorReport {
     opencodeCheck(),
     integrationCheck(base),
     muninnCheck(projectPath, dbPath),
+    muninnAttributionCheck(projectPath, dbPath),
   ];
 
   const ok = checks.every((check) => !check.critical || check.status === "ok");

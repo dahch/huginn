@@ -645,7 +645,13 @@ database.
 5. Tests (`test/muninn/`): the database path follows `--project` from any cwd; running `--project X`
    from a cwd inside `Y` creates only X's row and writes nothing into `Y`'s database; `doctor` flags a
    foreign row.
-6. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
+6. Screen the **whole** `.huginn` surface, not just the database: the durable JSONL export
+   (`syncToDisk`/`importFromDisk`) goes through `assertDocPath` too, so a repository-shipped
+   `.huginn/memories.jsonl` symlink can be neither written through nor read from — the read direction
+   would otherwise pull foreign content into the database, where the MCP memory tools serve it to the
+   agent (SEC-006). The `doctor` attribution check compares canonical (`realpath`) roots so a project
+   reached through a path alias is not reported as a foreign row.
+7. Verify: `bun test`, `bunx vitest run`, `bun run typecheck` all green.
 
 ## Iteration 39 — The Run Output Panel Is Never Dead
 modules: src/tui/Dashboard.tsx, src/tui/feedback.ts, src/brand.ts, src/engine/agent/types.ts, test/tui/

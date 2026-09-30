@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -994,6 +995,73 @@ describe("Muninn Database Layer & SQLite FTS5 Schema", () => {
         fs.rmSync(tempGit, { recursive: true, force: true });
       }
     });
+  });
+});
+
+/**
+ * ADR-49 / REQ-50 — the database file and the project row are resolved from ONE
+ * root: the caller's `projectRoot`, never the process working directory. The
+ * regression this pins is a `--project X` run from a cwd inside `Y` labelling X's
+ * row (and writing X's data) into Y's database.
+ */
+describe("Muninn one-root resolution (ADR-49)", () => {
+  const roots: string[] = [];
+
+  function gitRepo(name: string): string {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `muninn-${name}-`)));
+    roots.push(dir);
+    spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+    return dir;
+  }
+
+  afterEach(() => {
+    while (roots.length > 0) {
+      fs.rmSync(roots.pop()!, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves the database from startDir, not the process cwd", () => {
+    const project = gitRepo("one-root");
+    const db = getDatabase(undefined, project);
+    try {
+      // The cwd here is the huginn repository, not the project.
+      expect(db.name).toBe(path.join(project, ".huginn", "muninn.db"));
+      expect(fs.existsSync(path.join(project, ".huginn", "muninn.db"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps the database and the project row on the same root", () => {
+    const project = gitRepo("one-row");
+    const db = getDatabase(undefined, project);
+    try {
+      const row = ensureProject(db, { startDir: project });
+      expect(row.root_path).toBe(project);
+
+      const target = getDatabase(undefined, project);
+      try {
+        // Re-opening from the same root finds the same row rather than creating
+        // a second one.
+        expect(ensureProject(target, { startDir: project }).id).toBe(row.id);
+        const count = db.prepare("SELECT count(*) AS n FROM projects").get() as { n: number };
+        expect(count.n).toBe(1);
+      } finally {
+        target.close();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses a repository-shipped .huginn symlink instead of writing through it (SEC-005)", () => {
+    const project = gitRepo("symlinked");
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "muninn-outside-")));
+    roots.push(outside);
+    fs.symlinkSync(outside, path.join(project, ".huginn"), "dir");
+
+    expect(() => getDatabase(undefined, project)).toThrow(/outside the project root|symlink/i);
+    expect(fs.readdirSync(outside)).toEqual([]);
   });
 });
 

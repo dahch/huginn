@@ -4,6 +4,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { assertDocPath } from "../../util/docPath.js";
 
 export type ObservationCategory =
   | "decision"
@@ -68,6 +69,13 @@ export interface EnsureProjectOptions {
   rootPath?: string;
   name?: string;
   gitRemote?: string;
+  /**
+   * Start directory for the git-root **fallback** when no `rootPath` is given.
+   * Callers that also choose the database path pass the same directory, so the
+   * database file and the project record can never be resolved from two different
+   * roots (ADR-49).
+   */
+  startDir?: string;
 }
 
 export const SCHEMA_SQL = `-- Muninn Engine Database Schema
@@ -271,10 +279,23 @@ export function resolveDatabasePath(
  * Initializes and returns a SQLite database instance using better-sqlite3.
  * Configures foreign_keys = ON, journal_mode = WAL, busy_timeout = 5000, recursive_triggers = ON, and executes schema.sql DDL.
  */
-export function getDatabase(dbPath?: string): Database.Database {
-  const resolvedPath = resolveDatabasePath(dbPath);
+export function getDatabase(dbPath?: string, startDir?: string): Database.Database {
+  // The database and the project record must come from ONE root (ADR-49): the
+  // caller passes the same directory it hands to `ensureProject`.
+  const resolvedPath = resolveDatabasePath(dbPath, startDir);
 
   if (resolvedPath !== ":memory:") {
+    // A cloned repository can ship `.huginn` — or the database file itself — as a
+    // symlink and redirect the SQLite write outside the project (SEC-005). The
+    // path is screened exactly like the harness state, the receipts and the
+    // promotion backup; the lexical path is kept for the open so callers see the
+    // path they named.
+    assertDocPath(resolvedPath, {
+      projectPath: findGitRoot(startDir ?? process.cwd()) ?? undefined,
+      label: "the Muninn database",
+      action: "write",
+    });
+
     const dir = path.dirname(resolvedPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -305,9 +326,10 @@ export function ensureProject(
   db: Database.Database,
   options?: EnsureProjectOptions
 ): Project {
-  const rootPath = options?.rootPath
-    ? path.resolve(options.rootPath)
-    : (findGitRoot() ?? process.cwd());
+  // Same fallback root as the database resolution (ADR-49): when no explicit
+  // root is given, both derive from `startDir` (or the process cwd).
+  const base = options?.startDir ? path.resolve(options.startDir) : process.cwd();
+  const rootPath = options?.rootPath ? path.resolve(options.rootPath) : (findGitRoot(base) ?? base);
 
   const existing = db
     .prepare<[string], Project>(

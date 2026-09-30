@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
+import { assertDocPath } from "../../util/docPath.js";
 import {
   getDatabase,
   ensureProject,
@@ -311,13 +312,17 @@ export class MemoryService implements IMemoryService {
       this._db = options.db;
       this.isDbOwned = false;
     } else {
-      this._db = getDatabase(options?.dbPath);
+      // ONE root for both (ADR-49): the database file and the project record are
+      // resolved from `projectRoot`, so `--project X` can never label a row in
+      // another project's database.
+      this._db = getDatabase(options?.dbPath, options?.projectRoot);
       this.isDbOwned = true;
     }
 
     try {
       this._currentProject = ensureProject(this._db, {
         rootPath: options?.projectRoot,
+        startDir: options?.projectRoot,
       });
     } catch (err) {
       if (this.isDbOwned && this._db?.open) {
@@ -333,6 +338,22 @@ export class MemoryService implements IMemoryService {
 
   public get currentProject(): Project {
     return this._currentProject;
+  }
+
+  /**
+   * Screen the durable JSONL export path exactly like the database path
+   * (SEC-006): a `.huginn/memories.jsonl` a cloned repository ships as a symlink
+   * must be neither written through nor read from — either direction would move
+   * project content outside the project (or pull foreign content in, where the
+   * MCP memory tools would serve it to the agent).
+   */
+  private assertMemoryPath(resolvedPath: string, action: string): void {
+    const root = this._currentProject.root_path || findGitRoot() || process.cwd();
+    assertDocPath(resolvedPath, {
+      projectPath: root,
+      label: "the Muninn memory export",
+      action,
+    });
   }
 
   /**
@@ -1027,6 +1048,8 @@ export class MemoryService implements IMemoryService {
       resolvedPath = path.join(root, ".huginn", "memories.jsonl");
     }
 
+    this.assertMemoryPath(resolvedPath, "write");
+
     const dir = path.dirname(resolvedPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -1150,6 +1173,8 @@ export class MemoryService implements IMemoryService {
         this._currentProject.root_path || findGitRoot() || process.cwd();
       resolvedPath = path.join(root, ".huginn", "memories.jsonl");
     }
+
+    this.assertMemoryPath(resolvedPath, "read");
 
     if (!fs.existsSync(resolvedPath)) {
       return { imported: 0, skipped: 0 };

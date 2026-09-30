@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setup, AGENT_TARGETS } from "../../src/agents/integrator.js";
+import { MemoryService } from "../../src/muninn/service/memory-service.js";
 import {
   handleDoctorCommand,
   runDoctorChecks,
@@ -83,6 +84,8 @@ describe("runDoctorChecks", () => {
     expect(checks.get("muninn")?.critical).toBe(true);
 
     expect(checks.get("git-binary")?.status).toBe("ok");
+    // A database whose rows all match the project root is healthy (AC-50.3).
+    expect(checks.get("muninn-attribution")?.status).toBe("ok");
     expect(report.checks.map((c) => c.id)).toEqual([
       "git-binary",
       "git-repo",
@@ -91,7 +94,26 @@ describe("runDoctorChecks", () => {
       "opencode",
       "integrations",
       "muninn",
+      "muninn-attribution",
     ]);
+  });
+
+  it("warns (never fails) when the database holds another project's rows (AC-50.3)", () => {
+    const env = makeEnv(true);
+    const other = join(env.root, "other-project");
+    mkdirSync(other, { recursive: true });
+    // The pre-ADR-49 mismatch wrote exactly this: a row for a different root.
+    new MemoryService({ projectRoot: other, dbPath: env.dbPath }).close?.();
+
+    const report = runDoctorChecks(options(env));
+    const check = byId(report).get("muninn-attribution");
+
+    expect(check?.status).toBe("warn");
+    expect(check?.critical).toBe(false);
+    expect(check?.detail).toContain("another root");
+    expect(check?.detail).toContain(other);
+    // Diagnosed, not fatal, and nothing is deleted.
+    expect(report.ok).toBe(true);
   });
 
   it("is independent of console output (structured report only)", () => {
@@ -100,7 +122,7 @@ describe("runDoctorChecks", () => {
     try {
       const report = runDoctorChecks(options(env));
       expect(logSpy).not.toHaveBeenCalled();
-      expect(report.checks).toHaveLength(7);
+      expect(report.checks).toHaveLength(8);
     } finally {
       logSpy.mockRestore();
     }
