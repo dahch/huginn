@@ -10,6 +10,8 @@ import { useTerminalSize } from "./useTerminalSize";
 import type { PromotionRecord } from "../state/schema";
 import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
+import { TWO_RAVENS } from "../brand.js";
+import { idleAgentPhrase } from "./feedback.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
   MCP_STATUS_POLL_TIMEOUT_MS,
@@ -455,6 +457,9 @@ export function Dashboard({
             spinner={spinner}
             verbose={ui.verbose}
             height={middleHeight}
+            report={ui.lastReport?.raw ?? ""}
+            runtimeId={engine.runtime.id}
+            streamsOutput={engine.runtime.streamsOutput === true}
           />
         </Box>
       </Box>
@@ -729,6 +734,19 @@ function PipelineCard({
   );
 }
 
+/**
+ * The run dashboard's output panel (ADR-50 / REQ-51).
+ *
+ * Three honest body modes, in order of what the engine actually has:
+ *   1. **stream** — incremental text, when the runtime has an event channel;
+ *   2. **report** — the tail of the last finished phase's real report, which is
+ *      all a subprocess runtime ever produces (AC-51.1);
+ *   3. **idle** — two ravens and a rotating phrase, with one line naming the
+ *      runtime and why there is nothing live to show (AC-51.2, AC-51.3).
+ *
+ * The waiting placeholder is kept only for a runtime that really can stream, so
+ * the panel never claims to await output that will not arrive.
+ */
 export function StreamCard({
   lines = [],
   totalLines,
@@ -738,6 +756,9 @@ export function StreamCard({
   spinner,
   verbose,
   height,
+  report = "",
+  runtimeId,
+  streamsOutput = true,
 }: {
   lines?: string[];
   totalLines?: number;
@@ -747,8 +768,33 @@ export function StreamCard({
   spinner: string;
   verbose: boolean;
   height?: number;
+  /** The last finished phase's raw report, shown when nothing streams (AC-51.1). */
+  report?: string;
+  /** Active runtime id, named by the honesty note (AC-51.3). */
+  runtimeId?: string;
+  /** Whether the runtime can push incremental output (AC-51.3). */
+  streamsOutput?: boolean;
 }) {
   const displayLines = lines;
+  const bodyBudget = Math.max(1, (height ?? 10) - 3);
+  const hasStream = displayLines.length > 0;
+  const reportLines =
+    !hasStream && report.trim().length > 0 ? report.trimEnd().split("\n") : [];
+  const hasReport = reportLines.length > 0;
+
+  const idleRows: Array<{ text: string; art: boolean }> = !hasStream && !hasReport
+    ? ([
+        ...TWO_RAVENS.map((text) => ({ text, art: true })),
+        { text: idleAgentPhrase(Math.floor(Date.now() / 4000)), art: false },
+        streamsOutput
+          ? { text: "(waiting for agent stream / tool executions...)", art: false }
+          : {
+              text: `${sanitizeTerminalText(runtimeId ?? "this runtime")} cannot stream live output — each phase's report appears here when it ends.`,
+              art: false,
+            },
+      ] as Array<{ text: string; art: boolean }>).slice(0, bodyBudget)
+    : [];
+
   return (
     <Box
       borderStyle="round"
@@ -760,7 +806,8 @@ export function StreamCard({
     >
       <Box justifyContent="space-between">
         <Text bold color={THEME.accent}>
-          {spinner} LIVE AGENT OUTPUT {verbose ? <Text color={THEME.ok}>[VERBOSE]</Text> : null}
+          {spinner} {streamsOutput ? "LIVE AGENT OUTPUT" : "AGENT OUTPUT"}{" "}
+          {verbose ? <Text color={THEME.ok}>[VERBOSE]</Text> : null}
         </Text>
         <Box>
           {maxScroll > 0 && (
@@ -772,11 +819,7 @@ export function StreamCard({
           <Text color={THEME.muted}>{chars > 0 ? `${(chars / 1024).toFixed(1)} KB` : ""}</Text>
         </Box>
       </Box>
-      {displayLines.length === 0 ? (
-        <Box marginTop={1} justifyContent="center">
-          <Text color={THEME.muted}>(waiting for agent stream / tool executions...)</Text>
-        </Box>
-      ) : (
+      {hasStream ? (
         displayLines.map((line, i) => {
           const trimmed = line.trim();
           const isTool = trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
@@ -794,6 +837,20 @@ export function StreamCard({
             <MarkdownLine key={i} text={line || " "} defaultColor={color} wrap="truncate" />
           );
         })
+      ) : hasReport ? (
+        // The runtime cannot stream: show the phase's real report rather than an
+        // empty panel that looks broken (AC-51.1).
+        reportLines.slice(-bodyBudget).map((line, i) => (
+          <MarkdownLine key={i} text={line || " "} defaultColor={THEME.text} wrap="truncate" />
+        ))
+      ) : (
+        <Box flexDirection="column" overflow="hidden">
+          {idleRows.map((row, i) => (
+            <Text key={i} color={row.art ? THEME.accentStrong : THEME.muted} wrap="truncate">
+              {row.art ? row.text : `  ${row.text}`}
+            </Text>
+          ))}
+        </Box>
       )}
     </Box>
   );

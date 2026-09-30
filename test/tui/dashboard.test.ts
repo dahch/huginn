@@ -65,6 +65,60 @@ describe("TUI Dashboard & StreamCard", () => {
 });
 
 /**
+ * ADR-50 / REQ-51 — the output panel always shows something true to the engine's
+ * state: the stream, the last phase's report, or an idle raven state that names
+ * why there is nothing live.
+ */
+describe("StreamCard honesty modes (REQ-51)", () => {
+  function renderCard(props: Record<string, unknown>): string {
+    const stdout = new PassThrough() as any;
+    stdout.columns = 120;
+    stdout.rows = 40;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const instance = render(
+      React.createElement(StreamCard, {
+        chars: 0,
+        spinner: "⠋",
+        verbose: false,
+        height: 12,
+        ...props,
+      } as any),
+      { stdout, patchConsole: false },
+    );
+    instance.unmount();
+    return output;
+  }
+
+  it("falls back to the phase report when the runtime cannot stream (AC-51.1)", () => {
+    const output = renderCard({
+      streamsOutput: false,
+      runtimeId: "commandcode",
+      report: "line one\nline two\nline three",
+    });
+    expect(output).toContain("line three");
+    expect(output).not.toContain("waiting for agent stream");
+  });
+
+  it("shows the idle state and names the runtime when there is nothing yet (AC-51.2/51.3)", () => {
+    const output = renderCard({ streamsOutput: false, runtimeId: "commandcode" });
+    expect(output).toContain("cannot stream live output");
+    expect(output).toContain("commandcode");
+    // The idle body draws the raven art (deterministic) plus a rotating phrase.
+    expect(output).toContain("<(o");
+    // No pending phase and no stream: the panel does not claim to be waiting.
+    expect(output).not.toContain("waiting for agent stream");
+  });
+
+  it("keeps the waiting placeholder only for a runtime that can stream (AC-51.3)", () => {
+    const output = renderCard({ streamsOutput: true, runtimeId: "opencode" });
+    expect(output).toContain("waiting for agent stream");
+  });
+});
+
+/**
  * ADR-48 / AC-49.3 — a failed promotion must be visible, naming the branch that
  * holds the finished iteration, instead of ending on a generic state.
  */

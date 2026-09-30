@@ -712,6 +712,12 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
    * `true`.
    */
   readonly sessionHistory = false;
+  /**
+   * A subprocess buffers its stdout and resolves once, so there is no incremental
+   * channel: the panel shows the phase report instead of pretending to wait
+   * (REQ-51 / AC-51.3).
+   */
+  readonly streamsOutput = false;
   protected options: GenericSubprocessOptions;
   /** Guards the once-per-runtime permission log (Phase 2C). */
   private permissionNoticeEmitted = false;

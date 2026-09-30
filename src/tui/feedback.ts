@@ -125,3 +125,22 @@ export function emptyChatHints(maxRows: number): string[] {
   const rows = Math.max(0, Math.floor(maxRows));
   return EMPTY_CHAT_HINTS.slice(0, rows).map((line) => sanitizeTerminalText(line));
 }
+
+/**
+ * Idle copy for the run dashboard's output panel (REQ-51 / AC-51.2). A runtime
+ * that cannot stream has nothing to show until a phase ends, so the panel speaks
+ * in the raven's voice instead of looking dead. Rotating keeps a long phase from
+ * reading as a frozen screen.
+ */
+export const IDLE_AGENT_PHRASES: readonly string[] = [
+  "Huginn circles above — the agent has not spoken yet.",
+  "Muninn remembers; this run has nothing to recall yet.",
+  "Two ravens listening. The first report is on its way.",
+  "Thought and memory wait on the agent's first words.",
+];
+
+/** The idle phrase for a rotation `seed` (e.g. `Math.floor(now / 4000)`). */
+export function idleAgentPhrase(seed: number): string {
+  const index = Math.abs(Math.floor(seed)) % IDLE_AGENT_PHRASES.length;
+  return sanitizeTerminalText(IDLE_AGENT_PHRASES[index] ?? IDLE_AGENT_PHRASES[0]!);
+}

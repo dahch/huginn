@@ -33,6 +33,18 @@ export const RAVEN_MARK: readonly string[] = [
   "   \\__/   \\_\\",
 ];
 
+/**
+ * The two ravens perched side by side — Huginn (thought) and Muninn (memory) —
+ * for the run panel's idle state (REQ-51 / AC-51.2). Printable ASCII only, like
+ * every other brand asset, so it is safe to write straight into the alternate
+ * screen buffer.
+ */
+export const TWO_RAVENS: readonly string[] = [
+  "    ___            ___",
+  "  <(o  \\___      <(o  \\___",
+  "   \\__/   \\_\\      \\__/   \\_\\",
+];
+
 /** Width of the widest row in an art block (rows are left-aligned, not padded). */
 export function artWidth(rows: readonly string[]): number {
   return rows.reduce((max, row) => Math.max(max, row.length), 0);

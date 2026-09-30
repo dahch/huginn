@@ -162,6 +162,17 @@ export interface IAgentRuntime {
    * `true`.
    */
   readonly sessionHistory?: boolean;
+  /**
+   * Whether this runtime can push **incremental** output while a prompt runs
+   * (REQ-51 / AC-51.3).
+   *
+   * Only a runtime with an event channel (the `opencode` server's SSE stream)
+   * can: every subprocess CLI buffers its stdout and resolves once at the end, so
+   * there is nothing to stream. A surface must therefore never claim to be
+   * waiting for output it will not receive — it shows the phase's report instead,
+   * and says so. `undefined` is read as `false`.
+   */
+  readonly streamsOutput?: boolean;
   isAvailable(): Promise<boolean>;
   getAvailableModels(): Promise<ModelInfo[]>;
   /**

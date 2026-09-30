@@ -129,6 +129,8 @@ export class OpencodeSession implements IAgentSession {
 
 export class OpencodeRuntimeAdapter implements IAgentRuntime {
   readonly id = "opencode" as const;
+  /** The only runtime with a live event channel (REQ-51). */
+  readonly streamsOutput = true;
   readonly name = "OpenCode";
   /**
    * Phase 4A: the opencode **server** owns the session and replays every prior
