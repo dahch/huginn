@@ -144,8 +144,10 @@ decides the outcome:
 
 1. **Bun** (the bin is `#!/usr/bin/env bun`; the bundle is Bun-target).
 2. **An agent CLI on `$PATH`** — any of the 13 registered targets. `opencode` is the default and the
-   only runtime with a native permission subscriber (`--permissions ask|deny`) and server-side
-   session history; when it is used, huginn starts it itself via
+   only runtime with a native permission subscriber (`--permissions ask|deny`), server-side
+   session history, and an incremental output channel (`IAgentRuntime.streamsOutput`, `true` only
+   there — every subprocess CLI buffers stdout and resolves once, so a surface shows the phase report
+   instead of pretending to stream); when it is used, huginn starts it itself via
    `opencode serve --port <n> --hostname 127.0.0.1` in the project dir (logs to
    `.harness/logs/server.log`).
 3. **`git` on `$PATH`** — used for module inference, diffs, base commits, doc staging and worktree
@@ -237,6 +239,8 @@ forwarded to the model.
 | `/agent <id>` | Hot-switches the runtime; fails closed if `isAvailable()` is false. | `LiveEngine.switchRuntime()` |
 | `/models`, `/model` | Opens `ModelPickerModal`. | `src/tui/ModelPickerModal.tsx` |
 | `/model <thinker> [executor]` | Validates `provider/model` and updates models for the session. | `LiveEngine.updateModels()` |
+| `/profile` | Opens the methodology-profile picker (`ProfilePickerModal`): name, description, active marker; `↑`/`↓`/`j`/`k` move, `Enter` = session, `p` = project, `g` = global, `Esc` cancels. | `src/tui/ProfilePickerModal.tsx` |
+| `/profile <id>` | Validates against `PROFILE_NAMES` and **fails closed** on an unknown id; the change applies to the next cycle and the console says so. | `LiveEngine.updateProfile()` |
 | `/mcp [id]` | Opens the MCP inspector, optionally preselecting a server id. | `src/tui/McpInspectorModal.tsx` |
 | `/skills`, `/skill` | Opens the skills browser (`SkillsModal`). | `src/tui/SkillsModal.tsx` |
 | `/skill <name>` | Resolves a skill by id/name/trigger and runs its `body` as the prompt. | `findSkill()` |
@@ -246,7 +250,22 @@ forwarded to the model.
 | `/quit` / `/abort` | Two-step confirmation, then aborts. | `LiveEngine.requestAbort()` |
 
 Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `--session <id>` and
-`--list-sessions`/`-sl` read `<project>/.huginn/live/sessions.json` (`src/state/liveSession.ts`).
+`--list-sessions`/`-sl` read `<project>/.huginn/live/sessions.json` (`src/state/liveSession.ts`). The
+store and the resume precedence are documented for users too, in the `usage()` section *Sessions
+(live)* (`src/cli.ts`, REQ-53).
+
+Two display conventions a TUI change must follow:
+
+- **Display glyphs come from `src/tui/glyphs.ts`** — one table of single-width ASCII shared by the
+  dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass, `!`
+  warning, `✕` blocked, `–` skipped; phase kinds `?` `>` `=` `%` `#` `@` `~` `.`, `+` for any other).
+  Never add an emoji display glyph. The gate marker literals (`### Overall gate: 🟢/🟡/🔴`,
+  `### Overall fidelity: …`) and the runtime stream prefixes (`⚡ ✓ ✗ 💭`) are excluded: the first are a
+  three-way contract, the second are producer output.
+- **An output panel only claims what the runtime can deliver**: the run dashboard's `StreamCard` shows
+  the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
+  title and waiting placeholder **only** for a runtime whose `IAgentRuntime.streamsOutput` is `true`
+  (`opencode`); everything else is titled `AGENT OUTPUT` and names itself (REQ-51).
 
 **Project skills** (`src/engine/skills/loader.ts`): `loadSkills()` discovers `*.md` skills in
 `<project>/.huginn/skills/` then `<project>/.opencode/skills/` (`.huginn` wins on id collision),

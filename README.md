@@ -159,9 +159,13 @@ left untouched and reported as skipped). Paths are overridable via `HUGINN_AGENT
 and `HUGINN_AGENT_RULES_PATH` / `HUGINN_AGENT_<ID>_RULES_PATH`.
 
 `huginn doctor` exits `0` only when its **critical** checks pass (git repository, a runtime, and the
-Muninn database); the `git` binary, Node, `opencode` CLI and missing agent integrations are warnings.
+Muninn database); the `git` binary, Node, `opencode` CLI, missing agent integrations and the
+`Muninn attribution` check are warnings.
 Its `integrations` check renders the same Muninn provisioning matrix as `huginn setup --status` — agent
 × installed × registered — with the exact `huginn setup --agent <id>` fix for every installed gap.
+`Muninn attribution` lists `projects` rows in the project's database whose `root_path` is another
+project (the signature of a command whose `--project` disagreed with its working directory), compares
+canonical paths so a symlinked alias is not a false positive, prints the fix, and **deletes nothing**.
 
 `huginn init` runs six non-blocking steps: git detection via `git rev-parse --is-inside-work-tree`
 (so a subdirectory, a linked worktree or a symlinked checkout counts; otherwise it prints a `git init`
@@ -276,10 +280,17 @@ the primary branch while the agent works:
   `.huginn/muninn.db`, so long-term memory survives the sandbox (ADR-20).
 - On iteration success the sandbox commits are integrated into your active branch
   (`git merge --ff-only`, falling back to `git cherry-pick`) and the worktree + branch are removed.
+  Untracked files in your tree that the integration would overwrite are first parked under
+  `<project>/.huginn/promotion-backup/<stamp>/` (content and mode preserved, symlinks kept as links;
+  the directory is symlink-screened and self-ignoring) — git refuses such a merge, which used to
+  strand a finished iteration — and the backup directory is named in the run log.
 - On abort or a phase error the sandbox is discarded and your working tree is never touched.
-- If promotion conflicts, the primary tree is restored, the `huginn/task-iter-<N>` branch is **kept**
-  so the work is recoverable by hand, and the run **fails closed** (the iteration is not marked
-  complete) instead of reporting success.
+- If promotion fails, the primary tree is restored (a conflict aborts the cherry-pick and puts every
+  parked file back), the worktree is removed, the `huginn/task-iter-<N>` branch is **kept** so the
+  work is recoverable by hand (`git log <branch>`), and the run fails closed — it finishes as an
+  error naming that branch, **never as `aborted`**. A later run renames the branch out of the reclaim
+  namespace (`huginn/preserved/task-iter-<N>-<stamp>`) before the startup sweep, so a plain re-run can
+  neither delete the only copy of the iteration's commits nor be blocked from re-sandboxing it.
 - If the repository has no `HEAD` commit yet, sandboxing is skipped for that run with a warning and
   the iterations run in place — a worktree cannot be created from an empty repository.
 - `--no-sandbox` runs iterations in place, exactly as before.
@@ -350,11 +361,14 @@ The refinement conversation is **persisted** in `<project>/.huginn/live/sessions
 mode `0o600`, capped messages/sessions/bytes, symlink-contained) and is deliberately *not* deleted on
 handoff, so a session survives a restart or a cycle: `huginn live --continue` (or `-c`) resumes the
 project's latest session, `huginn live --session <id>` a specific one, and
-`huginn live --list-sessions` prints them and exits 0. Resuming **reattaches** to the same
-server-side opencode session when it is still alive; for a runtime that keeps no history each turn
-carries a bounded, sanitized transcript (12 turns / 12 000 characters, delimited as untrusted data), so
-a one-shot CLI still sees the conversation. `.huginn/.gitignore` (holding `*`) keeps that state out of
-the working tree.
+`huginn live --list-sessions` prints them and exits 0. `--session <id>` is the strongest request and
+wins over `--continue`; `--continue` with nothing to continue starts a fresh session and says so; a
+bare `--session` fails closed. Sessions are a **live-mode surface only** — `run` neither reads nor
+writes them — and `huginn --help --all` documents the store and these rules under *Sessions (live)*.
+Resuming **reattaches** to the same server-side opencode session when it is still alive; for a runtime
+that keeps no history each turn carries a bounded, sanitized transcript (12 turns / 12 000 characters,
+delimited as untrusted data), so a one-shot CLI still sees the conversation. `.huginn/.gitignore`
+(holding `*`) keeps that state out of the working tree.
 
 **Live & Dashboard TUI Features**:
 - **Raven Brand Header (`RavenHeader`)**: Both dashboards render one shared ASCII **raven mark + `HUGINN` wordmark** (from `src/brand.ts`), so the TUI reads as Huginn the raven instead of an eagle emoji. The mark degrades to wordmark-only below 72 columns, to plain `HUGINN` text when even that does not fit or the terminal is too short, and the header also carries the live stage, the MCP badge, the active runtime, the project path and the active models.
@@ -366,7 +380,8 @@ the working tree.
 - **Composer with a Cursor, Multiline Growth & Input History**: the message row is the anchor of the view — its own accent border and a `❯` prompt glyph. It is a real editor: `←`/`→` move the caret (with `⌥`/`Ctrl` for whole words), `Home`/`End` jump to the ends of the caret's visual row, `Backspace`/`Delete` act at the caret (again word-wise with `⌥`/`Ctrl`), and typed text is inserted at the caret. A draft that wraps grows up to **6 rows** and then scrolls internally, and the caret is always drawn inside the frame (it never pushes a column off the row). `↑` recalls the previous submission of the session (the last 50), `↓` walks forward and ends at the empty draft. Recalled drafts stay editable and slash-command submissions are never stored. Recall applies only while the command palette is closed and the draft is empty, so it never fights the palette's own `↑`/`↓`.
 - **Terminal Theme System (`src/tui/theme.ts`)**: components ask for a semantic token (`THEME.text`, `THEME.muted`, `THEME.danger`, …) instead of hard-coding colours — the old `color="white"` chat body is gone, so nothing is invisible on a white terminal. Modes are `light`, `dark` and `auto` (default), pinned with `HUGINN_THEME`; `auto` stays background-agnostic (and sniffs `COLORFGBG` when the terminal advertises it), and a non-empty `NO_COLOR` disables every token and `dimColor`.
 - **Live Context Panel & Empty-State Hero (`InfoPanel` / `LiveHero`)**: on wide terminals (≥100 columns, with a minimum spare column/row budget) a compact **LIVE CONTEXT** panel sits beside the conversation with the stage, agent and models, the per-agent MCP enumeration, the git branch and tree state, the worktree sandbox, Muninn's counts and the size of the conversation, plus a stage-appropriate tip; below that width it is not rendered at all and the header alone carries the facts, so it can never push the composer or footer off the frame. An empty conversation renders a raven-branded hero with the first-run guidance instead of a blank card, sliced to the card's real rows.
-- **Honest Panels**: the old `REFINEMENT CONVERSATION` card is simply **`Conversation`**, and the agent-output (stream) panel **collapses automatically** while the agent has emitted no reasoning/stream content for the session — its rows return to the conversation and it is never shown as an empty bordered box; it expands on the first content.
+- **Honest Panels**: the old `REFINEMENT CONVERSATION` card is simply **`Conversation`**, and the agent-output (stream) panel **collapses automatically** while the agent has emitted no reasoning/stream content for the session — its rows return to the conversation and it is never shown as an empty bordered box; it expands on the first content. The `run` dashboard's output panel follows the same rule: with no stream content it shows the tail of the last finished phase's **real report**, and before anything has finished an **idle raven state** (the two-ravens mark, Huginn and Muninn, beside a rotating raven-voiced line). Only a runtime that can actually push incremental output (`IAgentRuntime.streamsOutput`, i.e. opencode) still reads `LIVE AGENT OUTPUT` and shows the waiting placeholder; every other runtime names itself and states that each phase's report appears when it ends.
+- **One Glyph Language, Single Width**: every phase/status glyph comes from one table (`src/tui/glyphs.ts`), shared by the dashboard and `.harness/PROGRESS.md` — `·` pending, the braille spinner while running, `✓` pass, `!` warning, `✕` blocked, `–` skipped, and the `PROGRESS.md` phase kinds `?` `>` `=` `%` `#` `@` `~` `.` (a `FIX_*` row keeps its `└─` indent). Printable and single-width, so the monospace grid and `NO_COLOR` behaviour hold; the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) are untouched.
 - **Selectable Runtime Picker (`AgentPickerModal`)**: bare `/agent` opens a modal over every registered target, each with an availability marker (`✔` / `— not installed`), the active runtime marked, and the highlighted entry's resolved binary path. `↑`/`↓` (or `j`/`k`) navigate, `Enter` switches, `Esc` cancels; a failed switch keeps the picker open so another runtime can be chosen immediately. `/agent <id>` still works for power users.
 - **Agent-Agnostic Questions**: any runtime can ask you a clarifying question through a marked output block; the decision modal renders the real option rows — a digit picks that option verbatim, `Enter` accepts the recommended one, `d` skips and `Esc` aborts (see [Clarifying questions](#clarifying-questions-agent-agnostic)).
 - **Interactive Model & Provider Selector (`ModelPickerModal`)**:
@@ -397,6 +412,7 @@ the working tree.
   - `/help`: opens the **cheat-sheet modal** (`HelpModal`) with every command, the navigation shortcuts, and the active agent/thinker/executor/project banner.
   - `/agent`: opens the interactive **runtime picker** (`AgentPickerModal`) described above. `/agent <id>` hot-switches the runtime in-session (fails closed if the target binary is unavailable).
   - `/models` or `/model`: opens the interactive model picker; `/model <thinker> [executor]` sets both models inline for the session.
+  - `/profile`: opens the **methodology-profile picker** (`ProfilePickerModal`) — every profile with its display name, one-line description and the active marker; `↑`/`↓` (or `j`/`k`) move, `Enter` applies it for the session, `p` also saves it to the project config and `g` globally, `Esc` cancels. `/profile <id>` sets one directly; an unknown id fails closed with the valid list and changes nothing. The console always says that the pipeline is chosen when a cycle starts, so a change applies to the **next** cycle.
   - `/mcp [id]`: opens the MCP inspector, optionally pre-selecting a server by id.
   - `/skills` (or bare `/skill`): opens the skills browser; `/skill <name>` executes a skill immediately.
   - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, the active **methodology profile**, and Muninn entity/observation counts (a failed Muninn database open reports the error instead of `0 entities, 0 observations`).
@@ -483,7 +499,7 @@ tools). The verdict of a huginn-run gate is huginn's own:
 
 1. **SPEC_AUDIT** — the embedded spec-auditor role audits `spec.md` against the implementation and must
    end on `### Overall fidelity: 🟢/🟡/🔴`. 🔴 deviations → fix with thinker, re-audit. On a repo with
-   no implementation code yet (greenfield), the audit is skipped with a ⏭️ verdict until an iteration
+   no implementation code yet (greenfield), the audit is skipped with a `–` verdict until an iteration
    has produced code.
 2. **EXECUTE** — sends the iteration's prompt verbatim to the `build` agent (executor).
 3. **VALIDATE_STEP** — huginn runs the gate itself: the qa role in `AUDIT-ONLY MODE`, the spec-auditor
@@ -536,7 +552,10 @@ so switching methodology changes *what runs and in what order*, not how a phase 
 | `strict-tdd` | Strict TDD | test-module (**expected to fail**) → execute → test-module → validate-step → commit-all, with a **frozen worktree snapshot** recorded as evidence |
 
 - **Selecting it**: `--profile <id>` on `run` and `live`, `"profile"` in `.huginn/config.json`, or
-  `huginn config set --profile <id>`. An unknown id fails closed with usage; a persisted unknown
+  `huginn config set --profile <id>`. In the live console `/profile` opens the profile picker
+  (`Enter` = session, `p` = project config, `g` = global config) and `/profile <id>` sets one
+  directly; an unknown id fails closed with the valid list. Unrecognised values elsewhere fail or are
+  dropped the same way as before: an unknown id on the flag exits with usage, and a persisted unknown
   profile is dropped with a warning (never a crash).
 - **Announced**: the active profile is printed in the CLI banner (e.g. `profile=huginn`) and shown as
   the **Methodology** row in the `/status` box, so you always know which cycle is running.
@@ -572,8 +591,11 @@ The `run` cycle never edits `plan.md`/`spec.md`/`adr.md` (only `plan` mode write
 time, and `live` mode writes/commits them after explicit human approval). Everything the harness
 needs is written under `<project>/.harness/`:
 
-- `state.json` — machine-readable source of truth (current iteration/phase, history, sessions).
-- `PROGRESS.md` — human-readable checklist regenerated after every phase.
+- `state.json` — machine-readable source of truth (current iteration/phase, history, sessions, and the
+  `promotion` record of the last sandbox integration).
+- `PROGRESS.md` — human-readable checklist regenerated after every phase. A run whose sandbox could not
+  be integrated renders `✕ PROMOTION FAILED — branch <branch> preserved` (naming the backup directory
+  when untracked files were parked), and `✕ ABORTED` stays reserved for a run you actually stopped.
 - `reports/` — full raw report of each phase attempt (`01-SPEC_AUDIT-1.md`).
 - `logs/server.log` — the internal `opencode serve` output.
 
@@ -588,8 +610,11 @@ If a run is interrupted, just re-run the same command and it auto-resumes from t
 Huginn includes the **Muninn memory engine** (`src/muninn/`), an embedded, persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5:
 
 - **Path Resolution**:
-  - Automatically resolves to `<git_root>/.huginn/muninn.db` when operating inside a git repository.
-  - Falls back to `~/.huginn/muninn.db` when running outside of a git repository.
+  - Resolves to `<project>/.huginn/muninn.db` inside a git repository, falling back to
+    `~/.huginn/muninn.db` outside one. The **database file and the project row are resolved from one
+    root** — the `--project` root when given, otherwise the git root of the working directory — so
+    `--project X` run from a directory inside `Y` writes to X (and only creates X's row), never into
+    `Y`'s database.
   - Supports explicit custom file paths or `:memory:` for testing.
   - Parent directories are created with secure permissions (`0o700`).
   - `.huginn/` and SQLite WAL/SHM artifacts are excluded from version control via `.gitignore`.
@@ -605,6 +630,7 @@ Huginn includes the **Muninn memory engine** (`src/muninn/`), an embedded, persi
 - **Security & Privacy**:
   - Git remote URLs in the `projects` table have embedded basic auth credentials stripped prior to storage.
   - Exported memory files (`.huginn/memories.jsonl`) are written with restrictive owner-only permissions (`0o600`).
+  - Every `.huginn` path huginn writes is **symlink-screened** before use (the shared `assertDocPath`): a symlinked final component is always refused, and a project-relative path must resolve inside the project. That covers the database file, the JSONL export — both read and write — and the sandbox promotion backup, so a cloned repository shipping `.huginn/...` as a link can neither redirect huginn's state outside the project nor pull foreign content into the memory the MCP tools serve.
 
 ### MemoryService API (`src/muninn/service/`)
 

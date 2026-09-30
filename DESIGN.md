@@ -44,8 +44,8 @@ src/
 │   ├── compiler.ts         TypeScript Compiler API contract verification, pre-emit diagnostics, visual error snippets
 │   └── index.ts            re-exports verifyTypeScriptContracts, formatDiagnosticsReport, TypeValidator, types
 ├── banner.ts               ASCII banner + path shortening (prints the shared HUGINN wordmark)
-├── brand.ts                shared ASCII brand assets: HUGINN wordmark + raven mark, artWidth (REQ-29 / ADR-29)
-├── format.ts               shared formatting: durations, verdict badges/icons/colors
+├── brand.ts                shared ASCII brand assets: HUGINN wordmark + raven mark + the two-ravens idle mark, artWidth (REQ-29 / ADR-29, REQ-51)
+├── format.ts               shared formatting: durations, verdict badges/icons/colors (delegates the glyph to the shared table)
 ├── headless.ts             stdout frontend; stdin decision answering; runLiveHeadless
 ├── update.ts               background npm version check (cache + semver compare + reminder)
 ├── engine/
@@ -93,11 +93,11 @@ src/
 │   │   ├── types.ts        Skill contract (id, name, description, triggers, body, filePath, builtin)
 │   │   └── index.ts        barrel export for the skills subsystem
 │   ├── engineEvents.ts     global typed event emitter
-│   ├── worktree.ts         git worktree sandbox manager (create/promote/discard/list/cleanup)
+│   ├── worktree.ts         git worktree sandbox manager (create/promote/discard/list/cleanup, untracked-file parking + branch preservation)
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
 ├── muninn/
 │   ├── db/
-│   │   ├── client.ts       better-sqlite3 initialization, pragmas, path resolution, ensureProject, sanitizeGitRemote
+│   │   ├── client.ts       better-sqlite3 initialization, pragmas, one-root path resolution (dbPath + startDir), ensureProject, sanitizeGitRemote, assertDocPath screening
 │   │   └── schema.sql      DDL for projects, observations, observations_fts, entities, observation_entities, entity_dependencies
 │   ├── indexer/
 │   │   ├── ast-indexer.ts  AST symbol/dependency extraction, batch indexing into Muninn, zombie entity pruning
@@ -129,9 +129,10 @@ src/
     ├── theme.ts            semantic colour tokens, light/dark/auto modes, NO_COLOR handling (REQ-47)
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
     ├── commandRegistry.ts  single slash-command registry (id, aliases, argHint, description) driving dispatch, the palette and /help (REQ-28 / ADR-28)
+    ├── glyphs.ts           the one phase/status glyph table (single-width ASCII) shared by the TUI and PROGRESS.md (REQ-52 / ADR-51)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
-    ├── feedback.ts         the one feedback voice: ✓/⚠/… prefixes, next-step hints, empty-chat first-run hints (REQ-31)
+    ├── feedback.ts         the one feedback voice: ✓/⚠/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
     ├── sessionContext.ts   shared status summaries for the header and the side panel (no fabricated values) (REQ-47)
     ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
     ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only (REQ-47)
@@ -142,7 +143,8 @@ src/
     ├── AgentPickerModal.tsx interactive runtime picker (/agent): availability, active marker, detected path (REQ-33)
     ├── HelpModal.tsx       live slash-command cheat sheet (generated from the registry), shortcuts & active config (/help)
     ├── SkillsModal.tsx     project/built-in skills browser & prompt-body preview (/skills)
-    └── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence (honest discovery states)
+    ├── ModelPickerModal.tsx interactive 3-step modal for thinker/executor selection & persistence (honest discovery states)
+    └── ProfilePickerModal.tsx interactive methodology-profile picker (/profile): every profile with name, description, active marker, scope keys (REQ-54)
 ```
 
 ### Runtime wiring (`src/cli.ts` → engine → frontends)
@@ -373,7 +375,7 @@ flowchart LR
   is never returned by the two parsers or the judge — only by the greenfield
   `SPEC_AUDIT` skip — and it neither passes nor blocks the pipeline. The
   progress renderer and both frontends treat it as a pass-equivalent
-  (`⏭️` icon) for display.
+  (`STATUS_GLYPHS.skipped`, `–`) for display.
 
 ## 6. Timeout model
 
@@ -412,10 +414,12 @@ State is one zod-validated document, `HarnessState` (`src/state/schema.ts`):
 stateDiagram-v2
     [*] --> RUNNING: run() starts
     RUNNING --> RUNNING: per phase → persist()
-    RUNNING --> COMPLETED: all iterations done
-    RUNNING --> ABORTED: abort/error → resolveAll + persist(aborted=true)
+    RUNNING --> COMPLETED: all iterations done (aborted cleared)
+    RUNNING --> FAILED: sandbox promotion failed → persist(promotion=conflict|failed), aborted stays false
+    RUNNING --> ABORTED: abort or other error → resolveAll + persist(aborted=true)
     RUNNING --> [*]: SIGINT/SIGTERM → requestAbort (interrupts agent + sets flag)
     COMPLETED --> [*]
+    FAILED --> [*]: branch preserved under huginn/… ; recover by hand
     ABORTED --> RUNNING: re-run (auto-resume) or --resume
     ABORTED --> [*]: --force-restart wipes .harness/
 ```
@@ -447,6 +451,11 @@ stateDiagram-v2
 - **Progress counting**: `renderProgressMarkdown` counts only `MAIN_PHASES`
   entries with `pass`/`warning`/`skipped` — the `done/8` gauge can never
   exceed 8 no matter how many `FIX_*` attempts happened.
+- **A promotion failure is not an abort (AC-49.3)**: when an iteration's sandbox could not be
+  integrated, `run()` records `state.promotion` and finishes with `outcome.reason = "error"` while
+  leaving `aborted` **false**, so `PROGRESS.md` and the TUI report the preserved branch instead of
+  `ABORTED` (§ 19.4, § 32.1). A run that completes clears a sticky `aborted` flag left by an earlier
+  interrupted run, so a resumed-then-successful run cannot report ABORTED beside a successful exit.
 
 ## 8. Live mode
 
@@ -618,6 +627,9 @@ flowchart LR
 16. **Stdio Transport Stream Hygiene**: `huginn mcp run` maintains absolute silence on `stdout` (no banners, no startup logging, no ANSI color sequences) to ensure standard JSON-RPC 2.0 frames over stdio are never corrupted.
 17. **Disambiguated Keyword Positionals**: The CLI parser separates subcommand names from subsequent positional arguments (`_positionals[0]` vs `_positionals.slice(1)`), preventing argument shadowing when keywords like `"search"` or `"sync"` are searched or referenced.
 18. **Boolean Flag Ingestion Safety**: `BOOLEAN_FLAGS` enforcement in `parseArgs` guarantees that standalone flags (e.g. `--import`, `--yes`, `--force`) never consume subsequent positional tokens or flags.
+19. **A completed iteration is never stranded or silently discarded**: `promoteSandbox` parks (never overwrites) the untracked files an integration would have clobbered, a failure puts them back and keeps the `huginn/task-iter-<N>` branch, and the run reports a **promotion failure** rather than an abort; the next run renames the branch under `huginn/preserved/` before its sweep, which does not match the reclaim pattern. A `git log` failure is reported as a failure, never as "no commits" (§ 19.4, ADR-48).
+20. **One root for Muninn**: the database file and the project row are resolved from the same `--project` root (or the git root of the start directory), and every `.huginn` write — database, JSONL export (both directions), promotion backup — is symlink-screened (§ 13, ADR-49).
+21. **A panel never claims output it cannot receive**: `IAgentRuntime.streamsOutput` decides whether an output surface may present itself as live; every other runtime shows the phase report or an idle state (§ 32.2, ADR-50).
 
 ## 12. Key tradeoffs (summary; full rationale in ADR.md)
 
@@ -657,6 +669,31 @@ flowchart TD
 - If a git root is discovered, the database path resolves to `<git_root>/.huginn/muninn.db`.
 - If no git repository is present, it falls back to the user's home profile at `~/.huginn/muninn.db`.
 - If the resolved path is not `:memory:`, `getDatabase` ensures the target directory exists by calling `fs.mkdirSync(dir, { recursive: true, mode: 0o700 })`, restricting filesystem permissions to the owner.
+
+#### One root for the database and the project record (ADR-49 / REQ-50)
+
+The database **file** and the project **row** used to be resolved independently — the file from
+`process.cwd()`, the row from the caller's `rootPath` — so `huginn mcp run --project X` executed from a
+working directory inside `Y` labelled a row in **Y's** database. Both now come from one root:
+
+- **`getDatabase(dbPath?, startDir?)`** forwards `startDir` to `resolveDatabasePath(dbPath, startDir)`.
+  `MemoryService` passes `options.projectRoot`, so the file lives at `<project>/.huginn/muninn.db`
+  regardless of the process's cwd.
+- **`ensureProject(db, options?)`** takes the same `startDir` for its fallback: with no explicit
+  `rootPath` it resolves `findGitRoot(resolve(startDir)) ?? resolve(startDir)` instead of an independent
+  `findGitRoot()` of the cwd — so a caller cannot pick two different roots for the two halves.
+- **Screened writes**: before opening, `getDatabase` runs the resolved path through the shared
+  `assertDocPath` (`projectPath` = the git root of `startDir`, label `"the Muninn database"`,
+  `action: "write"`). The screen refuses a symlinked final component always and demands that a
+  project-relative path resolve inside the project (§ 28.6), so a cloned repository shipping `.huginn/`
+  — or `muninn.db` itself — as a symlink (or a symlinked parent) cannot redirect the SQLite write
+  outside the project (SEC-005). `MemoryService.assertMemoryPath`
+  applies the same screen to the durable JSONL export in **both** directions (`syncToDisk` writes,
+  `importFromDisk` reads), because a readable foreign `memories.jsonl` would be served to the agent
+  through the MCP memory tools (SEC-006).
+- **Diagnosis, not repair**: `huginn doctor`'s non-critical `muninn-attribution` check lists `projects`
+  rows whose `root_path` is not the project root, comparing `realpath`ed paths so a symlink alias (or
+  macOS `/tmp` vs `/private/tmp`) is not a false positive, and deletes nothing.
 
 ### SQLite Connection & PRAGMA Configuration
 
@@ -1761,7 +1798,9 @@ service. `handleDoctorCommand` prints one colorized line per check (`✔`/`⚠`/
 Each iteration can run in an isolated git worktree so the developer's editor stays on the primary
 branch while the agent works (REQ-17). A `Sandbox` is
 `{ iteration, path, branch, projectRoot, baseCommit }`; `sandboxBranch(N)` is `huginn/task-iter-<N>`
-and `sandboxPath(root, N)` is `<root>/.huginn/worktrees/task-iter-<N>` (AC-17.1/17.2).
+and `sandboxPath(root, N)` is `<root>/.huginn/worktrees/task-iter-<N>` (AC-17.1/17.2). A branch a failed
+promotion has to preserve is moved out of the reclaim namespace to
+`huginn/preserved/task-iter-<N>-<stamp>` (ADR-48).
 
 ```mermaid
 stateDiagram-v2
@@ -1771,28 +1810,49 @@ stateDiagram-v2
     Running --> Discarded: abort / phase error → discardSandbox()
     Promoted --> [*]: merge --ff-only | cherry-pick; worktree+branch removed
     Discarded --> [*]: worktree+branch removed; primary tree untouched
-    Running --> Conflict: promotion fails both strategies
-    Conflict --> [*]: cherry-pick --abort (primary restored), worktree removed, branch KEPT, run fails closed
+    Running --> Parked: untracked collisions → .huginn/promotion-backup/<stamp>/
+    Parked --> Promoted: integration retried (ff, else cherry-pick)
+    Parked --> Failed: parking failed → no integration attempt
+    Running --> Conflict: integration fails both strategies
+    Conflict --> [*]: cherry-pick --abort, parked files restored, worktree removed, branch KEPT, run fails closed as an error
+    Failed --> [*]: worktree removed, branch KEPT, parked files put back, run fails closed as an error
 ```
 
 #### `WorktreeManager` API (`src/engine/worktree.ts`)
 
 | method | behavior |
 |---|---|
-| `createSandbox(projectRoot, iteration)` | resolves HEAD, **fails closed** (throws, no mutation) if the repo has no HEAD commit or the branch/path already exists, then `git worktree add -b <branch> <path> HEAD`; symlinks shared deps |
-| `promoteSandbox(sandbox)` | integrates via `git merge --ff-only <branch>`, else `git cherry-pick <baseCommit>..<branch>`; returns `{ promoted, method: "ff"\|"cherry-pick"\|"none", commits }` |
+| `createSandbox(projectRoot, iteration)` | resolves HEAD, **fails closed** (throws, no mutation) if the repo has no HEAD commit or the branch/path already exists, and screens the target path with `assertDocPath` (a tracked `.huginn` symlink cannot redirect the worktree out of the project, SEC-104); then `git worktree add -b <branch> <path> HEAD` (parent `0o700`); symlinks shared deps |
+| `promoteSandbox(sandbox)` | parks untracked collisions, then integrates via `git merge --ff-only <branch>`, else `git cherry-pick <baseCommit>..<branch>`; returns `{ promoted, method: "ff"\|"cherry-pick"\|"none", commits, backups?, detail?, failure? }` |
 | `discardSandbox(sandbox)` | removes the worktree (`--force`, tolerant) and deletes the ephemeral branch; idempotent; never touches the primary tree |
 | `listSandboxes()` | parses `git worktree list --porcelain`, keeping only entries under `<root>/.huginn/worktrees/` |
 | `cleanupAll()` | discards every listed sandbox **and** deletes orphaned `huginn/task-iter-*` branches with no worktree (safety net); returns the reclaimed resource count |
+| `preserveOrphanBranch(branch)` | renames a preserved sandbox branch out of the reclaim namespace (`huginn/task-iter-<N>` → `huginn/preserved/task-iter-<N>-<stamp>`); returns the new name, or `null` when the name is not a sandbox branch or it does not exist |
 
 - **Dependency symlinks (AC-17.3)**: if `node_modules` and/or `.env` exist at the project root and
   not already in the sandbox, a symlink is created pointing at the root copy (never overwriting a
   real file/dir). Symlink failures are non-fatal warnings.
-- **Promotion & conflict policy (AC-17.4)**: on success the worktree and branch are removed. On a
-  conflict (both strategies fail) the primary tree is restored with `git cherry-pick --abort`, the
-  worktree is removed, but the `huginn/task-iter-<N>` branch is **kept** so the sandbox work stays
-  recoverable by hand; `promoted: false` is returned with a warning naming the branch. A zero-commit
-  sandbox is a `method: "none"` no-op that still cleans up.
+- **Untracked-collision parking (AC-49.1)**: `untrackedCollisions(root, sandbox)` intersects
+  `git ls-files -z --others --exclude-standard` in the primary tree with
+  `git diff --name-only -z <baseCommit>..<branch>` (paths escaping the project, and huginn's own
+  `.huginn/`/`.harness/` artifacts, are dropped) — exactly the paths `git merge` refuses to overwrite,
+  which is what used to strand a completed iteration. Each one is parked under
+  `<root>/.huginn/promotion-backup/<stamp>/<relPath>`: a **symlink is backed up as a link** (never
+  followed), a regular file with its mode minus setuid/setgid bits, and anything else (a directory, a
+  FIFO) is refused because it could not be restored. The directory is allocated through `assertDocPath`
+  (`action: "write"`, a unique `<stamp>`/`<stamp>-<n>` retry), created `0o700` with a self-ignoring
+  `.gitignore` holding `*`, so parked content is never committed even on a project whose `.gitignore`
+  does not list `.huginn/`.
+- **Promotion & failure policy (AC-17.4, AC-49.2)**: on success the worktree and branch are removed and
+  any backup directory is returned in `backups` so the files are discoverable. On a **conflict** (both
+  strategies fail) the primary tree is restored with `git cherry-pick --abort`, **every parked file is
+  put back**, the worktree is removed, but the `huginn/task-iter-<N>` branch is **kept** so the sandbox
+  work stays recoverable by hand; the result carries `failure: "conflict"` and a sanitized `detail`. A
+  parking failure never attempts the integration at all: the result is `failure: "failed"` with the
+  branch (and any un-restorable backup directory) preserved. A `git log` that cannot be read is
+  reported as `failure: "failed"` rather than "no commits", so a read error can never delete a branch
+  (REV-005). A zero-commit sandbox stays a `method: "none"` no-op that still cleans up; only a
+  directory that still holds content is ever named in `backups` (NFR-17).
 
 #### CycleEngine wiring (AC-17.6)
 
@@ -1802,9 +1862,14 @@ injected manager (tests), otherwise one is created lazily against `cfg.projectPa
 no HEAD cannot create a worktree, so the engine warns once and runs that run in place instead of
 letting `createSandbox` throw.
 
-- At the start of `run()`, when sandboxing is enabled, a best-effort `cleanupAll()` reclaims the
-  worktrees **and** the orphaned `huginn/task-iter-*` branches (e.g. a branch preserved by a
-  conflicted promotion) left behind by a crashed prior run.
+- At the start of `run()`, when sandboxing is enabled, a branch a previous **failed** promotion
+  preserved (`state.promotion.status` is `conflict` or `failed`) is first renamed by
+  `preserveOrphanBranch` — it holds the only copy of that iteration's commits, so it must leave the
+  reclaim namespace before the sweep and be logged as such — and then a best-effort `cleanupAll()`
+  reclaims the worktrees **and** the orphaned `huginn/task-iter-*` branches (e.g. a branch preserved by
+  a conflicted promotion) left behind by a crashed prior run. A `huginn/preserved/*` branch is never
+  swept: it does not match the reclaim pattern. Each iteration resets `state.promotion` (and the
+  engine's in-memory copy) so one iteration's outcome can never be read as the next one's.
 - In `runIteration`, `createSandbox(projectRoot, iteration.index)` is called first (so its path can
   scope the agent session), then `workPath = sandbox?.path ?? projectPath`. `ensureSession` always
   creates a **fresh** `iter N: <title>` session under sandboxing — a persisted
@@ -1826,12 +1891,19 @@ letting `createSandbox` throw.
   (before promotion), so a failed/aborted promotion can leave phantom entities for code that never
   landed; this is an accepted trade-off documented in ADR-20.
 - On iteration success (no abort, not `--only-phase`), `promoteSandbox` integrates the commit into
-  the primary branch and logs the method/commit count. On abort or a thrown phase error a
-  `finally` block `discardSandbox`s, exactly once (`settled` flag), never touching the primary tree.
-- **A promotion conflict fails the run closed (AC-17.4)**: `promoteSandbox` has already restored
-  the primary tree and preserved the branch, so `runIteration` throws instead of reporting success
-  — the iteration is not marked complete and the run finishes as an error naming the preserved
-  branch.
+  the primary branch, logs the method/commit count and the backup directory when files were parked,
+  and records `state.promotion = { status: "promoted" | "none", branch, backups? }`. On abort or a
+  thrown phase error a `finally` block `discardSandbox`s, exactly once (`settled` flag), never touching
+  the primary tree.
+- **A promotion failure fails the run closed and is not an abort (AC-17.4 / AC-49.3)**:
+  `promoteSandbox` has already restored the primary tree and preserved the branch, so `runIteration`
+  throws — the message names the branch and the recovery command, and states that a re-run renames it
+  under `huginn/preserved/` rather than deleting it. `run()` records the structured promotion record
+  (`status: "conflict" | "failed"`, `branch`, `backups?`, `detail?`), sets `outcome.reason = "error"`
+  and finishes as an **error**; `state.aborted` is deliberately *not* set, so `PROGRESS.md` renders the
+  promotion failure distinctly instead of `✕ ABORTED`. A run that completes clears the sticky
+  `aborted` flag (`state.aborted = false`), so a resumed-then-successful run cannot report ABORTED
+  beside a successful exit.
 - **Mid-iteration resume is disabled under sandboxing**: the resume phase is only honored when
   `!sandbox`, because a prior run's worktree was discarded at startup — an ephemeral sandbox cannot
   resume mid-iteration, so earlier phases re-run.
@@ -1954,6 +2026,7 @@ The runtime abstraction defines two foundational ports:
    - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`).
    - `name: string` — human-readable agent name.
    - `readonly sessionHistory?: boolean` — `true` when the backend keeps the conversation server-side (only `opencode`); every subprocess adapter declares `false` and `undefined` is read as "does not keep history" (§ 29.1).
+   - `readonly streamsOutput?: boolean` — whether the runtime can push **incremental** output while a prompt runs: `true` for `opencode` (its server's SSE event stream), `false` on `GenericSubprocessRuntimeAdapter` (and every adapter that inherits it), because a subprocess buffers stdout and resolves once. `undefined` is read as `false`. A surface uses it to decide what the output panel may claim rather than testing a hardcoded id list (§ 32.2).
    - `isAvailable(): Promise<boolean>` — non-blocking probe verifying if the agent's executable binary exists on `PATH` or daemon is reachable.
    - `getAvailableModels(): Promise<ModelInfo[]>` — queries the models the runtime can actually use (never a fabricated catalog); returns `[]` when the runtime exposes no listing mechanism.
    - `getModelCatalog?(): Promise<ModelCatalog>` — richer discovery carrying a `reason` when the catalog is empty, so an empty result is never indistinguishable from a failure (REQ-27/AC-27.4).
@@ -2376,6 +2449,7 @@ flowchart TD
         Skills["SkillsModal (/skills, /skill)"]
         Inspect["McpInspectorModal (/mcp [id])"]
         Picker["ModelPickerModal (/models, /model)"]
+        Profile["ProfilePickerModal (/profile)"]
         Reject["system message: Unknown command"]
     end
 
@@ -2398,6 +2472,7 @@ flowchart TD
     Dispatcher -- "/skill <name>" --> Find
     Dispatcher -- "/mcp [id]" --> Inspect
     Dispatcher -- "/models, /model" --> Picker
+    Dispatcher -- "/profile" --> Profile
     Dispatcher -- "/status" --> Diag
     Dispatcher -- "/agent <id>" --> Switch
     Dispatcher -- "unknown /…" --> Reject
@@ -2454,6 +2529,8 @@ Because skills are read from the repository, the loader treats discovery and rea
 | `/agent <id>` | Hot-switches the runtime via `LiveEngine.switchRuntime(id)`; an unknown id is rejected with the available-target list. |
 | `/models`, `/model` | Mounts the interactive `ModelPickerModal`. |
 | `/model <thinker> [executor]` (also `/models …`) | Validates `provider/model` syntax for both values (executor defaults to the current one), rejects extra args or malformed values, then calls `LiveEngine.updateModels(...)` for the session. |
+| `/profile` | Mounts the interactive `ProfilePickerModal` (REQ-54): every `PROFILES` row with its display name, one-line description and active marker; `↑`/`↓`/`j`/`k` move, `Enter` = session, `p` = project, `g` = global, `Esc` cancels (`§ 32.5`). |
+| `/profile <id>` | Validates against `PROFILE_NAMES` and calls `LiveEngine.updateProfile(id, "session")`; an unknown id fails closed with the valid list and the console states that the change applies to the **next** cycle. |
 | `/mcp`, `/mcp <id>` | Mounts `McpInspectorModal`, optionally pre-selecting a server by id (`text.slice(4).trim()`). |
 | `/skills`, bare `/skill` | Refreshes via `loadSkills(cfg.projectPath)` and mounts `SkillsModal`; `Enter` on a skill executes it (`live.chat(skill.body)`). |
 | `/skill <name>` | Resolves `findSkill(...)`; a match runs its `body` immediately, otherwise the browser hint message is shown. |
@@ -2464,7 +2541,7 @@ Because skills are read from the repository, the loader treats discovery and rea
 
 Each branch above answers with a sanitized acknowledgement from `feedback.ts` (`✓` result, `⚠` problem naming the next step with the raw cause on a `cause:` line, `…` while running), so no dispatched input is a silent no-op (REQ-31). While a bare `/…` draft has matches, the palette takes `↑`/`↓` (and `j`/`k`) / `Tab` / `Enter` / `Esc` *before* the dashboard's focus-toggle (`Tab`) and scroll-trap (`↑`/`↓`) handlers, and a draft with no matches does not count as open (REQ-28 / AC-28.3).
 
-`SkillsModal` and `HelpModal` follow the same TUI conventions as the other modals: a `stateRef` bridge for fresh `useInput` callbacks under React 19, centered list windowing (`VISIBLE_LIST_ITEMS = 8`, `VISIBLE_BODY_LINES = 8`), `Tab` pane focus, and `Esc`/`q` dismissal. `HelpModal` sanitizes and clamps every external prop at the component boundary, and its `SLASH_COMMANDS` array is now *derived* from the command registry instead of hand-maintained.
+`SkillsModal` and `HelpModal` follow the same TUI conventions as the other modals: a `stateRef` bridge for fresh `useInput` callbacks under React 19, centered list windowing (`VISIBLE_LIST_ITEMS = 8`, `VISIBLE_BODY_LINES = 8`), `Tab` pane focus, and `Esc`/`q` dismissal. `HelpModal` sanitizes and clamps every external prop at the component boundary, and its `SLASH_COMMANDS` array is now *derived* from the command registry instead of hand-maintained. `ProfilePickerModal` follows the same conventions (`stateRef` bridge, `VISIBLE_PROFILE_ROWS` = 6, `Esc` to cancel) and owns the row budget while it is open, exactly like the palette and the runtime picker.
 
 ### 24.7 `LiveEngine` Runtime Switching & Diagnostics
 
@@ -2473,6 +2550,7 @@ Two engine additions back the dispatcher (`src/engine/liveMode.ts`):
 - **`switchRuntime(agentId)`**: resolves the target runtime via the injected `runtimeFactory` (a new optional `LiveEngineOptions.runtimeFactory` field used by tests) or `getAgentRuntime(...)`, then **fails closed** — if `isAvailable()` is false it throws and the active runtime is left untouched. On success it aborts the previous `session` (or `sessionId` via `abortSession`), swaps the runtime, clears the session handle, and sets `needsSystemPrompt` so the architect/system prompt is re-seeded on the next `prompt` rather than lost with the disposed session. A `liveChat` system event announces the switch.
 - **`getDiagnostics()`**: returns `DiagnosticsInfo` assembled from best-effort git probes (`rev-parse --abbrev-ref HEAD`, `status --porcelain`, `--git-dir` worktree detection), the active `runtime.name`, the formatted thinker/executor models, and Muninn `getStats()` entity/observation counts — each wrapped in `try/catch` so a missing git repo or uninitialized memory DB degrades to defaults instead of throwing.
 - `runtime` is now a **private field behind a public getter** (`get runtime()`), mutated only by the constructor and `switchRuntime`.
+- **`getProfile()` / `updateProfile(name, scope)`** (Phase 8, REQ-54): the resolved profile and its setter, which validates against `PROFILE_NAMES`, fails closed on an unknown id, and persists through `saveUserConfig`/`saveGlobalUserConfig` for a `project`/`global` scope (§ 32.5).
 
 ## 25. Iteration 24 — `huginn init` Onboarding Wizard, Two-Tier Help & Greenfield Launch
 
@@ -3300,6 +3378,109 @@ forbid the washed-out colour families by name.
   nothing to count renders `""` (never `0`), an unreadable Muninn database reports its sanitized
   error instead of looking empty, and the summaries carry no colour — the TUI picks the token, which
   is what keeps `NO_COLOR` a presentation concern.
+
+## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-54)
+
+This sub-phase answers four things a real run exposed: a finished iteration whose sandbox could not be
+merged was *stranded* and reported as an abort; a Muninn command whose `--project` disagreed with its
+working directory wrote into the wrong database; the run dashboard's output panel stayed at
+`(waiting for agent stream / tool executions...)` for the whole run on every subprocess runtime; and the
+phase grid was drawn with double-width emoji that broke the monospace grid. The implementation lives in
+`src/engine/worktree.ts`, `src/engine/cycle.ts`, `src/state/schema.ts`, `src/state/store.ts`,
+`src/muninn/db/client.ts`, `src/muninn/service/memory-service.ts`, `src/commands/doctor.ts`,
+`src/tui/glyphs.ts` (new), `src/tui/Dashboard.tsx`, `src/tui/ProfilePickerModal.tsx` (new),
+`src/tui/feedback.ts`, `src/brand.ts`, `src/engine/agent/types.ts` and `src/cli.ts`. The phase *engine*
+(`runPhase`/`runIteration`), the pipeline-as-data model, the sandbox *model* and the Muninn schema are
+untouched.
+
+### 32.1 Promotion integrity (REQ-49 / ADR-48)
+
+The parking, preservation and honest-outcome flows are part of the sandbox lifecycle and documented
+there; the pieces that live outside `worktree.ts`:
+
+- **`stateSchema.promotion`** (`src/state/schema.ts`) is an *optional*
+  `{ status: "promoted" | "none" | "conflict" | "failed", branch, backups?, detail? }`, so state files
+  written before this sub-phase still parse. The engine records it on every iteration (reset per
+  iteration) and persists it with the failure.
+- **`renderProgressMarkdown`** (`src/state/store.ts`) renders a failure as
+  `✕ PROMOTION FAILED — branch \`<branch>\` preserved (untracked file(s) backed up under …)`, and keeps
+  `✕ ABORTED` (`STATUS_GLYPHS.blocked`) for a genuine abort and `✓ COMPLETED` (`STATUS_GLYPHS.pass`)
+  for success; every interpolated branch/backup path is `sanitizeTerminalText`ed.
+- **Fail-closed but honest**: a promotion failure sets `outcome.reason = "error"` and finishes the run
+  as an *error*, never as `aborted` (§ 19.4). Recovery is by hand (`git log <branch>`), and a re-run
+  renames the branch out of the reclaim namespace instead of deleting it.
+
+### 32.2 The run output panel is never dead (REQ-51 / ADR-50)
+
+`StreamCard` in `src/tui/Dashboard.tsx` picks its body from what the engine actually has, in order:
+
+1. **stream** — incremental `phaseStream` lines, available only when the runtime has an event channel
+   (`src/engine/permissions.ts` forwards opencode's SSE stream);
+2. **report** — the tail of `ui.lastReport.raw` (the last finished phase's real report), clipped to the
+   card's rows, which is all a subprocess runtime ever produces;
+3. **idle** — `TWO_RAVENS` (`src/brand.ts`, the Huginn + Muninn mark) plus a rotating phrase from
+   `IDLE_AGENT_PHRASES`/`idleAgentPhrase` (`src/tui/feedback.ts`), and one honesty line naming the
+   active runtime and stating that each phase's report appears when it ends.
+
+The capability comes from `IAgentRuntime.streamsOutput` (`src/engine/agent/types.ts`), not from a
+hardcoded target list: `true` on `OpencodeRuntimeAdapter`, `false` on
+`GenericSubprocessRuntimeAdapter` (and therefore on every adapter that inherits it), `undefined` read as
+`false`. Only a streaming runtime keeps the `LIVE AGENT OUTPUT` title and the waiting placeholder; a
+non-streaming one is titled `AGENT OUTPUT` and names itself. A failed promotion gets its own row under
+the middle cards (`PROMOTION_HEIGHT`, `✕ PROMOTION FAILED — branch … preserved · backups: …`), shown
+only when the run ends with `state.promotion.status` of `conflict`/`failed`, and the row is part of the
+layout budget (`VIEWPORT_RESERVED_ROWS`) so it can never push the frame off-screen.
+
+### 32.3 One semantic glyph table, single width (REQ-52 / ADR-51)
+
+`src/tui/glyphs.ts` is the only place a phase/status glyph is defined:
+
+| surface | glyphs |
+|---|---|
+| `STATUS_GLYPHS` | `pending` `·` · `running` the existing braille spinner (`⠋`) · `pass` `✓` · `warning` `!` · `blocked` `✕` · `skipped` `–` |
+| `verdictGlyph(v)` | the status glyph for a `Verdict` (replaces `verdictIcon`'s emoji) |
+| `phaseGlyph(phase)` | `SPEC_AUDIT` `?` · `EXECUTE` `>` · `VALIDATE_STEP` `=` · `TEST_MODULE` `%` · `SECURE_CHECK` `#` · `REVIEW` `@` · `DOC_SYNC` `~` · `COMMIT_ALL` `.` · any `FIX_*`/unknown `+` |
+
+- `verdictIcon` (`src/format.ts`) now delegates to `verdictGlyph`, so a colour token is still resolved
+  by the TUI while the character comes from the table (AC-52.4).
+- `.harness/PROGRESS.md` consumes the same table (`verdictGlyph` for the mark, `phaseGlyph` for the
+  phase kind, `STATUS_GLYPHS.pending`/`running` for a pending row), so the markdown and the TUI cannot
+  drift, and `PHASE_LABEL` in `src/state/store.ts` no longer carries an icon (AC-52.1).
+- `Dashboard.tsx` drops its `⏳`, its hardcoded `🔴` fallback and `[⏸ PAUSED]` for
+  `STATUS_GLYPHS.pending` / `STATUS_GLYPHS.blocked` / `[PAUSED]`; the modal section headers
+  (`HelpModal`, `SkillsModal`, `ModelPickerModal`) lose their emoji.
+- Out of scope deliberately: the gate marker literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall
+  fidelity: …`) and the stream-marker prefixes a *runtime* emits (`⚡ ✓ ✗ 💭`) — the first are a
+  three-way contract, the second are producer output (AC-52.3).
+
+### 32.4 Sessions are a documented surface (REQ-53 / ADR-52)
+
+`usage()` (`src/cli.ts`) gains a **Sessions (live)** section: the store
+(`<project>/.huginn/live/sessions.json`, owner-only, written atomically, never tracked by git), the
+three flags, and the precedence — `--session <id>` is the strongest request and wins over `--continue`,
+which adopts the project's most recently updated session; `--continue` with nothing to continue starts
+fresh and says so; a bare `--session` fails closed. It also states the scope: sessions are a live-mode
+surface, and `run` neither reads nor writes them. `usageCore()` adds a one-line pointer to it, and the
+drift guard (`test/commands/init.test.ts`) asserts every token it advertises exists in `usage()`.
+
+### 32.5 Methodology profiles are selectable in-session (REQ-54 / ADR-53)
+
+The profile used to be fixed before the run and merely *displayed*. Now:
+
+- **`LiveEngine.getProfile()` / `updateProfile(name, scope)`** (`src/engine/liveMode.ts`): the getter
+  returns the resolved `{ id, name, description }`; the setter lowercases and validates against
+  `PROFILE_NAMES`, **fails closed** with an actionable message on an unknown id (nothing is written),
+  then persists through the existing writers — `session` keeps it in memory only, `project` writes
+  `<project>/.huginn/config.json`, `global` writes `~/.huginn/config.json` — and mutates `cfg.profile`,
+  so the header, `/status` and the next cycle all read the same value.
+- **`/profile`** (registered in `src/tui/commandRegistry.ts`, so the palette and the `HelpModal` cheat
+  sheet include it) opens `ProfilePickerModal`; `/profile <id>` applies directly. The modal mirrors
+  `AgentPickerModal`: rows from `PROFILE_NAMES`/`PROFILES` with display name, description and an active
+  marker, windowed at `VISIBLE_PROFILE_ROWS` = 6, `↑`/`↓`/`j`/`k` move, `Esc` cancels, and the scope
+  keys are `Enter` = session, `p` = project, `g` = global.
+- **No silent no-op (AC-54.4)**: the pipeline is chosen when a cycle starts, so the console states that
+  a change applies to the **next** cycle, and the modal footer repeats it. While the picker is open it
+  owns the row budget (the log tail steps aside, like the palette and the runtime picker).
 
 
 
