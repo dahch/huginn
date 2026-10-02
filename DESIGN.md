@@ -3322,10 +3322,17 @@ flowchart TD
     F --> H["entry value: current id as-is; an explicit flag the catalog omits verbatim; else catalog seed (thinker → first, executor → second)"]
 ```
 
-- **Preselection rules** (`promptModelChoice`): a real catalog id is used as-is; an explicit
-  `--thinker`/`--executor` the catalog does not list is kept **verbatim**, so pressing Enter never
-  silently overrides what the user typed; a *default* absent from the catalog seeds from the catalog
-  (thinker → first model, executor → second) so the two pickers do not land on the same model.
+- **Preselection rules** (`promptModelChoice`): a real catalog id is used as-is — whether
+  pre-selected or typed directly into the numbered prompt (a typed id is matched against the catalog
+  ids, not just the display labels); an explicit `--thinker`/`--executor` the catalog does not list is
+  kept **verbatim**, so pressing Enter never silently overrides what the user typed; a *default* absent
+  from the catalog seeds from the catalog (thinker → first model, executor → second) so the two
+  pickers do not land on the same model.
+- **A typed answer is never dropped on the floor**: `promptChoiceDefault` returns an explicit answer
+  that is not a 1-based list number verbatim (only a blank answer keeps the fallback), and each caller
+  validates it — the agent prompt through `isAgentTarget`, the model prompt through its catalog id
+  set. Previously an unlisted answer was silently replaced by the pre-selected seed, so a model id
+  typed instead of its number persisted the wrong model.
 - **Honest fallback**: with no catalog, or an empty one carrying a `reason`, the wizard falls back to
   plain text entry and prints the sanitized reason — a runtime that cannot list models is never a
   dead end, and the non-TTY/`--yes` path uses the same values.

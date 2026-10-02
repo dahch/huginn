@@ -876,6 +876,47 @@ describe("huginn init wizard — Phase 5 model picker", () => {
     });
   });
 
+  it("accepts a model id typed verbatim instead of its list number", async () => {
+    const env = makeEnv();
+    // Both rows carry a description, so their picker labels are
+    // "<id> — <description>" and a typed id is NOT an exact label match. The
+    // resolver must still recognize the id and persist it, instead of quietly
+    // keeping the pre-selected seed (the model-selection bug).
+    const catalog: ModelInfo[] = [
+      { id: "acme/alpha", name: "Alpha", provider: "acme", description: "fast and cheap" },
+      { id: "acme/beta", name: "Beta", provider: "acme", description: "slow and smart" },
+    ];
+    const cap = await runInitTty(env, ["opencode", "acme/beta", "acme/alpha"], {}, {
+      detectAgents: async () => [],
+      getRuntime: () => catalogRuntime(catalog),
+    });
+
+    expect(cap.report?.thinker).toBe("acme/beta");
+    expect(cap.report?.executor).toBe("acme/alpha");
+    expect(cap.stdin.remaining()).toBe(0);
+    expect(readConfig(env)).toEqual({
+      agent: "opencode",
+      thinker: "acme/beta",
+      executor: "acme/alpha",
+    });
+  });
+
+  it("keeps the pre-selected seed when the typed id is not in the catalog", async () => {
+    const env = makeEnv();
+    const cap = await runInitTty(env, ["opencode", "acme/gamma", "acme/beta"], {}, {
+      detectAgents: async () => [],
+      getRuntime: () => catalogRuntime(MODELS),
+    });
+
+    // "acme/gamma" is neither a catalog id nor a label → the thinker seed
+    // (catalog[0]) is kept; the executor keeps its own typed choice.
+    expect(readConfig(env)).toEqual({
+      agent: "opencode",
+      thinker: "acme/alpha",
+      executor: "acme/beta",
+    });
+  });
+
   it("pre-selects the current value when the catalog contains it", async () => {
     const env = makeEnv();
     const fallbacks: string[] = [];

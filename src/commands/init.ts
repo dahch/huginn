@@ -173,6 +173,17 @@ async function promptTextDefault(question: string, fallback: string, io: PromptI
   return askLine(`${question} [${fallback}] `, fallback, io);
 }
 
+/**
+ * Numbered-choice resolver shared by the agent and model prompts. A valid
+ * 1-based number returns the choice at that position; any other explicit answer
+ * is returned **verbatim** (a listed label, or a value the caller resolves
+ * itself — e.g. a model id typed instead of its number), so only a blank answer
+ * keeps `fallback`. Returning the raw answer matters: silently substituting
+ * `fallback` here persisted the pre-selected catalog seed instead of the model
+ * the user typed. Callers must therefore validate a non-index answer — the
+ * agent prompt narrows it through `isAgentTarget`, the model prompt through its
+ * catalog id set.
+ */
 async function promptChoiceDefault(
   question: string,
   choices: string[],
@@ -186,7 +197,7 @@ async function promptChoiceDefault(
   if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
     return choices[index - 1];
   }
-  return choices.includes(answer) ? answer : fallback;
+  return answer.length > 0 ? answer : fallback;
 }
 
 /**
@@ -229,8 +240,10 @@ async function loadModelCatalog(
  * fabricated substitution).
  *
  * The label is mapped back to the model id so the persisted value is always a
- * real catalog id (or the kept flag), and a blank/unknown answer falls back to
- * the pre-selected default.
+ * real catalog id (or the kept flag). A typed catalog id is accepted verbatim
+ * too (matched against the ids, not just the labels) so pressing Enter on a
+ * seeded default is not the only way to persist a model; a blank/unknown answer
+ * still falls back to the pre-selected default.
  */
 async function promptModelChoice(
   question: string,
