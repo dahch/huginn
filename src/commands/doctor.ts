@@ -17,7 +17,7 @@ import {
   type McpFormat,
   type ResolveOptions,
 } from "../agents/integrator.js";
-import { MemoryService } from "../muninn/service/memory-service.js";
+import { MemoryService } from "@dahch/muninn";
 
 export interface DoctorCheck {
   id: string;

@@ -9,7 +9,7 @@ import { git } from "./diff";
 import { treeHash } from "./receipts";
 import { WorktreeManager, sandboxPath, type Sandbox, type PromoteResult } from "./worktree";
 import { freshState } from "../state/store";
-import { MemoryService } from "../muninn/service/memory-service";
+import { MemoryService } from "@dahch/muninn";
 import type { RunConfig } from "../config";
 import type { Iteration } from "../plan/types";
 import type { IAgentRuntime, IAgentSession } from "./agent/types";

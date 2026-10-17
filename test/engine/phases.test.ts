@@ -19,7 +19,7 @@ import {
 } from "../../src/engine/steps/context.js";
 import { VALIDATE_STEP_CONSOLIDATION } from "../../src/engine/steps/instructions.js";
 import { git } from "../../src/engine/diff.js";
-import { MemoryService } from "../../src/muninn/service/memory-service.js";
+import { MemoryService } from "@dahch/muninn";
 
 /** The passing report the synthesized `VALIDATE_STEP` gate is mocked to return. */
 const GATE_PASS_REPORT = "### Overall gate: 🟢\n✅ AUTO-APPROVED — all checks pass";

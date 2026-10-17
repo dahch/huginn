@@ -10,9 +10,13 @@ rationalized in [`ADR.md`](./ADR.md).
   produced by `bun build src/cli.ts --target=bun --outdir=dist --minify`.
 - **Dependencies actually imported in `src/`**:
   - `@opencode-ai/sdk` — typed HTTP client for the opencode server.
-  - `@modelcontextprotocol/sdk` — Model Context Protocol SDK for agent tooling.
-  - `better-sqlite3` — embedded SQLite database driver with WAL mode and FTS5 for the Muninn memory engine (`src/muninn/db/client.ts`).
-  - `typescript` — TypeScript Compiler API for static AST analysis, contract verification, and symbol indexing (`src/contracts/compiler.ts`, `src/muninn/indexer/ast-indexer.ts`).
+  - `@dahch/muninn` — the memory engine, extracted to its own repository
+    (<https://github.com/dahch/muninn>). It supplies the SQLite/FTS5 store, the AST
+    symbol graph, the MCP server and the TypeScript contract verifier imported by
+    `src/engine/phases.ts`, `src/engine/liveMode.ts`, `src/engine/cycle.ts`,
+    `src/commands/memory.ts`, `src/commands/check.ts` and `src/commands/doctor.ts`.
+    `better-sqlite3`, `typescript` and `@modelcontextprotocol/sdk` are its
+    dependencies, not huginn's.
   - `ink` + `react` — the TUI dashboard.
   - `zod` — `HarnessState` schema validation.
   - `chalk` — ANSI colors in the banner (`src/banner.ts`), headless frontend
@@ -25,6 +29,10 @@ rationalized in [`ADR.md`](./ADR.md).
   (spawned for diffs and module inference). Nothing else.
 
 ## 2. Module map
+
+> `src/muninn/` and `src/contracts/` moved to
+> [`@dahch/muninn`](https://github.com/dahch/muninn); the map below still lists them
+> where they used to live. Everything else is unchanged.
 
 ```
 src/

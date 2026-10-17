@@ -619,7 +619,9 @@ If a run is interrupted, just re-run the same command and it auto-resumes from t
 
 ## Muninn Memory Engine (`.huginn/`)
 
-Huginn includes the **Muninn memory engine** (`src/muninn/`), an embedded, persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5:
+Huginn embeds the **Muninn memory engine**, a persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5.
+
+> Muninn is no longer part of this repository: it lives at [dahch/muninn](https://github.com/dahch/muninn) and is consumed as the `@dahch/muninn` package (a `file:../muninn` link while it is unpublished). Its own CLI is `muninn memory | check | mcp run`; `huginn memory`, `huginn check` and `huginn mcp run` are thin wrappers over the same library, so existing scripts keep working.
 
 - **Path Resolution**:
   - Resolves to `<project>/.huginn/muninn.db` inside a git repository, falling back to

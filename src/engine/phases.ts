@@ -8,10 +8,10 @@ import { pendingChanges, changedFilesSince } from "./diff";
 import {
   verifyTypeScriptContracts,
   formatDiagnosticsReport,
-} from "../contracts/compiler.js";
-import { indexFilesIntoMuninn } from "../muninn/indexer/ast-indexer.js";
-import { MemoryService } from "../muninn/service/memory-service.js";
-import { resolveDatabasePath } from "../muninn/db/client.js";
+} from "@dahch/muninn";
+import { indexFilesIntoMuninn } from "@dahch/muninn";
+import { MemoryService } from "@dahch/muninn";
+import { resolveDatabasePath } from "@dahch/muninn";
 import {
   type StepContext,
   specAuditPrompt,

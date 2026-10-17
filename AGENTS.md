@@ -164,12 +164,20 @@ decides the outcome:
 bun install            # dependencies only — there is no postinstall hook any more
 bun link               # exposes the global `huginn` bin → dist/cli.js
 bun test               # unit tests under src/**/*.test.ts (bun:test)
-vitest run             # integration + Muninn suite under test/**/*.test.ts
+vitest run             # integration suite under test/**/*.test.ts
 bun run typecheck      # tsc --noEmit (strict)
 bun run dev -- ...     # run from source, e.g.
                        #   bun run dev -- run --project ../repo --thinker a/b --executor c/d
 bun run build          # bun build src/cli.ts --target=bun --outdir=dist --minify
 ```
+
+**Muninn lives in its own repository** ([dahch/muninn](https://github.com/dahch/muninn)) and is
+consumed as `@dahch/muninn` — the database, service, AST indexer, MCP server and TypeScript
+contract verifier are all there, with their own test suite (`test/muninn/**` and
+`test/contracts/**` moved with them). `huginn memory`, `huginn check` and `huginn mcp run`
+remain as wrappers, so the CLI surface and the `.huginn/muninn.db` data location are unchanged.
+While the package is unpublished, huginn depends on it through `file:../muninn`: re-run
+`bun install` in huginn after rebuilding a sibling checkout.
 
 The suites that matter for the step pipeline and its state: `src/engine/gate.test.ts` (the verdict
 parsers), `src/engine/cycle.test.ts` (retry/escalation, the read-only guard, structural verdicts),
