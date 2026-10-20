@@ -9,12 +9,8 @@ import {
   inferListingTransport,
   listMcpServersViaCommand,
   mapMcpListingStatus,
-  parseAgyMcpList,
   parseClaudeMcpList,
-  parseCommandcodeMcpList,
-  parseDevinMcpList,
   parseOpencodeMcpList,
-  parseQwenMcpList,
   runMcpListCommand,
 } from "../../../src/engine/agent/adapters/mcpList.js";
 import type { McpListingStatus } from "../../../src/engine/agent/types.js";
@@ -75,64 +71,13 @@ describe("per-agent MCP listing parsers (REQ-32 / AC-32.1)", () => {
     expect(listings.map((l) => l.name)).not.toContain("Checking MCP server health…");
   });
 
-  it("parses `qwen mcp list` including the reported transport", () => {
-    expect(parseQwenMcpList(fixture("qwen-mcp-list.txt"))).toEqual([
-      {
-        name: "engram",
-        transport: "stdio",
-        status: "connected",
-        detail: "/opt/homebrew/bin/engram mcp --tools=agent",
-      },
-    ]);
-  });
-
-  it("parses `agy mcp list` as configuration (`enabled`), never as a live probe", () => {
-    const listings = parseAgyMcpList(fixture("agy-mcp-list.txt"));
-    expect(listings.map((l) => l.name)).toEqual([
-      "codegraph",
-      "engram",
-      "muninn",
-      "sequential-thinking",
-      "tabularis",
-    ]);
-    expect(listings.map((l) => l.status)).toEqual([
-      "enabled",
-      "enabled",
-      "enabled",
-      "enabled",
-      "enabled",
-    ]);
-    expect(listings.every((l) => l.transport === "stdio")).toBe(true);
-    expect(listings.find((l) => l.name === "muninn")?.detail).toContain("huginn mcp run");
-    // The `NAME TYPE STATUS COMMAND/URL` header is not a server.
-    expect(listings.map((l) => l.name)).not.toContain("NAME");
-  });
-
-  it("parses `commandcode mcp list` with scope as detail and drops the footer", () => {
-    const listings = parseCommandcodeMcpList(fixture("commandcode-mcp-list.txt"));
-    expect(listings).toEqual([
-      { name: "muninn", transport: "stdio", status: "enabled", detail: "scope user" },
-    ]);
-    expect(listings.map((l) => l.name)).not.toContain("MCP Servers");
-    expect(listings.map((l) => l.name)).not.toContain("Total: 1 server");
-    expect(listings.map((l) => l.name)).not.toContain("NAME");
-  });
-
   it("returns [] for empty or unstructured output instead of inventing servers", () => {
-    for (const parser of [
-      parseOpencodeMcpList,
-      parseClaudeMcpList,
-      parseQwenMcpList,
-      parseAgyMcpList,
-      parseCommandcodeMcpList,
-    ]) {
+    for (const parser of [parseOpencodeMcpList, parseClaudeMcpList]) {
       expect(parser("")).toEqual([]);
       expect(parser("\n\n   \n")).toEqual([]);
     }
     expect(parseOpencodeMcpList("┌  MCP Servers\n│\n└  0 server(s)\n")).toEqual([]);
     expect(parseClaudeMcpList("Checking MCP server health…\n\nNo MCP servers configured.\n")).toEqual([]);
-    expect(parseQwenMcpList("Configured MCP servers:\n")).toEqual([]);
-    expect(parseCommandcodeMcpList("MCP Servers\n\nTotal: 0 server(s)\n")).toEqual([]);
   });
 
   it("strips ANSI codes and never claims a transport it was not told about", () => {
@@ -143,27 +88,6 @@ describe("per-agent MCP listing parsers (REQ-32 / AC-32.1)", () => {
     expect(parseOpencodeMcpList(colored)[0]?.name).not.toContain("\u001b");
   });
 
-  it("parses `devin mcp list` and accepts `command:`/`url:` in any case (REV-3A-007)", () => {
-    const stdout = [
-      "Configured MCP servers:",
-      "",
-      "  • stdio-srv",
-      "    command: npx something --mcp",
-      "",
-      "  • remote-srv",
-      "    uRl: https://example.com/mcp",
-      "",
-      "  ✗ off-srv  (disabled)",
-      "    COMMAND: echo",
-      "",
-    ].join("\n");
-
-    expect(parseDevinMcpList(stdout)).toEqual([
-      { name: "stdio-srv", status: "enabled", transport: "stdio", detail: "npx something --mcp" },
-      { name: "remote-srv", status: "enabled", transport: "http", detail: "https://example.com/mcp" },
-      { name: "off-srv", status: "disabled", transport: "stdio", detail: "echo" },
-    ]);
-  });
 });
 
 describe("honest listing→status mapping (AC-32.2)", () => {
@@ -211,18 +135,23 @@ describe("bounded MCP listing runner (REQ-32 / NFR-9)", () => {
         bin,
         "#!/bin/sh\n" +
           '[ "$1" = "mcp" ] && [ "$2" = "list" ] || exit 9\n' +
-          "printf '  NAME    TYPE   SCOPE  AUTH  STATUS\\n  muninn  stdio  user   -     enabled\\n\\nTotal: 1 server\\n'\n",
+          "printf 'muninn: huginn mcp run --project /x - ✔ Connected\\n'\n",
       );
       chmodSync(bin, 0o755);
 
       const result = await runMcpListCommand(
-        { command: "fakemcp", args: ["mcp", "list"], parse: parseCommandcodeMcpList },
+        { command: "fakemcp", args: ["mcp", "list"], parse: parseClaudeMcpList },
         { env: { PATH: tempDir } },
       );
 
       expect(result.error).toBeUndefined();
       expect(result.listings).toEqual([
-        { name: "muninn", transport: "stdio", status: "enabled", detail: "scope user" },
+        {
+          name: "muninn",
+          transport: "stdio",
+          status: "connected",
+          detail: "huginn mcp run --project /x",
+        },
       ]);
       expect(MCP_LIST_TIMEOUT_MS).toBe(5000);
       expect(CLAUDE_MCP_LIST_TIMEOUT_MS).toBeGreaterThanOrEqual(MCP_LIST_TIMEOUT_MS);

@@ -564,10 +564,7 @@ describe("Agent Subsystem Barrel Exports", () => {
     expect(AgentSubsystem.OpencodeRuntimeAdapter).toBeDefined();
     expect(AgentSubsystem.ClaudeRuntimeAdapter).toBeDefined();
     expect(AgentSubsystem.CodexRuntimeAdapter).toBeDefined();
-    expect(AgentSubsystem.OmpRuntimeAdapter).toBeDefined();
-    expect(AgentSubsystem.CommandCodeRuntimeAdapter).toBeDefined();
-    expect(AgentSubsystem.QwenRuntimeAdapter).toBeDefined();
-    expect(AgentSubsystem.GenericSubprocessRuntimeAdapter).toBeDefined();
+    expect(AgentSubsystem.PiRuntimeAdapter).toBeDefined();
   });
 });
 

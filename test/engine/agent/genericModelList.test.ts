@@ -3,7 +3,6 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenericSubprocessRuntimeAdapter } from "../../../src/engine/agent/adapters/generic.js";
-import { CommandCodeRuntimeAdapter } from "../../../src/engine/agent/adapters/commandcode.js";
 import { COMMANDCODE_PERMISSION_ARGS } from "../../../src/engine/agent/genericTargets.js";
 import type { ModelInfo } from "../../../src/engine/agent/types.js";
 
@@ -118,9 +117,11 @@ describe("REQ-27 · GenericSubprocessRuntimeAdapter model discovery (AC-27.4)", 
     expect(await adapter.getAvailableModels()).toEqual(injected);
   });
 
-  it("returns [] when the Command Code listing CLI exits non-zero", async () => {
+  it("returns [] when a configured listing CLI exits non-zero", async () => {
     const script = makeScript("failing-commandcode.sh", "exit 3");
-    const adapter = new CommandCodeRuntimeAdapter({
+    const adapter = new GenericSubprocessRuntimeAdapter({
+      id: "commandcode",
+      name: "Command Code",
       command: script,
       modelListCommand: { command: script, args: ["--list-models"], parse: parseIdLines },
     });
@@ -154,7 +155,14 @@ describe("REQ-27 · native model forwarding (AC-27.5)", () => {
   it("uses the runtime's short flag for Command Code", async () => {
     const script = makeScript("argv.sh", `printf '%s\\n' "$@"`);
 
-    const adapter = new CommandCodeRuntimeAdapter({ command: script });
+    const adapter = new GenericSubprocessRuntimeAdapter({
+      id: "commandcode",
+      name: "Command Code",
+      command: script,
+      args: ["-p"],
+      modelArgs: (model) => ["-m", model],
+      permissionArgs: COMMANDCODE_PERMISSION_ARGS,
+    });
     const session = await adapter.createSession({ title: "Command Code model" });
     const result = await session.prompt("hello", { model: "claude-sonnet-5" });
 
