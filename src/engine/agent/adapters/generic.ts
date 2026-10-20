@@ -35,6 +35,13 @@ export interface GenericSubprocessOptions {
   id: AgentTarget;
   name: string;
   command: string;
+  /**
+   * Secondary binary names the same CLI may install under (e.g.
+   * `command-code` for Command Code, `qwen-code` for Qwen Code). Availability
+   * probes these when {@link command} is absent; sessions still spawn
+   * {@link command}, matching every adapter this option replaced.
+   */
+  fallbackCommands?: string[];
   args?: string[];
   projectPath?: string;
   homeDir?: string;
@@ -729,7 +736,16 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
   }
 
   async isAvailable(): Promise<boolean> {
-    if (isExecutableBinary(this.options.command)) {
+    const candidates = [this.options.command, ...(this.options.fallbackCommands ?? [])];
+    for (const command of candidates) {
+      if (await this.isCommandAvailable(command)) return true;
+    }
+    return false;
+  }
+
+  /** PATH probe plus a bounded `--version` fallback for one binary name. */
+  private async isCommandAvailable(command: string): Promise<boolean> {
+    if (isExecutableBinary(command)) {
       return true;
     }
 
@@ -737,7 +753,7 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
     const dirs = pathEnv.split(delimiter);
     for (const dir of dirs) {
       if (!dir) continue;
-      const fullPath = join(dir, this.options.command);
+      const fullPath = join(dir, command);
       // SEC-004: verify resolved path is a regular file and executable
       if (isExecutableBinary(fullPath)) {
         return true;
@@ -756,7 +772,7 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
       };
 
       try {
-        const child = spawn(this.options.command, ["--version"], {
+        const child = spawn(command, ["--version"], {
           stdio: "ignore",
           env: {
             ...process.env,

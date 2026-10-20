@@ -17,7 +17,16 @@ import { dirname, isAbsolute, join, normalize } from "node:path";
  * declarative `AGENT_REGISTRY`, so adding a new agent is a one-row change.
  */
 
-export type AgentTarget =
+/**
+ * A **provisioning target** — somewhere `huginn setup`/`init`/`doctor` registers
+ * the Muninn MCP server and injects the directive block.
+ *
+ * This union describes where memory is configured, *not* what the cycle runs.
+ * Since M4b the two concepts are separate: a provisioning target that has no
+ * dedicated driver is executed through the `generic` runtime (see
+ * {@link RuntimeId} and {@link runtimeIdForTarget}).
+ */
+export type ProvisioningTarget =
   | "cursor"
   | "claude"
   | "opencode"
@@ -31,6 +40,56 @@ export type AgentTarget =
   | "omp"
   | "mcode"
   | "mimo";
+
+/**
+ * Retained name for the provisioning-target union (it predates the M4b split).
+ * New code should prefer {@link ProvisioningTarget} when it means "where Muninn
+ * is registered"; `IAgentRuntime.id` still carries this shape for the legacy
+ * CLI adapters during the transition.
+ */
+export type AgentTarget = ProvisioningTarget;
+
+/**
+ * The id of a **runtime** — what actually executes a prompt.
+ *
+ * Five drivers exist after M4b: three native SDK drivers (`pi`, `codex`,
+ * `claude`), the opencode daemon (`opencode`) and one configured subprocess
+ * bridge (`generic`). The eight CLI-only provisioning targets (`agy`,
+ * `commandcode`, `devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen`) plus
+ * `cursor` are all served by `generic`: they keep their provisioning row, but
+ * they are no longer separate runtime classes.
+ */
+export type RuntimeId = "pi" | "opencode" | "codex" | "claude" | "generic";
+
+/** Every runtime, in the order `huginn runtime list` shows them. */
+export const RUNTIME_IDS: readonly RuntimeId[] = ["pi", "codex", "claude", "opencode", "generic"];
+
+/**
+ * Which runtime serves each provisioning target.
+ *
+ * The four targets with a dedicated driver keep their own runtime id; every
+ * other target is driven by the configured generic bridge.
+ */
+export const AGENT_TARGET_RUNTIME: Record<ProvisioningTarget, RuntimeId> = {
+  pi: "pi",
+  opencode: "opencode",
+  codex: "codex",
+  claude: "claude",
+  cursor: "generic",
+  agy: "generic",
+  commandcode: "generic",
+  devin: "generic",
+  kimi: "generic",
+  mcode: "generic",
+  mimo: "generic",
+  omp: "generic",
+  qwen: "generic",
+};
+
+/** Map a provisioning target onto the runtime that executes it. */
+export function runtimeIdForTarget(target: ProvisioningTarget): RuntimeId {
+  return AGENT_TARGET_RUNTIME[target];
+}
 
 export type McpFormat = "mcpServers" | "opencode" | "toml";
 

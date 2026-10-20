@@ -9,6 +9,7 @@ import {
   resolveAgent,
   SUBPROCESS_PERMISSION_ARGS,
 } from "../../../src/engine/agent/registry.js";
+import { GenericSubprocessRuntimeAdapter } from "../../../src/engine/agent/adapters/generic.js";
 import type {
   IAgentRuntime,
   IAgentSession,
@@ -177,125 +178,40 @@ describe("Agent Registry & Factory", () => {
     }
   });
 
-  it("wires the real `omp models` listing command (AC-27.4)", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "huginn-omp-wiring-"));
-    try {
-      const ompBin = join(tempDir, "omp");
-      writeFileSync(
-        ompBin,
-        "#!/bin/sh\n" +
-          '[ "$1" = "models" ] || exit 9\n' +
-          "printf 'deepseek (1)\\n" +
-          "┌─┬─┐\\n" +
-          "│ model │ context │\\n" +
-          "├─┼─┤\\n" +
-          "│ deepseek-flash │ 1M │\\n" +
-          "└─┴─┘\\n'\n",
-      );
-      chmodSync(ompBin, 0o755);
-
-      const runtime = getAgentRuntime("omp", { env: { PATH: tempDir } });
-      expect(await runtime.getAvailableModels()).toEqual([
-        {
-          id: "deepseek/deepseek-flash",
-          name: "deepseek-flash",
-          provider: "deepseek",
-          description: "context 1M",
-        },
-      ]);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+  it("builds every CLI-only target through the configured generic runtime (M4b)", () => {
+    const targets = [
+      "cursor",
+      "agy",
+      "commandcode",
+      "devin",
+      "kimi",
+      "mcode",
+      "mimo",
+      "omp",
+      "qwen",
+    ] as const;
+    for (const target of targets) {
+      const runtime = getAgentRuntime(target);
+      expect(runtime).toBeInstanceOf(GenericSubprocessRuntimeAdapter);
+      expect(runtime.id).toBe(target);
+      expect(runtime.sessionHistory).toBe(false);
     }
   });
 
-  it("wires the real `agy models` listing command and ignores its preamble (AC-27.4)", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "huginn-agy-wiring-"));
-    try {
-      const agyBin = join(tempDir, "agy");
-      writeFileSync(
-        agyBin,
-        "#!/bin/sh\n" +
-          '[ "$1" = "models" ] || exit 9\n' +
-          "printf 'Fetching available models...\\n" +
-          "gemini-3.8-flash-high\\tGemini 3.8 Flash (High)\\n'\n",
-      );
-      chmodSync(agyBin, 0o755);
-
-      const runtime = getAgentRuntime("agy", { env: { PATH: tempDir } });
-      expect(await runtime.getAvailableModels()).toEqual([
-        { id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", provider: "agy" },
-      ]);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("wires the real `devin models list` listing command and ignores its preamble (AC-27.4)", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "huginn-devin-wiring-"));
-    try {
-      const devinBin = join(tempDir, "devin");
-      writeFileSync(
-        devinBin,
-        "#!/bin/sh\n" +
-          '[ "$1" = "models" ] && [ "$2" = "list" ] || exit 9\n' +
-          "printf 'Available models (1 families)\\n\\n" +
-          "Claude Opus 5.5 (claude-opus-5.5)\\n" +
-          "  claude-opus-5-5-medium                                          Claude Opus 5.5 Medium  [$4 / 1M Output]\\n'\n",
-      );
-      chmodSync(devinBin, 0o755);
-
-      const runtime = getAgentRuntime("devin", { env: { PATH: tempDir } });
-      expect(await runtime.getAvailableModels()).toEqual([
-        {
-          id: "claude-opus-5-5-medium",
-          name: "Claude Opus 5.5 Medium",
-          provider: "Claude Opus 5.5",
-          description: "$4 / 1M Output",
-        },
-      ]);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("wires the real `mimo models` listing command (AC-27.4)", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "huginn-mimo-wiring-"));
-    try {
-      const mimoBin = join(tempDir, "mimo");
-      // Rows copied verbatim from the captured `mimo models` fixture (the argv
-      // is asserted too: only `models`, never `models --verbose`).
-      writeFileSync(
-        mimoBin,
-        "#!/bin/sh\n" +
-          '[ "$1" = "models" ] || exit 9\n' +
-          "cat <<'HUGINN_EOF'\n" +
-          "deepseek/deepseek-flash — window 1M, compacts at 900K\n" +
-          "xiaomi/mimo-v2.6-pro — window 1.05M, compacts at 944K\n" +
-          "HUGINN_EOF\n",
-      );
-      chmodSync(mimoBin, 0o755);
-
-      const runtime = getAgentRuntime("mimo", {
-        // Keep the real PATH behind the temp dir so the fake `mimo` can still
-        // resolve `cat`.
-        env: { PATH: `${tempDir}:${process.env.PATH ?? ""}` },
-      });
-      expect(await runtime.getAvailableModels()).toEqual([
-        {
-          id: "deepseek/deepseek-flash",
-          name: "deepseek-flash",
-          provider: "deepseek",
-          description: "window 1M, compacts at 900K",
-        },
-        {
-          id: "xiaomi/mimo-v2.6-pro",
-          name: "mimo-v2.6-pro",
-          provider: "xiaomi",
-          description: "window 1.05M, compacts at 944K",
-        },
-      ]);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+  it("reports an honest empty catalog for the CLI-only generic targets (M4b)", async () => {
+    for (const target of [
+      "agy",
+      "commandcode",
+      "devin",
+      "kimi",
+      "mcode",
+      "mimo",
+      "omp",
+      "qwen",
+    ] as const) {
+      const catalog = await getAgentRuntime(target, { env: { PATH: "/dev/null" } }).getModelCatalog?.();
+      expect(catalog?.models).toEqual([]);
+      expect(catalog?.reason).toContain("no model-listing command");
     }
   });
 
@@ -651,11 +567,7 @@ describe("Agent Subsystem Barrel Exports", () => {
     expect(AgentSubsystem.OmpRuntimeAdapter).toBeDefined();
     expect(AgentSubsystem.CommandCodeRuntimeAdapter).toBeDefined();
     expect(AgentSubsystem.QwenRuntimeAdapter).toBeDefined();
-    expect(AgentSubsystem.McodeRuntimeAdapter).toBeDefined();
-    expect(AgentSubsystem.MimoRuntimeAdapter).toBeDefined();
-    expect(AgentSubsystem.MCODE_PERMISSION_ARGS).toBeDefined();
-    expect(AgentSubsystem.MIMO_PERMISSION_ARGS).toBeDefined();
-    expect(AgentSubsystem.parseMimoModels).toBeDefined();
+    expect(AgentSubsystem.GenericSubprocessRuntimeAdapter).toBeDefined();
   });
 });
 

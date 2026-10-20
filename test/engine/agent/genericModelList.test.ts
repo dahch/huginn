@@ -3,10 +3,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenericSubprocessRuntimeAdapter } from "../../../src/engine/agent/adapters/generic.js";
-import {
-  CommandCodeRuntimeAdapter,
-  COMMANDCODE_PERMISSION_ARGS,
-} from "../../../src/engine/agent/adapters/commandcode.js";
+import { CommandCodeRuntimeAdapter } from "../../../src/engine/agent/adapters/commandcode.js";
+import { COMMANDCODE_PERMISSION_ARGS } from "../../../src/engine/agent/genericTargets.js";
 import type { ModelInfo } from "../../../src/engine/agent/types.js";
 
 const tempDirs: string[] = [];

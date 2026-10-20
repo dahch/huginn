@@ -9,7 +9,7 @@ import {
   GenericSubprocessRuntimeAdapter,
   withPermissionArgs,
 } from "../../../src/engine/agent/adapters/generic.js";
-import { DEVIN_PERMISSION_ARGS } from "../../../src/engine/agent/adapters/devin.js";
+import { DEVIN_PERMISSION_ARGS } from "../../../src/engine/agent/genericTargets.js";
 import { getAgentRuntime, SUBPROCESS_PERMISSION_ARGS } from "../../../src/engine/agent/registry.js";
 import { events } from "../../../src/engine/engineEvents.js";
 import { LiveEngine } from "../../../src/engine/liveMode.js";

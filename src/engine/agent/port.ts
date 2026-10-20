@@ -1,16 +1,9 @@
-import type { AgentTarget } from "../../agents/integrator.js";
+import type { RuntimeId } from "../../agents/integrator.js";
 import type { ModelCatalog, PromptResult } from "./types.js";
 
-/**
- * The id of a **runtime** — the thing that actually executes a prompt.
- *
- * Deliberately separate from `AgentTarget` (the provisioning targets `huginn
- * setup`/`init`/`doctor` know how to write MCP config for): a runtime is what
- * the cycle drives, a provisioning target is where Muninn gets registered. They
- * overlap today, and they will not once the CLI-only targets stop being
- * first-class runtimes.
- */
-export type RuntimeId = AgentTarget | "generic";
+// The runtime id is defined next to the provisioning targets so the mapping
+// between the two concepts lives in one place (M4b).
+export type { RuntimeId } from "../../agents/integrator.js";
 
 /**
  * What a driver can actually do, declared instead of guessed.

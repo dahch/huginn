@@ -34,7 +34,13 @@ describe("huginn runtime list", () => {
     silent();
     await handleRuntimeCommand("list", {}, { getPort });
     expect(getPort).toHaveBeenCalledTimes(5);
-    expect(getPort.mock.calls.map((c) => c[0])).toEqual(["pi", "codex", "claude", "opencode", "kimi"]);
+    expect(getPort.mock.calls.map((c) => c[0])).toEqual([
+      "pi",
+      "codex",
+      "claude",
+      "opencode",
+      "generic",
+    ]);
   });
 
   it("prints the capability text instead of claiming what is not there", async () => {
