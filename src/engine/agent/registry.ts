@@ -10,6 +10,7 @@ import {
 import type { IAgentRuntime } from "./types.js";
 import { toLegacyRuntime, toRuntimePort } from "./legacy-bridge.js";
 import { createPiSdkPort } from "./drivers/pi-sdk.js";
+import { createCodexSdkPort } from "./drivers/codex-sdk.js";
 import type { RuntimePort } from "./port.js";
 import type { PermissionMode } from "../../config.js";
 import {
@@ -371,9 +372,10 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
  * of implied. New drivers register here by returning their own `RuntimePort`.
  */
 export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}): RuntimePort {
-  // pi is the first driver that runs the loop itself; everything else is still
-  // the legacy adapter behind the bridge until its SDK driver lands.
+  // Drivers that own their SDK; every other target is still the legacy adapter
+  // behind the bridge until its driver lands.
   if (target === "pi") return createPiSdkPort();
+  if (target === "codex") return createCodexSdkPort();
   return toRuntimePort(getAgentRuntime(target, options));
 }
 
@@ -388,5 +390,6 @@ export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}
  */
 export function getEngineRuntime(target: AgentTarget, options: RuntimeOptions = {}): IAgentRuntime {
   if (target === "pi") return toLegacyRuntime(createPiSdkPort());
+  if (target === "codex") return toLegacyRuntime(createCodexSdkPort());
   return getAgentRuntime(target, options);
 }
