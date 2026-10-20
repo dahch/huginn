@@ -176,8 +176,10 @@ consumed as `@dahch/muninn` — the database, service, AST indexer, MCP server a
 contract verifier are all there, with their own test suite (`test/muninn/**` and
 `test/contracts/**` moved with them). `huginn memory`, `huginn check` and `huginn mcp run`
 remain as wrappers, so the CLI surface and the `.huginn/muninn.db` data location are unchanged.
-While the package is unpublished, huginn depends on it through `file:../muninn`: re-run
-`bun install` in huginn after rebuilding a sibling checkout.
+While the package is not on npm, huginn depends on the `v0.1.0` tarball attached to its GitHub
+release — a brand-new package cannot be created through trusted publishing, so the release asset is
+the install path until the first manual publish. Bump that URL when Muninn ships, and switch to
+`^0.1.0` once it is on the registry.
 
 The suites that matter for the step pipeline and its state: `src/engine/gate.test.ts` (the verdict
 parsers), `src/engine/cycle.test.ts` (retry/escalation, the read-only guard, structural verdicts),
