@@ -11,7 +11,7 @@ import {
 import { createClient, prompt, abortSession, probeSession } from "../server/client";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
 import { OpencodeRuntimeAdapter, OpencodeSession } from "./agent/adapters/opencode.js";
-import { getAgentRuntime, subprocessPermissionMessage } from "./agent/registry.js";
+import { getEngineRuntime, subprocessPermissionMessage } from "./agent/registry.js";
 import type { AgentTarget } from "../agents/integrator.js";
 import { MemoryService } from "@dahch/muninn";
 import { resolveDatabasePath } from "@dahch/muninn";
@@ -605,7 +605,7 @@ export class LiveEngine {
     const target = agentId as AgentTarget;
     const newRuntime = this.runtimeFactory
       ? this.runtimeFactory(target)
-      : getAgentRuntime(target, {
+      : getEngineRuntime(target, {
           client: target === "opencode" ? this.client : undefined,
           port: this.cfg.port,
           projectPath: this.cfg.projectPath,

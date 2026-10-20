@@ -35,7 +35,7 @@ import { printBanner, type BannerInfo } from "./banner";
 import { runPlanMode } from "./engine/planMode";
 import { LiveEngine } from "./engine/liveMode";
 import { maybePrintUpdateReminder } from "./update";
-import { resolveAgent, getAgentRuntime, OpencodeRuntimeAdapter, subprocessPermissionMessage } from "./engine/agent/index.js";
+import { resolveAgent, getEngineRuntime, OpencodeRuntimeAdapter, subprocessPermissionMessage } from "./engine/agent/index.js";
 import type { AgentTarget } from "./agents/integrator.js";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
@@ -756,7 +756,7 @@ export async function main(argv: string[]): Promise<void> {
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
-  const runtime = getAgentRuntime(resolvedAgent as AgentTarget, {
+  const runtime = getEngineRuntime(resolvedAgent as AgentTarget, {
     projectPath,
     port: cfg.port,
     serverTimeoutMs: cfg.serverTimeoutMs,
@@ -1127,7 +1127,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
-  const runtime = getAgentRuntime(resolvedAgent as AgentTarget, {
+  const runtime = getEngineRuntime(resolvedAgent as AgentTarget, {
     projectPath,
     port: cfg.port,
     serverTimeoutMs: cfg.serverTimeoutMs,
