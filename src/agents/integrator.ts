@@ -17,7 +17,16 @@ import { dirname, isAbsolute, join, normalize } from "node:path";
  * declarative `AGENT_REGISTRY`, so adding a new agent is a one-row change.
  */
 
-export type AgentTarget =
+/**
+ * A **provisioning target** — somewhere `huginn setup`/`init`/`doctor` registers
+ * the Muninn MCP server and injects the directive block.
+ *
+ * This union describes where memory is configured, *not* what the cycle runs.
+ * Since M4b the two concepts are separate: a provisioning target that has no
+ * dedicated driver is executed through the `generic` runtime (see
+ * {@link RuntimeId} and {@link runtimeIdForTarget}).
+ */
+export type ProvisioningTarget =
   | "cursor"
   | "claude"
   | "opencode"
@@ -32,6 +41,56 @@ export type AgentTarget =
   | "mcode"
   | "mimo";
 
+/**
+ * Retained name for the provisioning-target union (it predates the M4b split).
+ * New code should prefer {@link ProvisioningTarget} when it means "where Muninn
+ * is registered"; `IAgentRuntime.id` still carries this shape for the legacy
+ * CLI adapters during the transition.
+ */
+export type AgentTarget = ProvisioningTarget;
+
+/**
+ * The id of a **runtime** — what actually executes a prompt.
+ *
+ * Five drivers exist after M4b: three native SDK drivers (`pi`, `codex`,
+ * `claude`), the opencode daemon (`opencode`) and one configured subprocess
+ * bridge (`generic`). The eight CLI-only provisioning targets (`agy`,
+ * `commandcode`, `devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen`) plus
+ * `cursor` are all served by `generic`: they keep their provisioning row, but
+ * they are no longer separate runtime classes.
+ */
+export type RuntimeId = "pi" | "opencode" | "codex" | "claude" | "generic";
+
+/** Every runtime, in the order `huginn runtime list` shows them. */
+export const RUNTIME_IDS: readonly RuntimeId[] = ["pi", "codex", "claude", "opencode", "generic"];
+
+/**
+ * Which runtime serves each provisioning target.
+ *
+ * The four targets with a dedicated driver keep their own runtime id; every
+ * other target is driven by the configured generic bridge.
+ */
+export const AGENT_TARGET_RUNTIME: Record<ProvisioningTarget, RuntimeId> = {
+  pi: "pi",
+  opencode: "opencode",
+  codex: "codex",
+  claude: "claude",
+  cursor: "generic",
+  agy: "generic",
+  commandcode: "generic",
+  devin: "generic",
+  kimi: "generic",
+  mcode: "generic",
+  mimo: "generic",
+  omp: "generic",
+  qwen: "generic",
+};
+
+/** Map a provisioning target onto the runtime that executes it. */
+export function runtimeIdForTarget(target: ProvisioningTarget): RuntimeId {
+  return AGENT_TARGET_RUNTIME[target];
+}
+
 export type McpFormat = "mcpServers" | "opencode" | "toml";
 
 /**
@@ -44,11 +103,46 @@ export type McpFormat = "mcpServers" | "opencode" | "toml";
  * agent (its rule/runtime plumbing — `.windsurf/rules`, `--permission-mode
  * dangerous` — was carried over), so an old `"agent": "windsurf"` config maps to
  * `devin` through the same warn-and-detect path as `gemini` → `agy`.
+ *
+ * M4b retires the eight CLI-only **runtimes**: `agy`, `commandcode`, `devin`,
+ * `kimi`, `mcode`, `mimo`, `omp` and `qwen` now run through the generic
+ * bridge and are no longer selectable from a persisted config. They stay in
+ * {@link AGENT_TARGETS} (and therefore in `huginn setup --status`), and an
+ * explicit `--agent <target>` still runs them through the generic bridge; only a
+ * *stored* value warns and falls back to auto-detection.
  */
 export const REMOVED_AGENT_TARGETS: ReadonlyMap<string, string> = new Map([
   ["gemini", "agy"],
   ["windsurf", "devin"],
+  ["agy", "generic"],
+  ["commandcode", "generic"],
+  ["devin", "generic"],
+  ["kimi", "generic"],
+  ["mcode", "generic"],
+  ["mimo", "generic"],
+  ["omp", "generic"],
+  ["qwen", "generic"],
 ]);
+
+/**
+ * Human-readable notice for a stored value found in
+ * {@link REMOVED_AGENT_TARGETS}. Shared by the config reader and
+ * `resolveAgent` so both explain the same migration the same way.
+ */
+export function removedAgentTargetNotice(target: string, where: string): string {
+  const successor = REMOVED_AGENT_TARGETS.get(target) ?? "auto-detection";
+  if (successor === "generic") {
+    return (
+      `[huginn] ⚠ the agent "${target}" in ${where} was removed as a built-in runtime ` +
+      `(it remains a provisioning target and runs through the "generic" runtime); ` +
+      `falling back to auto-detection.`
+    );
+  }
+  return (
+    `[huginn] ⚠ the agent "${target}" in ${where} was removed ` +
+    `(superseded by "${successor}"); falling back to auto-detection.`
+  );
+}
 
 /**
  * One row of the Muninn provisioning matrix (REQ-38 / AC-38.4): whether the

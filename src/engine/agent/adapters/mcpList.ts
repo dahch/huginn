@@ -34,15 +34,6 @@ export const MCP_LIST_TIMEOUT_MS = 5000;
  */
 export const CLAUDE_MCP_LIST_TIMEOUT_MS = 30000;
 
-/** `agy mcp list` reads its local config table (measured ≈ 0.2 s). */
-export const AGY_MCP_LIST_TIMEOUT_MS = 3000;
-
-/** `commandcode mcp list` is a local table read too; same bound as `agy`. */
-export const COMMANDCODE_MCP_LIST_TIMEOUT_MS = 5000;
-
-/** `devin mcp list` merges its local/project/user config files (measured ≈ 0.9 s). */
-export const DEVIN_MCP_LIST_TIMEOUT_MS = 5000;
-
 /** A leading status glyph the CLIs print before the server name. */
 const LEADING_GLYPH = /^[✓✔✗✘×✕]\s*/;
 
@@ -51,9 +42,6 @@ const OPENCODE_BULLET = /^[●○◯◦•·*]\s+/;
 
 /** Box-drawing gutter that prefixes an `opencode` detail (command) line. */
 const OPENCODE_GUTTER = /^[│┃|]\s*/;
-
-/** `id + 2-or-more spaces` (or tabs) — the column separator of aligned tables. */
-const COLUMN_SEPARATOR = /(?:\t+| {2,})/;
 
 /**
  * Maps one status word/glyph reported by a CLI to its true meaning (AC-32.2).
@@ -97,36 +85,6 @@ export function inferListingTransport(detail?: string): string | undefined {
   const clean = sanitizeTerminalText(detail ?? "").trim();
   if (!clean) return undefined;
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(clean) ? "http" : "stdio";
-}
-
-/**
- * Splits an aligned table row into at most `max` cells on tab runs or 2+-space
- * runs. The last cell keeps everything that is left (so a command line with
- * single spaces survives verbatim), which is what makes the `agy`/`commandcode`
- * tables parseable without knowing their column widths.
- */
-function splitColumns(line: string, max: number): string[] {
-  const cells: string[] = [];
-  let rest = line.trim();
-  while (cells.length < max - 1) {
-    const separator = COLUMN_SEPARATOR.exec(rest);
-    if (!separator || separator.index < 1) break;
-    cells.push(rest.slice(0, separator.index).trim());
-    rest = rest.slice(separator.index + separator[0].length);
-  }
-  cells.push(rest.trim());
-  return cells;
-}
-
-/** True for the `NAME  TYPE  …` header row every table-format listing prints. */
-function isColumnHeader(name: string, second: string): boolean {
-  return name.toUpperCase() === "NAME" && second.toUpperCase() === "TYPE";
-}
-
-/** Free-text cell that carries no information (`-`, `n/a`, empty). */
-function isBlankCell(value: string | undefined): boolean {
-  const clean = (value ?? "").trim();
-  return clean.length === 0 || clean === "-" || clean.toLowerCase() === "n/a";
 }
 
 /**
@@ -211,215 +169,6 @@ export function parseClaudeMcpList(stdout: string): McpServerListing[] {
       status: mapMcpListingStatus(status),
       detail: command || undefined,
     });
-  }
-
-  return listings;
-}
-
-/**
- * Pure parser for `qwen mcp list` (REQ-32 / AC-32.1).
- *
- * Verified format: a `Configured MCP servers:` heading, then
- * `<ESC>[32m✓<ESC>[0m <name>: <command> (<transport>) - <Connected>`. The ANSI
- * codes and the leading glyph are stripped, the transport is read from the last
- * parenthesised group before the status (so nothing is guessed when the CLI
- * reports one), and the heading — which has no `: ` separator — is skipped.
- * Exported for fixture tests.
- */
-export function parseQwenMcpList(stdout: string): McpServerListing[] {
-  const listings: McpServerListing[] = [];
-  const seen = new Set<string>();
-
-  for (const rawLine of sanitizeTerminalText(stdout).split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    const body = line.replace(LEADING_GLYPH, "").trim();
-    const nameSep = body.indexOf(": ");
-    if (nameSep <= 0) continue;
-
-    const name = body.slice(0, nameSep).trim();
-    const tail = body.slice(nameSep + 2).trim();
-    if (!name || !tail || seen.has(name)) continue;
-
-    const withTransport = /^(.*?)\(\s*([^()]+?)\s*\)\s+-\s+(.+)$/.exec(tail);
-    let command: string;
-    let transport: string | undefined;
-    let status: string;
-
-    if (withTransport) {
-      command = withTransport[1].trim();
-      transport = withTransport[2].trim();
-      status = withTransport[3].trim();
-    } else {
-      const statusSep = tail.lastIndexOf(" - ");
-      if (statusSep < 0) continue;
-      command = tail.slice(0, statusSep).trim();
-      transport = inferListingTransport(command);
-      status = tail.slice(statusSep + 3).trim();
-    }
-    if (!status) continue;
-    seen.add(name);
-
-    listings.push({
-      name,
-      transport,
-      status: mapMcpListingStatus(status),
-      detail: command || undefined,
-    });
-  }
-
-  return listings;
-}
-
-/**
- * Pure parser for `agy mcp list` (REQ-32 / AC-32.1).
- *
- * Verified format: a `NAME TYPE STATUS COMMAND/URL` header followed by aligned
- * rows (`muninn  stdio  enabled  huginn mcp run --project …`). Statuses are the
- * configuration words `enabled`/`disabled` — never a probe result — so they map
- * to `enabled`/`disabled` and are never upgraded to `connected` (AC-32.2).
- * Exported for fixture tests.
- */
-export function parseAgyMcpList(stdout: string): McpServerListing[] {
-  const listings: McpServerListing[] = [];
-  const seen = new Set<string>();
-
-  for (const rawLine of sanitizeTerminalText(stdout).split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    const cells = splitColumns(line, 4);
-    const [rawName = "", rawTransport = "", rawStatus = "", rawDetail = ""] = cells;
-    if (cells.length < 3) continue;
-    if (isColumnHeader(rawName, rawTransport)) continue;
-
-    const name = sanitizeTerminalText(rawName).trim();
-    if (!name || !rawStatus || seen.has(name)) continue;
-    seen.add(name);
-
-    const detail = rawDetail.trim();
-    listings.push({
-      name,
-      transport: sanitizeTerminalText(rawTransport).trim() || inferListingTransport(detail),
-      status: mapMcpListingStatus(rawStatus),
-      detail: detail || undefined,
-    });
-  }
-
-  return listings;
-}
-
-/**
- * Pure parser for `commandcode mcp list` (REQ-32 / AC-32.1).
- *
- * Verified format: a blank line, `MCP Servers`, the header
- * `NAME TYPE SCOPE AUTH STATUS`, indented rows
- * (`  muninn  stdio  user     -     enabled`) and a `Total: N server(s)` footer.
- * Scope/auth are surfaced as detail (AC-32.5) so the panel can show what the CLI
- * actually knows; placeholders (`-`) are dropped rather than rendered as truth.
- * Exported for fixture tests.
- */
-export function parseCommandcodeMcpList(stdout: string): McpServerListing[] {
-  const listings: McpServerListing[] = [];
-  const seen = new Set<string>();
-
-  for (const rawLine of sanitizeTerminalText(stdout).split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (/^MCP Servers$/i.test(line)) continue;
-    if (/^Total:/i.test(line)) continue;
-
-    const cells = splitColumns(line, 5);
-    const [rawName = "", rawTransport = "", rawScope = "", rawAuth = "", rawStatus = ""] = cells;
-    if (cells.length < 5) continue;
-    if (isColumnHeader(rawName, rawTransport)) continue;
-
-    const name = sanitizeTerminalText(rawName).trim();
-    if (!name || !rawStatus || seen.has(name)) continue;
-    seen.add(name);
-
-    const detailParts: string[] = [];
-    if (!isBlankCell(rawScope)) detailParts.push(`scope ${sanitizeTerminalText(rawScope).trim()}`);
-    if (!isBlankCell(rawAuth)) detailParts.push(`auth ${sanitizeTerminalText(rawAuth).trim()}`);
-
-    listings.push({
-      name,
-      transport: sanitizeTerminalText(rawTransport).trim() || undefined,
-      status: mapMcpListingStatus(rawStatus),
-      detail: detailParts.length > 0 ? detailParts.join(" · ") : undefined,
-    });
-  }
-
-  return listings;
-}
-
-/**
- * Bullet/status glyph that opens a `devin mcp list` row.
- *
- * Enabled rows use a bullet (`  • <name>`); a disabled row swaps it for a
- * cross (`  ✗ <name>  (disabled)`).
- */
-const DEVIN_MCP_GLYPH = /^[•·*✔✓✗✘×✕]\s+/;
-
-/** Trailing `  (disabled)` marker a disabled `devin mcp list` row carries. */
-const DEVIN_MCP_DISABLED_MARKER = /\s{2,}\(disabled\)$/;
-
-/** Glyphs that mean "configured but disabled" even without the explicit marker. */
-const DEVIN_MCP_DISABLED_GLYPHS = new Set(["✗", "✘", "×", "✕"]);
-
-/**
- * Detail line under a server: `    Command: …` (stdio) or `    URL: …` (http).
- *
- * REV-3A-007: matched case-insensitively — a future devin build may print
- * `command:`/`url:` (or any case), and the label is configuration, not content.
- */
-const DEVIN_MCP_DETAIL = /^(command|url):\s*(.+)$/i;
-
-/**
- * Pure parser for `devin mcp list` (REQ-32 / AC-32.1).
- *
- * Verified format: a `Configured MCP servers:` heading, then per server a
- * glyph-led row (`  • <name>` when enabled, `  ✗ <name>  (disabled)` when
- * disabled) followed by an indented detail line — `Command: <cmd>` for a stdio
- * server or `URL: <url>` for a remote one. The transport is taken from the
- * CLI's own label (matched case-insensitively, REV-3A-007), the status is the
- * CLI's own enabled/disabled word (a *configuration* state, never a liveness
- * probe — a redacted command like `<redacted>` is surfaced verbatim rather than
- * guessed at), and the heading — which has neither a glyph nor a detail prefix —
- * is inert. Exported for fixture tests.
- */
-export function parseDevinMcpList(stdout: string): McpServerListing[] {
-  const listings: McpServerListing[] = [];
-  const seen = new Set<string>();
-  let current: McpServerListing | undefined;
-
-  for (const rawLine of sanitizeTerminalText(stdout).split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    const glyph = DEVIN_MCP_GLYPH.exec(line);
-    if (glyph) {
-      const body = line.slice(glyph[0].length).trim();
-      const marker = DEVIN_MCP_DISABLED_MARKER.exec(body);
-      const name = (marker ? body.slice(0, marker.index) : body).trim();
-      if (!name || seen.has(name)) {
-        current = undefined;
-        continue;
-      }
-      seen.add(name);
-      const disabled = marker !== null || DEVIN_MCP_DISABLED_GLYPHS.has(glyph[0].trim());
-      current = { name, status: disabled ? "disabled" : "enabled" };
-      listings.push(current);
-      continue;
-    }
-
-    const detail = DEVIN_MCP_DETAIL.exec(line);
-    if (detail && current) {
-      current.transport = detail[1].toUpperCase() === "URL" ? "http" : "stdio";
-      const value = detail[2].trim();
-      if (value) current.detail = value;
-    }
   }
 
   return listings;

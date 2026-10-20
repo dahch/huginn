@@ -1,3 +1,4 @@
+import { runtimeIdForTarget } from "../../agents/integrator.js";
 import type { IAgentRuntime, IAgentSession, McpStatusReport, PromptResult } from "./types.js";
 import type {
   EventSink,
@@ -54,7 +55,9 @@ export function legacyCapabilities(runtime: IAgentRuntime): RuntimeCapabilities 
 export function toRuntimePort(runtime: IAgentRuntime): RuntimePort {
   const capabilities = legacyCapabilities(runtime);
   return {
-    id: runtime.id,
+    // The legacy adapter still carries the provisioning-target id; the port
+    // speaks the five-valued runtime id (M4b).
+    id: runtimeIdForTarget(runtime.id),
     name: runtime.name,
     capabilities,
 

@@ -13,7 +13,11 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PhaseName } from "./engine/types";
-import { AGENT_TARGETS, REMOVED_AGENT_TARGETS } from "./agents/integrator";
+import {
+  AGENT_TARGETS,
+  REMOVED_AGENT_TARGETS,
+  removedAgentTargetNotice,
+} from "./agents/integrator";
 import { DEFAULT_PROFILE, isProfileName, PROFILE_NAMES, type ProfileName } from "./engine/profiles";
 
 /**
@@ -209,16 +213,13 @@ function sanitizeConfig(value: unknown, path: string): UserConfig {
       else console.warn(`[huginn] config ${path}: "${key}" must be a string; ignoring`);
     } else if (key === "agent") {
       const candidate = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-      if ((AGENT_TARGETS as readonly string[]).includes(candidate)) {
+      // REMOVED first: an M4b-retired runtime (e.g. `kimi`) is still an
+      // `AGENT_TARGETS` member for provisioning, but a persisted config must
+      // warn and fall back instead of selecting a runtime that no longer exists.
+      if (REMOVED_AGENT_TARGETS.has(candidate)) {
+        console.warn(removedAgentTargetNotice(candidate, `config ${path}`));
+      } else if ((AGENT_TARGETS as readonly string[]).includes(candidate)) {
         out.agent = candidate;
-      } else if (REMOVED_AGENT_TARGETS.has(candidate)) {
-        // A removed target (e.g. `gemini`, superseded by `agy`) is reported
-        // specifically, so the user learns what to switch to rather than just
-        // being told the list (AC-35.3).
-        console.warn(
-          `[huginn] config ${path}: agent "${candidate}" was removed ` +
-            `(superseded by "${REMOVED_AGENT_TARGETS.get(candidate)}"); falling back to auto-detection`,
-        );
       } else {
         console.warn(
           `[huginn] config ${path}: "agent" must be one of [${AGENT_TARGETS.join(", ")}]; ignoring`,

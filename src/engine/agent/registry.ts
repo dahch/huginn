@@ -5,6 +5,7 @@ import {
   AGENT_REGISTRY,
   AGENT_TARGETS,
   REMOVED_AGENT_TARGETS,
+  removedAgentTargetNotice,
   type AgentTarget,
 } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
@@ -12,30 +13,32 @@ import { toLegacyRuntime, toRuntimePort } from "./legacy-bridge.js";
 import { createPiSdkPort } from "./drivers/pi-sdk.js";
 import { createCodexSdkPort } from "./drivers/codex-sdk.js";
 import { createClaudeSdkPort } from "./drivers/claude-sdk.js";
-import type { RuntimePort } from "./port.js";
+import type { RuntimeCapabilities, RuntimePort } from "./port.js";
 import type { PermissionMode } from "../../config.js";
 import {
-  AGY_MCP_LIST_TIMEOUT_MS,
+  CLAUDE_PERMISSION_ARGS,
+  CODEX_PERMISSION_ARGS,
   ClaudeRuntimeAdapter,
   CodexRuntimeAdapter,
-  CommandCodeRuntimeAdapter,
-  DEVIN_PERMISSION_ARGS,
-  DevinRuntimeAdapter,
   GenericSubprocessRuntimeAdapter,
-  KIMI_PERMISSION_ARGS,
-  KimiRuntimeAdapter,
-  MCODE_PERMISSION_ARGS,
-  MIMO_PERMISSION_ARGS,
-  McodeRuntimeAdapter,
-  MimoRuntimeAdapter,
-  OmpRuntimeAdapter,
   OpencodeRuntimeAdapter,
   PI_PERMISSION_ARGS,
   PiRuntimeAdapter,
-  QwenRuntimeAdapter,
-  parseAgyMcpList,
-  parseAgyModels,
 } from "./adapters/index.js";
+import {
+  AGY_PERMISSION_ARGS,
+  COMMANDCODE_PERMISSION_ARGS,
+  CURSOR_PERMISSION_ARGS,
+  DEVIN_PERMISSION_ARGS,
+  GENERIC_TARGET_SPECS,
+  KIMI_PERMISSION_ARGS,
+  MCODE_PERMISSION_ARGS,
+  MIMO_PERMISSION_ARGS,
+  OMP_PERMISSION_ARGS,
+  QWEN_PERMISSION_ARGS,
+  isGenericTarget,
+  type GenericTarget,
+} from "./genericTargets.js";
 
 export const AGENT_BINARIES: Record<AgentTarget, string[]> = {
   opencode: ["opencode"],
@@ -103,46 +106,31 @@ export function subprocessPermissionMessage(
 }
 
 /**
- * Auto-approval flag of every subprocess runtime (Phase 2C), used by the
- * runtimes whose adapter is constructed inline here. The class-based adapters
- * (`claude`, `codex`, `omp`, `commandcode`, `qwen`, `devin`, `kimi`, `pi`)
- * carry the same value as an exported constant next to their runtime —
- * `devin`/`kimi`/`pi` reuse {@link DEVIN_PERMISSION_ARGS} /
- * {@link KIMI_PERMISSION_ARGS} / {@link PI_PERMISSION_ARGS} directly so the
- * documented table and the adapter cannot drift (REV-3A-004).
+ * Auto-approval flag of every subprocess runtime (Phase 2C).
  *
  * These are the CLIs' **own** switches, not a huginn protocol: they are what
  * keeps the cycle from stalling when a CLI would otherwise wait for an approval
  * that can never arrive (stdin is closed after the prompt). Each flag can shift
  * between CLI versions — re-verify with `<cli> --help` before trusting it.
+ *
+ * The generic rows and the dedicated adapters share the exact same array
+ * instance as their spec/class (REV-3A-004), so the documented table cannot
+ * drift from what is spawned.
  */
-export const SUBPROCESS_PERMISSION_ARGS: Partial<Record<AgentTarget, string[]>> = {
-  claude: ["--dangerously-skip-permissions"],
-  codex: ["--dangerously-bypass-approvals-and-sandbox"],
-  qwen: ["-y"],
-  omp: ["--auto-approve"],
-  commandcode: ["--yolo"],
-  // Phase 3C: kimi's prompt mode (`-p <prompt>`) *rejects* every permission
-  // switch ("Cannot combine --prompt with --auto" / `--yolo` / `--plan`) and
-  // forces the session's permission mode to `auto` (Never Ask) itself, so the
-  // correct flag list is empty — the previous `["--auto"]` made every prompt
-  // fail. Same array instance as the adapter, so the table cannot drift.
-  kimi: KIMI_PERMISSION_ARGS,
+export const SUBPROCESS_PERMISSION_ARGS: Record<AgentTarget, string[]> = {
+  claude: CLAUDE_PERMISSION_ARGS,
+  codex: CODEX_PERMISSION_ARGS,
   pi: PI_PERMISSION_ARGS,
-  cursor: ["-f"],
-  // Phase 3A: `devin --permission-mode dangerous` auto-approves every tool
-  // (verified with `devin --help`) and replaces the old `windsurf` target. The
-  // flags live next to the adapter; this is the same array instance, so the
-  // adapter can never diverge from the table.
+  cursor: CURSOR_PERMISSION_ARGS,
+  agy: AGY_PERMISSION_ARGS,
+  commandcode: COMMANDCODE_PERMISSION_ARGS,
   devin: DEVIN_PERMISSION_ARGS,
-  agy: ["--dangerously-skip-permissions"],
-  // Phase 3B: `mcode exec --permission full` (verified live — the `smart`
-  // default still decides per action, `full` auto-approves) and `mimo run
-  // --yolo` (the `run` subcommand's own auto-approval switch; its *global*
-  // `--trust`/`--never-ask` are rejected by `run`). Same array instances as the
-  // adapters, so the table cannot drift.
+  kimi: KIMI_PERMISSION_ARGS,
   mcode: MCODE_PERMISSION_ARGS,
   mimo: MIMO_PERMISSION_ARGS,
+  omp: OMP_PERMISSION_ARGS,
+  qwen: QWEN_PERMISSION_ARGS,
+  opencode: [],
 };
 
 export interface AgentResolutionSources {
@@ -213,22 +201,22 @@ export async function resolveAgent(sources: AgentResolutionSources = {}): Promis
   };
 
   /**
-   * A *persisted* agent that was **removed** (e.g. `gemini`, superseded by `agy`)
-   * must not break the run: warn and fall through to detection, so an old
-   * `.huginn/config.json` keeps working (AC-35.3). An arbitrary unknown value is
-   * still rejected, so a hostile config cannot name an arbitrary binary (SEC-001).
+   * A *persisted* agent that was **removed** must not break the run: warn and
+   * fall through to detection, so an old `.huginn/config.json` keeps working
+   * (AC-35.3). Since M4b this includes the eight CLI-only runtimes: they remain
+   * provisioning targets and an explicit `--agent <target>` still runs them
+   * through the generic bridge, but a *stored* value migrates to auto-detection.
+   * An arbitrary unknown value is still rejected, so a hostile config cannot
+   * name an arbitrary binary (SEC-001).
    */
   const fromStoredConfig = (val: string | undefined, where: string): AgentTarget | undefined => {
     const candidate = val?.trim().toLowerCase();
     if (!candidate) return undefined;
-    if (isAgentTarget(candidate)) return candidate;
     if (REMOVED_AGENT_TARGETS.has(candidate)) {
-      console.warn(
-        `[huginn] ⚠ the agent "${candidate}" in ${where} was removed ` +
-          `(superseded by "${REMOVED_AGENT_TARGETS.get(candidate)}"); falling back to auto-detection.`,
-      );
+      console.warn(removedAgentTargetNotice(candidate, where));
       return undefined;
     }
+    if (isAgentTarget(candidate)) return candidate;
     throw new Error(`Unknown agent target: "${val}". Supported targets: ${AGENT_TARGETS.join(", ")}`);
   };
 
@@ -261,7 +249,42 @@ export async function resolveAgent(sources: AgentResolutionSources = {}): Promis
 }
 
 /**
- * Factory for creating an IAgentRuntime adapter for the requested AgentTarget.
+ * Build the configured generic bridge for a CLI-only provisioning target (M4b).
+ *
+ * The target keeps its `AgentTarget` id (provisioning, MCP paths, display) while
+ * the port layer maps it to the `generic` runtime id. Its argv is the one the
+ * deleted adapter carried, so behaviour is unchanged.
+ */
+function buildGenericRuntime(target: GenericTarget, options: RuntimeOptions): IAgentRuntime {
+  const spec = GENERIC_TARGET_SPECS[target];
+  return new GenericSubprocessRuntimeAdapter({
+    id: target,
+    name: spec.name,
+    command: spec.command,
+    fallbackCommands: spec.fallbackCommands ? [...spec.fallbackCommands] : undefined,
+    args: [...spec.args],
+    promptViaStdin: spec.promptViaStdin,
+    promptFileFlag: spec.promptFileFlag,
+    promptValueFlag: spec.promptValueFlag,
+    maxPromptArgLength: spec.maxPromptArgLength,
+    modelArgs: options.modelArgs ?? spec.modelArgs,
+    permissionArgs: options.permissionArgs ?? [...spec.permissionArgs],
+    permissionArgsVerified: spec.permissionArgsVerified,
+    permissions: options.permissions,
+    projectPath: options.projectPath,
+    homeDir: options.homeDir,
+    env: options.env,
+  });
+}
+
+/**
+ * The CLI-shaped runtime factory: provisioning, model discovery and the
+ * argv-level tests keep this shape.
+ *
+ * The four targets with a dedicated driver return it (`pi`, `opencode`,
+ * `codex`, `claude`). Every other target — including the eight retired CLI
+ * adapters — is a **configured generic runtime**, so `--agent kimi` keeps
+ * working during the migration without another adapter class.
  */
 export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {}): IAgentRuntime {
   if (!AGENT_TARGETS.includes(target)) {
@@ -275,104 +298,98 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
       return new ClaudeRuntimeAdapter(options);
     case "codex":
       return new CodexRuntimeAdapter(options);
-    case "omp":
-      return new OmpRuntimeAdapter(options);
-    case "commandcode":
-      return new CommandCodeRuntimeAdapter(options);
-    case "qwen":
-      return new QwenRuntimeAdapter(options);
-    case "kimi":
-      // Phase 3C: `KimiRuntimeAdapter` owns kimi's real non-interactive shape
-      // (`-p <prompt>` as a flag *value*, no stdin/`--prompt-file` channel), its
-      // empty permission-flag list and `kimi provider list --json` discovery.
-      return new KimiRuntimeAdapter(options);
     case "pi":
-      // Phase 3C: `PiRuntimeAdapter` owns pi's print mode (`-p` + prompt on
-      // stdin), its verified `--model` flag, `pi --list-models` discovery and
-      // the assumed (`--approve`) project-trust flag.
-      //
       // The native driver (`getRuntimePort("pi")`) is not routed here on purpose:
       // the engine still speaks `IAgentRuntime`, and this path's argv behaviour is
       // covered by tests that only the engine switch can safely retire.
       return new PiRuntimeAdapter(options);
-    // REQ-27 / REQ-35.3: `cursor` exposes no listing command (verified by
-    // probing `--help` where installed), so discovery is honestly empty (`[]` —
-    // the `${id}/default` placeholder is gone) and the picker offers free-text
-    // ids. `agy` (`agy models`), `devin` (`devin models list`), `pi`
-    // (`pi --list-models`) and `kimi` (`kimi provider list --json`) *do* list and
-    // are wired in their own adapters. (`gemini` was removed entirely: its
-    // non-interactive form needs `-p <arg>` and it is superseded by `agy`.)
-    case "devin":
-      return new DevinRuntimeAdapter(options);
-    // Phase 3B. `mcode` is a commandcode-style single-shot CLI: `exec
-    // --input -` + `--permission full`, with **no** model listing (`mcode
-    // provider list` enumerates providers only, each with an empty `models`
-    // array) and no `mcp` command at all — both are honestly absent rather than
-    // fabricated. `mimo` is the opencode-style one: `run` reads the prompt from
-    // stdin, plus `mimo models` / `mimo mcp list`.
-    case "mcode":
-      return new McodeRuntimeAdapter(options);
-    case "mimo":
-      return new MimoRuntimeAdapter(options);
-    case "agy":
-      return new GenericSubprocessRuntimeAdapter({
-        id: "agy",
-        name: AGENT_REGISTRY.agy?.label ?? "agy",
-        command: "agy",
-        modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
-        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS.agy,
-        permissions: options.permissions,
-        modelListCommand: {
-          command: "agy",
-          args: ["models"],
-          parse: parseAgyModels,
-        },
-        // REQ-32 / AC-32.1: `agy mcp list` prints its own name/type/status table
-        // (statuses are `enabled`/`disabled` — configuration words, never a probe
-        // result), so its rows are mapped honestly and are never called live.
-        mcpListCommand: {
-          command: "agy",
-          args: ["mcp", "list"],
-          parse: parseAgyMcpList,
-          timeoutMs: AGY_MCP_LIST_TIMEOUT_MS,
-        },
-        projectPath: options.projectPath,
-        homeDir: options.homeDir,
-        env: options.env,
-      });
-    case "cursor":
-      return new GenericSubprocessRuntimeAdapter({
-        id: target,
-        name: AGENT_REGISTRY[target]?.label ?? target,
-        command: target,
-        // REV-003/S1: `cursor` is not installed on the reference machine, so the
-        // flag is unverified-but-conventional (`--model`); overridable via
-        // `RuntimeOptions.modelArgs`.
-        modelArgs: options.modelArgs ?? ((model) => ["--model", model]),
-        // Phase 2C: `cursor -f` is verified; the flag is announced as
-        // auto-approved.
-        permissionArgs: options.permissionArgs ?? SUBPROCESS_PERMISSION_ARGS[target],
-        permissionArgsVerified: true,
-        permissions: options.permissions,
-        projectPath: options.projectPath,
-        homeDir: options.homeDir,
-        env: options.env,
-      });
-    default: {
-      const _exhaustiveCheck: never = target;
-      throw new Error(`Unknown agent target: "${String(target)}". Supported targets: ${AGENT_TARGETS.join(", ")}`);
-    }
+    default:
+      break;
   }
+
+  if (isGenericTarget(target)) return buildGenericRuntime(target, options);
+
+  throw new Error(`Unknown agent target: "${String(target)}". Supported targets: ${AGENT_TARGETS.join(", ")}`);
 }
 
 /**
- * The runtime port for `target`.
+ * Capabilities of the single generic driver, stated honestly: it is a bridged
+ * subprocess, so it has no events, no history, no resume, no catalog listing and
+ * no MCP listing of its own.
+ */
+const GENERIC_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
+  inProcess: false,
+  structuredEvents: false,
+  streaming: false,
+  permissions: "none",
+  sessionHistory: false,
+  sessionResume: false,
+  modelCatalog: "none",
+  structuredOutput: false,
+  usageCost: false,
+  mcpListing: false,
+  interrupt: true,
+};
+
+/**
+ * The `generic` runtime as a catalog entry, for `huginn runtime list`.
+ *
+ * There is no single binary to probe: the driver runs whichever CLI-only target
+ * is selected, so availability means "at least one of them is installed".
+ * `createSession` cannot pick a target on its own and says so instead of
+ * silently running the wrong CLI.
+ */
+export function getGenericRuntimePort(options: RuntimeOptions = {}): RuntimePort {
+  return {
+    id: "generic",
+    name: "Generic CLI bridge",
+    capabilities: GENERIC_RUNTIME_CAPABILITIES,
+
+    async isAvailable() {
+      const detected = await detectAvailableAgents(options.env?.PATH ?? process.env.PATH ?? "");
+      const available = detected.filter((entry) => isGenericTarget(entry.id) && entry.available);
+      if (available.length === 0) {
+        return {
+          ok: false,
+          reason:
+            "no generic-target CLI is installed (cursor, agy, commandcode, devin, kimi, mcode, mimo, omp, qwen)",
+        };
+      }
+      return { ok: true, path: available[0]?.path };
+    },
+
+    async listModels() {
+      return {
+        models: [],
+        reason:
+          "the generic runtime has no model listing; each concrete target keeps its own binary and flags",
+      };
+    },
+
+    resolveModel(reference: string) {
+      const model = reference.trim();
+      return model === ""
+        ? { ok: false, reason: "the model reference is empty" }
+        : { ok: true, model };
+    },
+
+    async createSession() {
+      throw new Error(
+        'the generic runtime needs a concrete agent target; use getRuntimePort("<target>")',
+      );
+    },
+  };
+}
+
+/**
+ * The runtime port for a target (or for the `generic` driver itself).
  *
  * Until a driver implements the port natively, this is the legacy adapter behind
  * {@link toRuntimePort}: identical behaviour, with capabilities stated instead
  * of implied. New drivers register here by returning their own `RuntimePort`.
  */
-export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}): RuntimePort {
+export function getRuntimePort(target: AgentTarget | "generic", options: RuntimeOptions = {}): RuntimePort {
+  if (target === "generic") return getGenericRuntimePort(options);
   // Drivers that own their SDK; every other target is still the legacy adapter
   // behind the bridge until its driver lands.
   if (target === "pi") return createPiSdkPort();
@@ -386,9 +403,9 @@ export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}
  *
  * Deliberately separate from {@link getAgentRuntime}: that factory still returns
  * the CLI-shaped adapters, which is what provisioning, model discovery and the
- * argv-level tests rely on. Here, a target with a native driver runs it — pi
- * today — presented through the reverse bridge until the engines consume
- * `RuntimePort` directly.
+ * argv-level tests rely on. Here, a target with a native driver runs it (pi,
+ * codex, claude) presented through the reverse bridge until the engines consume
+ * `RuntimePort` directly; every other target is the configured generic bridge.
  */
 export function getEngineRuntime(target: AgentTarget, options: RuntimeOptions = {}): IAgentRuntime {
   if (target === "pi") return toLegacyRuntime(createPiSdkPort());

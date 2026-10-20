@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { RuntimePort } from "../engine/agent/port.js";
 import { getRuntimePort } from "../engine/agent/registry.js";
-import type { AgentTarget } from "../agents/integrator.js";
+import { RUNTIME_IDS, type RuntimeId } from "../agents/integrator.js";
 
 /**
  * The runtimes the cycle can execute, and what each one actually promises.
@@ -10,16 +10,21 @@ import type { AgentTarget } from "../agents/integrator.js";
  * MCP config for every agent it knows, while this one answers "what can run the
  * cycle, and with which capabilities?".
  */
-const RUNTIMES: Array<{ id: AgentTarget; kind: string }> = [
+const RUNTIMES: Array<{ id: RuntimeId; kind: string }> = [
   { id: "pi", kind: "native (in-process)" },
   { id: "codex", kind: "native (SDK)" },
   { id: "claude", kind: "native (SDK, optional)" },
   { id: "opencode", kind: "daemon (HTTP)" },
-  { id: "kimi", kind: "CLI bridge" },
+  { id: "generic", kind: "CLI bridge (no dedicated driver)" },
 ];
 
 export interface RuntimeCommandDeps {
-  getPort: (id: AgentTarget) => RuntimePort;
+  getPort: (id: RuntimeId) => RuntimePort;
+}
+
+/** Fail fast if the displayed list and the canonical runtime list drift. */
+if (RUNTIMES.length !== RUNTIME_IDS.length) {
+  throw new Error("huginn runtime list is out of sync with RUNTIME_IDS");
 }
 
 export function printRuntimeUsage(): void {
@@ -85,7 +90,8 @@ export async function handleRuntimeCommand(
   console.log(
     chalk.dim(
       "\n  A capability that is not listed is not claimed: no surface waits for events a runtime cannot emit.\n" +
-        "  \`huginn setup\` still provisions MCP config for every agent, runtime or not.\n",
+        "  \`generic\` runs every CLI-only provisioning target (agy, commandcode, devin, kimi, mcode,\n" +
+        "  mimo, omp, qwen, cursor); \`huginn setup\` still provisions all 13 targets.\n",
     ),
   );
 }

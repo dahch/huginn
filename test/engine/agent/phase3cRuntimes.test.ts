@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentRuntime, SUBPROCESS_PERMISSION_ARGS } from "../../../src/engine/agent/registry.js";
 import {
-  KIMI_MAX_PROMPT_ARG_LENGTH,
-  KIMI_PERMISSION_ARGS,
   PI_PERMISSION_ARGS,
   CODEX_PERMISSION_ARGS,
 } from "../../../src/engine/agent/adapters/index.js";
+import {
+  KIMI_MAX_PROMPT_ARG_LENGTH,
+  KIMI_PERMISSION_ARGS,
+} from "../../../src/engine/agent/genericTargets.js";
 import { events } from "../../../src/engine/engineEvents.js";
 
 const FIXTURES = fileURLToPath(new URL("../../fixtures/", import.meta.url));
@@ -174,19 +176,6 @@ describe("Phase 3C · kimi runs non-interactively through `--prompt=<prompt>`", 
     }
   });
 
-  it("discovers its catalog through `kimi provider list --json`", async () => {
-    const cli = installFakeCli("kimi", { args: "provider list --json", fixture: "kimi-provider-list.json" });
-    const runtime = getAgentRuntime("kimi", { env: { PATH: cli.path, HUGINN_ARGV: cli.argvPath } });
-
-    expect(await runtime.getAvailableModels()).toEqual([
-      { id: "deepseek-chat", name: "DeepSeek Chat", provider: "deepseek" },
-      { id: "deepseek-reasoner", name: "deepseek-reasoner", provider: "deepseek" },
-      { id: "kimi-k2.5-high", name: "Kimi K2.5 (High)", provider: "moonshot" },
-      { id: "gemini-3-pro", name: "Gemini 3 Pro", provider: "openrouter" },
-    ]);
-    // …against the exact argv, so the wiring (not just the parser) is asserted.
-    expect(readFileSync(cli.argvPath, "utf8").trim().split("\n")).toEqual(["provider", "list", "--json"]);
-  });
 });
 
 describe("Phase 3C · pi streams the prompt over stdin", () => {

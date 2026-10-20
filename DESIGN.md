@@ -38,7 +38,7 @@ rationalized in [`ADR.md`](./ADR.md).
 src/
 ├── cli.ts                  entry point; arg parsing (run/live/plan/install/setup/doctor/memory/mcp/check/config), git bootstrap gate, live-session resume flags, banner, lifecycle wiring
 ├── agents/
-│   └── integrator.ts       AGENT_REGISTRY (13 targets) + setup(): Muninn MCP registration, per-target rules injection, and the installed × registered provisioning matrix (REQ-15/REQ-38)
+│   └── integrator.ts       AGENT_REGISTRY (13 provisioning targets) + RuntimeId (5 runtimes) + setup(): Muninn MCP registration, per-target rules injection, and the installed × registered provisioning matrix (REQ-15/REQ-38)
 ├── commands/
 │   ├── check.ts            CLI commands: handleCheckCommand (verify TypeScript contracts), printCheckUsage
 │   ├── config.ts           CLI commands: handleConfigCommand (show/set thinker+executor), printConfigUsage
@@ -63,23 +63,18 @@ src/
 │   │   ├── modelCatalog.ts     discoverModelCatalog: the shared catalog lookup + reason used by the picker and the init wizard
 │   │   ├── mcpStatus.ts        fetchMcpStatusWithTimeout (bounded `Promise.race`, 60 s listing cache) + attributed, `undefined`-safe formatMcpBadge (REQ-30/REQ-32)
 │   │   ├── index.ts            barrel export for runtime subsystem
+│   │   ├── genericTargets.ts  GENERIC_TARGET_SPECS: binary, argv, prompt channel, model flag and permission switch for every CLI-only target (M4b)
+│   │   ├── port.ts            RuntimeId/RuntimeCapabilities/RuntimePort: the driver-neutral contract (M4b split)
+│   │   ├── legacy-bridge.ts   toRuntimePort / toLegacyRuntime: adapters ⇄ port without changing behaviour
 │   │   └── adapters/
 │   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK); connected-provider discovery + `opencode models` fallback; sessionHistory = true
 │   │       ├── claude.ts       ClaudeRuntimeAdapter (Claude Code CLI / stdio)
 │   │       ├── codex.ts        CodexRuntimeAdapter (OpenAI Codex CLI) + `codex mcp list --json` parser
-│   │       ├── omp.ts          OmpRuntimeAdapter (Oh My Pi CLI) + `omp models` parser
-│   │       ├── agy.ts          `agy models` parser (id<TAB>name TSV)
-│   │       ├── commandcode.ts  CommandCodeRuntimeAdapter (Command Code CLI) + `--list-models` parser
-│   │       ├── qwen.ts         QwenRuntimeAdapter (Qwen Code CLI)
-│   │       ├── kimi.ts         KimiRuntimeAdapter: `-p <prompt>` prompt mode, no permission flag, `kimi provider list --json`
 │   │       ├── pi.ts           PiRuntimeAdapter: `-p` + stdin, `--model`, `pi --list-models`, assumed `--approve`
-│   │       ├── devin.ts        DevinRuntimeAdapter (formerly `windsurf`): `-p --respect-workspace-trust false` + `--prompt-file`, `devin models list`, `devin mcp list`
-│   │       ├── mcode.ts        McodeRuntimeAdapter (MiniMax Code): `exec --input -` + `--permission full`; no model listing, no mcp command
-│   │       ├── mimo.ts         MimoRuntimeAdapter (MiMo Code): `run` from stdin + `--yolo`, `mimo models`, `mimo mcp list`
 │   │       ├── modelList.ts    runModelListCommand: bounded, sanitized spawn used by every listing CLI (REQ-27)
-│   │       ├── mcpList.ts      per-CLI `mcp list` parsers (opencode/claude/qwen/agy/commandcode/codex/devin/mimo) + listMcpServersViaCommand (REQ-32)
-│   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio, native model flags, auto-approval args, sessionHistory = false)
-│   │       └── index.ts        re-exports all adapters
+│   │       ├── mcpList.ts      shared `mcp list` parsers (opencode/claude/codex formats) + listMcpServersViaCommand (REQ-32)
+│   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio, native model flags, auto-approval args, fallback binaries, sessionHistory = false)
+│   │       └── index.ts        re-exports the remaining adapters
 │   ├── cycle.ts            CycleEngine: pipeline-as-data (per profile, `readOnly` flag), retry/fix/escalate loop, structural verdicts, state machine
 │   ├── phases.ts           the 8 phase functions + 3 fix functions; the single prompt seam; huginn-orchestrated VALIDATE_STEP; read-only tree guard
 │   ├── steps/              huginn-owned step instructions (REQ-40): instructions.ts (embedded roles/tasks), prompts.ts (per-step composers), context.ts (bounded reads, git capture, untrusted embedding, verdict contracts), types.ts (StepContext)
@@ -2011,18 +2006,14 @@ flowchart TD
         OpencodeAdapter["OpencodeRuntimeAdapter (HTTP / SDK)"]
         ClaudeAdapter["ClaudeRuntimeAdapter (CLI / stdio)"]
         CodexAdapter["CodexRuntimeAdapter (CLI / stdio)"]
-        OmpAdapter["OmpRuntimeAdapter (CLI / stdio)"]
-        CommandCodeAdapter["CommandCodeRuntimeAdapter (CLI / stdio)"]
-        QwenAdapter["QwenRuntimeAdapter (CLI / stdio)"]
-        GenericAdapter["GenericSubprocessRuntimeAdapter (stdio)"]
+        PiAdapter["PiRuntimeAdapter (CLI / stdio)"]
+        GenericAdapter["GenericSubprocessRuntimeAdapter (configured per target, stdio)"]
     end
 
     RuntimePort -.-> OpencodeAdapter
     RuntimePort -.-> ClaudeAdapter
     RuntimePort -.-> CodexAdapter
-    RuntimePort -.-> OmpAdapter
-    RuntimePort -.-> CommandCodeAdapter
-    RuntimePort -.-> QwenAdapter
+    RuntimePort -.-> PiAdapter
     RuntimePort -.-> GenericAdapter
 ```
 
@@ -2031,7 +2022,9 @@ flowchart TD
 The runtime abstraction defines two foundational ports:
 
 1. **`IAgentRuntime`**:
-   - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`).
+   - `id: AgentTarget` — the provisioning-target id this legacy adapter is shaped for. The port
+     layer maps it through `runtimeIdForTarget()` onto a `RuntimeId` (M4b): `pi`, `opencode`,
+     `codex`, `claude` or `generic`. `RuntimePort.id` is therefore one of those five.
    - `name: string` — human-readable agent name.
    - `readonly sessionHistory?: boolean` — `true` when the backend keeps the conversation server-side (only `opencode`); every subprocess adapter declares `false` and `undefined` is read as "does not keep history" (§ 29.1).
    - `readonly streamsOutput?: boolean` — whether the runtime can push **incremental** output while a prompt runs: `true` for `opencode` (its server's SSE event stream), `false` on `GenericSubprocessRuntimeAdapter` (and every adapter that inherits it), because a subprocess buffers stdout and resolves once. `undefined` is read as `false`. A surface uses it to decide what the output panel may claim rather than testing a hardcoded id list (§ 32.2).
@@ -2054,15 +2047,15 @@ The runtime abstraction defines two foundational ports:
 - **`OpencodeRuntimeAdapter`**: Wraps `opencode serve` and `@opencode-ai/sdk`. Manages background server lifecycle (`startDaemon`, `stopDaemon`), translates `client.provider.list()` and `client.mcp.status()`, runs sessions via OpenCode's HTTP SDK, and is the only adapter with `sessionHistory = true`.
 - **`ClaudeRuntimeAdapter`**: Connects to the Claude Code CLI (`claude`). Supports interactive prompt streaming with `--print` flags and stdin piping.
 - **`CodexRuntimeAdapter`**: Integrates with OpenAI Codex CLI (`codex`); model via `-m`, servers via `codex mcp list --json`, no model listing.
-- **`OmpRuntimeAdapter`**: Connects to Oh My Pi (`omp`).
-- **`CommandCodeRuntimeAdapter`**: Integrates with Command Code (`commandcode` or fallback `command-code`).
-- **`QwenRuntimeAdapter`**: Integrates with Qwen Code (`qwen` or fallback `qwen-code`).
-- **`KimiRuntimeAdapter`**: kimi's prompt-mode shape — the prompt is the `-p <prompt>` flag value (no stdin channel, no `--prompt-file`), permission flags are the empty list (the CLI rejects them in prompt mode), and discovery parses `kimi provider list --json`.
 - **`PiRuntimeAdapter`**: `-p` with the prompt on stdin, `--model`, `pi --list-models`, and the *assumed* `--approve` (project-resource trust, announced as such).
-- **`DevinRuntimeAdapter`**: print mode `-p --respect-workspace-trust false` with the prompt passed through `--prompt-file`; `devin models list` and `devin mcp list`.
-- **`McodeRuntimeAdapter`**: MiniMax Code — `exec --input -` plus `--permission full`; no model listing and no `mcp` command (both honestly absent → `[]`/config fallback).
-- **`MimoRuntimeAdapter`**: MiMo Code — `run` reads the prompt from stdin, `--yolo`, `mimo models`, `mimo mcp list`, with an opencode-format `mcp` container.
-- **`GenericSubprocessRuntimeAdapter`**: Reusable base adapter and session implementation managing subprocess stdio, process groups, timeouts, native model flags, per-runtime auto-approval args, and JSON/TOML MCP status inspection; it is what `agy` and `cursor` are built from.
+- **`GenericSubprocessRuntimeAdapter`**: the single reusable adapter/session implementation for every
+  target without a dedicated driver. It manages subprocess stdio, process groups, timeouts, native
+  model flags, per-target auto-approval args, prompt-file/prompt-value channels, fallback binary
+  names and JSON/TOML MCP status inspection. M4b replaced the eight CLI-only classes
+  (`agy`, `commandcode`, `devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen`) plus `cursor` with
+  declarative rows in `src/engine/agent/genericTargets.ts`: binary, base argv, prompt channel,
+  model flag and permission switch. Their model/MCP listing commands were removed with the
+  classes; discovery returns an explained empty catalog and the MCP panel uses config discovery.
 
 ### 21.3 Agent Resolution Precedence
 
@@ -2075,7 +2068,14 @@ When initializing `CycleEngine` or `LiveEngine`, Huginn resolves the active runt
 5. **Auto-Detection**: Scans `PATH` using `detectAvailableAgents()` for the first installed binary, in `AGENT_TARGETS` order (`cursor`, `claude`, `opencode`, `devin`, `qwen`, `codex`, `agy`, `kimi`, `pi`, `commandcode`, `omp`, `mcode`, `mimo`).
 6. **Fallback**: Default to `opencode`.
 
-The stored/env paths are softened for a target that was **removed** (`REMOVED_AGENT_TARGETS`: `gemini → agy`, `windsurf → devin`): it warns and falls through to detection, while any other unknown value is still rejected (SEC-001).
+The stored/env paths are softened for a target that was **removed** (`REMOVED_AGENT_TARGETS`:
+`gemini → agy`, `windsurf → devin`, and the eight M4b-retired runtimes `agy`, `commandcode`,
+`devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen` → the `generic` runtime): it warns and falls
+through to detection, while any other unknown value is still rejected (SEC-001). The eight remain in
+`AGENT_TARGETS` for provisioning and an explicit `--agent <target>` still resolves; only *stored*
+values migrate to auto-detection. This check runs **before** the `AGENT_TARGETS` membership test in
+both `sanitizeConfig` and `resolveAgent`, otherwise those eight would be accepted as stored runtime
+choices.
 
 ### 21.4 Security Hardening & Subprocess Isolation
 
@@ -2179,7 +2179,7 @@ Input characters are filtered through `sanitizeKeyInput()` to strip ANSI escape 
 ### 22.3 Provider Catalog Discovery & Fallback Resilience
 
 The modal decouples model enumeration through `runtime.getModelCatalog?()` / `runtime.getAvailableModels()`:
-- **Runtime Discovery**: Calls `runtime.getModelCatalog?.()` (falling back to `getAvailableModels()`). When operating with OpenCode, this queries `client.provider.list()` and keeps **only models from providers in the response's `connected` set** (581 on the reference machine, not the 8 195-model catalog), translating them into `ModelInfo` records (`id`, `name`, `provider`, `description`). Runtimes with a listing command use it (Command Code `--list-models`, `omp models`, `agy models`); when the SDK/CLI is unreachable it falls back to `opencode models`.
+- **Runtime Discovery**: Calls `runtime.getModelCatalog?.()` (falling back to `getAvailableModels()`). When operating with OpenCode, this queries `client.provider.list()` and keeps **only models from providers in the response's `connected` set** (581 on the reference machine, not the 8 195-model catalog), translating them into `ModelInfo` records (`id`, `name`, `provider`, `description`). Runtimes with a listing command use it (after M4b: `opencode` and `pi`); when the SDK/CLI is unreachable it falls back to `opencode models`, and every other runtime returns an explained empty catalog.
 - **Honest Empty/Error States (supersedes the old `DEFAULT_FALLBACK_MODELS` fallback)**: an empty or failed discovery shows a distinct empty state ("No models discovered from <runtime> — type a provider/model id and press Enter") plus the sanitized discovery `reason`; a thrown discovery error is surfaced verbatim. No hardcoded catalog is ever substituted.
 - **Custom Model Flexibility**: Users are never restricted to pre-discovered models; typing a model id and pressing `Enter` confirms it. The `provider/model` shape is required for free-text ids on fully-qualified runtimes, but a catalog selection — and a bare free-text id on a runtime that exposes bare ids (`agy`, Command Code) — is accepted verbatim.
 
@@ -2729,14 +2729,15 @@ changed.
 | runtime | listing mechanism | verified |
 |---|---|---|
 | `opencode` | `client.provider.list()` intersected with the response's **`connected`** provider ids; on throw/empty, the `opencode models` CLI | 581 of the 8 195-model catalog |
-| `commandcode` | `commandcode --list-models` (group headings, `id` + 2-space description rows; the trailing `Pass the full id…` / `Docs:` footer breaks the parse) | 82 |
-| `omp` | `omp models` (`<provider> (<count>)` sections + box-drawing table; header and border rows skipped) | 192 |
-| `agy` | `agy models` (`id<TAB>name` TSV; non-TSV preamble and duplicates dropped) | 14 |
-| `devin` | `devin models list` | captured in `test/fixtures/devin-models.txt` |
-| `mimo` | `mimo models` | captured in `test/fixtures/mimo-models.txt` |
 | `pi` | `pi --list-models` | captured in `test/fixtures/pi-models.txt` |
-| `kimi` | `kimi provider list --json` | captured in `test/fixtures/kimi-provider-list.json` |
-| `claude`, `qwen`, `codex`, `cursor`, `mcode` | none → `[]` **with a reason** | — |
+| `claude`, `codex` | none → `[]` **with a reason** | — |
+| `generic` (`cursor`, `agy`, `commandcode`, `devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen`) | none → `[]` **with a reason** | — |
+
+M4b removed the per-CLI listings that this Phase 6 table originally recorded: `commandcode
+--list-models` (82), `omp models` (192), `agy models` (14), `devin models list`, `mimo models` and
+`kimi provider list --json`, together with their parsers and fixtures. Those targets are still
+provisioned and run through `generic`; their discovery is now honestly empty instead of carrying a
+format-specific parser for a runtime that no longer exists.
 
 ```mermaid
 flowchart TD
@@ -2768,8 +2769,9 @@ flowchart TD
   accepted verbatim; filtering runs in a `useMemo` over a fixed 6-row window so a ~600–8 000-entry
   catalog stays responsive.
 - **Verification.** Discovery is exercised against captured artifacts under `test/fixtures/`
-  (a real `GET /provider` payload, `opencode models` with 581 lines, `commandcode --list-models`
-  with 82 models, `omp models`, `agy models`) rather than hand-written mocks alone.
+  (a real `GET /provider` payload, `opencode models` with 581 lines, `pi --list-models`) rather than
+  hand-written mocks alone. The fixtures for the retired generic targets were deleted with their
+  parsers in M4b.
 
 ### 26.2 Discoverable slash-command palette (REQ-28)
 
@@ -2859,13 +2861,12 @@ list use it; the rest fall back to config-file discovery with `status: "unknown"
 |---|---|---|---|
 | `opencode` | `opencode mcp list` | `parseOpencodeMcpList` | `connected` (box list, ANSI stripped) |
 | `claude` | `claude mcp list` | `parseClaudeMcpList` | `connected` (`✔`, health-checks ≈ 23 s) |
-| `qwen` | `qwen mcp list` | `parseQwenMcpList` | `connected` |
-| `agy` | `agy mcp list` | `parseAgyMcpList` | `enabled`/`disabled` (TSV; **config state**) |
-| `commandcode` | `commandcode mcp list` | `parseCommandcodeMcpList` | scope/auth surfaced as `detail` |
 | `codex` | `codex mcp list --json` | `parseCodexMcpList` | per-server `enabled`/`discovered`/`auth_status` |
-| `devin` | `devin mcp list` | `parseDevinMcpList` | `• <name>` rows with an indented `Command:`/`URL:` detail; `✗ <name> (disabled)` |
-| `mimo` | `mimo mcp list` | `parseOpencodeMcpList` (reused — opencode-format output) | `connected` |
-| `omp`, `kimi`, `pi`, `cursor`, `mcode` | *(none)* | — | config discovery → `unknown` |
+| `pi` and every `generic` target (`cursor`, `agy`, `commandcode`, `devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen`) | *(none)* | — | config discovery → `unknown` |
+
+M4b deleted the qwen/agy/commandcode/devin/mimo listings together with their adapters; the shared
+opencode/claude/codex formats and the bounded runner remain. A generic target now falls back to
+config-file discovery, which is still the honest answer for a server declared but never probed.
 
 ```mermaid
 flowchart TD
@@ -3190,37 +3191,33 @@ flowchart TD
 | `kimi` | *(none)* | prompt mode rejects every permission switch and forces its own auto mode |
 | `opencode` | *(not applicable)* | permissions are enforced through the event subscriber |
 
-`SUBPROCESS_PERMISSION_ARGS` (`src/engine/agent/registry.ts`) is the table the inline-constructed
-runtimes read, while the class-based adapters export the same array *instance* next to their argv
-(`KIMI_PERMISSION_ARGS`, `PI_PERMISSION_ARGS`, `DEVIN_PERMISSION_ARGS`, `MCODE_PERMISSION_ARGS`,
-`MIMO_PERMISSION_ARGS`), so the documented table and the runtime cannot drift. Fail-closed behavior:
+`SUBPROCESS_PERMISSION_ARGS` (`src/engine/agent/registry.ts`) is the table every runtime reads. The
+dedicated adapters export the same array *instance* next to their argv (`PI_PERMISSION_ARGS`,
+`CLAUDE_PERMISSION_ARGS`, `CODEX_PERMISSION_ARGS`), and after M4b the CLI-only rows live in
+`src/engine/agent/genericTargets.ts` and are the same instances `GENERIC_TARGET_SPECS` uses, so the
+documented table and the spawned argv cannot drift. Fail-closed behavior:
 `assertPermissionModeSupported(runtime.id, permissions)` (`src/cli.ts`) exits 1 before anything runs
 when `ask`/`deny` meets a non-opencode runtime, `LiveEngine.switchRuntime` refuses the same
 combination with the same wording (`subprocessPermissionMessage`), and an invalid `--permissions`
 value (`denn`) exits 1 instead of falling back to `auto`.
 
-### 28.5 Runtime lineup (REQ-43)
+### 28.5 Runtime lineup (REQ-43 / M4b)
 
-| target | binary(ies) | model discovery | MCP enumeration |
-|---|---|---|---|
-| `opencode` | `opencode` | SDK `provider.list().connected` + `opencode models` fallback | `opencode mcp list` |
-| `claude` | `claude` | none → `[]` with a reason | `claude mcp list` (health-checks) |
-| `qwen` | `qwen`, `qwen-code` | none → `[]` with a reason | `qwen mcp list` |
-| `codex` | `codex` | none → `[]` with a reason | `codex mcp list --json` |
-| `commandcode` | `commandcode`, `command-code` | `commandcode --list-models` | `commandcode mcp list` |
-| `omp` | `omp` | `omp models` | none → config discovery (`unknown`) |
-| `agy` | `agy` | `agy models` (TSV) | `agy mcp list` (TSV, `enabled`/`disabled`) |
-| `devin` | `devin` | `devin models list` | `devin mcp list` |
-| `kimi` | `kimi`, `kimi-code` | `kimi provider list --json` | none → config discovery |
-| `pi` | `pi` | `pi --list-models` | none → config discovery |
-| `cursor` | `cursor` | none → `[]` with a reason | none → config discovery |
-| `mcode` | `mcode` | none (honestly absent) | none (the CLI has no `mcp` command) |
-| `mimo` | `mimo` | `mimo models` | `mimo mcp list` |
+| runtime | served target(s) | binary(ies) | model discovery | MCP enumeration |
+|---|---|---|---|---|
+| `pi` | `pi` | `pi` | `pi --list-models` | none → config discovery |
+| `opencode` | `opencode` | `opencode` | SDK `provider.list().connected` + `opencode models` fallback | `opencode mcp list` |
+| `codex` | `codex` | `codex` | none → `[]` with a reason | `codex mcp list --json` |
+| `claude` | `claude` | `claude` | none → `[]` with a reason | `claude mcp list` (health-checks) |
+| `generic` | `cursor`, `agy`, `commandcode`, `devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen` | per target (see `GENERIC_TARGET_SPECS`) | none → `[]` with a reason (the per-CLI parsers were removed in M4b) | none → config discovery |
 
-`AGENT_BINARIES` declares the primary and fallback names, `detectAvailableAgents`/`resolveAgent` scan
-them in `AGENT_TARGETS` order, and `REMOVED_AGENT_TARGETS` (`windsurf → devin`, `gemini → agy`) makes
-a persisted removed target warn and fall through to detection instead of throwing (any *other*
-unknown value is still rejected, so a hostile config cannot name an arbitrary binary).
+`AGENT_BINARIES` still declares the primary and fallback names for all 13 provisioning targets, and
+`detectAvailableAgents`/`resolveAgent` scan them in `AGENT_TARGETS` order. The eight CLI-only
+targets are no longer separate runtimes but stay in the registry, so `huginn setup --status` keeps
+listing 13; a persisted value naming one of them warns and falls through to detection instead of
+throwing (any *other* unknown value is still rejected, so a hostile config cannot name an arbitrary
+binary). `--agent <target>` remains the explicit escape hatch and runs the target through
+`generic`.
 
 ### 28.6 Repository material is untrusted (REQ-40 / hardening)
 
