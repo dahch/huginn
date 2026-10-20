@@ -178,8 +178,15 @@ argv-level tests.
 
 `codex` is the second native driver (`drivers/codex-sdk.ts`): a persisted `Thread` from
 `@openai/codex-sdk`, so `sessionHistory` is real, while `sessionResume`, streaming and approvals
-are declared false — the SDK exposes no abort and huginn does not feed its approval options yet. Both
-SDKs are `--external` in the build, so 23 MB of pi plus codex stay out of the bundle.
+are declared false — the SDK exposes no abort and huginn does not feed its approval options yet.
+
+`claude` is the third native driver (`drivers/claude-sdk.ts`) and the only one whose SDK is **not
+open source**: it lives in `optionalDependencies` (an install failure is tolerated), is never bundled,
+and is imported only by its own adapter. `interrupt` is real (an AbortController cancels the query);
+approvals need `canUseTool`, which huginn does not feed yet, so `ask|deny` keeps failing closed, and
+streaming, resume and the catalog are declared false.
+
+All three SDKs are `--external` in the build, so pi, codex and claude stay out of the bundle.
 
 A driver *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and
 `permissions: "none"` for every legacy adapter because none of them has a channel back mid-turn), and
