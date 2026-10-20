@@ -9,6 +9,7 @@ import {
 } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
 import { toRuntimePort } from "./legacy-bridge.js";
+import { createPiSdkPort } from "./drivers/pi-sdk.js";
 import type { RuntimePort } from "./port.js";
 import type { PermissionMode } from "../../config.js";
 import {
@@ -366,5 +367,8 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
  * of implied. New drivers register here by returning their own `RuntimePort`.
  */
 export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}): RuntimePort {
+  // pi is the first driver that runs the loop itself; everything else is still
+  // the legacy adapter behind the bridge until its SDK driver lands.
+  if (target === "pi") return createPiSdkPort();
   return toRuntimePort(getAgentRuntime(target, options));
 }
