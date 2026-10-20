@@ -103,11 +103,46 @@ export type McpFormat = "mcpServers" | "opencode" | "toml";
  * agent (its rule/runtime plumbing — `.windsurf/rules`, `--permission-mode
  * dangerous` — was carried over), so an old `"agent": "windsurf"` config maps to
  * `devin` through the same warn-and-detect path as `gemini` → `agy`.
+ *
+ * M4b retires the eight CLI-only **runtimes**: `agy`, `commandcode`, `devin`,
+ * `kimi`, `mcode`, `mimo`, `omp` and `qwen` now run through the generic
+ * bridge and are no longer selectable from a persisted config. They stay in
+ * {@link AGENT_TARGETS} (and therefore in `huginn setup --status`), and an
+ * explicit `--agent <target>` still runs them through the generic bridge; only a
+ * *stored* value warns and falls back to auto-detection.
  */
 export const REMOVED_AGENT_TARGETS: ReadonlyMap<string, string> = new Map([
   ["gemini", "agy"],
   ["windsurf", "devin"],
+  ["agy", "generic"],
+  ["commandcode", "generic"],
+  ["devin", "generic"],
+  ["kimi", "generic"],
+  ["mcode", "generic"],
+  ["mimo", "generic"],
+  ["omp", "generic"],
+  ["qwen", "generic"],
 ]);
+
+/**
+ * Human-readable notice for a stored value found in
+ * {@link REMOVED_AGENT_TARGETS}. Shared by the config reader and
+ * `resolveAgent` so both explain the same migration the same way.
+ */
+export function removedAgentTargetNotice(target: string, where: string): string {
+  const successor = REMOVED_AGENT_TARGETS.get(target) ?? "auto-detection";
+  if (successor === "generic") {
+    return (
+      `[huginn] ⚠ the agent "${target}" in ${where} was removed as a built-in runtime ` +
+      `(it remains a provisioning target and runs through the "generic" runtime); ` +
+      `falling back to auto-detection.`
+    );
+  }
+  return (
+    `[huginn] ⚠ the agent "${target}" in ${where} was removed ` +
+    `(superseded by "${successor}"); falling back to auto-detection.`
+  );
+}
 
 /**
  * One row of the Muninn provisioning matrix (REQ-38 / AC-38.4): whether the

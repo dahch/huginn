@@ -382,35 +382,38 @@ describe("Agent Registry & Factory", () => {
   );
 
   it("resolves agent target with strict precedence", async () => {
+    // M4b retired omp/qwen as stored choices, so precedence uses targets that
+    // still have a dedicated stored-runtime row (the retirement itself is
+    // covered by the migration test below).
     // 1. Flag wins over everything
     const fromFlag = await resolveAgent({
       flagAgent: "claude",
       projectConfig: { agent: "codex" },
-      userConfig: { agent: "omp" },
-      env: { HUGINN_AGENT: "qwen" },
+      userConfig: { agent: "pi" },
+      env: { HUGINN_AGENT: "cursor" },
     });
     expect(fromFlag).toBe("claude");
 
     // 2. Project config wins over user config, env, and detection
     const fromProject = await resolveAgent({
       projectConfig: { agent: "codex" },
-      userConfig: { agent: "omp" },
-      env: { HUGINN_AGENT: "qwen" },
+      userConfig: { agent: "pi" },
+      env: { HUGINN_AGENT: "cursor" },
     });
     expect(fromProject).toBe("codex");
 
     // 3. User config wins over env and detection
     const fromUser = await resolveAgent({
-      userConfig: { agent: "omp" },
-      env: { HUGINN_AGENT: "qwen" },
+      userConfig: { agent: "pi" },
+      env: { HUGINN_AGENT: "cursor" },
     });
-    expect(fromUser).toBe("omp");
+    expect(fromUser).toBe("pi");
 
     // 4. Env wins over detection
     const fromEnv = await resolveAgent({
-      env: { HUGINN_AGENT: "qwen" },
+      env: { HUGINN_AGENT: "cursor" },
     });
-    expect(fromEnv).toBe("qwen");
+    expect(fromEnv).toBe("cursor");
 
     // 5. Default fallback to opencode when nothing matches/detected
     const fallback = await resolveAgent({
@@ -438,8 +441,8 @@ describe("Agent Registry & Factory", () => {
   it("trims whitespace from agent source strings", async () => {
     expect(await resolveAgent({ flagAgent: "  claude  " })).toBe("claude");
     expect(await resolveAgent({ projectConfig: { agent: "  codex  " } })).toBe("codex");
-    expect(await resolveAgent({ userConfig: { agent: "  omp  " } })).toBe("omp");
-    expect(await resolveAgent({ env: { HUGINN_AGENT: "  qwen  " } })).toBe("qwen");
+    expect(await resolveAgent({ userConfig: { agent: "  pi  " } })).toBe("pi");
+    expect(await resolveAgent({ env: { HUGINN_AGENT: "  cursor  " } })).toBe("cursor");
   });
 
   it("throws an error when an unknown agent target is provided to getAgentRuntime (SEC-001)", () => {
@@ -487,6 +490,31 @@ describe("Agent Registry & Factory", () => {
       expect(message).toContain('"devin"');
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it("warns and falls back for every M4b-retired runtime, while an explicit flag still runs it", async () => {
+    const retired = ["agy", "commandcode", "devin", "kimi", "mcode", "mimo", "omp", "qwen"] as const;
+    for (const target of retired) {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        // Still a provisioning target…
+        expect(AGENT_TARGETS).toContain(target);
+        // …but a stored value warns and falls through to detection.
+        const resolved = await resolveAgent({
+          projectConfig: { agent: target },
+          env: { PATH: "" },
+        });
+        expect(resolved, target).toBe("opencode");
+        expect(warn, target).toHaveBeenCalled();
+        const message = warn.mock.calls.flat().join(" ");
+        expect(message).toContain(`"${target}"`);
+        expect(message).toContain("generic");
+        // The explicit flag is the documented escape hatch during migration.
+        expect(await resolveAgent({ flagAgent: target }), target).toBe(target);
+      } finally {
+        warn.mockRestore();
+      }
     }
   });
 

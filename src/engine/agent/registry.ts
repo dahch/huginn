@@ -5,6 +5,7 @@ import {
   AGENT_REGISTRY,
   AGENT_TARGETS,
   REMOVED_AGENT_TARGETS,
+  removedAgentTargetNotice,
   type AgentTarget,
 } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
@@ -200,22 +201,22 @@ export async function resolveAgent(sources: AgentResolutionSources = {}): Promis
   };
 
   /**
-   * A *persisted* agent that was **removed** (e.g. `gemini`, superseded by `agy`)
-   * must not break the run: warn and fall through to detection, so an old
-   * `.huginn/config.json` keeps working (AC-35.3). An arbitrary unknown value is
-   * still rejected, so a hostile config cannot name an arbitrary binary (SEC-001).
+   * A *persisted* agent that was **removed** must not break the run: warn and
+   * fall through to detection, so an old `.huginn/config.json` keeps working
+   * (AC-35.3). Since M4b this includes the eight CLI-only runtimes: they remain
+   * provisioning targets and an explicit `--agent <target>` still runs them
+   * through the generic bridge, but a *stored* value migrates to auto-detection.
+   * An arbitrary unknown value is still rejected, so a hostile config cannot
+   * name an arbitrary binary (SEC-001).
    */
   const fromStoredConfig = (val: string | undefined, where: string): AgentTarget | undefined => {
     const candidate = val?.trim().toLowerCase();
     if (!candidate) return undefined;
-    if (isAgentTarget(candidate)) return candidate;
     if (REMOVED_AGENT_TARGETS.has(candidate)) {
-      console.warn(
-        `[huginn] ⚠ the agent "${candidate}" in ${where} was removed ` +
-          `(superseded by "${REMOVED_AGENT_TARGETS.get(candidate)}"); falling back to auto-detection.`,
-      );
+      console.warn(removedAgentTargetNotice(candidate, where));
       return undefined;
     }
+    if (isAgentTarget(candidate)) return candidate;
     throw new Error(`Unknown agent target: "${val}". Supported targets: ${AGENT_TARGETS.join(", ")}`);
   };
 

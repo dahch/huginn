@@ -202,6 +202,22 @@ describe("loadUserConfig", () => {
     }
   });
 
+  it("warns and falls back for a retired M4b runtime target (kimi)", () => {
+    const { project, home } = makeEnv();
+    writeProjectConfig(project, { agent: "kimi" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // `kimi` is still a provisioning target, but it is no longer a stored
+      // runtime choice: the config drops it and the run detects a runtime.
+      expect(loadUserConfig(project, home)).toEqual({});
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("kimi"));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("generic"));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("auto-detection"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("still rejects an arbitrary unknown agent in config (SEC-001)", () => {
     const { project, home } = makeEnv();
     writeProjectConfig(project, { agent: "evil-script" });
