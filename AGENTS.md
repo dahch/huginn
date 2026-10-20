@@ -165,9 +165,15 @@ a `RuntimeCapabilities` record, `isAvailable()`, `listModels()`, `resolveModel()
 `createSession()` → `RuntimeSession` (typed `text`/`tool`/`permission`/`usage`/`error`/`done`
 events, `interrupt()`, idempotent `close()`).
 
-Every target registered today is served by `toRuntimePort()` (`legacy-bridge.ts`), which wraps the
-existing `IAgentRuntime` **without changing behaviour**; `getRuntimePort()` is the factory. A driver
-now *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and
+Every target except `pi` is still served by `toRuntimePort()` (`legacy-bridge.ts`), which wraps the
+existing `IAgentRuntime` **without changing behaviour**; `getRuntimePort()` is the factory.
+`pi` is the first driver implemented natively (`drivers/pi-sdk.ts`): it runs `createAgentSession()`
+in huginn's own process, resolves `provider/model` through the SDK's `ModelRuntime`, lists the real
+catalog and keeps a real session history. Its events, permissions and resume are **not** wired yet, so
+it declares `streaming`, `structuredEvents` and `sessionResume` false — the engine switch is what
+turns them on. The package is `--external` in the build, so the 23 MB SDK stays out of the bundle.
+
+A driver *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and
 `permissions: "none"` for every legacy adapter because none of them has a channel back mid-turn), and
 the conformance suite (`conformance.ts`, run for every target in
 `test/engine/agent/conformance.test.ts`) fails a driver that claims more than it delivers:
