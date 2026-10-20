@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
 import child_process from "node:child_process";
 import { events } from "./engineEvents";
 import { sanitizeTerminalText } from "../util/text";
@@ -391,10 +392,44 @@ export function probeGitRepo(projectPath: string): { state: GitRepoState; detail
     if (res.stdout === "false") return { state: "not-a-repo", detail };
     return { state: "error", detail };
   }
-  // Being outside every work tree is the only failure that means "initialize me".
-  return `${res.stdout} ${res.stderr}`.toLowerCase().includes("not a git repository")
-    ? { state: "not-a-repo", detail }
-    : { state: "error", detail };
+  // Being outside every work tree is the only failure that means "initialize me",
+  // and it is decided from the exit code plus a filesystem probe — never from
+  // git's message. Git localises that message ("fatal: no es un repositorio
+  // git"), so matching English text reported `error` on every machine whose
+  // locale is not English and refused to bootstrap a greenfield project
+  // (REV-001).
+  if (res.code !== 128) return { state: "error", detail };
+  // `git --version` in the target directory proves at once that git runs and
+  // that the directory is a usable working directory: a missing path and a
+  // regular file both fail here, and neither may be initialised.
+  if (git(projectPath, ["--version"]).code !== 0) return { state: "error", detail };
+  // A repository git already knows but refuses to read (dubious ownership,
+  // permissions) is an error, not a greenfield directory: `git init` there
+  // would re-initialise a checkout huginn does not own.
+  if (hasGitEntryAbove(projectPath)) return { state: "error", detail };
+  return { state: "not-a-repo", detail };
+}
+
+/**
+ * True when a `.git` entry exists at `projectPath` or an ancestor, stopping at
+ * the same filesystem boundary git itself stops at (`GIT_DISCOVERY_ACROSS_FILESYSTEM`
+ * is unset). Only used to refuse initialising over a repository git will not
+ * read; the normal cases are answered by `rev-parse` itself.
+ */
+function hasGitEntryAbove(projectPath: string): boolean {
+  try {
+    let current = resolve(projectPath);
+    const device = statSync(current).dev;
+    for (;;) {
+      if (existsSync(join(current, ".git"))) return true;
+      const parent = dirname(current);
+      if (parent === current) return false;
+      if (statSync(parent).dev !== device) return false;
+      current = parent;
+    }
+  } catch {
+    return false;
+  }
 }
 
 /** The tri-state alone, for callers that only branch on it. */
