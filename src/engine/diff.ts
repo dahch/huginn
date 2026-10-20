@@ -259,8 +259,15 @@ export function gitBounded(
     // A process killed by a signal (timeout, OOM, external kill) has no exit
     // status. That is a failure, never an "empty but successful" result
     // (REV-106) — a max-buffer kill is the one exception: the prefix is real.
-    const killedBySignal =
-      res.status === null && res.signal !== null && !killedOnMaxBuffer;
+    //
+    // The criterion is `status === null` alone, not `signal !== null`: Bun's
+    // spawnSync reports a timed-out child with a null status *and* a null signal
+    // (Node sets both the signal and `error.code = "ETIMEDOUT"`), so requiring a
+    // signal turned a killed git into a clean, empty success on Bun — the exact
+    // false success REV-106 forbids.
+    const killedBySignal = res.status === null && !killedOnMaxBuffer;
+    const timedOut =
+      killedBySignal && (errorCode === undefined || errorCode === "ETIMEDOUT");
     const code = killedOnMaxBuffer
       ? 0
       : killedBySignal
@@ -269,7 +276,7 @@ export function gitBounded(
 
     const detail = stderrRaw.trim()
       ? stderrRaw.trim()
-      : errorCode === "ETIMEDOUT"
+      : timedOut
         ? `git timed out after ${timeoutMs}ms`
         : res.error
           ? String(res.error.message)

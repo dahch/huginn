@@ -232,6 +232,12 @@ describe("gitBounded (M-3/REV-104/REV-106/SEC-006)", () => {
   });
 
   it("treats a signal-killed process as a failure, not an empty success (REV-106)", () => {
+    // A 1 ms deadline only exercises the kill path when git has real work to do.
+    // On an empty repository `git log -p` exits (128) before the timer fires, so
+    // the old assertion raced the spawn and flaked; seed a commit whose patch
+    // cannot be produced inside the deadline.
+    writeFileSync(join(dir, "big.txt"), "x".repeat(2_000_000));
+    commitAll(dir);
     const res = gitBounded(dir, ["log", "-p"], { timeoutMs: 1 });
     expect(res.code).toBe(1);
     expect(res.stderr).toContain("timed out");
