@@ -17,7 +17,7 @@
     "prepublishOnly": "bun run build && npm run test && bun run typecheck"
   },
   "dependencies": {
-    "@dahch/muninn": "file:../muninn",
+    "@dahch/muninn": "https://github.com/dahch/muninn/releases/download/v0.1.0/dahch-muninn-0.1.0.tgz",
     "@opencode-ai/sdk": "^1.18.14",
     "chalk": "^6.0.0",
     "ink": "^7.1.1",
