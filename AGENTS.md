@@ -171,10 +171,10 @@ existing `IAgentRuntime` **without changing behaviour**; `getRuntimePort()` is t
 in huginn's own process, resolves `provider/model` through the SDK's `ModelRuntime`, lists the real
 catalog and keeps a real session history. Its events, permissions and resume are **not** wired yet, so
 it declares `streaming`, `structuredEvents` and `sessionResume` false — the engine switch is what
-turns them on. `toLegacyRuntime()` is the reverse bridge that will plug it into the current engine;
-until that switch, `getAgentRuntime("pi")` still returns the CLI adapter, whose argv behaviour the
-existing tests pin. The package is `--external` in the build, so the 23 MB SDK stays out of the
-bundle.
+turns them on. `toLegacyRuntime()` is the reverse bridge that plugs it into the current engine:
+`getEngineRuntime()` — what `run` and `live` build — returns the native driver, while
+`getAgentRuntime()` keeps returning the CLI adapter for provisioning, model discovery and the
+argv-level tests. The package is `--external` in the build, so the 23 MB SDK stays out of the bundle.
 
 A driver *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and
 `permissions: "none"` for every legacy adapter because none of them has a channel back mid-turn), and

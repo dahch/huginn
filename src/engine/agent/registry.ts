@@ -8,7 +8,7 @@ import {
   type AgentTarget,
 } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
-import { toRuntimePort } from "./legacy-bridge.js";
+import { toLegacyRuntime, toRuntimePort } from "./legacy-bridge.js";
 import { createPiSdkPort } from "./drivers/pi-sdk.js";
 import type { RuntimePort } from "./port.js";
 import type { PermissionMode } from "../../config.js";
@@ -288,6 +288,10 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
       // Phase 3C: `PiRuntimeAdapter` owns pi's print mode (`-p` + prompt on
       // stdin), its verified `--model` flag, `pi --list-models` discovery and
       // the assumed (`--approve`) project-trust flag.
+      //
+      // The native driver (`getRuntimePort("pi")`) is not routed here on purpose:
+      // the engine still speaks `IAgentRuntime`, and this path's argv behaviour is
+      // covered by tests that only the engine switch can safely retire.
       return new PiRuntimeAdapter(options);
     // REQ-27 / REQ-35.3: `cursor` exposes no listing command (verified by
     // probing `--help` where installed), so discovery is honestly empty (`[]` —
@@ -371,4 +375,18 @@ export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}
   // the legacy adapter behind the bridge until its SDK driver lands.
   if (target === "pi") return createPiSdkPort();
   return toRuntimePort(getAgentRuntime(target, options));
+}
+
+/**
+ * The runtime the **cycle** executes.
+ *
+ * Deliberately separate from {@link getAgentRuntime}: that factory still returns
+ * the CLI-shaped adapters, which is what provisioning, model discovery and the
+ * argv-level tests rely on. Here, a target with a native driver runs it — pi
+ * today — presented through the reverse bridge until the engines consume
+ * `RuntimePort` directly.
+ */
+export function getEngineRuntime(target: AgentTarget, options: RuntimeOptions = {}): IAgentRuntime {
+  if (target === "pi") return toLegacyRuntime(createPiSdkPort());
+  return getAgentRuntime(target, options);
 }
