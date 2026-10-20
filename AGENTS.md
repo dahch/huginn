@@ -174,7 +174,12 @@ it declares `streaming`, `structuredEvents` and `sessionResume` false — the en
 turns them on. `toLegacyRuntime()` is the reverse bridge that plugs it into the current engine:
 `getEngineRuntime()` — what `run` and `live` build — returns the native driver, while
 `getAgentRuntime()` keeps returning the CLI adapter for provisioning, model discovery and the
-argv-level tests. The package is `--external` in the build, so the 23 MB SDK stays out of the bundle.
+argv-level tests.
+
+`codex` is the second native driver (`drivers/codex-sdk.ts`): a persisted `Thread` from
+`@openai/codex-sdk`, so `sessionHistory` is real, while `sessionResume`, streaming and approvals
+are declared false — the SDK exposes no abort and huginn does not feed its approval options yet. Both
+SDKs are `--external` in the build, so 23 MB of pi plus codex stay out of the bundle.
 
 A driver *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and
 `permissions: "none"` for every legacy adapter because none of them has a channel back mid-turn), and
