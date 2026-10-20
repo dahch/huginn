@@ -156,6 +156,7 @@ and default — while `huginn init --help` prints the wizard's own usage.
 | `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
 | `config` | `huginn config show\|set [flags]` | Inspect the effective models, or persist `thinker`/`executor` to project or user config |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
+| `runtime` | `huginn runtime list [--check]` | Show which runtimes can execute the cycle, with the capabilities each one declares (`--check` probes availability) |
 | `install` | `huginn install` | Compatibility no-op: the step prompts are built into huginn |
 | `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`) |
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |

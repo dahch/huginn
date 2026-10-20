@@ -141,6 +141,7 @@ Commands:
   setup   register Muninn MCP + rules with Cursor, Claude, OpenCode and Devin
   doctor  diagnose the local environment, providers and Muninn database
   check   verify TypeScript execution contracts and pre-emit diagnostics
+  runtime show which runtimes can execute the cycle, and what each one promises
   install compatibility no-op: the opencode agents and step prompts are built
           into huginn, so there is nothing to install
   memory  query and manage persistent codebase memory (init, search, sync, index)
