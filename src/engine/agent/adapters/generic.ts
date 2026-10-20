@@ -49,7 +49,7 @@ export interface GenericSubprocessOptions {
   models?: ModelInfo[];
   /**
    * Declarative model listing (REQ-27 / AC-27.4): argv + pure parser for a CLI
-   * that can enumerate its catalog (e.g. `commandcode --list-models`). Preferred
+   * that can enumerate its catalog (e.g. `pi --list-models`). Preferred
    * over the static `models` array; without either, discovery returns `[]`.
    */
   modelListCommand?: {

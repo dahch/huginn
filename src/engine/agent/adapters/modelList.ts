@@ -5,8 +5,8 @@ import { sanitizeTerminalText } from "../../../util/text.js";
  * Hard deadline for a runtime's model-listing command (REQ-27 / NFR-6).
  *
  * Measured on the reference machine: `opencode models` ≈ 1.6 s and
- * `commandcode --list-models` ≈ 3.9 s (the latter fetches its catalog over the
- * network), so a very short bound would make honest discovery fail permanently.
+ * `pi --list-models` ≈ 0.2 s, so a very short bound would make honest discovery
+ * fail permanently for a slower/network-backed CLI.
  * The spawn is asynchronous (it never blocks the Ink render loop), the picker
  * shows a cancellable loading state, and the child is killed on expiry.
  */
@@ -68,7 +68,7 @@ function describeStderr(stderr: string): string | undefined {
 
 /**
  * Runs an external model-listing command (e.g. `opencode models`,
- * `commandcode --list-models`) with a bounded timeout and output cap.
+ * `pi --list-models`) with a bounded timeout and output cap.
  *
  * Resolution contract (REQ-27 / AC-27.2, AC-27.3): never throws and never
  * fabricates output. A missing binary, a non-zero exit, a timeout, a stream
