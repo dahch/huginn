@@ -32,19 +32,23 @@ a default `.gitignore` and a bootstrap commit) unless `--no-git-init` asks them 
 ## Requirements
 
 - [Bun](https://bun.sh) >= 1.0 (runtime)
-- An AI coding agent CLI on `$PATH` (any of the 13 registered targets below; `opencode` is the only
-  one with a native permission subscriber and server-side session history):
-  - [opencode](https://opencode.ai) CLI (default runtime)
-  - [Claude Code](https://claude.ai/code) (`claude`)
-  - [OpenAI Codex](https://github.com/openai/codex) (`codex`)
-  - [Oh My Pi](https://github.com/can1357/oh-my-pi) (`omp`)
-  - [Command Code](https://github.com/command-code) (`commandcode`)
-  - [Qwen Code](https://github.com/QwenLM) (`qwen`)
-  - Kimi Code CLI (`kimi`), Pi coding agent (`pi`), Devin (`devin`), Antigravity CLI (`agy`),
-    MiniMax Code (`mcode`), MiMo Code (`mimo`) and Cursor (`cursor`)
-  - Or any generic agent CLI conforming to stdio execution.
+- An AI coding agent CLI on `$PATH`. Huginn has **13 provisioning targets** but **5 runtimes**:
+  - dedicated drivers: [opencode](https://opencode.ai) (default; the only one with a native
+    permission subscriber, server-side session history and incremental output),
+    [Claude Code](https://claude.ai/code) (`claude`), [OpenAI Codex](https://github.com/openai/codex)
+    (`codex`) and Pi (`pi`);
+  - the `generic` bridge, which runs the remaining CLI-only targets with their own verified argv:
+    Cursor (`cursor`), Antigravity CLI (`agy`), Command Code (`commandcode`), Devin (`devin`),
+    Kimi Code CLI (`kimi`), MiniMax Code (`mcode`), MiMo Code (`mimo`), Oh My Pi (`omp`) and
+    Qwen Code (`qwen`).
 - `git` on `$PATH` (module inference, diffs, worktree sandboxing). A directory that is inside **no**
   work tree is initialized in place by `run`/`plan`/`live` unless `--no-git-init` is passed.
+
+> **Runtimes vs provisioning targets.** `huginn runtime list` shows the five things that can execute
+> the cycle. `huginn setup`/`init`/`doctor` still know all 13 targets and register Muninn for each;
+> a target without a dedicated driver is executed through `generic` and is no longer a persisted
+> `agent` choice (an old config warns and falls back to auto-detection, while `--agent <target>`
+> keeps working).
 
 > Note: the instructions huginn drives are **built in** (`src/engine/steps/instructions.ts`) — there
 > are no opencode subagents or slash commands to install, and `huginn install` is a compatibility
@@ -156,13 +160,14 @@ and default — while `huginn init --help` prints the wizard's own usage.
 | `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
 | `config` | `huginn config show\|set [flags]` | Inspect the effective models, or persist `thinker`/`executor` to project or user config |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
-| `runtime` | `huginn runtime list [--check]` | Show which runtimes can execute the cycle, with the capabilities each one declares (`--check` probes availability) |
+| `runtime` | `huginn runtime list [--check]` | Show the five runtimes that can execute the cycle (`pi`, `codex`, `claude`, `opencode`, `generic`), with the capabilities each one declares (`--check` probes availability) |
 | `install` | `huginn install` | Compatibility no-op: the step prompts are built into huginn |
 | `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`) |
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |
 
 `huginn setup` targets: `cursor`, `claude`, `opencode`, `devin`, `qwen`, `codex`, `agy`,
-`kimi`, `pi`, `commandcode`, `omp`, `mcode`, `mimo`, or `all` (default). `--status` prints the provisioning matrix
+`kimi`, `pi`, `commandcode`, `omp`, `mcode`, `mimo`, or `all` (default). All 13 stay provisioning
+targets even when the cycle runs them through `generic`. `--status` prints the provisioning matrix
 (agent × installed × muninn registered) with the exact fix command and writes nothing; `--installed`
 **filters** the selection to the agents whose CLI is present (never widening it) and reports what it
 skipped; `--agent a,b` configures exactly that subset. `--dry-run` reports exactly what would change

@@ -143,13 +143,17 @@ decides the outcome:
 ## 5. Runtime requirements
 
 1. **Bun** (the bin is `#!/usr/bin/env bun`; the bundle is Bun-target).
-2. **An agent CLI on `$PATH`** — any of the 13 registered targets. `opencode` is the default and the
-   only runtime with a native permission subscriber (`--permissions ask|deny`), server-side
-   session history, and an incremental output channel (`IAgentRuntime.streamsOutput`, `true` only
-   there — every subprocess CLI buffers stdout and resolves once, so a surface shows the phase report
-   instead of pretending to stream); when it is used, huginn starts it itself via
+2. **An agent CLI on `$PATH`** — huginn has 13 **provisioning targets** but only 5 **runtimes**
+   (`pi`, `codex`, `claude`, `opencode`, `generic`). `opencode` is the default and the only runtime
+   with a native permission subscriber (`--permissions ask|deny`), server-side session history, and
+   an incremental output channel (`IAgentRuntime.streamsOutput`, `true` only there — every subprocess
+   CLI buffers stdout and resolves once, so a surface shows the phase report instead of pretending to
+   stream); when it is used, huginn starts it itself via
    `opencode serve --port <n> --hostname 127.0.0.1` in the project dir (logs to
-   `.harness/logs/server.log`).
+   `.harness/logs/server.log`). `getAgentRuntime()` still builds the CLI-shaped adapter for every
+   provisioning target; the nine without a dedicated driver (`cursor`, `agy`, `commandcode`, `devin`,
+   `kimi`, `mcode`, `mimo`, `omp`, `qwen`) are one configured
+   `GenericSubprocessRuntimeAdapter` from `src/engine/agent/genericTargets.ts`.
 3. **`git` on `$PATH`** — used for module inference, diffs, base commits, doc staging and worktree
    sandboxing. The project directory does **not** have to be a repository: `run`/`plan`/`live`
    bootstrap one (`git init -b main` + `.gitignore` + a bootstrap commit) unless `--no-git-init` is
@@ -160,21 +164,38 @@ decides the outcome:
 
 ### The runtime port
 
-`src/engine/agent/port.ts` is the driver-neutral contract the cycle is moving onto: a `RuntimeId`,
-a `RuntimeCapabilities` record, `isAvailable()`, `listModels()`, `resolveModel()` and
-`createSession()` → `RuntimeSession` (typed `text`/`tool`/`permission`/`usage`/`error`/`done`
-events, `interrupt()`, idempotent `close()`).
+`src/engine/agent/port.ts` is the driver-neutral contract the cycle is moving onto: a `RuntimeId`
+(defined in `src/agents/integrator.ts` next to the provisioning targets), a `RuntimeCapabilities`
+record, `isAvailable()`, `listModels()`, `resolveModel()` and `createSession()` →
+`RuntimeSession` (typed `text`/`tool`/`permission`/`usage`/`error`/`done` events,
+`interrupt()`, idempotent `close()`).
 
-Every target except `pi` is still served by `toRuntimePort()` (`legacy-bridge.ts`), which wraps the
-existing `IAgentRuntime` **without changing behaviour**; `getRuntimePort()` is the factory.
+M4b split the two concepts. `ProvisioningTarget` (`AgentTarget`) is where `setup`/`doctor`
+register Muninn — 13 values, unchanged. `RuntimeId` is what executes the cycle — five values
+(`pi`, `opencode`, `codex`, `claude`, `generic`), mapped by `runtimeIdForTarget()`. The
+legacy `IAgentRuntime.id` still carries the provisioning-target shape during the transition; the
+port maps it to a `RuntimeId` when it wraps an adapter.
+
+`getRuntimePort()` returns the native driver for `pi`, `codex` and `claude`, the bridged
+`opencode` adapter, or a bridged configured generic adapter for every other target.
+`getGenericRuntimePort()` is the `generic` catalog entry used by `huginn runtime list` (it probes
+whether any generic-target CLI is installed; `createSession` there says it needs a concrete target).
 `pi` is the first driver implemented natively (`drivers/pi-sdk.ts`): it runs `createAgentSession()`
 in huginn's own process, resolves `provider/model` through the SDK's `ModelRuntime`, lists the real
 catalog and keeps a real session history. Its events, permissions and resume are **not** wired yet, so
 it declares `streaming`, `structuredEvents` and `sessionResume` false — the engine switch is what
 turns them on. `toLegacyRuntime()` is the reverse bridge that plugs it into the current engine:
-`getEngineRuntime()` — what `run` and `live` build — returns the native driver, while
-`getAgentRuntime()` keeps returning the CLI adapter for provisioning, model discovery and the
+`getEngineRuntime()` — what `run` and `live` build — returns the native driver for `pi`,
+`codex` and `claude` and the configured generic bridge for every other target, while
+`getAgentRuntime()` keeps returning the CLI-shaped adapter for provisioning, model discovery and the
 argv-level tests.
+
+The eight CLI-only targets retired as **runtimes** (`agy`, `commandcode`, `devin`, `kimi`,
+`mcode`, `mimo`, `omp`, `qwen`) remain **provisioning targets**: `huginn setup --status` still
+lists all 13, their MCP paths/rules rows are unchanged, and `--agent <target>` still runs them
+through `generic`. Only a *stored* config value warns and falls back to auto-detection (M4b
+migration); model/MCP listing is no longer wired for them, so discovery honestly returns an explained
+empty catalog and the MCP panel falls back to config discovery.
 
 `codex` is the second native driver (`drivers/codex-sdk.ts`): a persisted `Thread` from
 `@openai/codex-sdk`, so `sessionHistory` is real, while `sessionResume`, streaming and approvals
