@@ -40,6 +40,7 @@ import type { AgentTarget } from "./agents/integrator.js";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
 import { handleCheckCommand } from "./commands/check";
+import { handleRuntimeCommand } from "./commands/runtime";
 import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
 import { handleInitCommand, printInitUsage } from "./commands/init.js";
 import { handleInstallCommand } from "./commands/install";
@@ -273,6 +274,7 @@ const KNOWN_COMMANDS = new Set([
   "memory",
   "mcp",
   "check",
+  "runtime",
   "setup",
   "doctor",
   "config",
@@ -607,6 +609,20 @@ export async function main(argv: string[]): Promise<void> {
     await handleConfigCommand(
       subcommand,
       args as Record<string, string | boolean | undefined>
+    );
+    return;
+  }
+  if (command === "runtime") {
+    const positionals = (args._positionals as string[] | undefined) ?? [];
+    const subcommand =
+      typeof positionals[0] === "string"
+        ? positionals[0]
+        : typeof args._positional === "string"
+          ? args._positional
+          : undefined;
+    await handleRuntimeCommand(
+      subcommand,
+      args as Record<string, string | boolean | undefined>,
     );
     return;
   }
