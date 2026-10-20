@@ -304,6 +304,50 @@ describe("gitRepoState (REV-001, REV-002)", () => {
   });
 });
 
+describe("probeGitRepo ignores git's localised message (REV-001)", () => {
+  let tempDir: string;
+  let originalPath: string | undefined;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-git-locale-test-"));
+    const bin = path.join(tempDir, "bin");
+    fs.mkdirSync(bin);
+    // A git that refuses to speak English: its fatal message is Spanish and its
+    // exit code is the one git uses for "no repository". The probe must classify
+    // from the code and the filesystem, never from the text.
+    const script = [
+      "#!/bin/sh",
+      'case "$*" in',
+      '  *--version*) echo "git version 2.99.0"; exit 0 ;;',
+      "esac",
+      'echo "fatal: no es un repositorio git (ni ningún padre en el punto de montaje /)" >&2',
+      "exit 128",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(bin, "git"), script, { mode: 0o755 });
+    originalPath = process.env.PATH;
+    process.env.PATH = `${bin}:${originalPath ?? ""}`;
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("classifies a greenfield directory as not-a-repo even when git answers in Spanish", () => {
+    const dir = path.join(tempDir, "plain");
+    fs.mkdirSync(dir);
+    expect(gitRepoState(dir)).toBe("not-a-repo");
+  });
+
+  it("still refuses to initialise over a repository git will not read", () => {
+    const dir = path.join(tempDir, "owned-by-someone-else");
+    fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
+    expect(gitRepoState(dir)).toBe("error");
+    expect(() => ensureGitRepository(dir)).toThrow(/could not determine git repository state/);
+  });
+});
+
 describe("ensureGitRepositoryOrExit (CLI gate)", () => {
   let tempDir: string;
 

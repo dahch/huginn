@@ -13,7 +13,7 @@
     "dev": "bun run src/cli.ts",
     "build": "bun build src/cli.ts --target=bun --outdir=dist --minify",
     "typecheck": "tsc --noEmit",
-    "test": "bun test && vitest run",
+    "test": "bun test src && vitest run",
     "prepublishOnly": "bun run build && npm run test && bun run typecheck"
   },
   "dependencies": {
