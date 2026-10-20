@@ -1,4 +1,4 @@
-import type { IAgentRuntime, IAgentSession, PromptResult } from "./types.js";
+import type { IAgentRuntime, IAgentSession, McpStatusReport, PromptResult } from "./types.js";
 import type {
   EventSink,
   ModelResolution,
@@ -136,6 +136,76 @@ function bridgeSession(session: IAgentSession, sink?: EventSink): RuntimeSession
     async close() {
       // A legacy session owns no resource the caller must release: the adapter
       // either talks to the shared opencode daemon or spawns a short-lived CLI.
+    },
+  };
+}
+
+/**
+ * Present a {@link RuntimePort} as the legacy `IAgentRuntime` the engine still
+ * consumes.
+ *
+ * The other direction of the bridge: it lets a native driver (today pi) run on
+ * the production path without rewriting `CycleEngine`/`LiveEngine` first. What it
+ * cannot do is invent a channel the legacy interface has no room for — events
+ * are dropped, and `streamsOutput` mirrors `capabilities.streaming` so no surface
+ * waits for output that will not arrive.
+ */
+export function toLegacyRuntime(port: RuntimePort): IAgentRuntime {
+  const capabilities = port.capabilities;
+  return {
+    id: port.id as IAgentRuntime["id"],
+    name: port.name,
+    sessionHistory: capabilities.sessionHistory,
+    streamsOutput: capabilities.streaming,
+
+    async isAvailable() {
+      return (await port.isAvailable()).ok;
+    },
+
+    async getAvailableModels() {
+      return (await port.listModels()).models;
+    },
+
+    async getModelCatalog() {
+      return port.listModels();
+    },
+
+    async getMcpStatus(): Promise<McpStatusReport> {
+      // A native driver owns no MCP client of its own, so claiming health would
+      // be the always-green badge again: report "nothing verified" instead.
+      return { servers: [], totalTools: 0, healthy: false, unverified: true };
+    },
+
+    async createSession(options) {
+      const session = await port.createSession({
+        title: options.title,
+        directory: options.directory,
+        model: options.model,
+        agent: options.agent,
+      });
+      const legacy: IAgentSession = {
+        id: session.id,
+        async prompt(text, promptOptions) {
+          return session.prompt({
+            text,
+            model: promptOptions?.model,
+            agent: promptOptions?.agent,
+            timeoutMs: promptOptions?.timeoutMs,
+            directory: promptOptions?.directory,
+          });
+        },
+        async abort() {
+          // The engine's abort ends the run, so the handle is released too: a
+          // native driver keeps file handles and a session file otherwise.
+          await session.interrupt("aborted by the engine");
+          await session.close();
+        },
+      };
+      return legacy;
+    },
+
+    async stopDaemon() {
+      await port.dispose?.();
     },
   };
 }
