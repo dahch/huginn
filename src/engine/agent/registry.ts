@@ -361,7 +361,8 @@ export function getGenericRuntimePort(options: RuntimeOptions = {}): RuntimePort
     async listModels() {
       return {
         models: [],
-        reason: "the generic runtime discovers models through a concrete agent target",
+        reason:
+          "the generic runtime has no model listing; each concrete target keeps its own binary and flags",
       };
     },
 
