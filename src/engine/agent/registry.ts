@@ -11,6 +11,7 @@ import type { IAgentRuntime } from "./types.js";
 import { toLegacyRuntime, toRuntimePort } from "./legacy-bridge.js";
 import { createPiSdkPort } from "./drivers/pi-sdk.js";
 import { createCodexSdkPort } from "./drivers/codex-sdk.js";
+import { createClaudeSdkPort } from "./drivers/claude-sdk.js";
 import type { RuntimePort } from "./port.js";
 import type { PermissionMode } from "../../config.js";
 import {
@@ -376,6 +377,7 @@ export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}
   // behind the bridge until its driver lands.
   if (target === "pi") return createPiSdkPort();
   if (target === "codex") return createCodexSdkPort();
+  if (target === "claude") return createClaudeSdkPort();
   return toRuntimePort(getAgentRuntime(target, options));
 }
 
@@ -391,5 +393,6 @@ export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}
 export function getEngineRuntime(target: AgentTarget, options: RuntimeOptions = {}): IAgentRuntime {
   if (target === "pi") return toLegacyRuntime(createPiSdkPort());
   if (target === "codex") return toLegacyRuntime(createCodexSdkPort());
+  if (target === "claude") return toLegacyRuntime(createClaudeSdkPort());
   return getAgentRuntime(target, options);
 }
