@@ -158,6 +158,23 @@ decides the outcome:
 4. **Nothing to install** — the roles and task bodies are embedded in the binary (§1). There is no
    `templates/` directory, no `postinstall` hook and no warning about missing pieces.
 
+### The runtime port
+
+`src/engine/agent/port.ts` is the driver-neutral contract the cycle is moving onto: a `RuntimeId`,
+a `RuntimeCapabilities` record, `isAvailable()`, `listModels()`, `resolveModel()` and
+`createSession()` → `RuntimeSession` (typed `text`/`tool`/`permission`/`usage`/`error`/`done`
+events, `interrupt()`, idempotent `close()`).
+
+Every target registered today is served by `toRuntimePort()` (`legacy-bridge.ts`), which wraps the
+existing `IAgentRuntime` **without changing behaviour**; `getRuntimePort()` is the factory. A driver
+now *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and
+`permissions: "none"` for every legacy adapter because none of them has a channel back mid-turn), and
+the conformance suite (`conformance.ts`, run for every target in
+`test/engine/agent/conformance.test.ts`) fails a driver that claims more than it delivers:
+`sessionResume` without `sessionHistory`, `interactive` permissions without `interrupt`,
+`streaming` without `structuredEvents`, a permission event from a driver whose mode is `none`, a
+`done` event that is not last, or a failed prompt that does not emit `error`.
+
 ## 6. Developer workflow (working on huginn itself)
 
 ```sh

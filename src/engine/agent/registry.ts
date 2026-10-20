@@ -8,6 +8,8 @@ import {
   type AgentTarget,
 } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
+import { toRuntimePort } from "./legacy-bridge.js";
+import type { RuntimePort } from "./port.js";
 import type { PermissionMode } from "../../config.js";
 import {
   AGY_MCP_LIST_TIMEOUT_MS,
@@ -354,4 +356,15 @@ export function getAgentRuntime(target: AgentTarget, options: RuntimeOptions = {
       throw new Error(`Unknown agent target: "${String(target)}". Supported targets: ${AGENT_TARGETS.join(", ")}`);
     }
   }
+}
+
+/**
+ * The runtime port for `target`.
+ *
+ * Until a driver implements the port natively, this is the legacy adapter behind
+ * {@link toRuntimePort}: identical behaviour, with capabilities stated instead
+ * of implied. New drivers register here by returning their own `RuntimePort`.
+ */
+export function getRuntimePort(target: AgentTarget, options: RuntimeOptions = {}): RuntimePort {
+  return toRuntimePort(getAgentRuntime(target, options));
 }
