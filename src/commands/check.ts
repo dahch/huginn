@@ -1,6 +1,6 @@
 import path from "node:path";
 import chalk from "chalk";
-import { verifyTypeScriptContracts } from "../contracts/compiler.js";
+import { verifyTypeScriptContracts } from "@dahch/muninn";
 
 export function printCheckUsage(): void {
   console.log(`huginn check — Static TypeScript execution contract verification

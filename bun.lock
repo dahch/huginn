@@ -5,9 +5,8 @@
     "": {
       "name": "dahch-harness",
       "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.30.1",
+        "@dahch/muninn": "https://github.com/dahch/muninn/releases/download/v0.1.0/dahch-muninn-0.1.0.tgz",
         "@opencode-ai/sdk": "^1.18.14",
-        "better-sqlite3": "^13.0.3",
         "chalk": "^6.0.0",
         "ink": "^7.1.1",
         "react": "^19.2.8",
@@ -15,7 +14,6 @@
         "zod": "^4.4.3",
       },
       "devDependencies": {
-        "@types/better-sqlite3": "^9.6.0",
         "@types/bun": "^1.3.14",
         "@types/react": "^19.2.0",
         "@vitest/coverage-v8": "^5.0.2",
@@ -36,6 +34,8 @@
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
     "@bcoe/v8-coverage": ["@bcoe/v8-coverage@1.0.2", "", {}, "sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA=="],
+
+    "@dahch/muninn": ["@dahch/muninn@https://github.com/dahch/muninn/releases/download/v0.1.0/dahch-muninn-0.1.0.tgz", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.1", "better-sqlite3": "^13.0.3", "chalk": "^6.0.0", "typescript": "^5.9.0", "zod": "^4.4.3" }, "bin": { "muninn": "./dist/cli.js" } }, "sha512-xhEiHRUUZ2f37yEUnMwlxX7N3x4OmYDYabVCOkZ4F+wcPB8YMPNbcaH4QfziMDzFZRTiLYuaqArmKYIaE1EoDQ=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 
@@ -82,8 +82,6 @@
     "@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.11", "", { "os": "win32", "cpu": "x64" }, "sha512-/PzKqzAJ03i19oy2ItPvyvaVjOjBCNnfaJs8yvUdGBKmiESgnrJSQ2awd81QzFbbnAmu7YO9ZnJrDCb9VSJPRA=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
-
-    "@types/better-sqlite3": ["@types/better-sqlite3@9.6.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-ZEEwBSgMu7GYJOynoagg5X9JbxfL6dTJDsgViJIqh67jV44kyOr9RXfmFjLK5rzC4MWssP06t9hu/JwGDnUbCg=="],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 

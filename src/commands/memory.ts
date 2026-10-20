@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import chalk from "chalk";
-import { MemoryService } from "../muninn/service/memory-service.js";
-import { startMcpServer } from "../muninn/mcp/server.js";
-import { indexFilesIntoMuninn } from "../muninn/indexer/ast-indexer.js";
+import { MemoryService } from "@dahch/muninn";
+import { startMcpServer } from "@dahch/muninn";
+import { indexFilesIntoMuninn } from "@dahch/muninn";
 import { sanitizeTerminalText } from "../util/text.js";
 
 const IGNORED_INDEX_DIRS = new Set([

@@ -39,7 +39,7 @@ import {
 import type { HarnessState, HistoryEntry, PromotionRecord } from "../state/schema";
 import { createClient, createSession, sessionExists, abortSession } from "../server/client";
 import { WorktreeManager, type Sandbox } from "./worktree";
-import { resolveDatabasePath } from "../muninn/db/client.js";
+import { resolveDatabasePath } from "@dahch/muninn";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
 import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
 import { sanitizeTerminalText } from "../util/text.js";

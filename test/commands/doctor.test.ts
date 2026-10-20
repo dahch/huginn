@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setup, AGENT_TARGETS } from "../../src/agents/integrator.js";
-import { MemoryService } from "../../src/muninn/service/memory-service.js";
+import { MemoryService } from "@dahch/muninn";
 import {
   handleDoctorCommand,
   runDoctorChecks,
