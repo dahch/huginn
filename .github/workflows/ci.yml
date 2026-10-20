@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # Split on purpose: the unit suite is bun:test under src/, the integration
+      # suite is vitest under test/. Running "bun test" over the whole tree used to
+      # execute the vitest files too, in one shared process, where a leaked
+      # process.exitCode could fail an unrelated file.
+      - name: Unit tests
+        run: bun test src
+
+      - name: Integration tests
+        run: bunx vitest run
+
+      - name: Build
+        run: bun run build
+
+      - name: Smoke the bundle
+        run: bun dist/cli.js help > /dev/null
