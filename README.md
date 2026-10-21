@@ -2,17 +2,16 @@
 
 [![npm](https://img.shields.io/npm/v/%40dahch%2Fhuginn)](https://www.npmjs.com/package/@dahch/huginn) [![license](https://img.shields.io/github/license/dahch/huginn)](https://github.com/dahch/huginn/blob/main/LICENSE) [![ci](https://img.shields.io/github/actions/workflow/status/dahch/huginn/publish.yml)](https://github.com/dahch/huginn/actions) [![stars](https://img.shields.io/github/stars/dahch/huginn)](https://github.com/dahch/huginn/stargazers) [![issues](https://img.shields.io/github/issues/dahch/huginn)](https://github.com/dahch/huginn/issues) [![bun](https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun)](https://bun.sh) [![TypeScript](https://img.shields.io/badge/stack-TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-> ### ⚠️ Work in progress — a better version is on the way
+> ### 3.0.0-rc.1 — the SDK rewrite, out for testing
 >
-> Huginn is mid-rewrite, and the version published today is **only partially functional**. The
-> memory engine (Muninn) has already been extracted into its own repository
-> ([dahch/muninn](https://github.com/dahch/muninn)), and the runtime layer is being rebuilt on top of
-> the agents' own SDKs instead of driving their CLIs — which is where most of the current rough edges
-> come from.
+> Huginn now executes **five runtimes** instead of driving thirteen agent CLIs: `pi` and `codex` run
+> their SDK in-process or over their app-server, `claude` uses its agent SDK (optional, external, and
+> the only non-OSS one), `opencode` keeps its daemon, and every other CLI goes through one configured
+> `generic` driver. The memory engine lives in [dahch/muninn](https://github.com/dahch/muninn).
 >
-> If your interest in Huginn is genuine, **watch this repository and wait for the next release**:
-> the interfaces are still moving, and adopting the current version today means adopting its known
-> gaps. Everything below documents the code as it exists right now and may lag behind the rewrite.
+> A runtime only advertises what it can deliver — `huginn runtime list` prints the contract. This is a
+> **release candidate**: 3.0.0 final follows the first field reports, and the runtime list is the
+> contract, not the implementation.
 
 CLI/TUI orchestrator for the agent-driven build cycle:
 
