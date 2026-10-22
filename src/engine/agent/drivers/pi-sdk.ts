@@ -12,6 +12,13 @@ export interface PiSessionHandle {
   readonly id: string;
   /** Run one turn and resolve with the assistant's final text. */
   prompt(text: string): Promise<string>;
+  /**
+   * Switch the model for the next turns, without persisting it to pi's own
+   * settings. huginn passes the model **per prompt** (thinker for fixes, executor
+   * for everything else), so a driver that drops it silently runs whatever pi has
+   * configured.
+   */
+  setModel?(reference: string): Promise<void>;
   interrupt(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -111,6 +118,17 @@ export function createPiSdkPort(adapter: PiSdkAdapter = createDefaultPiAdapter()
         resumable: false,
         async prompt(request) {
           try {
+            // The engine asks for a model on every prompt; honour it or fail, never
+            // fall back to pi's own setting in silence (that is how the TUI came to
+            // show DeepSeek while the API billed Claude).
+            if (request.model) {
+              if (!handle.setModel) {
+                throw new Error(
+                  `the pi driver cannot switch models per prompt (asked for "${request.model}")`,
+                );
+              }
+              await handle.setModel(request.model);
+            }
             const text = await handle.prompt(request.text);
             const result = { messageId: `${handle.id}:last`, text };
             if (text) sink?.({ type: "text", text });
@@ -164,8 +182,25 @@ export function createDefaultPiAdapter(): PiSdkAdapter {
         modelRuntime: runtime,
       });
       const stats = session.getSessionStats();
+      // What the session currently runs; `undefined` means pi's own default.
+      let appliedModel: string | undefined = model;
       return {
         id: stats.sessionId,
+        async setModel(reference: string) {
+          const wanted = reference.trim();
+          if (wanted === appliedModel) return;
+          const ticked = pi.resolveCliModel({
+            ...splitReferenceOrThrow(wanted),
+            modelRuntime: runtime,
+          });
+          if (!ticked.model) {
+            throw new Error(ticked.error ?? `pi cannot resolve the model "${wanted}"`);
+          }
+          // `persist: false` keeps this a session choice: switching the executor
+          // must never rewrite the model the user has configured in pi itself.
+          await session.setModel(ticked.model, { persist: false });
+          appliedModel = wanted;
+        },
         async prompt(text: string) {
           await session.prompt(text);
           await session.waitForIdle();

@@ -89,6 +89,16 @@ describe("claude SDK driver specifics", () => {
     expect(abort).toHaveBeenCalledTimes(1);
   });
 
+  it("honours the model the engine asks for on each turn", async () => {
+    const run = vi.fn(async (_prompt: string, _model?: string) => "ok");
+    const port = createClaudeSdkPort(
+      fakeAdapter({ async startTurn() { return fakeTurn({ run }); } }),
+    );
+    const session = await port.createSession({ title: "t" });
+    await session.prompt({ text: "a", model: "claude-opus-4-5" });
+    expect(run).toHaveBeenCalledWith("a", "claude-opus-4-5");
+  });
+
   it("reports an unloadable SDK as unavailable with the reason", async () => {
     const port = createClaudeSdkPort(
       fakeAdapter({ async probe() { throw new Error("claude-agent-sdk not installed"); } }),
