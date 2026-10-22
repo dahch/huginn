@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalize, num } from "./cli";
+import { canonicalize, main, num } from "./cli";
 
 const base = join(import.meta.dir, "..", ".tmp-canonical-test");
 const realDir = join(base, "real");
@@ -54,4 +54,27 @@ describe("num", () => {
     expect(num("-1", 3)).toBe(0);
     expect(num("-5", 3)).toBe(0);
   });
+});
+
+describe("--version", () => {
+  // It used to fall through to the live-first default and start an agent: a CLI
+  // that answers "what version are you?" by opening a console is a bug.
+  for (const argv of [["--version"], ["-v"], ["version"]]) {
+    it(`answers ${argv[0]} with the version and exits`, async () => {
+      const lines: string[] = [];
+      const original = console.log;
+      console.log = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
+      try {
+        await main(argv);
+      } finally {
+        console.log = original;
+      }
+      const output = lines.join("\n");
+      expect(output).toMatch(/^huginn \d+\.\d+\.\d+/);
+      // No banner, no live console, nothing else.
+      expect(lines).toHaveLength(1);
+    });
+  }
 });

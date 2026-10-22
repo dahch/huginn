@@ -33,6 +33,7 @@ import { subscribeToEvents } from "./engine/permissions";
 import { events } from "./engine/engineEvents";
 import { printBanner, type BannerInfo } from "./banner";
 import { runPlanMode } from "./engine/planMode";
+import pkg from "../package.json";
 import { LiveEngine } from "./engine/liveMode";
 import { maybePrintUpdateReminder } from "./update";
 import { resolveAgent, getEngineRuntime, OpencodeRuntimeAdapter, subprocessPermissionMessage } from "./engine/agent/index.js";
@@ -142,6 +143,7 @@ Commands:
   doctor  diagnose the local environment, providers and Muninn database
   check   verify TypeScript execution contracts and pre-emit diagnostics
   runtime show which runtimes can execute the cycle, and what each one promises
+  version print the version and exit (--version, -v)
   install compatibility no-op: the opencode agents and step prompts are built
           into huginn, so there is nothing to install
   memory  query and manage persistent codebase memory (init, search, sync, index)
@@ -236,6 +238,9 @@ const BOOLEAN_FLAGS = new Set([
   "--yes",
   "--force",
   "--resume",
+  // Declared so `huginn --version` never swallows the next argument.
+  "--version",
+  "-v",
   // Phase 4C: live-session flags. They must be declared here so the parser never
   // treats the next argv entry as their value — `huginn live -c "keep going"`
   // would otherwise swallow the idea into `-c`.
@@ -544,6 +549,13 @@ async function getFreePort(): Promise<number> {
 export async function main(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const command = args._command;
+  // Asked before anything else, and without the banner: `--version` used to fall
+  // through to the live-first default and *start an agent*, which is a surprising
+  // way to ask a CLI what version it is.
+  if (args["--version"] || args["-v"] || command === "version") {
+    console.log(`huginn ${pkg.version}`);
+    return;
+  }
   if (command === "help" || args["--help"] || args["-h"]) {
     printBanner({});
     if (command === "init") {
