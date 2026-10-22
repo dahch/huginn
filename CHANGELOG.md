@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Muninn could not open its database in the published bundle.** `bun build` had baked the CI
+  runner's absolute path (`/home/runner/…/better-sqlite3/build/Release/better_sqlite3.node`) into
+  the native binding, so every installed copy reported Muninn as unavailable while a source checkout
+  worked. `better-sqlite3` is now `--external` and a direct dependency, resolved at runtime.
+- The dark palette's secondary text was ANSI `gray` (bright black, ~#7f7f7f) and nearly invisible on
+  a dark terminal: `muted`/`system` are `#9aa5b1` and the border `#5b6572`.
+
+### Changed
+
+- The models are shown once, in the status header; the LIVE CONTEXT panel no longer repeats
+  `thinker`/`executor` (two rows freed, and a test keeps them out).
+- Re-tagging is safe now: the publish step skips when the version is already on npm, and the release
+  job updates the existing page from the changelog instead of skipping it.
+
 ## 2.0.0-rc.2
 
 **Renumbered from 3.0.0-rc.1.** No code changed in the renumbering. `1.2.0` is the last stable, the
