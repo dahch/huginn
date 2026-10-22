@@ -650,6 +650,13 @@ flowchart LR
   session per iteration; parallelism (multiple agents at once) is deliberately
   not attempted, which keeps verdict ordering and state trivial.
 
+> **Sections 13–18 describe Muninn as it lived inside this repository.** The engine now ships as the
+> separate [`@dahch/muninn`](https://github.com/dahch/muninn) package, so the paths below
+> (`src/muninn/…`, `src/contracts/…`, `src/commands/memory.ts`, `test/muninn/…`) no longer exist
+> here. The design is kept for the record; the authoritative source — and the place these chapters
+> belong — is that repository. What huginn still owns is the wrapper surface: `huginn memory`,
+> `huginn check` and `huginn mcp run`, which call the package.
+
 ## 13. Muninn Memory Engine — Database Layer & SQLite FTS5 Schema
 
 The `src/muninn/db/` package provides embedded, local-first persistence for project memories, code symbol entity linkages, and BM25 full-text search without external network calls or vector API keys.
