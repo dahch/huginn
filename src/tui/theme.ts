@@ -182,8 +182,11 @@ const LIGHT_PALETTE: ThemePalette = LEGIBLE_PALETTE;
  */
 const DARK_PALETTE: ThemePalette = Object.freeze({
   text: undefined,
-  muted: "gray",
-  border: "gray",
+  // ANSI `gray` is bright black (~#7f7f7f) and reads as barely-there on a dark
+  // terminal; secondary text has to be legible, not decorative. Same slots,
+  // lifted to ~#9aa5b1 (≈6:1 on #12141a) and a quieter border.
+  muted: "#9aa5b1",
+  border: "#5b6572",
   borderFocus: "cyanBright",
   accent: "cyan",
   accentStrong: "cyanBright",
@@ -193,7 +196,7 @@ const DARK_PALETTE: ThemePalette = Object.freeze({
   info: "cyan",
   thinker: "magenta",
   executor: "green",
-  system: "gray",
+  system: "#9aa5b1",
   brand: "cyan",
 });
 

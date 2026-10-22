@@ -218,7 +218,10 @@ describe("theme palette integrity (REQ-12)", () => {
     expect(dark.ok).toBe("green");
     expect(dark.warn).toBe("yellow");
     expect(dark.danger).toBe("red");
-    expect(dark.muted).toBe("gray");
+    // ANSI `gray` is bright black (~#7f7f7f) and disappears on a dark terminal;
+    // the secondary slots are truecolor values now.
+    expect(dark.muted).toBe("#9aa5b1");
+    expect(dark.system).toBe("#9aa5b1");
     expect(dark.text).toBeUndefined();
   });
 
