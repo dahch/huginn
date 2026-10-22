@@ -40,7 +40,24 @@ jobs:
       - name: Test
         run: npm run test && bun run typecheck
 
+      # Re-tagging is a legitimate repair — the tag message lives in git, and a
+      # wrong one can only be fixed by re-pushing the tag. Republishing is not:
+      # npm rejects an existing version and turns a successful repair into a red
+      # run. So the publish is skipped when the version is already there, and the
+      # release job below refreshes the page instead of skipping it.
+      - name: Check whether this version is already on npm
+        id: on-npm
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "@dahch/huginn@$version" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::@dahch/huginn@$version is already published; skipping the publish step."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.on-npm.outputs.exists != 'true'
         run: |
           version="$(node -p "require('./package.json').version")"
           if [[ "$version" == *-* ]]; then
@@ -52,7 +69,8 @@ jobs:
   release:
     # A green publish is not a release: the tag needs its notes too. This job
     # copies the version's CHANGELOG section into a GitHub Release, so a tag is
-    # never a bare pointer with an empty page.
+    # never a bare pointer with an empty page — and a re-tagged fix refreshes the
+    # page instead of being ignored.
     needs: npm
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -69,22 +87,23 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::notice::release $TAG already exists; leaving it alone"
-            exit 0
-          fi
-          # The changelog is the source of truth: take this version's section,
-          # and fall back to GitHub's generated notes when it has none.
+          # The changelog is the source of truth: take this version's section.
           awk -v v="$version" '
             BEGIN { p = 0 }
             $0 == "## " v { p = 1; next }
             p && /^## / { exit }
             p { print }
           ' CHANGELOG.md > notes.md
-          flags=(--verify-tag --title "$TAG")
+          flags=(--title "$TAG")
           case "$version" in *-*) flags+=(--prerelease) ;; esac
           if [ -s notes.md ]; then
-            gh release create "$TAG" "${flags[@]}" --notes-file notes.md
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release edit "$TAG" "${flags[@]}" --notes-file notes.md
+            else
+              gh release create "$TAG" --verify-tag "${flags[@]}" --notes-file notes.md
+            fi
+          elif gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::no changelog section for $version; leaving the existing release alone"
           else
-            gh release create "$TAG" "${flags[@]}" --generate-notes
+            gh release create "$TAG" --verify-tag "${flags[@]}" --generate-notes
           fi
