@@ -1348,8 +1348,6 @@ function RefineView({
     busy,
     spinner,
     agentName: currentRuntimeName,
-    thinker: currentThinker,
-    executor: currentExecutor,
     mcpText: mcpBadge.text,
     mcpToken: mcpStatusToken(mcpBadge.status),
     git: gitSummary,

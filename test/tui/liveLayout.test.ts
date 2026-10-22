@@ -205,8 +205,6 @@ const panelData: PanelData = {
   busy: true,
   spinner: "⠋",
   agentName: "opencode",
-  thinker: "anthropic/claude-3-7-sonnet",
-  executor: "opencode/gpt-5.1-codex",
   mcpText: "MCP: 🟢 2 connected · opencode",
   mcpToken: "ok",
   git: { branch: "feature/parser", clean: false, sandbox: true },
@@ -233,8 +231,10 @@ describe("panel lines (REQ-12)", () => {
     expect(lines[0]).toEqual({ kind: "title", text: PANEL_TITLE });
     expect(labels).toContain("stage");
     expect(labels).toContain("agent");
-    expect(labels).toContain("thinker");
-    expect(labels).toContain("executor");
+    // The models live in the header; repeating them in the panel cost two rows
+    // and told the same story twice.
+    expect(labels).not.toContain("thinker");
+    expect(labels).not.toContain("executor");
     expect(labels).toContain("git");
     expect(labels).toContain("sandbox");
     expect(labels).toContain("muninn");

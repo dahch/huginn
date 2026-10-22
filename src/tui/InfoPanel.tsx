@@ -69,8 +69,6 @@ export interface PanelData {
   spinner: string;
   /** Active agent/runtime name. */
   agentName: string;
-  thinker: string;
-  executor: string;
   /** The attributed MCP badge text (`formatMcpBadge`). */
   mcpText: string;
   /** The badge's severity token (`mcpStatusToken`). */
@@ -166,8 +164,8 @@ export function panelLines(data: PanelData, contentWidth: number): PanelLine[] {
     row("stage", `${data.stageLabel}${data.busy ? ` ${data.spinner}` : ""}`, data.stageToken),
   );
   if (data.agentName) lines.push(row("agent", data.agentName, "warn"));
-  if (data.thinker) lines.push(row("thinker", data.thinker, "thinker"));
-  if (data.executor) lines.push(row("executor", data.executor, "executor"));
+  // The models live in the header only: repeating them here cost two rows and
+  // told the same story twice.
   if (data.mcpText) {
     lines.push({ kind: "badge", text: headerValue(data.mcpText, width), token: data.mcpToken });
   }
