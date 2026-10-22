@@ -28,6 +28,71 @@ before drafting and then executing the resulting plan in the same session (`hugi
 does not even have to be a git repository yet: `run`/`plan`/`live` bootstrap one (`git init -b main`,
 a default `.gitignore` and a bootstrap commit) unless `--no-git-init` asks them to fail instead.
 
+## Why the gates
+
+The phases are not new: spec-first work, stage gates, a definition of done and a mandatory review are
+decades old. What is unusual here is that **a gate can actually stop the delivery**, and that it
+leaves an artifact you can check afterwards.
+
+Every phase ends with a verdict, and the verdict is *parsed*, not read: `pass`, `warning` or
+`blocked`. The rules that make it fail closed:
+
+- **No marker, no pass.** A report that does not carry its machine-readable line is `blocked`. An
+  agent that forgets to report cannot pass by omission.
+- **The synthesis may escalate, never downgrade.** `VALIDATE_STEP` runs the qa, spec-auditor and
+  security audits independently, derives the gate from the three, and rewrites the report so the
+  verdict it computed is the one that survives.
+- **Auditors cannot edit.** `SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK` and `REVIEW` are
+  read-only: the working tree is hashed before and after, and a phase whose signature changed is
+  `blocked` — whatever its report says.
+- **A broken contract stops the gate.** A TypeScript execution-contract violation short-circuits to
+  `blocked`; it never softens into a warning because the model seemed confident.
+
+### The receipt
+
+`--profile sdd`, `rdd` or `strict-tdd` (the default `huginn` profile writes no receipt) pins each
+iteration to `.huginn/receipts/`: the base commit, the resulting commit, the **tree hash that was
+verified** and every phase's verdict. That is the difference between *the agent said the tests
+passed* and *this exact tree, at this hash, was verified with these verdicts*:
+
+```json
+{
+  "profile": "sdd",
+  "evidence": "receipt",
+  "iteration": 3,
+  "title": "Checkout flow with Stripe",
+  "baseCommit": "1b67592",
+  "headCommit": "46776f6227e418aa7ef2604806607b346399c2d4",
+  "treeHash": "7dbf0bcdd17e9ab155a4c041920995846d7f657ceef306b8e59d461b353ee36a",
+  "verdicts": [
+    { "phase": "SPEC_AUDIT", "verdict": "pass" },
+    { "phase": "EXECUTE", "verdict": "pass" },
+    { "phase": "VALIDATE_STEP", "verdict": "pass" },
+    { "phase": "TEST_MODULE", "verdict": "pass" },
+    { "phase": "SECURE_CHECK", "verdict": "warning" },
+    { "phase": "REVIEW", "verdict": "pass" },
+    { "phase": "DOC_SYNC", "verdict": "pass" },
+    { "phase": "COMMIT_ALL", "verdict": "pass" }
+  ],
+  "createdAt": "2026-10-22T19:40:00.000Z"
+}
+```
+
+*Example written by the engine's own `buildIterationReceipt`: the shape, the field order and the
+tree hash of this repository are real; the iteration and its verdicts are a scripted sample.*
+
+### What this is not
+
+- **Not a new methodology.** [Spec-driven development](https://github.com/github/spec-kit) tells you
+  what to write; Huginn runs it and refuses to commit when the gate fails. They compose; they do not
+  compete.
+- **Not a security guarantee.** The security phase is an audit by a model, not a scanner. A green
+  gate means the process ran, not that the code is safe.
+- **Not free.** Evidence is opt-in because profiles with a receipt cost an extra hash and a file per
+  iteration.
+
+The claim is deliberately narrow: the process leaves evidence, and the evidence is checkable.
+
 ## Requirements
 
 - [Bun](https://bun.sh) >= 1.0 (runtime)
