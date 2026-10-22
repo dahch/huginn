@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.0-rc.2
+
+**Renumbered from 3.0.0-rc.1.** No code changed in the renumbering. `1.2.0` is the last stable, the
+`2.0.0-rc.1` line never shipped a final, and the SDK rewrite is one breaking change — so it lands on
+`2.0.0` instead of skipping past a major that never existed. `3.0.0-rc.1` stays on npm as a
+deprecated artifact until the account can unpublish it.
+
+Two fixes since that prerelease:
+
+- `huginn --version` answers instead of starting the live console.
+- The model the engine asks for is the model that runs: `pi` switches per prompt with
+  `session.setModel(model, { persist: false })`, `claude` passes it to each turn's query, and
+  `codex` says it cannot (its SDK fixes the model per thread).
+
 ## 3.0.0-rc.1
 
 The SDK rewrite. Huginn stops driving thirteen agent CLIs and starts executing the runtimes it can
