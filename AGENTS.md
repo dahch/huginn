@@ -207,6 +207,14 @@ and is imported only by its own adapter. `interrupt` is real (an AbortController
 approvals need `canUseTool`, which huginn does not feed yet, so `ask|deny` keeps failing closed, and
 streaming, resume and the catalog are declared false.
 
+**The model is requested per prompt, not per session.** The engine asks for the thinker on a fix
+and the executor on everything else, and a driver that drops that request runs whatever the tool has
+configured — which is how the TUI came to show one model while the API billed another. `pi` switches
+with `session.setModel(model, { persist: false })` (session-only: it never rewrites the model the user
+configured in pi), `claude` passes it to each turn's query, and `codex` cannot: its SDK fixes the model
+when the thread starts, so it ignores the request and the thread keeps its own. That last one is a
+known gap, recorded next to the code.
+
 All three SDKs are `--external` in the build, so pi, codex and claude stay out of the bundle.
 
 A driver *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and

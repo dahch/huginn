@@ -12,6 +12,9 @@ function fakeHandle(overrides: Partial<PiSessionHandle> = {}): PiSessionHandle {
     async prompt(text: string) {
       return `pi says: ${text}`;
     },
+    async setModel() {
+      /* recorded by the test when it matters */
+    },
     async interrupt() {
       /* recorded by the test when it matters */
     },
@@ -145,5 +148,42 @@ describe("pi SDK driver specifics", () => {
     expect(port.resolveModel("claude-opus-4-5").ok).toBe(false);
     expect(port.resolveModel("/claude").ok).toBe(false);
     expect(port.resolveModel("anthropic/").ok).toBe(false);
+  });
+});
+
+describe("pi driver · the model the engine asks for is the model that runs", () => {
+  it("switches the session model on every prompt that names one", async () => {
+    const setModel = vi.fn(async () => {});
+    const port = createPiSdkPort(
+      fakeAdapter({ async createSession() { return fakeHandle({ setModel }); } }),
+    );
+    const session = await port.createSession({ title: "t" });
+    await session.prompt({ text: "audit", model: "anthropic/claude-opus-4-5" });
+    await session.prompt({ text: "execute", model: "deepseek/deepseek-v4-pro" });
+    expect(setModel.mock.calls.map((c) => c[0])).toEqual([
+      "anthropic/claude-opus-4-5",
+      "deepseek/deepseek-v4-pro",
+    ]);
+  });
+
+  it("leaves pi's own setting alone when the prompt names no model", async () => {
+    const setModel = vi.fn(async () => {});
+    const port = createPiSdkPort(
+      fakeAdapter({ async createSession() { return fakeHandle({ setModel }); } }),
+    );
+    const session = await port.createSession({ title: "t" });
+    await session.prompt({ text: "hola" });
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  it("fails loudly instead of running the wrong model when it cannot switch", async () => {
+    const handle = fakeHandle();
+    delete handle.setModel;
+    const port = createPiSdkPort(fakeAdapter({ async createSession() { return handle; } }));
+    const session = await port.createSession({ title: "t" });
+    await expect(session.prompt({ text: "x", model: "deepseek/deepseek-v4-pro" })).rejects.toThrow(
+      /cannot switch models per prompt/,
+    );
+    expect((await Promise.resolve(true))).toBe(true);
   });
 });

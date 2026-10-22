@@ -84,6 +84,10 @@ export function createCodexSdkPort(adapter: CodexSdkAdapter = createDefaultCodex
     },
 
     async createSession(options: RuntimeSessionOptions): Promise<RuntimeSession> {
+      // Known gap: the SDK fixes the model when the thread starts and offers no
+      // per-turn override. Switching mid-session would need a new thread and would
+      // drop the conversation, so `request.model` is ignored here. The pi and claude
+      // drivers do honour it (setModel / run(prompt, model)).
       const thread = await adapter.startThread({ model: options.model });
       const sink = options.sink;
       // The provider id is null until the first turn, so huginn's handle is its

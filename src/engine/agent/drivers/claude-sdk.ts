@@ -10,7 +10,8 @@ import type {
 
 /** One Claude Code turn, as huginn needs it. */
 export interface ClaudeTurnHandle {
-  run(prompt: string): Promise<string>;
+  /** `model` overrides the one the turn was started with, per prompt. */
+  run(prompt: string, model?: string): Promise<string>;
   abort(): void;
 }
 
@@ -80,7 +81,9 @@ export function createClaudeSdkPort(adapter: ClaudeSdkAdapter = createDefaultCla
         resumable: false,
         async prompt(request) {
           try {
-            const text = await turn.run(request.text);
+            // Each turn is its own query, so the model the engine asks for is
+            // applied without restarting the session (and without persisting it).
+            const text = await turn.run(request.text, request.model);
             const result = { messageId: `${id}:last`, text };
             if (text) sink?.({ type: "text", text });
             sink?.({ type: "done", result });
@@ -119,12 +122,12 @@ export function createDefaultClaudeAdapter(): ClaudeSdkAdapter {
         abort() {
           controller.abort();
         },
-        async run(prompt: string) {
+        async run(prompt: string, overrideModel?: string) {
           const stream = query({
             prompt,
             options: {
               cwd,
-              model,
+              model: overrideModel ?? model,
               abortController: controller,
             },
           });
