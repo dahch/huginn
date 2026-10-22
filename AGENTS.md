@@ -238,6 +238,27 @@ bun run dev -- ...     # run from source, e.g.
 bun run build          # bun build src/cli.ts --target=bun --outdir=dist --minify
 ```
 
+### Releasing
+
+A tag **is** the release: `publish.yml` publishes to npm, then builds the GitHub release from the
+version's `CHANGELOG.md` section. So the changelog entry must exist before the tag, and the tag message
+is written from that same section — never typed by hand, or `git show` and the release page end up
+telling different stories:
+
+```sh
+# 1. the changelog entry is the release notes
+$EDITOR CHANGELOG.md
+git commit -am "chore(release): X.Y.Z"
+
+# 2. the tag carries the same text
+git tag -a vX.Y.Z -F <(awk -v v=X.Y.Z '$0=="## "v{p=1;next} p&&/^## /{exit} p' CHANGELOG.md)
+git push origin vX.Y.Z
+```
+
+Re-tagging to fix a message is safe: the publish step **skips** when the version is already on npm,
+and the release job **updates** the existing page instead of failing or skipping. Republishing a
+version stays impossible, on purpose.
+
 **Muninn lives in its own repository** ([dahch/muninn](https://github.com/dahch/muninn)) and is
 consumed as `@dahch/muninn` — the database, service, AST indexer, MCP server and TypeScript
 contract verifier are all there, with their own test suite (`test/muninn/**` and
