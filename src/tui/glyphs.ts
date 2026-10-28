@@ -56,6 +56,7 @@ const PHASE_GLYPHS: Record<string, string> = {
   EXECUTE: ">",
   VALIDATE_STEP: "=",
   TEST_MODULE: "%",
+  VERIFY: "V",
   SECURE_CHECK: "#",
   REVIEW: "@",
   DOC_SYNC: "~",

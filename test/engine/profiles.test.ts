@@ -22,6 +22,7 @@ const IMPLEMENTED: PhaseName[] = [
   "EXECUTE",
   "VALIDATE_STEP",
   "TEST_MODULE",
+  "VERIFY",
   "SECURE_CHECK",
   "REVIEW",
   "DOC_SYNC",
@@ -29,10 +30,10 @@ const IMPLEMENTED: PhaseName[] = [
 ];
 
 describe("methodology profiles (REQ-36 / ADR-35)", () => {
-  it("defaults to the Huginn Cycle and keeps its pipeline unchanged", () => {
+  it("defaults to the Huginn Cycle and runs the deterministic VERIFY phase", () => {
     expect(DEFAULT_PROFILE).toBe("huginn");
-    // The default profile *is* the pipeline Huginn always ran: eight phases, in
-    // order. If this changes, the default behaviour changed.
+    // The default profile is the Huginn Cycle plus the deterministic increment
+    // verification that runs before the commit.
     expect(phasesForProfile(undefined)).toEqual([
       "SPEC_AUDIT",
       "EXECUTE",
@@ -41,6 +42,7 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
       "SECURE_CHECK",
       "REVIEW",
       "DOC_SYNC",
+      "VERIFY",
       "COMMIT_ALL",
     ]);
     expect(profileSpec(undefined).name).toBe("Huginn Cycle");
@@ -49,8 +51,8 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
   it("defines the four alternative methodologies over the existing vocabulary", () => {
     expect(PROFILE_NAMES).toEqual(["huginn", "sdd", "odd", "rdd", "strict-tdd"]);
 
-    // ODD: lightweight — no heavy gates.
-    expect(phasesForProfile("odd")).toEqual(["EXECUTE", "TEST_MODULE", "COMMIT_ALL"]);
+    // ODD: lightweight — no heavy gates, but the increment is still verified.
+    expect(phasesForProfile("odd")).toEqual(["EXECUTE", "TEST_MODULE", "VERIFY", "COMMIT_ALL"]);
 
     // SDD: spec-first and archived through the docs.
     expect(phasesForProfile("sdd")[0]).toBe("SPEC_AUDIT");
@@ -61,6 +63,7 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
       "EXECUTE",
       "TEST_MODULE",
       "VALIDATE_STEP",
+      "VERIFY",
       "COMMIT_ALL",
     ]);
     expect(profileSpec("rdd").evidence).toBe("receipt");

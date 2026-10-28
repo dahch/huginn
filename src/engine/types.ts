@@ -12,6 +12,8 @@ export type PhaseName =
   | "FIX_VALIDATE"
   | "TEST_MODULE"
   | "FIX_TEST"
+  | "VERIFY"
+  | "FIX_VERIFY"
   | "SECURE_CHECK"
   | "FIX_SECURITY"
   | "REVIEW"
@@ -19,7 +21,7 @@ export type PhaseName =
   | "DOC_SYNC"
   | "COMMIT_ALL";
 
-/** The eight pipeline phases run once per iteration (FIX_* phases are excluded). */
+/** The pipeline phases run once per iteration (FIX_* phases are excluded). */
 export const MAIN_PHASES: PhaseName[] = [
   "SPEC_AUDIT",
   "EXECUTE",
@@ -28,6 +30,7 @@ export const MAIN_PHASES: PhaseName[] = [
   "SECURE_CHECK",
   "REVIEW",
   "DOC_SYNC",
+  "VERIFY",
   "COMMIT_ALL",
 ];
 

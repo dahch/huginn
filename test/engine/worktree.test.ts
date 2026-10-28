@@ -65,6 +65,9 @@ describe("WorktreeManager — sandbox creation (AC-17.2, AC-17.3)", () => {
     const root = freshRepo();
     fs.mkdirSync(path.join(root, "node_modules"));
     fs.writeFileSync(path.join(root, ".env"), "SECRET=1\n");
+    fs.mkdirSync(path.join(root, ".pi"));
+    fs.writeFileSync(path.join(root, ".pi", "mcp.json"), '{"mcpServers":{}}');
+    fs.mkdirSync(path.join(root, ".agents"));
     const mgr = new WorktreeManager(root);
 
     const sandbox = mgr.createSandbox(root, 1);
@@ -86,6 +89,13 @@ describe("WorktreeManager — sandbox creation (AC-17.2, AC-17.3)", () => {
     const env = path.join(sandbox.path, ".env");
     expect(fs.lstatSync(env).isSymbolicLink()).toBe(true);
     expect(fs.readlinkSync(env)).toBe(path.join(root, ".env"));
+
+    // The agent's project-scoped resources follow the iteration into the sandbox.
+    for (const entry of [".pi", ".agents"]) {
+      const link = path.join(sandbox.path, entry);
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(link)).toBe(path.join(root, entry));
+    }
   });
 
   it("does not symlink deps absent from the root", () => {
@@ -552,5 +562,177 @@ describe("WorktreeManager — discard & cleanup (AC-17.5)", () => {
     mgr.cleanupAll();
     // The sibling worktree is untouched; it was never treated as a sandbox.
     expect(fs.existsSync(sibling)).toBe(true);
+  });
+});
+
+describe("WorktreeManager — tracked local changes are parked before integration", () => {
+  it("parks an unstaged tracked modification and promotes the iteration", () => {
+    const root = freshRepo();
+    fs.writeFileSync(path.join(root, "file.txt"), "user local\n");
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 21);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(true);
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("iteration\n");
+    expect(res.backups).toHaveLength(1);
+    expect(fs.readFileSync(path.join(res.backups![0], "file.txt"), "utf8")).toBe("user local\n");
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(res.backups![0], "manifest.json"), "utf8"),
+    ) as { entries: Array<Record<string, unknown>> };
+    expect(manifest.entries).toContainEqual(
+      expect.objectContaining({
+        path: "file.txt",
+        kind: "file",
+        tracked: true,
+        staged: false,
+      }),
+    );
+    expect(statusClean(root)).toBe(true);
+  });
+
+  it("parks a staged tracked modification and promotes the iteration", () => {
+    const root = freshRepo();
+    fs.writeFileSync(path.join(root, "file.txt"), "user staged\n");
+    expect(git(root, ["add", "file.txt"]).code).toBe(0);
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 22);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(true);
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("iteration\n");
+    expect(fs.readFileSync(path.join(res.backups![0], "file.txt"), "utf8")).toBe("user staged\n");
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(res.backups![0], "manifest.json"), "utf8"),
+    ) as { entries: Array<Record<string, unknown>> };
+    expect(manifest.entries).toContainEqual(
+      expect.objectContaining({ path: "file.txt", tracked: true, staged: true }),
+    );
+    expect(statusClean(root)).toBe(true);
+  });
+
+  it("parks a tracked deletion and records it in the manifest", () => {
+    const root = freshRepo();
+    fs.rmSync(path.join(root, "file.txt"));
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 23);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(true);
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("iteration\n");
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(res.backups![0], "manifest.json"), "utf8"),
+    ) as { entries: Array<Record<string, unknown>> };
+    expect(manifest.entries).toContainEqual(
+      expect.objectContaining({ path: "file.txt", kind: "deleted", tracked: true }),
+    );
+    // The deletion has no content copy to inspect.
+    expect(fs.existsSync(path.join(res.backups![0], "file.txt"))).toBe(false);
+    expect(statusClean(root)).toBe(true);
+  });
+
+  it("restores a parked tracked modification with its staged state on conflict", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 24);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    // Diverge the primary on the same file, then add a staged local change on top.
+    fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
+    commitAll(root, "primary edit");
+    fs.writeFileSync(path.join(root, "file.txt"), "user staged\n");
+    expect(git(root, ["add", "file.txt"]).code).toBe(0);
+    const primaryHead = headCommit(root);
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(false);
+    expect(res.failure).toBe("conflict");
+    // The user's version and its staged state are both back.
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("user staged\n");
+    expect(git(root, ["diff", "--cached", "--name-only"]).stdout.trim()).toBe("file.txt");
+    expect(headCommit(root)).toBe(primaryHead);
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+    const backupRoot = path.join(root, ".huginn", "promotion-backup");
+    expect(fs.existsSync(backupRoot) ? fs.readdirSync(backupRoot).length : 0).toBe(0);
+  });
+
+  it("refuses a partially staged tracked file instead of losing the staged version", () => {
+    const root = freshRepo();
+    fs.writeFileSync(path.join(root, "file.txt"), "staged\n");
+    expect(git(root, ["add", "file.txt"]).code).toBe(0);
+    fs.writeFileSync(path.join(root, "file.txt"), "unstaged\n");
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 25);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(false);
+    expect(res.failure).toBe("failed");
+    expect(res.detail).toMatch(/partially staged/);
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("unstaged\n");
+    expect(git(root, ["diff", "--cached", "--name-only"]).stdout.trim()).toBe("file.txt");
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+  });
+
+  it("refuses a staged new file that collides with the iteration", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 26);
+    fs.writeFileSync(path.join(sandbox.path, "new.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+    fs.writeFileSync(path.join(root, "new.txt"), "user new\n");
+    expect(git(root, ["add", "new.txt"]).code).toBe(0);
+
+    const res = mgr.promoteSandbox(sandbox);
+
+    expect(res.promoted).toBe(false);
+    expect(res.failure).toBe("failed");
+    expect(res.detail).toMatch(/staged new file/);
+    expect(fs.readFileSync(path.join(root, "new.txt"), "utf8")).toBe("user new\n");
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+  });
+});
+
+describe("WorktreeManager — atomic increment checkpoint", () => {
+  it("commits pending changes and leaves the sandbox clean", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 1);
+
+    fs.writeFileSync(path.join(sandbox.path, "increment.txt"), "work\n");
+    const first = mgr.commitPendingChanges(sandbox, "chore: checkpoint");
+    expect(first.pending).toBe(true);
+    expect(first.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(statusClean(sandbox.path)).toBe(true);
+
+    // A second call is a no-op: COMMIT_ALL already left the tree clean.
+    expect(mgr.commitPendingChanges(sandbox, "again")).toEqual({ pending: false });
+  });
+
+  it("refuses to promote a dirty sandbox with no commits instead of deleting it", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 1);
+    fs.writeFileSync(path.join(sandbox.path, "increment.txt"), "work\n");
+
+    const result = mgr.promoteSandbox(sandbox);
+    expect(result.promoted).toBe(false);
+    expect(result.failure).toBe("failed");
+    expect(result.detail).toMatch(/uncommitted changes/);
+    // The only copy of the work is still on disk.
+    expect(fs.existsSync(path.join(sandbox.path, "increment.txt"))).toBe(true);
   });
 });

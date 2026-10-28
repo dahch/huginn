@@ -131,6 +131,8 @@ const PHASE_LABEL: Record<string, { label: string }> = {
   FIX_VALIDATE: { label: "Fix validation findings" },
   TEST_MODULE: { label: "Test module" },
   FIX_TEST: { label: "Fix test failures" },
+  VERIFY: { label: "Verify increment" },
+  FIX_VERIFY: { label: "Fix verification findings" },
   SECURE_CHECK: { label: "Secure check" },
   FIX_SECURITY: { label: "Fix security findings" },
   REVIEW: { label: "Code review" },

@@ -683,6 +683,7 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     manager: WorktreeManager;
     created: Sandbox[];
     promoted: Sandbox[];
+    checkpointed: Sandbox[];
     discarded: Sandbox[];
     cleaned: { count: number };
   }
@@ -692,6 +693,7 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     const real = new WorktreeManager(root);
     const created: Sandbox[] = [];
     const promoted: Sandbox[] = [];
+    const checkpointed: Sandbox[] = [];
     const discarded: Sandbox[] = [];
     const cleaned = { count: 0 };
     const manager = {
@@ -704,6 +706,10 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
         promoted.push(s);
         return real.promoteSandbox(s);
       },
+      commitPendingChanges: (s: Sandbox, message: string) => {
+        checkpointed.push(s);
+        return real.commitPendingChanges(s, message);
+      },
       discardSandbox: (s: Sandbox) => {
         discarded.push(s);
         real.discardSandbox(s);
@@ -713,7 +719,7 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
         return real.cleanupAll();
       },
     } as unknown as WorktreeManager;
-    return { manager, created, promoted, discarded, cleaned };
+    return { manager, created, promoted, checkpointed, discarded, cleaned };
   }
 
   it("creates a sandbox, runs phases against its path and promotes on success", async () => {
@@ -761,6 +767,8 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
 
     // Success promoted the sandbox and never discarded it.
     expect(spy.promoted).toEqual([sandbox]);
+    // The deterministic checkpoint ran before promotion (even when clean).
+    expect(spy.checkpointed).toEqual([sandbox]);
     expect(spy.discarded).toHaveLength(0);
     // Promotion removed the worktree from disk.
     expect(existsSync(sandbox.path)).toBe(false);
@@ -889,6 +897,7 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
         promotedCount++;
         return { promoted: false, method: "cherry-pick", commits: ["deadbeef"] };
       },
+      commitPendingChanges: () => ({ pending: false }),
       discardSandbox: () => {},
       cleanupAll: () => 0,
     } as unknown as WorktreeManager;
@@ -935,6 +944,7 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
         failure: "failed",
         detail: "could not park untracked file(s)",
       }),
+      commitPendingChanges: () => ({ pending: false }),
       discardSandbox: () => {
         discarded++;
       },

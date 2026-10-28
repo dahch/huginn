@@ -8,6 +8,7 @@ import {
   execute,
   validateStep,
   testModule,
+  verifyIteration,
   secureCheck,
   review,
   docSync,
@@ -122,6 +123,7 @@ const STEP_BY_PHASE: Partial<Record<PhaseName, PipelineStep>> = {
   EXECUTE: { phase: "EXECUTE", fn: execute, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
   VALIDATE_STEP: { phase: "VALIDATE_STEP", fn: validateStep, gate: "validate-step", fixPhase: "FIX_VALIDATE", fixLabel: "validation gate", blocking: true, readOnly: true },
   TEST_MODULE: { phase: "TEST_MODULE", fn: testModule, gate: "judge", fixPhase: "FIX_TEST", fixLabel: "test failures", blocking: true },
+  VERIFY: { phase: "VERIFY", fn: verifyIteration, gate: "none", fixPhase: "FIX_VERIFY", fixLabel: "verification", blocking: true },
   SECURE_CHECK: { phase: "SECURE_CHECK", fn: secureCheck, gate: "judge", fixPhase: "FIX_SECURITY", fixLabel: "security audit", blocking: true, readOnly: true },
   REVIEW: { phase: "REVIEW", fn: review, gate: "judge", fixPhase: "FIX_REVIEW", fixLabel: "code review", blocking: true, readOnly: true },
   DOC_SYNC: { phase: "DOC_SYNC", fn: docSync, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
@@ -344,6 +346,16 @@ export class CycleEngine {
       throw new Error(`"${this.cfg.projectPath}" is not a git repository.`);
     }
 
+    if (!this.cfg.sandbox) {
+      events.emit("log", {
+        level: "warn",
+        message:
+          "[huginn] in-place execution: stopping mid-iteration can leave a partial working tree; " +
+          "use the sandbox (default) for atomic increments",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     // Best-effort: reclaim worktrees (and orphaned branches) left behind by a
     // previous interrupted run before creating this run's sandboxes.
     if (this.sandboxingEnabled()) {
@@ -544,6 +556,7 @@ export class CycleEngine {
         baseCommit,
         profilePreamble: profilePreamble(this.cfg.profile),
         phaseTimeoutMs: this.cfg.phaseTimeoutMs,
+        verify: this.cfg.verify !== false,
       };
 
       // resume point: only meaningful when resuming the exact iteration we are on.
@@ -605,6 +618,35 @@ export class CycleEngine {
         this.persist();
       }
 
+      // Atomic increment: promotion integrates *commits*, so a successful
+      // iteration must never reach promoteSandbox with uncommitted work. The
+      // agent's COMMIT_ALL phase normally leaves a clean tree; this checkpoint is
+      // the deterministic backstop when it did not (or the profile has no commit
+      // phase). Without it, a dirty sandbox with zero commits was discarded
+      // silently.
+      if (sandbox && !this.abortRequested && !this.cfg.onlyPhase) {
+        try {
+          const checkpoint = this.getWorktrees().commitPendingChanges(
+            sandbox,
+            `chore(iter-${iteration.index}): checkpoint — ${sanitizeTerminalText(iteration.title)}`,
+          );
+          if (checkpoint.commit) {
+            events.emit("log", {
+              level: "info",
+              message: `[huginn] iteration ${iteration.index}: checkpoint commit ${checkpoint.commit.slice(0, 12)}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } catch (err) {
+          // Keep the worktree: it holds the only copy of the iteration's work.
+          settled = true;
+          throw new Error(
+            `Could not checkpoint iteration ${iteration.index}: ${(err as Error).message}. ` +
+              `The sandbox was preserved at ${sandbox.path}.`,
+          );
+        }
+      }
+
       // Write the receipt *before* promotion so it pins the verified tree.
       const receipt = buildIterationReceipt({
         profile: this.cfg.profile,
@@ -653,7 +695,7 @@ export class CycleEngine {
         settled = true;
         const backupNote =
           result.backups && result.backups.length > 0
-            ? ` (untracked file(s) parked under ${result.backups.join(", ")})`
+            ? ` (local change(s) parked under ${result.backups.join(", ")})`
             : "";
         if (result.promoted) {
           this.state.promotion = {
@@ -696,7 +738,8 @@ export class CycleEngine {
             `Sandbox promotion for iteration ${iteration.index} ${
               kind === "failed" ? "failed" : "conflicted"
             }. The primary tree is intact and branch ${sandbox.branch} holds the iteration's work; ` +
-              `recover it with \`git log ${sandbox.branch}\` (a re-run renames it under huginn/preserved/ rather than deleting it).${reason}`,
+              `recover it with \`git log ${sandbox.branch}\` (a re-run renames it under huginn/preserved/ rather than deleting it). ` +
+              `If the reason names a partially staged or staged-new file, commit, unstage or stash it before re-running; tracked local changes are parked automatically, and the iteration's commits stay safe on the branch.${reason}`,
           );
         } else {
           this.state.promotion = { status: "none", branch: sandbox.branch };

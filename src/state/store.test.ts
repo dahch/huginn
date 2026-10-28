@@ -211,7 +211,7 @@ describe("harness state store", () => {
     s.history.push({ ...base, iteration: 1, phase: "SPEC_AUDIT", attempt: 1, verdict: "pass", summary: "ok" });
     s.history.push({ ...base, iteration: 1, phase: "FIX_SPEC", attempt: 1, verdict: "pass", summary: "fix" });
     const content = readFileSync(renderProgressMarkdown(dir, s), "utf8");
-    expect(content).toContain("Phase progress: 1/8");
+    expect(content).toContain("Phase progress: 1/9");
   });
 
   /**

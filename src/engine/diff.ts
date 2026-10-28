@@ -302,6 +302,11 @@ export function gitBounded(
   }
 }
 
+/** Extra environment for one git call (identity for harness-authored commits). */
+export interface GitRunOptions {
+  env?: Record<string, string | undefined>;
+}
+
 /**
  * Run `git <args>` in `projectPath`, with the global hardening and the
  * write/exec escape-hatch screen applied.
@@ -319,7 +324,11 @@ export function gitBounded(
  * A clean `-c`-carrying call site must use the flag git provides for it instead
  * (see `gitRepo`'s `commit --no-gpg-sign`).
  */
-export function git(projectPath: string, args: string[]): { stdout: string; stderr: string; code: number } {
+export function git(
+  projectPath: string,
+  args: string[],
+  options: GitRunOptions = {},
+): { stdout: string; stderr: string; code: number } {
   const forbidden = forbiddenGitArgRejectionReason(args);
   if (forbidden) {
     events.emit("log", {
@@ -335,6 +344,7 @@ export function git(projectPath: string, args: string[]): { stdout: string; stde
     try {
       const res = Bun.spawnSync(["git", ...safeArgs], {
         cwd: projectPath,
+        env: { ...process.env, ...(options.env ?? {}) },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -355,6 +365,7 @@ export function git(projectPath: string, args: string[]): { stdout: string; stde
   try {
     const res = child_process.spawnSync("git", safeArgs, {
       cwd: projectPath,
+      env: { ...process.env, ...(options.env ?? {}) },
       encoding: "utf-8",
     });
     const errorMsg = res.error ? String(res.error) : "";

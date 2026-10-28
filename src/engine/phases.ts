@@ -28,6 +28,7 @@ import {
   type ValidateStepReports,
 } from "./steps/index.js";
 import { parseSpecAuditVerdict } from "./gate";
+import { formatVerificationReport, runVerification } from "./verify.js";
 import type { Verdict } from "./types";
 
 /**
@@ -64,6 +65,8 @@ export interface PhaseContext extends StepContext {
    */
   primaryProjectRoot?: string;
   phaseTimeoutMs: number;
+  /** `false` disables the deterministic `VERIFY` phase (`--no-verify`). */
+  verify?: boolean;
 }
 
 /** The sandbox-scoped directory every prompt should run against. */
@@ -122,6 +125,62 @@ export async function execute(ctx: PhaseContext): Promise<PromptResult> {
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
+}
+
+/**
+ * `VERIFY` — deterministic proof that the increment works.
+ *
+ * The plan declares one or more non-interactive commands; huginn runs them in the
+ * iteration's sandbox and gates on the real exit codes, so "it works" is not a
+ * model's opinion. A plan without `Verification:` stays compatible: the phase
+ * passes with a note and the existing QA/validation gates apply.
+ */
+export async function verifyIteration(ctx: PhaseContext): Promise<PhaseOutput> {
+  const commands = ctx.iteration.verification ?? [];
+  const disabled =
+    ctx.verify === false
+      ? "Verification is disabled for this run (`--no-verify` / `verify: false`)."
+      : undefined;
+
+  if (commands.length === 0) {
+    return {
+      messageId: "verification",
+      text: [
+        `# Verification — Iteration ${ctx.iteration.index}`,
+        "",
+        disabled ?? "No `Verification:` commands were declared by this plan.",
+        "The increment is gated by the existing QA / validation phases instead.",
+        "",
+        "### Verification status: PASS (nothing to run)",
+      ].join("\n"),
+      authoritativeVerdict: "pass",
+    };
+  }
+
+  if (disabled) {
+    return {
+      messageId: "verification",
+      text: [
+        `# Verification — Iteration ${ctx.iteration.index}`,
+        "",
+        disabled,
+        `${commands.length} command(s) were declared but not executed.`,
+        "",
+        "### Verification status: PASS (disabled)",
+      ].join("\n"),
+      authoritativeVerdict: "pass",
+    };
+  }
+
+  const result = await runVerification(commands, {
+    cwd: ctx.projectPath,
+    timeoutMs: ctx.phaseTimeoutMs,
+  });
+  return {
+    messageId: "verification",
+    text: formatVerificationReport(ctx.iteration, result),
+    authoritativeVerdict: result.ok ? "pass" : "blocked",
+  };
 }
 
 const EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build"]);

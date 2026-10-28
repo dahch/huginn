@@ -67,6 +67,7 @@ export const PROFILES: Record<ProfileName, ProfileSpec> = {
       "SECURE_CHECK",
       "REVIEW",
       "DOC_SYNC",
+      "VERIFY",
       "COMMIT_ALL",
     ],
     evidence: "none",
@@ -75,7 +76,7 @@ export const PROFILES: Record<ProfileName, ProfileSpec> = {
     id: "sdd",
     name: "Spec-Driven Development",
     description: "Proposal → spec → design → tasks → apply → verify → archive",
-    phases: ["SPEC_AUDIT", "EXECUTE", "VALIDATE_STEP", "TEST_MODULE", "REVIEW", "DOC_SYNC", "COMMIT_ALL"],
+    phases: ["SPEC_AUDIT", "EXECUTE", "VALIDATE_STEP", "TEST_MODULE", "REVIEW", "DOC_SYNC", "VERIFY", "COMMIT_ALL"],
     evidence: "receipt",
     preamble:
       "Work spec-first: before writing code, state the proposal, the spec deltas, the design " +
@@ -86,7 +87,7 @@ export const PROFILES: Record<ProfileName, ProfileSpec> = {
     id: "odd",
     name: "Organic-Driven Development",
     description: "Lightweight daily changes — implement, test, commit",
-    phases: ["EXECUTE", "TEST_MODULE", "COMMIT_ALL"],
+    phases: ["EXECUTE", "TEST_MODULE", "VERIFY", "COMMIT_ALL"],
     evidence: "none",
     preamble:
       "Keep this small and direct: make the change, run the tests, commit. Do not invent spec " +
@@ -96,14 +97,14 @@ export const PROFILES: Record<ProfileName, ProfileSpec> = {
     id: "rdd",
     name: "Receipt-Driven Development",
     description: "Implement, test, gate, and freeze a receipt the commit references",
-    phases: ["EXECUTE", "TEST_MODULE", "VALIDATE_STEP", "COMMIT_ALL"],
+    phases: ["EXECUTE", "TEST_MODULE", "VALIDATE_STEP", "VERIFY", "COMMIT_ALL"],
     evidence: "receipt",
   },
   "strict-tdd": {
     id: "strict-tdd",
     name: "Strict TDD",
     description: "Tests first, then implement, with a frozen worktree snapshot as evidence",
-    phases: ["TEST_MODULE", "EXECUTE", "TEST_MODULE", "VALIDATE_STEP", "COMMIT_ALL"],
+    phases: ["TEST_MODULE", "EXECUTE", "TEST_MODULE", "VALIDATE_STEP", "VERIFY", "COMMIT_ALL"],
     evidence: "snapshot",
     testFirst: true,
     preamble:

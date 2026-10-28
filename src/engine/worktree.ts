@@ -39,9 +39,10 @@ export interface PromoteResult {
   /** Commit SHAs that were (or were meant to be) integrated. */
   commits: string[];
   /**
-   * Backup directory holding the untracked files that had to be moved aside so
-   * the integration could proceed (ADR-48 / AC-49.1). Present only when at least
-   * one file was parked.
+   * Backup directory holding the local changes (untracked files or tracked
+   * files with local modifications) that had to be moved aside so the
+   * integration could proceed (ADR-48 / AC-49.1). Present only when at least one
+   * path was parked; `manifest.json` inside records what it holds.
    */
   backups?: string[];
   /** Why an integration failed, sanitized, when `promoted` is false. */
@@ -57,7 +58,8 @@ export interface PromoteResult {
 
 /**
  * `<root>/.huginn/promotion-backup/<stamp>` — where {@link WorktreeManager} parks
- * untracked files that an integration would otherwise overwrite (ADR-48).
+ * local files (untracked or tracked-modified) that an integration would
+ * otherwise overwrite (ADR-48).
  *
  * The directory is screened with the shared containment helper before use and
  * carries a self-ignoring `.gitignore`, so parked content cannot be committed
@@ -77,10 +79,39 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** A parked untracked file, and whether it was a symlink (restore it as one). */
+/** NUL-separated `--name-only -z` output as a set (git never C-quotes it). */
+function pathSet(result: { stdout: string }): Set<string> {
+  return new Set(result.stdout.split("\0").filter((rel) => rel.length > 0));
+}
+
+/**
+ * A path huginn may park: relative, inside the project, and never one of its own
+ * state directories (whose contents are not part of an iteration's work).
+ */
+function isParkablePath(rel: string): boolean {
+  return (
+    rel.length > 0 &&
+    !rel.startsWith("/") &&
+    !rel.startsWith("..") &&
+    !rel.startsWith(".huginn/") &&
+    !rel.startsWith(".harness/")
+  );
+}
+
+/**
+ * One parked collision.
+ *
+ * `tracked` entries were reset to `HEAD` (index and worktree) so the integration
+ * could proceed; `staged` records whether the user's version was staged, so the
+ * rollback can reproduce the index state. `deleted` means the user's change was
+ * a deletion and there is no content copy (the manifest is the record).
+ */
 interface ParkedEntry {
   rel: string;
   link: boolean;
+  tracked?: boolean;
+  staged?: boolean;
+  deleted?: boolean;
 }
 
 /**
@@ -131,15 +162,87 @@ function parkEntry(root: string, dir: string, rel: string): ParkedEntry {
 }
 
 /**
+ * Move one **tracked** modified file aside and reset its index + worktree to
+ * `HEAD`, so `git merge`/`cherry-pick` can integrate the branch. The user's
+ * version is copied to the backup (or recorded as a deletion) first; a failure to
+ * reset puts it back before throwing.
+ *
+ * Only paths that exist in `HEAD` are passed here: a staged *new* file is a
+ * different case (and a partial stage is refused by the caller), so this function
+ * never runs `git restore` against a path `HEAD` does not know.
+ */
+function parkTrackedEntry(
+  root: string,
+  dir: string,
+  rel: string,
+  staged: boolean,
+): ParkedEntry {
+  const source = join(root, rel);
+  const stat = lstatOrUndefined(source);
+  let link = false;
+  let deleted = false;
+
+  if (!stat) {
+    deleted = true;
+  } else {
+    const target = join(dir, rel);
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    if (stat.isSymbolicLink()) {
+      link = true;
+      symlinkSync(readlinkSync(source), target);
+    } else if (stat.isFile()) {
+      copyFileSync(source, target);
+      chmodSync(target, stat.mode & 0o777);
+    } else {
+      throw new Error(`not a regular file`);
+    }
+  }
+
+  return { rel, link, tracked: true, staged, deleted };
+}
+
+/**
+ * Reset one parked tracked path (index + worktree) to `HEAD`.
+ *
+ * Called only after its backup entry is already in the caller's `parked` list,
+ * so a failure here still rolls the path back through the normal restore path
+ * instead of leaving its backup orphaned for cleanup to delete.
+ */
+function resetTrackedEntry(root: string, rel: string): void {
+  const reset = git(root, [
+    "restore",
+    "--source=HEAD",
+    "--staged",
+    "--worktree",
+    "--",
+    rel,
+  ]);
+  if (reset.code !== 0) {
+    throw new Error(reset.stderr || reset.stdout || `could not reset ${rel}`);
+  }
+}
+
+/**
  * Put one parked file back where it was, preserving its exact form. **Throws**
  * when the backup copy is missing, so the caller counts the restore as failed and
  * keeps the backup directory instead of silently dropping it.
  */
 function restoreEntry(root: string, dir: string, entry: ParkedEntry): void {
+  const target = join(root, entry.rel);
+
+  // A tracked deletion has no content copy: the restore is the deletion itself.
+  if (entry.tracked && entry.deleted) {
+    rmSync(target, { recursive: true, force: true });
+    if (entry.staged) {
+      const staged = git(root, ["rm", "--cached", "--", entry.rel]);
+      if (staged.code !== 0) throw new Error(staged.stderr || staged.stdout);
+    }
+    return;
+  }
+
   const source = join(dir, entry.rel);
   const stat = lstatOrUndefined(source);
   if (!stat) throw new Error(`backup copy for ${entry.rel} is missing`);
-  const target = join(root, entry.rel);
   mkdirSync(dirname(target), { recursive: true });
   rmSync(target, { recursive: true, force: true });
   if (entry.link) {
@@ -149,6 +252,33 @@ function restoreEntry(root: string, dir: string, entry: ParkedEntry): void {
     // `copyFileSync` creates with the ambient umask, so restore the mode too.
     chmodSync(target, stat.mode & 0o777);
   }
+
+  if (entry.tracked && entry.staged) {
+    const staged = git(root, ["add", "--", entry.rel]);
+    if (staged.code !== 0) throw new Error(staged.stderr || staged.stdout);
+  }
+}
+
+/**
+ * A human-readable record of what a successful promotion parked. The files
+ * themselves are the backup; this manifest also covers a tracked **deletion**,
+ * which has no content copy to inspect.
+ */
+function writeParkingManifest(dir: string, entries: ParkedEntry[]): void {
+  const manifest = {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    entries: entries.map((entry) => ({
+      path: entry.rel,
+      kind: entry.deleted ? "deleted" : entry.link ? "symlink" : "file",
+      tracked: entry.tracked === true,
+      staged: entry.staged === true,
+    })),
+  };
+  writeFileSync(join(dir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
+    mode: 0o600,
+    flag: "w",
+  });
 }
 
 /** Domain error raised for fail-closed worktree operations. */
@@ -159,8 +289,15 @@ export class WorktreeError extends Error {
   }
 }
 
-/** Shared dependency entries symlinked from the project root into a sandbox. */
-const SHARED_DEPS = ["node_modules", ".env"] as const;
+/**
+ * Shared resource entries symlinked from the project root into a sandbox.
+ *
+ * `node_modules`/`.env` keep the iteration runnable; `.pi`/`.agents` keep the
+ * agent's own project-scoped resources (MCP servers and skills for the
+ * in-process pi driver) available even when they are untracked and therefore
+ * absent from a worktree created from HEAD.
+ */
+const SHARED_DEPS = ["node_modules", ".env", ".pi", ".agents"] as const;
 
 /** Branch name for a given iteration: `huginn/task-iter-<N>`. */
 export function sandboxBranch(iteration: number): string {
@@ -247,6 +384,58 @@ export class WorktreeManager {
   }
 
   /**
+   * Commit everything the iteration left in the sandbox, so a successful
+   * increment is always made of commits and cannot be discarded by
+   * {@link promoteSandbox}. Returns the new HEAD when it had to commit.
+   *
+   * The agent's `COMMIT_ALL` phase is expected to leave a clean tree; this is the
+   * deterministic backstop for the case where it did not (or where a profile has
+   * no commit phase). Fails closed with a {@link WorktreeError} when git refuses
+   * the commit, because promoting a dirty sandbox would silently lose work.
+   */
+  commitPendingChanges(
+    sandbox: Sandbox,
+    message: string,
+  ): { commit?: string; pending: boolean } {
+    const status = git(sandbox.path, ["status", "--porcelain"]);
+    if (status.code !== 0) {
+      throw new WorktreeError(
+        `Cannot inspect the sandbox for ${sandbox.branch}: ${status.stderr || status.stdout}`,
+      );
+    }
+    if (status.stdout.trim().length === 0) return { pending: false };
+
+    const add = git(sandbox.path, ["add", "-A"]);
+    if (add.code !== 0) {
+      throw new WorktreeError(
+        `Cannot stage the sandbox for ${sandbox.branch}: ${add.stderr || add.stdout}`,
+      );
+    }
+    const commit = git(
+      sandbox.path,
+      ["commit", "--no-gpg-sign", "-m", message],
+      {
+        // A missing git identity (or a configured signing key) must not lose a
+        // completed increment. This is a harness-authored checkpoint, so it
+        // carries the harness identity and never signs.
+        env: {
+          GIT_AUTHOR_NAME: "huginn",
+          GIT_AUTHOR_EMAIL: "huginn@localhost",
+          GIT_COMMITTER_NAME: "huginn",
+          GIT_COMMITTER_EMAIL: "huginn@localhost",
+        },
+      },
+    );
+    if (commit.code !== 0) {
+      throw new WorktreeError(
+        `Cannot commit the sandbox for ${sandbox.branch}: ${commit.stderr || commit.stdout}`,
+      );
+    }
+    const head = git(sandbox.path, ["rev-parse", "HEAD"]).stdout.trim();
+    return { commit: head || undefined, pending: true };
+  }
+
+  /**
    * Symlink `node_modules` and/or `.env` from the project root into the sandbox
    * when present at the root and absent in the sandbox. Never overwrites; any
    * failure is a non-fatal warning (Windows symlink privileges, etc.).
@@ -275,8 +464,9 @@ export class WorktreeManager {
    * the worktree and delete the ephemeral branch.
    *
    * Uses `git merge --ff-only` when possible, otherwise `git cherry-pick`. Before
-   * integrating, every **untracked** file the branch would overwrite is parked
-   * under `.huginn/promotion-backup/` — git refuses such a merge, which used to
+   * integrating, every local file the branch would overwrite — untracked **or**
+   * tracked with staged/unstaged changes — is parked under
+   * `.huginn/promotion-backup/` (with a `manifest.json`), which is what used to
    * strand a completed iteration silently (ADR-48). A failed cherry-pick is
    * aborted so the primary tree is left uncorrupted, every parked file is put
    * back, the worktree is removed but the branch is preserved for manual recovery
@@ -303,19 +493,34 @@ export class WorktreeManager {
     }
 
     if (commits.length === 0) {
+      const pending = git(sandbox.path, ["status", "--porcelain"]);
+      if (pending.code === 0 && pending.stdout.trim().length > 0) {
+        // The caller should have checkpointed first. Never delete the only copy
+        // of the iteration's work: report a failed promotion and keep the
+        // worktree for recovery.
+        return {
+          promoted: false,
+          method: "none",
+          commits,
+          failure: "failed",
+          detail:
+            "the sandbox has uncommitted changes and no commits to promote; " +
+            "run commitPendingChanges() first",
+        };
+      }
       this.removeWorktreeAndBranch(root, sandbox);
       return { promoted: false, method: "none", commits };
     }
 
-    // Resolve untracked collisions *before* integrating: `git merge --ff-only`
-    // refuses to overwrite a file the user has not committed, which is what
-    // stranded the iteration this ADR exists for.
-    const parked = this.parkUntrackedCollisions(root, sandbox);
+    // Resolve collisions *before* integrating: `git merge --ff-only` refuses to
+    // overwrite an untracked file **or** a tracked file with local changes, which
+    // is what stranded the iteration this ADR exists for.
+    const parked = this.parkCollisions(root, sandbox);
     if (parked.error) {
       // huginn could not safely move the colliding file(s): do not integrate, but
       // never discard the iteration either — the branch keeps the finished work
       // and the run reports a *failed* promotion (AC-49.2, AC-49.3, NFR-15).
-      // `parkUntrackedCollisions` has already rolled back; its `backups` is the
+      // `parkCollisions` has already rolled back; its `backups` is the
       // authoritative pointer to anything it could not put back (REV-002).
       this.removeWorktree(root, sandbox);
       return {
@@ -367,6 +572,17 @@ export class WorktreeManager {
     };
   }
 
+  /** Branch-changed paths, or an empty set when git could not answer. */
+  private branchFiles(root: string, sandbox: Sandbox): Set<string> {
+    const res = git(root, [
+      "diff",
+      "--name-only",
+      "-z",
+      `${sandbox.baseCommit}..${sandbox.branch}`,
+    ]);
+    return res.code === 0 ? pathSet(res) : new Set();
+  }
+
   /**
    * Untracked, non-ignored files in the primary tree that the sandbox branch would
    * add or modify — exactly the paths `git merge` refuses to overwrite
@@ -374,38 +590,84 @@ export class WorktreeManager {
    * artifacts, are dropped; `-z` is used so git never C-quotes a name.
    */
   private untrackedCollisions(root: string, sandbox: Sandbox): string[] {
+    const branchFiles = this.branchFiles(root, sandbox);
+    if (branchFiles.size === 0) return [];
     const untracked = git(root, ["ls-files", "-z", "--others", "--exclude-standard"]);
     if (untracked.code !== 0) return [];
-    const branchFiles = new Set(
-      git(root, ["diff", "--name-only", "-z", `${sandbox.baseCommit}..${sandbox.branch}`])
-        .stdout.split("\0")
-        .filter((rel) => rel.length > 0),
+    return [...pathSet(untracked)].filter(
+      (rel) => branchFiles.has(rel) && isParkablePath(rel),
     );
-    if (branchFiles.size === 0) return [];
-    return untracked.stdout
-      .split("\0")
-      .filter(
-        (rel) =>
-          rel.length > 0 &&
-          branchFiles.has(rel) &&
-          !rel.startsWith("/") &&
-          !rel.startsWith("..") &&
-          !rel.startsWith(".huginn/") &&
-          !rel.startsWith(".harness/"),
-      );
   }
 
   /**
-   * Move every colliding untracked file into `.huginn/promotion-backup/<stamp>/`,
-   * preserving it exactly, so the integration can proceed. Returns the backup
-   * directory (when anything moved) and a restore closure.
+   * Tracked files in the primary tree with local changes (staged or unstaged)
+   * that the branch also changes. These are the paths `git merge`/`cherry-pick`
+   * refuses with "Your local changes … would be overwritten".
+   *
+   * Partial staging and staged *new* files are reported as unsafe rather than
+   * parked: reproducing their exact index state would require copying index blobs,
+   * and a guess could lose the staged version. The caller then fails closed and
+   * leaves the commits on the branch, which is always recoverable.
+   */
+  private trackedCollisions(
+    root: string,
+    sandbox: Sandbox,
+  ): { conflicts: string[]; staged: Set<string>; unsupported: string[] } {
+    const branchFiles = this.branchFiles(root, sandbox);
+    if (branchFiles.size === 0) {
+      return { conflicts: [], staged: new Set(), unsupported: [] };
+    }
+
+    const staged = pathSet(git(root, ["diff", "--cached", "--name-only", "-z"]));
+    const unstaged = pathSet(git(root, ["diff", "--name-only", "-z"]));
+    const candidates = new Set(
+      [...staged, ...unstaged].filter(
+        (rel) => branchFiles.has(rel) && isParkablePath(rel),
+      ),
+    );
+
+    const conflicts: string[] = [];
+    const unsupported: string[] = [];
+    for (const rel of candidates) {
+      if (staged.has(rel) && unstaged.has(rel)) {
+        unsupported.push(`${rel} (partially staged)`);
+        continue;
+      }
+      const inHead = git(root, ["cat-file", "-e", `HEAD:${rel}`]).code === 0;
+      if (!inHead) {
+        // A staged new file is not recoverable through `git restore --source=HEAD`.
+        if (staged.has(rel)) unsupported.push(`${rel} (staged new file)`);
+        continue;
+      }
+      conflicts.push(rel);
+    }
+    return { conflicts, staged, unsupported };
+  }
+
+  /**
+   * Move every colliding untracked or tracked-modified file into
+   * `.huginn/promotion-backup/<stamp>/`, preserving it exactly, so the
+   * integration can proceed. Returns the backup directory (when anything moved)
+   * and a restore closure that puts every file (and its index state) back.
    *
    * Never throws: a failure is returned as {@link ParkedCollisions.error} after
    * putting back whatever already moved, so the caller can preserve the sandbox
    * instead of discarding a completed iteration (ADR-48, NFR-15).
    */
-  private parkUntrackedCollisions(root: string, sandbox: Sandbox): ParkedCollisions {
-    const collisions = this.untrackedCollisions(root, sandbox);
+  private parkCollisions(root: string, sandbox: Sandbox): ParkedCollisions {
+    const untracked = this.untrackedCollisions(root, sandbox);
+    const tracked = this.trackedCollisions(root, sandbox);
+    if (tracked.unsupported.length > 0) {
+      return {
+        restore: () => undefined,
+        error: sanitizeTerminalText(
+          `cannot park ${tracked.unsupported.join(", ")}: commit, unstage or stash ` +
+            `the file(s) before re-running; the iteration's commits are safe on ${sandbox.branch}`,
+        ),
+      };
+    }
+
+    const collisions = [...untracked, ...tracked.conflicts];
     if (collisions.length === 0) return { restore: () => undefined };
 
     // Never write (or `rm -rf`) through a link a cloned repository can ship: the
@@ -467,9 +729,17 @@ export class WorktreeManager {
       // Self-ignoring: parked content is never committed even on a project whose
       // `.gitignore` does not list `.huginn/`.
       writeFileSync(join(dir, ".gitignore"), "*\n", { mode: 0o600, flag: "w" });
-      for (const rel of collisions) {
+      for (const rel of untracked) {
         parked.push(parkEntry(root, dir, rel));
       }
+      for (const rel of tracked.conflicts) {
+        // Park first, then reset: if the reset fails, `putBack` still knows about
+        // this entry and restores it instead of deleting its backup.
+        const entry = parkTrackedEntry(root, dir, rel, tracked.staged.has(rel));
+        parked.push(entry);
+        resetTrackedEntry(root, rel);
+      }
+      writeParkingManifest(dir, parked);
     } catch (err) {
       // Name the backup whenever anything is still parked there, so a partial
       // rollback can never leave a user file stranded unannounced (NFR-15).
@@ -478,7 +748,7 @@ export class WorktreeManager {
         restore: () => undefined,
         backups: leftovers,
         error: sanitizeTerminalText(
-          `could not park untracked file(s) for ${sandbox.branch}: ${message(err)}`,
+          `could not park colliding file(s) for ${sandbox.branch}: ${message(err)}`,
         ),
       };
     }

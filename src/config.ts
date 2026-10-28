@@ -50,6 +50,8 @@ export interface RunConfig {
   ignorePlanChanges: boolean;
   chooseModel?: boolean;
   sandbox: boolean;
+  /** Run the plan's `Verification:` commands before promoting an increment. */
+  verify?: boolean;
 }
 
 /**
@@ -63,6 +65,8 @@ export interface UserConfig {
   agent?: string;
   mode?: "auto" | "supervised";
   profile?: ProfileName;
+  /** `false` disables running the plan's `Verification:` commands. */
+  verify?: boolean;
   [key: string]: unknown;
 }
 

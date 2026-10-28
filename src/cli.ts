@@ -212,6 +212,7 @@ Optional:
   --only-phase <name>   run a single phase per iteration (debugging)
   --sandbox             run each iteration in an isolated git worktree sandbox  (default)
   --no-sandbox          run iterations in place (disables worktree sandboxing)
+  --no-verify           do not run the plan's Verification: commands before promotion
   --resume              resume from saved state; errors if no saved state exists
   --force-restart       discard saved state and start over
   --ignore-plan-changes resume even if plan.md/spec.md/adr.md changed
@@ -255,6 +256,7 @@ const BOOLEAN_FLAGS = new Set([
   "--import",
   "--sandbox",
   "--no-sandbox",
+  "--no-verify",
   "--global",
   "--choose-model",
   "--skip-setup",
@@ -718,6 +720,7 @@ export async function main(argv: string[]): Promise<void> {
     ignorePlanChanges: Boolean(args["--ignore-plan-changes"]),
     chooseModel: Boolean(args["--choose-model"]),
     sandbox: !args["--no-sandbox"],
+    verify: args["--no-verify"] ? false : (layers.project.verify ?? layers.user.verify) !== false,
   };
 
   for (const [name, path] of [
@@ -1135,6 +1138,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     ignorePlanChanges: Boolean(args["--ignore-plan-changes"]),
     chooseModel: Boolean(args["--choose-model"]),
     sandbox: !args["--no-sandbox"],
+    verify: args["--no-verify"] ? false : (layers.project.verify ?? layers.user.verify) !== false,
   };
 
   if (!cfg.tui) {
