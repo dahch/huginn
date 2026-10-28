@@ -102,6 +102,17 @@ describe("StreamCard honesty modes (REQ-51)", () => {
     expect(output).not.toContain("waiting for agent stream");
   });
 
+  it("does not let a blank-only stream buffer hide the last phase report", () => {
+    const output = renderCard({
+      streamsOutput: false,
+      runtimeId: "pi",
+      lines: [""],
+      report: "phase report body",
+    });
+    expect(output).toContain("phase report body");
+    expect(output).not.toContain("waiting for agent stream");
+  });
+
   it("shows the idle state and names the runtime when there is nothing yet (AC-51.2/51.3)", () => {
     const output = renderCard({ streamsOutput: false, runtimeId: "commandcode" });
     expect(output).toContain("cannot stream live output");

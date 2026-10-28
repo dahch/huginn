@@ -185,7 +185,9 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
     const output = harness.output();
     expect(output).toContain("❯ /status");
     expect(output).not.toContain("▸");
-    expect(output).toContain("[Tab] Focus");
+    // With no stream content the footer no longer advertises a focus toggle that
+    // would be a no-op; the normal scroll/history hints are back.
+    expect(output).toContain("[PgUp/Dn] Scroll");
   });
 
   it("moves the highlight with the arrow keys", async () => {

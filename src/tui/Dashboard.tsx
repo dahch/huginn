@@ -34,6 +34,7 @@ const BASE_PHASES = [
   "SECURE_CHECK",
   "REVIEW",
   "DOC_SYNC",
+  "VERIFY",
   "COMMIT_ALL",
 ] as const;
 
@@ -657,6 +658,7 @@ function PipelineCard({
           (base === "SPEC_AUDIT" && key === "FIX_SPEC") ||
           (base === "VALIDATE_STEP" && key === "FIX_VALIDATE") ||
           (base === "TEST_MODULE" && key === "FIX_TEST") ||
+          (base === "VERIFY" && key === "FIX_VERIFY") ||
           (base === "SECURE_CHECK" && key === "FIX_SECURITY") ||
           (base === "REVIEW" && key === "FIX_REVIEW")
         ) {
@@ -778,7 +780,10 @@ export function StreamCard({
 }) {
   const displayLines = lines;
   const bodyBudget = Math.max(1, (height ?? 10) - 3);
-  const hasStream = displayLines.length > 0;
+  // A buffer that only holds the empty string (a phase that emitted nothing) is
+  // not a stream: treating it as one hid the last phase's report behind a blank
+  // row (REQ-51 / AC-51.1). This matches the live view's `hasStreamContent`.
+  const hasStream = displayLines.some((line) => line.trim().length > 0);
   const reportLines =
     !hasStream && report.trim().length > 0 ? report.trimEnd().split("\n") : [];
   const hasReport = reportLines.length > 0;
@@ -909,7 +914,7 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
         : req.kind === "draft-format"
           ? "⚠️ DECISION REQUIRED · Draft format violated"
           : req.kind === "post-cycle-live"
-            ? "🎉 CYCLE COMPLETE · Next Action"
+            ? "CYCLE FINISHED · Next Action"
             : isQuestion
               ? "❓ QUESTION FROM AGENT · Input required"
               : `⚠️ DECISION REQUIRED · Gate ${req.phase} (Iteration ${req.iteration})`;

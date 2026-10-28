@@ -212,6 +212,15 @@ describe("Composer history & adaptive panels (REQ-34, REQ-35)", () => {
     expect(h.output()).not.toContain("THINKING & LIVE AGENT STREAM");
   });
 
+  it("explains Tab when the stream panel is collapsed instead of silently ignoring it", async () => {
+    const h = await mountLive(createMockLive());
+    h.stdin.write("\t");
+    await tick(80);
+    h.unmount();
+    expect(h.output()).toContain("collapsed");
+    expect(h.output()).toContain("PgUp/PgDn");
+  });
+
   it("shows the agent-output panel once real stream content arrives (AC-35.2)", async () => {
     const h = await mountLive(createMockLive());
     events.emit("phaseStream", { text: "reasoning…" });
@@ -219,6 +228,25 @@ describe("Composer history & adaptive panels (REQ-34, REQ-35)", () => {
     h.unmount();
 
     expect(h.output()).toContain("THINKING & LIVE AGENT STREAM");
+  });
+
+  it("scrolls the conversation with PageUp while the composer is enabled", async () => {
+    const transcript = Array.from({ length: 60 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      text: `message ${index} `.repeat(4),
+    }));
+    const h = await mountLive(
+      createMockLive({ getTranscript: vi.fn().mockReturnValue(transcript) }),
+    );
+    await tick(120);
+
+    h.stdin.write("\u001B[5~"); // PageUp
+    await tick(80);
+    h.unmount();
+
+    // The composer still owns the text input, but the focused conversation card
+    // scrolls and says so.
+    expect(h.output()).toContain("▲ +");
   });
 
   it("keeps arrow-scrolling available on the focused stream card, not history (AC-34.3)", async () => {

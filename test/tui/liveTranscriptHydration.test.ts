@@ -68,7 +68,9 @@ async function submit(stdin: MockStdin, text: string): Promise<void> {
 }
 
 /** A cycle stub: enough for the `Dashboard` that takes over while it runs. */
-function cycleStub(run: () => Promise<void>): CycleEngine {
+function cycleStub(
+  run: () => Promise<{ reason: "completed" | "aborted" | "error"; error?: string } | void>,
+): CycleEngine {
   return {
     runtime: { name: "MockRuntime", id: "opencode" },
     getState: () => ({ currentIteration: 1, currentPhase: "EXECUTE" }),
@@ -76,7 +78,9 @@ function cycleStub(run: () => Promise<void>): CycleEngine {
     resume: vi.fn(),
     requestAbort: vi.fn(),
     resolveDecision: vi.fn(),
-    run,
+    // The real engine always resolves an outcome; a stub that omits it is a
+    // completed cycle, never a surprise failure.
+    run: async () => (await run()) ?? { reason: "completed" },
   } as unknown as CycleEngine;
 }
 
@@ -92,7 +96,10 @@ interface Fake {
  * `clearTranscript()` empties it in place, like the real one does.
  */
 function createFakeLive(
-  options: { transcript?: TranscriptTurn[]; run?: () => Promise<void> } = {},
+  options: {
+    transcript?: TranscriptTurn[];
+    run?: () => Promise<{ reason: "completed" | "aborted" | "error"; error?: string } | void>;
+  } = {},
 ): Fake {
   const transcript: TranscriptTurn[] = options.transcript ?? [];
   const live = {
@@ -234,6 +241,25 @@ describe("Live conversation rehydration (Phase 4D / REQ-2.3)", () => {
     expect(output).toContain("harden the parser");
     expect(output).toContain("Scope captured: harden the parser.");
     expect(output).not.toContain(EMPTY_CHAT_HINTS[0]!);
+  });
+
+  it("never reports a failed cycle as 'completed' in the post-cycle prompt", async () => {
+    const { live } = createFakeLive({
+      run: async () => ({ reason: "error", error: "promotion conflicted on README.md" }),
+    });
+    const harness = await mountLive(live);
+
+    await submit(harness.stdin, "/draft");
+    await tick(150);
+
+    expect(live.ask).toHaveBeenCalledTimes(1);
+    const request = (live.ask as unknown as { mock: { calls: Array<[Record<string, unknown>]> } })
+      .mock.calls[0]![0] as { message: string };
+    expect(request.message).toContain("Cycle failed: promotion conflicted on README.md");
+    expect(request.message).not.toContain("Cycle completed! All iterations finished successfully.");
+    expect(request.message).toContain("last successfully promoted increment is intact");
+
+    harness.unmount();
   });
 
   it("still renders turns announced while mounted, so hydration never swallows one", async () => {

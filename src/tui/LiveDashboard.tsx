@@ -290,7 +290,28 @@ export function LiveApp({
     if (!cycle) return;
     void (async () => {
       try {
-        await cycle.run();
+        const outcome = await cycle.run();
+        // A failed promotion is not a completed cycle (ADR-48 / AC-49.3): say
+        // what actually happened, keep the last promoted increment, and never
+        // report success for a run that stopped on an error.
+        const completed = outcome.reason === "completed";
+        const headline = completed
+          ? "Cycle completed! All iterations finished successfully."
+          : outcome.reason === "aborted"
+            ? "Cycle aborted."
+            : `Cycle failed: ${outcome.error ?? "unknown error"}`;
+        const promotion = cycle.getState().promotion;
+        const preservedBranch =
+          promotion?.status === "conflict" || promotion?.status === "failed";
+        const preserved = completed
+          ? ""
+          : preservedBranch
+            ? "\n\nThe last successfully promoted increment is intact; the iteration's work is on its preserved sandbox branch (see the promotion notice above)."
+            : "\n\nThe last successfully promoted increment is intact; the in-flight iteration's sandbox was discarded.";
+        const parked =
+          promotion?.backups && promotion.backups.length > 0
+            ? `\n\nYour local changes were parked under ${promotion.backups.join(", ")} (see manifest.json).`
+            : "";
         const choice = await live.ask({
           id: crypto.randomUUID(),
           kind: "post-cycle-live",
@@ -298,17 +319,22 @@ export function LiveApp({
           phase: "LIVE",
           attempt: 1,
           message:
-            "Cycle completed! All iterations finished successfully.\n\n" +
-            "Would you like to exit or return to Live mode to continue refinement?",
+            `${headline}${preserved}${parked}\n\n` +
+            "Would you like to return to Live mode or exit?",
         });
         if (choice === "retry") {
           setCycle(null);
           events.emit("liveChat", {
             role: "system",
-            text: "Cycle complete. Live mode reactivated. Describe what you want to build or change next.",
+            text: completed
+              ? "Cycle complete. Live mode reactivated. Describe what you want to build or change next."
+              : "Back in Live mode. The failed cycle's state is preserved; describe the fix or the next change.",
           });
         } else {
-          events.emit("done", { reason: "completed" });
+          events.emit("done", {
+            reason: outcome.reason,
+            error: outcome.error,
+          });
           exit();
         }
       } catch (err) {
@@ -1455,8 +1481,17 @@ function RefineView({
       return;
     }
     if (key.tab) {
-      // Focus only has meaning while both cards are mounted (REV-3207).
-      if (showStreamPanel) setFocusCard((f) => (f === "chat" ? "stream" : "chat"));
+      // Focus only has meaning while both cards are mounted (REV-3207). With no
+      // stream content the agent-output card is deliberately collapsed, so say
+      // what to use instead of letting the key be a silent no-op.
+      if (showStreamPanel) {
+        setFocusCard((f) => (f === "chat" ? "stream" : "chat"));
+      } else {
+        emitSystem(
+          "The agent-output panel is collapsed until the runtime emits stream content. " +
+            "Use PgUp/PgDn to scroll the conversation.",
+        );
+      }
       return;
     }
 
@@ -1769,7 +1804,11 @@ function RefineView({
               {suggestionsOpen ? (
                 <Text color={THEME.muted} wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
               ) : (
-                <Text color={THEME.muted} wrap="truncate">[Tab] Focus · [PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands</Text>
+                <Text color={THEME.muted} wrap="truncate">
+                  {showStreamPanel
+                    ? "[Tab] Focus · [PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands"
+                    : "[PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands"}
+                </Text>
               )}
             </Box>
             <Box flexShrink={0}>
