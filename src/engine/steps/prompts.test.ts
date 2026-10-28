@@ -79,6 +79,41 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p.length).toBeLessThan(MAX_EMBEDDED_OUTPUT + 2_000);
   });
 
+  it("executePrompt carries the increment's Definition of Done as untrusted evidence", () => {
+    const p = executePrompt(
+      ctx({
+        iteration: {
+          index: 1,
+          title: "Increment",
+          prompt: "Implement it",
+          goal: "the app answers /health",
+          acceptanceCriteria: ["REQ-1: /health returns 200"],
+          verification: ["bun test"],
+          startLine: 1,
+        },
+      }),
+    );
+    expect(p).toContain("## Definition of Done (this increment)");
+    expect(p).toContain("the app answers /health");
+    expect(p).toContain("REQ-1: /health returns 200");
+    expect(p).toContain("bun test");
+    expect(p).toContain("<<<BEGIN UNTRUSTED-");
+  });
+
+  it("testModulePrompt and the QA audit carry the acceptance criteria", () => {
+    const iteration = {
+      index: 1,
+      title: "Increment",
+      prompt: "Implement it",
+      goal: "the app answers /health",
+      acceptanceCriteria: ["REQ-1: /health returns 200"],
+      verification: ["bun test"],
+      startLine: 1,
+    };
+    expect(testModulePrompt(ctx({ iteration }))).toContain("REQ-1: /health returns 200");
+    expect(validateStepSubPrompts(ctx({ iteration }))[0]).toContain("REQ-1: /health returns 200");
+  });
+
   it("executePrompt neutralises a delimiter forgery hidden in the plan", () => {
     const p = executePrompt(
       ctx({

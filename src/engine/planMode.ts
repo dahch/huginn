@@ -31,6 +31,22 @@ export function unwrapFences(text: string): string {
 export type DraftDocType = "spec" | "adr" | "plan";
 
 /**
+ * The increment contract shared by every plan prompt.
+ *
+ * Huginn runs iterations as Scrum-style increments: each one must leave the
+ * application runnable and its tests green, so stopping the harness always
+ * leaves the last completed iteration as a working state. This is prompt text
+ * rather than prose in the README because the thinker is the one that produces
+ * the plan, and `validateDraftFormat` enforces it afterwards.
+ */
+export const INCREMENT_CONTRACT = `INCREMENT CONTRACT — every iteration is a Scrum-style increment:
+- It delivers observable, user-facing behavior, not a layer of scaffolding. Do not plan a "foundations only" iteration: infrastructure enters behind a flow that works.
+- It leaves the application runnable and its test suite green. If a change cannot be left green and runnable, split it into two iterations.
+- It has no forward dependency: iteration N must not need code that iteration N+1 introduces.
+- The first iteration includes the smallest runnable "hello world" of the product, so the app can be started after it.
+- Its Verification commands are non-interactive and must pass before the iteration is considered done.`;
+
+/**
  * Shared output-format contract, appended to every prompt that produces a final
  * file (spec/adr/plan). Acts like a system prompt appended to the user message:
  * the model's reply is post-validated against these rules, so compliance does
@@ -53,8 +69,14 @@ export const OUTPUT_FORMAT_CONTRACT: Record<DraftDocType, string> = {
 - Code fences will be stripped; the content must be valid standalone markdown.
 - Start with "# Plan: <short project name>".
 - Iterations are "## Iteration N — <Title>" numbered from 1 (space after "##", capital "Iteration", " — " separator).
-- Optionally a "modules:" line immediately after each heading.
-- The body of each heading is the verbatim executor prompt for that iteration.`,
+- Immediately after each heading, a "modules:" line with comma-separated source paths the iteration touches (use "modules: ." when the iteration is repository-wide).
+- Then EXACTLY these three sections, in this order, before the executor prompt:
+  "**Goal:** <one observable outcome>"
+  "**Acceptance criteria:**" followed by one or more "- [ ] <verifiable criterion>" items.
+  "**Verification:**" followed by a fenced \`\`\`sh block with one non-interactive command per line (for example "bun test", "bun run typecheck", "cargo test"). These commands must pass before the iteration is done.
+- After those sections, the body of the heading is the verbatim executor prompt for that iteration.
+
+${INCREMENT_CONTRACT}`,
 };
 
 export function withOutputContract(text: string, docType: DraftDocType): string {
@@ -88,12 +110,27 @@ export function validateDraftFormat(docType: DraftDocType, content: string): str
     }
     case "plan": {
       if (!/^#\s+Plan\s*:/im.test(text)) return 'plan must start with "# Plan: <name>"';
+      let iterations;
       try {
-        if (parsePlan(text).length === 0) {
-          return 'plan must contain at least one "## Iteration N — <Title>" heading';
-        }
+        iterations = parsePlan(text);
       } catch {
         return "plan is not parseable";
+      }
+      if (iterations.length === 0) {
+        return 'plan must contain at least one "## Iteration N — <Title>" heading';
+      }
+      for (const iteration of iterations) {
+        const missing: string[] = [];
+        if (!iteration.goal) missing.push("**Goal:**");
+        if (!iteration.acceptanceCriteria || iteration.acceptanceCriteria.length === 0) {
+          missing.push("**Acceptance criteria:** with at least one criterion");
+        }
+        if (!iteration.verification || iteration.verification.length === 0) {
+          missing.push("**Verification:** with at least one non-interactive command");
+        }
+        if (missing.length > 0) {
+          return `iteration ${iteration.index} ("${iteration.title}") must declare ${missing.join(", ")} — every iteration is a runnable, testable increment`;
+        }
       }
       return null;
     }
@@ -164,9 +201,13 @@ The plan is consumed by a harness that runs iterations one by one. Format rules 
 
 - Top-level title: "# Plan: <short project name>"
 - Each iteration is a heading: "## Iteration N — <Title>", numbered sequentially starting at 1. Use a space after "##", capitalize "Iteration", and separate the number from the title with " — ".
-- Immediately after each heading, optionally a "modules:" line with comma-separated source paths the iteration touches (e.g. "modules: src/audio/, src/export/"). Only include it if you can be confident about the paths.
-- The body of each heading is the verbatim prompt that will be sent to the executor to build that iteration. It must be self-contained and actionable.
-- Order iterations so each builds on the previous (foundations first, then features, then hardening/polish). 3 to 8 iterations is typical.
+- Immediately after each heading, a "modules:" line with comma-separated source paths the iteration touches (e.g. "modules: src/audio/, src/export/"). Use "modules: ." when the iteration is repository-wide.
+- Then EXACTLY these sections, in this order:
+  - "**Goal:** <one observable outcome>"
+  - "**Acceptance criteria:**" followed by one or more "- [ ] <verifiable criterion>" items, traced to REQ-* where possible.
+  - "**Verification:**" followed by a fenced \`\`\`sh block with one non-interactive command per line (e.g. "bun test", "bun run typecheck"). These commands are executed by the harness before the iteration is promoted.
+- After those sections, the body of the heading is the verbatim prompt that will be sent to the executor to build that iteration. It must be self-contained and actionable.
+- Order iterations so each builds on the previous, but keep every one a vertical slice. 3 to 8 iterations is typical.
 
 Iterations should map cleanly to the numbered requirements in the spec so progress is auditable.
 
@@ -249,9 +290,13 @@ The plan is consumed by a harness that runs iterations one by one against the cu
 
 - Top-level title: "# Plan: <short project name>"
 - Each iteration is a heading: "## Iteration N — <Title>", numbered sequentially starting at 1. Use a space after "##", capitalize "Iteration", and separate the number from the title with " — ".
-- Immediately after each heading, optionally a "modules:" line with comma-separated source paths the iteration touches (e.g. "modules: src/audio/, src/export/"). Only include it if you can be confident about the paths. Ground module paths in the actual repository state below.
-- The body of each heading is the verbatim prompt that will be sent to the executor to build that iteration. It must be self-contained and actionable. Reference existing code paths and the new spec requirements (REQ-*) so the executor knows exactly what to add or change.
-- Order iterations so each builds on the previous (foundations first, then features, then hardening/polish). 3 to 8 iterations is typical.
+- Immediately after each heading, a "modules:" line with comma-separated source paths the iteration touches (e.g. "modules: src/audio/, src/export/"). Use "modules: ." when the iteration is repository-wide. Ground module paths in the actual repository state below.
+- Then EXACTLY these sections, in this order:
+  - "**Goal:** <one observable outcome>"
+  - "**Acceptance criteria:**" followed by one or more "- [ ] <verifiable criterion>" items, traced to REQ-* where possible.
+  - "**Verification:**" followed by a fenced \`\`\`sh block with one non-interactive command per line (e.g. "bun test", "bun run typecheck"). These commands are executed by the harness before the iteration is promoted.
+- After those sections, the body of the heading is the verbatim prompt that will be sent to the executor to build that iteration. It must be self-contained and actionable. Reference existing code paths and the new spec requirements (REQ-*) so the executor knows exactly what to add or change.
+- Order iterations so each builds on the previous, but keep every one a vertical slice. 3 to 8 iterations is typical.
 
 CRITICAL: this is an UPDATE, not a greenfield plan. The iterations you write cover ONLY the work that remains — the delta between the current codebase and the updated spec. Do NOT re-plan or re-run anything already shipped: previous iterations were completed and committed to git history. Assume the repository is in the state described below.
 

@@ -148,12 +148,18 @@ describe("update-mode drafting prompts", () => {
     expect(p).toContain("APPEND");
   });
 
-  it("remainingPlanPrompt produces only remaining iterations grounded in repo state", () => {
+  it("remainingPlanPrompt produces only remaining increments grounded in repo state", () => {
     const p = remainingPlanPrompt("# Spec", "## ADR-1: X", "src/app.ts");
     expect(p).toContain("REMAINING");
     expect(p).toContain("Do NOT re-plan");
     expect(p).toContain("src/app.ts");
     expect(p).toContain("starting at 1");
+    // The Scrum-style increment contract every iteration must satisfy.
+    expect(p).toContain("INCREMENT CONTRACT");
+    expect(p).toContain("**Goal:**");
+    expect(p).toContain("**Acceptance criteria:**");
+    expect(p).toContain("**Verification:**");
+    expect(p).toContain("runnable");
   });
 
   it("appends the output format contract to every document prompt", () => {
@@ -233,8 +239,30 @@ describe("validateDraftFormat", () => {
     expect(validateDraftFormat("adr", "## ADR-2: X\n\n### Context\nc\n### Decision\nd\n### Consequences\nx")).toBeNull();
   });
 
-  it("accepts a parseable plan and rejects unparseable ones", () => {
-    expect(validateDraftFormat("plan", "# Plan: x\n\n## Iteration 1 — Do\n\nwork\n")).toBeNull();
+  it("accepts a plan whose iterations are runnable increments and rejects the rest", () => {
+    const increment = [
+      "# Plan: x",
+      "",
+      "## Iteration 1 — Do",
+      "",
+      "**Goal:** the app starts and answers a request.",
+      "",
+      "**Acceptance criteria:**",
+      "- [ ] REQ-1: the endpoint responds.",
+      "",
+      "**Verification:**",
+      "```sh",
+      "bun test",
+      "```",
+      "",
+      "work",
+      "",
+    ].join("\n");
+    expect(validateDraftFormat("plan", increment)).toBeNull();
+    // Old-style plans are valid on disk but not as a *new* draft.
+    expect(validateDraftFormat("plan", "# Plan: x\n\n## Iteration 1 — Do\n\nwork\n")).toContain(
+      "must declare",
+    );
     expect(validateDraftFormat("plan", "# Plan: x\n\nno iterations here")).toContain("Iteration");
     expect(validateDraftFormat("plan", "just prose")).toContain("# Plan:");
   });
@@ -244,7 +272,25 @@ describe("LiveEngine flow", () => {
   const SCOPE_REPLY = "SCOPE:\n```markdown\nAdd a notifications module to the existing app\n```";
   const SPEC_REPLY = "# Spec: notifications\n\nREQ-1: notify users\n";
   const ADR_REPLY = "## ADR-2: Publish via queues\n\nContext: notify needs async delivery.\nDecision: use a queue.\nConsequences: adds infra.";
-  const PLAN_REPLY = "# Plan: notifications\n\n## Iteration 1 — Add notifications\n\nAdd the notifications feature per REQ-1.\n";
+  const PLAN_REPLY = [
+    "# Plan: notifications",
+    "",
+    "## Iteration 1 — Add notifications",
+    "modules: src/notifications/",
+    "",
+    "**Goal:** Users receive a notification when a new event occurs.",
+    "",
+    "**Acceptance criteria:**",
+    "- [ ] REQ-1: a new event delivers a notification to the user.",
+    "",
+    "**Verification:**",
+    "```sh",
+    "bun test",
+    "```",
+    "",
+    "Add the notifications feature per REQ-1.",
+    "",
+  ].join("\n");
 
   function routingClient(): OpencodeClient {
     return makeClient(async (body) => {
