@@ -278,6 +278,7 @@ override the detected locations.
 | `--from-iteration <n>` | — | start at iteration n |
 | `--only-phase <name>` | — | run a single phase per iteration (debugging) |
 | `--sandbox` / `--no-sandbox` | `--sandbox` | run each iteration in an isolated git worktree under `.huginn/worktrees/` (see [Sandboxing](#sandboxing-git-worktrees)); `--no-sandbox` runs iterations in place |
+| `--no-verify` | — | do not run the plan's `Verification:` commands before promoting an increment (they run by default; a failure blocks the promotion) |
 | `--resume` | — | resume from saved state; fails if no saved state exists (plain re-runs auto-resume anyway) |
 | `--force-restart` | — | discard saved state and start over |
 | `--ignore-plan-changes` | — | resume even if plan/spec/adr changed |
@@ -362,13 +363,21 @@ the primary branch while the agent works:
   `.huginn/muninn.db`, so long-term memory survives the sandbox (ADR-20).
 - On iteration success the sandbox commits are integrated into your active branch
   (`git merge --ff-only`, falling back to `git cherry-pick`) and the worktree + branch are removed.
-  Untracked files in your tree that the integration would overwrite are first parked under
-  `<project>/.huginn/promotion-backup/<stamp>/` (content and mode preserved, symlinks kept as links;
-  the directory is symlink-screened and self-ignoring) — git refuses such a merge, which used to
-  strand a finished iteration — and the backup directory is named in the run log.
+  Every local path the integration would overwrite is first parked under
+  `<project>/.huginn/promotion-backup/<stamp>/`: **untracked** files (content and mode preserved,
+  symlinks kept as links) and **tracked files with staged or unstaged local changes** (the user's
+  version is copied, the index/worktree is reset to `HEAD`, and the staged bit is recorded). A
+  `manifest.json` records every entry, including a tracked deletion. The directory is symlink-screened
+  and self-ignoring, and it is named in the run log and in the live post-cycle prompt. Partial staging
+  and a staged *new* file are refused (fail closed) rather than guessed, because their exact index
+  state cannot be reproduced safely; the iteration stays on its branch.
+- `node_modules`, `.env`, `.pi` and `.agents` are symlinked from the primary tree into the sandbox
+  when they exist there and are absent from the worktree, so an untracked `.pi/mcp.json` or a
+  project skill still reaches the agent's session.
 - On abort or a phase error the sandbox is discarded and your working tree is never touched.
 - If promotion fails, the primary tree is restored (a conflict aborts the cherry-pick and puts every
-  parked file back), the worktree is removed, the `huginn/task-iter-<N>` branch is **kept** so the
+  parked file back, including a tracked file's staged/unstaged index state), the worktree is removed,
+  the `huginn/task-iter-<N>` branch is **kept** so the
   work is recoverable by hand (`git log <branch>`), and the run fails closed — it finishes as an
   error naming that branch, **never as `aborted`**. A later run renames the branch out of the reclaim
   namespace (`huginn/preserved/task-iter-<N>-<stamp>`) before the startup sweep, so a plain re-run can
@@ -461,6 +470,7 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
 - **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` aborts immediately, while `/quit` (alias `/abort`) aborts after a two-step confirmation.
 - **Composer with a Cursor, Multiline Growth & Input History**: the message row is the anchor of the view — its own accent border and a `❯` prompt glyph. It is a real editor: `←`/`→` move the caret (with `⌥`/`Ctrl` for whole words), `Home`/`End` jump to the ends of the caret's visual row, `Backspace`/`Delete` act at the caret (again word-wise with `⌥`/`Ctrl`), and typed text is inserted at the caret. A draft that wraps grows up to **6 rows** and then scrolls internally, and the caret is always drawn inside the frame (it never pushes a column off the row). `↑` recalls the previous submission of the session (the last 50), `↓` walks forward and ends at the empty draft. Recalled drafts stay editable and slash-command submissions are never stored. Recall applies only while the command palette is closed and the draft is empty, so it never fights the palette's own `↑`/`↓`.
 - **Terminal Theme System (`src/tui/theme.ts`)**: components ask for a semantic token (`THEME.text`, `THEME.muted`, `THEME.danger`, …) instead of hard-coding colours — the old `color="white"` chat body is gone, so nothing is invisible on a white terminal. Modes are `light`, `dark` and `auto` (default), pinned with `HUGINN_THEME`; `auto` stays background-agnostic (and sniffs `COLORFGBG` when the terminal advertises it), and a non-empty `NO_COLOR` disables every token and `dimColor`.
+- **Adaptive Agent-Output Panel & Scrolling**: the live stream card appears only once the runtime emits real content. `PgUp`/`PgDn` scroll the focused card; when the stream card is collapsed, Tab explains that it appears with stream content and the footer drops the `[Tab] Focus` hint (the conversation scrolls with `PgUp`/`PgDn`). In the run dashboard, a non-streaming runtime's `AGENT OUTPUT` shows the last finished phase's report — including when the stream buffer holds only a blank row.
 - **Live Context Panel & Empty-State Hero (`InfoPanel` / `LiveHero`)**: on wide terminals (≥100 columns, with a minimum spare column/row budget) a compact **LIVE CONTEXT** panel sits beside the conversation with the stage, agent and models, the per-agent MCP enumeration, the git branch and tree state, the worktree sandbox, Muninn's counts and the size of the conversation, plus a stage-appropriate tip; below that width it is not rendered at all and the header alone carries the facts, so it can never push the composer or footer off the frame. An empty conversation renders a raven-branded hero with the first-run guidance instead of a blank card, sliced to the card's real rows.
 - **Honest Panels**: the old `REFINEMENT CONVERSATION` card is simply **`Conversation`**, and the agent-output (stream) panel **collapses automatically** while the agent has emitted no reasoning/stream content for the session — its rows return to the conversation and it is never shown as an empty bordered box; it expands on the first content. The `run` dashboard's output panel follows the same rule: with no stream content it shows the tail of the last finished phase's **real report**, and before anything has finished an **idle raven state** (the two-ravens mark, Huginn and Muninn, beside a rotating raven-voiced line). Only a runtime that can actually push incremental output (`IAgentRuntime.streamsOutput`, i.e. opencode) still reads `LIVE AGENT OUTPUT` and shows the waiting placeholder; every other runtime names itself and states that each phase's report appears when it ends.
 - **One Glyph Language, Single Width**: every phase/status glyph comes from one table (`src/tui/glyphs.ts`), shared by the dashboard and `.harness/PROGRESS.md` — `·` pending, the braille spinner while running, `✓` pass, `!` warning, `✕` blocked, `–` skipped, and the `PROGRESS.md` phase kinds `?` `>` `=` `%` `#` `@` `~` `.` (a `FIX_*` row keeps its `└─` indent). Printable and single-width, so the monospace grid and `NO_COLOR` behaviour hold; the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) are untouched.
@@ -481,7 +491,7 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
   - **Native Model Forwarding**: the chosen model is passed to the runtime through the flag it documents (`--model`/`-m`, or the OpenCode SDK model ref), so selecting a model actually takes effect; `HUGINN_MODEL` is kept only as an extra environment hint for wrapper scripts.
   - **Auto-Onboarding Preflight Check**: if thinker or executor came from the documented defaults and the runtime's catalog is non-empty while containing **neither** default, Huginn automatically opens the model selector on startup.
 - **Live MCP Monitor & Server Inspector (`McpInspectorModal`)**:
-  - **Live Header Status Badge**: real-time indicator with 15-second polls over a bounded 12 s budget. MCP is **per-agent** — Huginn holds no client, the active agent owns every connection — so the badge is always self-describing and **attributes the agent it describes**, never rendering a bare or unexplained number: `MCP: 🟢 3 connected · opencode` for servers a real probe reported reachable, `MCP: ⚪ 5 configured · agy` for servers the agent's own CLI enumerated as configured-but-unprobed, `MCP: ⚪ none · omp` when nothing is registered, and `MCP: 🟡 error — <reason> · <agent>` / `MCP: 🟡 timeout · <agent>` on failure. Every numeric field is nullish-coalesced, so `undefined`/`NaN` can no longer reach the screen.
+  - **Live Header Status Badge**: real-time indicator with 15-second polls over a bounded budget. MCP is **per-agent** — Huginn holds no client, the active agent owns every connection — so the badge is always self-describing and **attributes the agent it describes**, never rendering a bare or unexplained number: `MCP: 🟢 3 connected · opencode` (or `MCP: 🟢 2 connected (214 tools) · pi` when the agent reports tool counts) for servers a real probe reported reachable, `MCP: ⚪ 5 configured · agy` for servers the agent's own CLI enumerated as configured-but-unprobed, `MCP: ⚪ none · omp` when nothing is registered, and `MCP: 🟡 error — <reason> · <agent>` / `MCP: 🟡 timeout · <agent>` on failure. The native `pi` driver now reports through `pi mcp list --json` (config discovery is the fast fallback), so it no longer shows `none` while pi has servers. Every numeric field is nullish-coalesced, so `undefined`/`NaN` can no longer reach the screen.
   - **Render Loop Protection**: `fetchMcpStatusWithTimeout` enforces a strict `Promise.race` deadline (with `.unref()`'d timers) so an unresponsive MCP server never blocks the Ink render loop; a completed listing is cached for 60 s per runtime and one spawn is shared across polls, so a slow CLI (`claude mcp list` health-checks every server, ~23 s measured) is fetched once and reused instead of being killed and retried forever.
   - **Interactive Inspector (`/mcp`)**: Type `/mcp` in the live chat input to open an interactive two-pane inspector modal:
     - *Left Pane (Servers)*: lists each server as `name · transport · status · detail` — `[connected]` only after a real probe, `[unknown]` for a server the agent's CLI reports as merely configured (`enabled`/`disabled`/`pending`), plus whatever detail the CLI exposed (command, scope, auth); the header summarizes `n/total active` or `n/total unverified` instead of counting unprobed servers as live.
@@ -508,7 +518,7 @@ Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` fo
 `--choose-model` to open the model selector modal on launch, `--continue`/`-c`, `--session <id>` and
 `--list-sessions`/`-sl` to resume or list persisted sessions,
 plus the run-mode flags `--mode`, `--profile`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,
-`--no-git-init`, `--port`, `--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless
+`--no-verify`, `--no-git-init`, `--port`, `--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless
 mode the chat refinement is skipped (the CLI idea is used as-is) and approvals are answered on stdin;
 non-interactive stdin aborts with a hint to use the TUI.
 
@@ -572,6 +582,22 @@ Group them under Added / Changed / Fixed and link each entry to its PR.
   `realpath` containment), files are opened with `O_NOFOLLOW` and capped at 1 MB, prototype-pollution
   keys are skipped, and every field is run through `sanitizeTerminalText`.
 
+### What the agent's own MCP servers and skills do
+
+Huginn does **not** proxy an agent's resources; the agent's session owns them:
+
+- **`pi` (in-process)** uses the pi SDK's default resource loader, so the session already sees
+  `~/.pi/agent/{mcp.json,skills}`, `~/.agents/skills`, the project's `.pi/{mcp.json,skills}` and
+  `.agents/skills`, plus `AGENTS.md`. The SDK starts with project trust enabled. That is why a pi
+  session can use its own MCP servers and skills during a huginn phase; the harness only **reports**
+  them (the MCP badge and `/mcp`), it does not re-declare or re-connect them.
+- **Subprocess runtimes** (`opencode`, `claude`, `codex`, the `generic` targets) load their resources
+  through their own CLI, exactly as when you run that CLI directly.
+- **Huginn's project skills** (`.huginn/skills/`, `.opencode/skills/`) are a *live-console* feature:
+  `/skills` and `/skill <name>` use them. They are not injected into the pipeline's phase prompts.
+- `.huginn/mcp.json` is read by the MCP inspector, but it is not automatically registered with pi;
+  `huginn setup --agent pi` is what writes `.pi/mcp.json`.
+
 ## The cycle (per iteration of `plan.md`)
 
 Huginn composes every step's instruction itself (`src/engine/steps/`) and sends it as a **prompt** to
@@ -593,11 +619,21 @@ tools). The verdict of a huginn-run gate is huginn's own:
 5. **SECURE_CHECK** — the embedded security-audit instruction; any breach → fix with thinker until clear.
 6. **REVIEW** — the embedded pre-PR review instruction; blockers → fix with thinker and re-review.
 7. **DOC_SYNC** — the embedded doc-sync instruction (informative, never blocks).
-8. **COMMIT_ALL** — the embedded commit instruction produces the semantic commits.
+8. **VERIFY** — deterministic proof that the increment works: huginn runs the iteration's
+   `Verification:` commands inside the sandbox and gates on their real exit codes. A failing command
+   blocks the iteration and feeds the `FIX_VERIFY` turn. A plan with no `Verification:` section stays
+   compatible (the phase passes with a note); `--no-verify` / `"verify": false` disables it.
+9. **COMMIT_ALL** — the embedded commit instruction produces the semantic commits.
 
 The auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`, `REVIEW`) are **read-only**: huginn
 hashes the working tree before and after the step and forces BLOCKED if the signature is missing or
 changed, so an audit that wrote to the repository cannot pass a gate.
+
+Every iteration is an **atomic increment**: after the pipeline completes, before promotion, huginn
+commits anything `COMMIT_ALL` left uncommitted (`chore(iter-N): checkpoint — …`). Promotion only
+integrates commits, so a successful increment can never be discarded silently — and stopping the
+process mid-iteration leaves the primary tree at the last increment that was promoted. In-place
+execution (`--no-sandbox`) cannot offer that guarantee and warns at startup.
 
 Repository material is treated as **untrusted**: every fragment embedded in a prompt (documents, `git`
 output, module names, phase reports) is sanitized, capped at 60 000 characters and wrapped in a
@@ -621,17 +657,18 @@ automatically from `git diff` since the iteration started.
 
 ### Methodology profiles
 
-The eight phases above are the **Huginn Cycle** — the default `--profile huginn`, unchanged and pinned
-by a snapshot test. `--profile` selects a different ordered pipeline over the same phase vocabulary,
-so switching methodology changes *what runs and in what order*, not how a phase works:
+The nine phases above are the **Huginn Cycle** — the default `--profile huginn`, pinned by a snapshot
+test. `--profile` selects a different ordered pipeline over the same phase vocabulary, so switching
+methodology changes *what runs and in what order*, not how a phase works. Every profile includes the
+deterministic `VERIFY` phase before its commit:
 
 | Profile | Name | Pipeline |
 |---|---|---|
-| `huginn` | Huginn Cycle (default) | spec-audit → execute → validate-step → test-module → secure-check → review → doc-sync → commit-all |
-| `sdd` | Spec-Driven Development | spec-audit → execute → validate-step → test-module → review → doc-sync → commit-all, with a spec/design/tasks **preamble** folded into execute and the run committed only after verification |
-| `odd` | Organic-Driven Development | execute → test-module → commit-all (lightweight daily changes, no heavy gates) |
-| `rdd` | Receipt-Driven Development | execute → test-module → validate-step → commit-all, where verification **freezes a receipt** the commit references |
-| `strict-tdd` | Strict TDD | test-module (**expected to fail**) → execute → test-module → validate-step → commit-all, with a **frozen worktree snapshot** recorded as evidence |
+| `huginn` | Huginn Cycle (default) | spec-audit → execute → validate-step → test-module → secure-check → review → doc-sync → **verify** → commit-all |
+| `sdd` | Spec-Driven Development | spec-audit → execute → validate-step → test-module → review → doc-sync → **verify** → commit-all, with a spec/design/tasks **preamble** folded into execute and the run committed only after verification |
+| `odd` | Organic-Driven Development | execute → test-module → **verify** → commit-all (lightweight daily changes, no heavy gates) |
+| `rdd` | Receipt-Driven Development | execute → test-module → validate-step → **verify** → commit-all, where verification **freezes a receipt** the commit references |
+| `strict-tdd` | Strict TDD | test-module (**expected to fail**) → execute → test-module → validate-step → **verify** → commit-all, with a **frozen worktree snapshot** recorded as evidence |
 
 - **Selecting it**: `--profile <id>` on `run` and `live`, `"profile"` in `.huginn/config.json`, or
   `huginn config set --profile <id>`. In the live console `/profile` opens the profile picker
@@ -652,20 +689,39 @@ so switching methodology changes *what runs and in what order*, not how a phase 
 ```markdown
 # Plan: my project
 
-## Iteration 1 — Audio domain setup
+## Iteration 1 — Play a sound
 modules: src/audio/
+
+**Goal:** the app starts and plays one bundled sound.
+
+**Acceptance criteria:**
+- [ ] REQ-1: the `play` command plays the bundled asset.
+- [ ] the app still starts when no audio device is present.
+
+**Verification:**
+```sh
+bun test
+bun run typecheck
+```
 
 The literal prompt that will be sent to the executor in step 2.
 All text up to the next `## Iteration N` heading is the prompt.
 
-## Iteration 2 — Export pipeline integration
+## Iteration 2 — Export the current sound
 modules: src/audio/, src/export/
 ...
 ```
 
 Headings use `## Iteration N` with `—`, `-` or `:` separators. Iterations run in numeric order (the
-parser sorts by index). The optional `modules:` line right below the heading provides explicit paths
-for `/validate-step` and `/test-module`; otherwise they are inferred from git.
+parser sorts by index). The `modules:` line right below the heading provides explicit paths for
+`VALIDATE_STEP` and `TEST_MODULE`; use `modules: .` for a repository-wide increment. The `Goal`,
+`Acceptance criteria` and `Verification` sections are the **increment contract**: the plan prompts
+require them, `EXECUTE`/`TEST_MODULE` receive them, and `VERIFY` runs the commands. Plans written
+before the contract (no sections) still run; `VERIFY` passes with a note.
+
+Every iteration must be a **vertical slice**: observable behavior, a runnable app and a green test
+suite at the end. The planner is explicitly told not to schedule “foundations only” iterations, and
+the first iteration includes the smallest runnable hello-world of the product.
 
 ## State & resumability (`.harness/`)
 
@@ -677,7 +733,7 @@ needs is written under `<project>/.harness/`:
   `promotion` record of the last sandbox integration).
 - `PROGRESS.md` — human-readable checklist regenerated after every phase. A run whose sandbox could not
   be integrated renders `✕ PROMOTION FAILED — branch <branch> preserved` (naming the backup directory
-  when untracked files were parked), and `✕ ABORTED` stays reserved for a run you actually stopped.
+  when local changes were parked), and `✕ ABORTED` stays reserved for a run you actually stopped.
 - `reports/` — full raw report of each phase attempt (`01-SPEC_AUDIT-1.md`).
 - `logs/server.log` — the internal `opencode serve` output.
 

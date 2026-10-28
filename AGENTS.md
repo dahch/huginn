@@ -88,12 +88,21 @@ enforced by huginn (see §4).
 | `SPEC_AUDIT` | `specAuditPrompt` | spec-auditor role + spec/adr/plan + iteration + git status | `### Overall fidelity:` parsed by `parseSpecAuditVerdict` |
 | `EXECUTE` | `executePrompt` | the iteration's prompt verbatim (+ the profile preamble) | non-blocking, but an empty report still fails closed |
 | `VALIDATE_STEP` | `validateStepSubPrompts` (qa / spec / security) + `validateStepSynthesisPrompt` | three independent audits, then a consolidation turn | huginn computes it (§4) |
-| `TEST_MODULE` | `testModulePrompt` | qa role + module scope | judge pass (`judgePhase`) |
+| `TEST_MODULE` | `testModulePrompt` | qa role + module scope + increment criteria/verification | judge pass (`judgePhase`) |
+| `VERIFY` | `verifyIteration` (`src/engine/verify.ts`) | the iteration's `Verification:` commands, run deterministically in the sandbox | `authoritativeVerdict` from the real exit codes |
 | `SECURE_CHECK` | `secureCheckPrompt` | security role + scoped diff | judge pass |
 | `REVIEW` | `reviewPrompt` | reviewing role + pre-PR diff | judge pass |
 | `DOC_SYNC` | `docSyncPrompt` | doc-writer role + recent history | informative (never blocks) |
 | `COMMIT_ALL` | `commitAllPrompt` | commit instruction + pending changes | informative (never blocks) |
-| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_SECURITY` / `FIX_REVIEW` | `fixFindingsPrompt` (+ the speculative/security extras) | the finding report + the extra instructions | re-runs the gate |
+| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW` | `fixFindingsPrompt` (+ the speculative/security extras) | the finding report + the extra instructions | re-runs the gate |
+
+**Increments, not layers.** `planPrompt` / `remainingPlanPrompt` (`src/engine/planMode.ts`) carry the
+shared `INCREMENT_CONTRACT`: every iteration is a vertical, runnable slice with no forward dependency,
+and the first one includes the smallest runnable hello-world. The plan format also requires
+`**Goal:**`, `**Acceptance criteria:**` and a fenced `**Verification:**` command block; `parsePlan`
+(`src/plan/parser.ts`) extracts them into `Iteration.goal`/`acceptanceCriteria`/`verification`, and
+`executePrompt`, `testModulePrompt` and the QA audit receive them. Old plans without the sections
+still run (the `VERIFY` phase passes with a note).
 
 `runCommand` still exists on `IAgentSession` (the opencode and generic adapters implement it) but **no
 step uses it**: a huginn step is always a prompt, so a runtime with no command surface runs the same
@@ -109,8 +118,9 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 | `SPEC_AUDIT` (spec-auditor prompt) | **executor** | `promptWithContext({ text: specAuditPrompt(ctx), model: executor })` — unless the repo has no implementation code yet, in which case the audit is **skipped** (`hasImplementationCode`, `src/engine/diff.ts`) and the role is never invoked |
 | `EXECUTE` (build agent) | **executor** | `promptWithContext({ text: executePrompt(ctx), agent: "build", model: executor })` |
 | `VALIDATE_STEP` (qa + spec-auditor + security + synthesis) | **executor** | four `promptWithContext` calls, each with `model: executor` |
+| `VERIFY` (deterministic) | **no model** | `verifyIteration` runs the plan's commands in the sandbox and gates on their exit codes |
 | Judge pass for `TEST_MODULE` / `SECURE_CHECK` / `REVIEW` | **executor** | `judgePhase(..., executor, ...)` |
-| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_SECURITY` / `FIX_REVIEW` | **thinker** | `fixFindingsPrompt` → `promptWithContext({ agent: "build", model: thinker })` |
+| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW` | **thinker** | `fixFindingsPrompt` → `promptWithContext({ agent: "build", model: thinker })` |
 | `huginn plan` drafts (spec → adr → plan) | **thinker** | `prompt({ model: thinker })`, 20-min timeout each |
 | `huginn live` chat refinement / scope extraction / doc drafts (`LiveEngine`) | **thinker** | `prompt({ model: thinker })` via `liveMode.ts`, 20-min timeout each; after handoff the resulting `CycleEngine` uses the executor per the rows above |
 
@@ -139,6 +149,18 @@ decides the outcome:
   (`src/util/docPath.ts`), and every `git` call goes through the hardened seam in
   `src/engine/diff.ts` (no pager/fsmonitor/hooks, `--no-ext-diff --no-textconv`, a subcommand
   allowlist and a forbidden-argument screen).
+- **Atomic increments.** Every profile runs `VERIFY` (the plan's commands, real exit codes) before
+  its commit. After the phase loop, `WorktreeManager.commitPendingChanges` creates a deterministic
+  `chore(iter-N): checkpoint — …` commit for anything `COMMIT_ALL` left uncommitted, and only then is
+  the sandbox promoted. A dirty sandbox with no commits is a failed promotion, never a silent delete.
+  The checkpoint commit uses the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env (the hardened `git()` seam
+  refuses `-c`) and `--no-gpg-sign`.
+- **Promotion parks both collision classes.** `parkCollisions` moves untracked files **and** tracked
+  files with staged/unstaged local changes into `.huginn/promotion-backup/<stamp>/` (plus a
+  `manifest.json`), resetting tracked paths to `HEAD` so the merge/cherry-pick can proceed. On a
+  failed integration every entry is restored, including its staged/unstaged index state. A partially
+  staged file or a staged *new* file fails closed (the branch is preserved) because its exact index
+  state cannot be reproduced without copying index blobs.
 
 ## 5. Runtime requirements
 
@@ -182,9 +204,14 @@ port maps it to a `RuntimeId` when it wraps an adapter.
 whether any generic-target CLI is installed; `createSession` there says it needs a concrete target).
 `pi` is the first driver implemented natively (`drivers/pi-sdk.ts`): it runs `createAgentSession()`
 in huginn's own process, resolves `provider/model` through the SDK's `ModelRuntime`, lists the real
-catalog and keeps a real session history. Its events, permissions and resume are **not** wired yet, so
-it declares `streaming`, `structuredEvents` and `sessionResume` false — the engine switch is what
-turns them on. `toLegacyRuntime()` is the reverse bridge that plugs it into the current engine:
+catalog and keeps a real session history. It also enumerates MCP: `listMcpServers` runs
+`pi mcp list --json` (bounded, 30 s, `cwd = project`), and `mcpStatus` reads
+`~/.pi/agent/mcp.json` + `<project>/.pi/mcp.json` as the fast, honest fallback. The default session
+uses pi's `DefaultResourceLoader`, so pi's own MCP servers, skills (`~/.agents/skills`, `.pi/skills`)
+and `AGENTS.md` are already available to the phase prompt; huginn only reports them. Its events,
+permissions and resume are **not** wired yet, so it declares `streaming`, `structuredEvents` and
+`sessionResume` false — the engine switch is what turns them on. `toLegacyRuntime()` is the reverse
+bridge that plugs it into the current engine:
 `getEngineRuntime()` — what `run` and `live` build — returns the native driver for `pi`,
 `codex` and `claude` and the configured generic bridge for every other target, while
 `getAgentRuntime()` keeps returning the CLI-shaped adapter for provisioning, model discovery and the
@@ -270,15 +297,17 @@ the install path until the first manual publish. Bump that URL when Muninn ships
 `^0.1.0` once it is on the registry.
 
 The suites that matter for the step pipeline and its state: `src/engine/gate.test.ts` (the verdict
-parsers), `src/engine/cycle.test.ts` (retry/escalation, the read-only guard, structural verdicts),
-`src/engine/steps/prompts.test.ts` + `src/engine/steps/context.test.ts` (composition, bounding,
-nonce delimitation, the git-interpolation allowlist, doc containment), `test/engine/phases.test.ts`
-(the orchestrated `VALIDATE_STEP`: three sub-prompts plus synthesis, the deterministic verdict and
-the single imposed gate/handoff line), `test/engine/phasesContractGuard.test.ts` (a compiler-contract
-verification that throws fails closed), `test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts`
-(bootstrap and path containment), and `test/state/liveSession.test.ts` +
-`test/engine/liveSessionPersistence.test.ts` + `test/commands/liveSessions.test.ts` (the persisted
-live store, resume flags and reattach).
+parsers), `src/engine/cycle.test.ts` (retry/escalation, the read-only guard, structural verdicts,
+the pre-promotion checkpoint), `src/engine/verify.test.ts` (the deterministic `VERIFY` phase and its
+command runner), `src/plan/parser.test.ts` (increment metadata), `src/engine/steps/prompts.test.ts` +
+`src/engine/steps/context.test.ts` (composition, bounding, nonce delimitation, the git-interpolation
+allowlist, doc containment), `test/engine/phases.test.ts` (the orchestrated `VALIDATE_STEP`: three
+sub-prompts plus synthesis, the deterministic verdict and the single imposed gate/handoff line),
+`test/engine/phasesContractGuard.test.ts` (a compiler-contract verification that throws fails closed),
+`test/engine/agent/piMcp.test.ts` (the `pi mcp list --json` parser and the native driver's MCP bridge),
+`test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment), and
+`test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
+`test/commands/liveSessions.test.ts` (the persisted live store, resume flags and reattach).
 
 ### Env overrides (all optional)
 
@@ -376,6 +405,12 @@ field is sanitized via the shared `sanitizeTerminalText` (`src/util/text.ts` —
 `src/engine/agent/mcpConfig.ts`). A skill file is exactly what the README's
 [Project skills](README.md#project-skills-huginnskills) section shows: YAML frontmatter, then the
 prompt body.
+
+These skills belong to the **live console** (`/skills`, `/skill <name>`); they are not injected into
+the pipeline's phase prompts. The runtime's own resources are a separate matter: the in-process `pi`
+driver uses pi's `DefaultResourceLoader`, so pi's MCP servers, skills (`~/.agents/skills`,
+`.pi/skills`, `~/.pi/agent/skills`) and `AGENTS.md` are available to the phase prompt, and every
+subprocess CLI loads its own resources the same way it does outside huginn.
 
 <!-- CODEGRAPH_START -->
 ## CodeGraph

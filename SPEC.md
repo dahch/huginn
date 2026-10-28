@@ -233,7 +233,7 @@ The verification contracts and AST symbol indexer must integrate seamlessly into
   | `codex` | OpenAI Codex CLI | `<home>/.codex/config.toml` | `toml` (`[mcp_servers.muninn]`) |
   | `agy` | Antigravity CLI (agy) | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` |
   | `kimi` | Kimi Code CLI | `<home>/.kimi-code/mcp.json`, `<project>/.kimi/mcp.json` | `mcpServers` |
-  | `pi` | Pi coding agent | `<home>/.pi/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` |
+  | `pi` | Pi coding agent | `<home>/.pi/agent/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` |
   | `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.commandcode/mcp.json` | `mcpServers` |
   | `omp` | Oh My Pi | `<home>/.omp/mcp.json`, `<project>/.omp/mcp.json` | `mcpServers` |
   | `mcode` | MiniMax Code | `<project>/.mcp.json` | `mcpServers` |
@@ -873,8 +873,10 @@ makes every surface tell the truth.
   `state.promotion = { status: "conflict" | "failed", branch, backups?, detail? }` and is **not**
   reported as an abort; `renderProgressMarkdown` renders a promotion failure distinctly and names the
   preserved branch, and `🛑 ABORTED` is reserved for a genuine abort.
-- **AC-49.4 (Backups reported)**: a successful integration that moved untracked files aside returns
-  the backup directory in `PromoteResult.backups` and logs it, so the files are discoverable.
+- **AC-49.4 (Backups reported)**: a successful integration that moved local changes aside — untracked
+  files **or** tracked files with staged/unstaged modifications — returns the backup directory in
+  `PromoteResult.backups`, logs it, and records a `manifest.json` inside it, so the files (and a
+  tracked deletion) are discoverable.
 
 ### REQ-50: One root for Muninn — the database and the project record agree
 - **AC-50.1 (One root)**: the database file and the project row are resolved from the same root: the
@@ -939,3 +941,83 @@ makes every surface tell the truth.
 - **NFR-17 (Honest surfaces)**: no surface reports a success, an abort, or an emptiness the engine did
   not actually produce — a stranded iteration, a foreign row and a dead panel are all named.
 
+
+## 22. Functional Requirements (Increment Execution)
+
+This section closes the gap between “the plan has iterations” and “every iteration is a usable,
+testable increment”. It is deliberately about *how* huginn plans, verifies and persists an iteration,
+not about adding another methodology profile.
+
+### REQ-55: Plan drafting produces runnable, testable increments
+- **AC-55.1 (Increment contract)**: `planPrompt` and `remainingPlanPrompt`
+  (`src/engine/planMode.ts`) carry the shared `INCREMENT_CONTRACT`: every iteration delivers
+  observable behavior, leaves the app runnable and the tests green, has no forward dependency, and
+  the first iteration includes the smallest runnable hello-world of the product.
+- **AC-55.2 (Machine-readable sections)**: the plan output contract requires `**Goal:**`,
+  `**Acceptance criteria:**` (one or more `- [ ]` items) and a fenced `**Verification:**` block with
+  one non-interactive command per line. `parsePlan` extracts them into
+  `Iteration.goal`/`acceptanceCriteria`/`verification` and keeps the body as the verbatim executor
+  prompt.
+- **AC-55.3 (Draft validation)**: `validateDraftFormat("plan", …)` rejects a newly drafted plan whose
+  iterations lack any of the three sections. Plans already on disk without them remain loadable and
+  executable.
+- **AC-55.4 (Execution sees the contract)**: `executePrompt`, `testModulePrompt` and the QA audit
+  prompt include the goal, criteria and verification commands, wrapped as untrusted plan data.
+
+### REQ-56: Verification is deterministic, not a model opinion
+- **AC-56.1 (A real phase)**: the `VERIFY` phase (`src/engine/verify.ts`, `verifyIteration`) runs the
+  iteration's `Verification:` commands inside the sandbox and gates on their real exit codes, with a
+  per-command deadline and process-group termination.
+- **AC-56.2 (Blocking and fixing)**: a non-zero exit or timeout makes the phase `blocked`, and the
+  `FIX_VERIFY` turn receives the report. A pass requires every command to exit 0.
+- **AC-56.3 (Compatibility and opt-out)**: a plan with no `Verification:` section passes with an
+  explicit note. `--no-verify` / `"verify": false` disables execution without failing the run.
+- **AC-56.4 (Every profile)**: `huginn`, `sdd`, `odd`, `rdd` and `strict-tdd` all run `VERIFY` before
+  `COMMIT_ALL`; `strict-tdd` runs it after its second `TEST_MODULE`.
+- **AC-56.5 (No silent no-op)**: the phase writes a report under `.harness/reports/`, including each
+  command, its exit code, duration and the bounded stdout/stderr.
+
+### REQ-57: A successful iteration is an atomic, durable increment
+- **AC-57.1 (Checkpoint before promotion)**: after the phase loop and before promotion,
+  `WorktreeManager.commitPendingChanges` commits anything `COMMIT_ALL` left uncommitted with a
+  deterministic `chore(iter-N): checkpoint — …` message.
+- **AC-57.2 (Never discard uncommitted work)**: a sandbox with uncommitted changes and no commits is
+  a failed promotion; the worktree is preserved and named in the error instead of being deleted.
+- **AC-57.3 (Stop means last functional state)**: aborting or stopping mid-iteration discards the
+  sandbox and leaves the primary tree at the last promoted increment. `--no-sandbox` warns that it
+  cannot offer this guarantee.
+- **AC-57.4 (Harness-authored commit)**: the checkpoint uses `GIT_AUTHOR_*`/`GIT_COMMITTER_*` and
+  `--no-gpg-sign`, so a missing identity or signing key cannot lose the increment; the hardened
+  `git()` seam still refuses user-supplied `-c`.
+- **AC-57.5 (Tracked local changes are parked, not silently overwritten)**: before integration,
+  `promoteSandbox` also parks tracked primary-tree paths that the branch changes and that have staged
+  or unstaged modifications: the user's content (or deletion) is backed up under
+  `.huginn/promotion-backup/<stamp>/` with a `manifest.json`, and the index/worktree is reset to
+  `HEAD` so `git merge`/`git cherry-pick` can proceed. A successful promotion names the backup in the
+  run log and the live post-cycle prompt.
+- **AC-57.6 (Exact rollback, fail closed on partial staging)**: when integration still conflicts,
+  every parked tracked file is restored with its content/mode and its staged/unstaged state
+  (`git add` / `git rm --cached`). A partially staged file or a staged *new* file is refused
+  (`failure: "failed"`, branch preserved) instead of guessing its index state.
+
+### REQ-58: The native pi driver reports its own MCP servers
+- **AC-58.1 (Port and bridge)**: `RuntimePort` exposes optional `listMcpServers()` and `mcpStatus()`;
+  `toRuntimePort`/`toLegacyRuntime` forward them, and a driver that cannot see MCP still reports
+  `unverified: true` rather than a fabricated healthy report.
+- **AC-58.2 (Real listing + fast fallback)**: the pi driver runs `pi mcp list --json` in the project
+  directory (bounded), parses `{ servers: [{ name, state, transport, scope, source, tools }] }` and
+  maps `connected`/`disabled`/`error`/`pending` honestly; `getMcpStatus()` reads
+  `~/.pi/agent/mcp.json` and `<project>/.pi/mcp.json` as the config fallback.
+- **AC-58.3 (Badge truth)**: `reportFromListings` sums the reported tool counts, so the badge can say
+  `MCP: 🟢 2 connected (214 tools) · pi`; config-only discovery says `⚪ n configured`, never `none`
+  while pi has servers, and a failed server is `🟡 error` (degraded), never live.
+- **AC-58.4 (Timeout honesty)**: when a slow listing outruns the poll, `fetchMcpStatusWithTimeout`
+  uses the reserved budget for config discovery instead of showing a bare timeout.
+
+### REQ-59: Agent-owned resources are documented, not proxied
+- **AC-59.1 (`pi` in-process)**: the README/AGENTS documentation states that the pi SDK's resource
+  loader supplies pi's own MCP config, skills and `AGENTS.md`; huginn observes and reports them but
+  does not re-declare or re-connect them.
+- **AC-59.2 (Subprocess runtimes)**: the same documentation states that each CLI loads its own
+  resources, and that huginn's `.huginn/skills`/`.opencode/skills` are a live-console feature and are
+  not injected into the pipeline prompts.

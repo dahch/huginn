@@ -2,8 +2,46 @@
 
 ## Unreleased
 
+### Added
+
+- **Scrum-style increments.** Iterations are now planned, executed and persisted as vertical,
+  testable slices. The plan prompts require `Goal`, `Acceptance criteria` and a fenced
+  `Verification:` block; the parser feeds them to `EXECUTE`, `TEST_MODULE` and the QA audit, and a
+  new deterministic `VERIFY` phase runs those commands in the sandbox and gates on their real exit
+  codes (blocking + `FIX_VERIFY` on failure). Every profile runs it before `COMMIT_ALL`.
+- **Atomic iteration checkpoint.** Before a sandbox is promoted, huginn commits anything
+  `COMMIT_ALL` left uncommitted (`chore(iter-N): checkpoint — …`), so a successful increment can
+  never be discarded silently. A dirty sandbox with zero commits is now a failed promotion that
+  preserves the worktree, and stopping a run leaves the primary tree at the last promoted increment.
+- **Tracked local changes are parked during promotion.** A tracked file with staged or unstaged
+  modifications that the iteration also changes (the real `README.md` conflict) is backed up under
+  `.huginn/promotion-backup/<stamp>/` with a `manifest.json`, reset to `HEAD`, and the iteration is
+  promoted. A failed integration restores the content, mode and staged/unstaged index state. Partial
+  staging and staged new files keep the fail-closed branch-preserving path.
+- **Native pi MCP reporting.** The `RuntimePort` exposes `listMcpServers`/`mcpStatus`, the bridges
+  forward them, and the pi driver lists `pi mcp list --json` (real state + tool counts) with
+  `~/.pi/agent/mcp.json` and `<project>/.pi/mcp.json` as the config fallback. The badge no longer
+  says `none` while pi has servers; it can report `🟢 2 connected (214 tools) · pi` or `⚪ 2 configured`.
+
+### Changed
+
+- `--no-verify` / `"verify": false` skips the plan's verification commands; plans without the
+  increment sections still run (the phase passes with a note).
+- The `MCP` badge distinguishes a failed server (`🟡 error`) from an unprobed one (`⚪ configured`)
+  and reserves part of its poll budget for fast config discovery.
+
 ### Fixed
 
+- **A failed cycle no longer says "Cycle completed!".** The live console now reads
+  `CycleEngine.run()`'s outcome: an error/abort is reported as such, names the preserved sandbox
+  branch, and does not emit a second `done (completed)` after the engine already failed. The
+  post-cycle modal title is neutral (`CYCLE FINISHED`), so a promotion conflict cannot read as success.
+- **The run dashboard's `AGENT OUTPUT` no longer hides the last phase report behind a blank stream
+  row.** A buffer that only holds `""` is treated as "no stream" (matching the live view), so the
+  report tail or the raven idle state is shown instead of an empty box.
+- **Live Tab is no longer a silent no-op when the agent-output panel is collapsed.** The footer
+  hides `[Tab] Focus` until there are two cards, and pressing Tab explains that the panel appears
+  with stream content and that PgUp/PgDn scroll the conversation.
 - **Muninn could not open its database in the published bundle.** `bun build` had baked the CI
   runner's absolute path (`/home/runner/…/better-sqlite3/build/Release/better_sqlite3.node`) into
   the native binding, so every installed copy reported Muninn as unavailable while a source checkout

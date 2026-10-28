@@ -1349,24 +1349,36 @@ avoids. They are ordered by how central the decision is to the design.
   an empty folder. The colliding file was huginn's own: `injectRulesForTarget` writes
   `<project>/AGENTS.md` after the bootstrap commit, so it is untracked and collides with the
   doc-writer's `AGENTS.md`. Integration only ever handled *committed* work; it had no notion of a
-  working-tree collision it could not overwrite.
+  working-tree collision it could not overwrite. A later real run exposed the second half of the same
+  bug: a **tracked** `README.md` with uncommitted local edits blocked the merge the same way, and the
+  live console still said “Cycle completed!” because it ignored the engine's outcome.
 - **Decision**:
-  1. **Resolve collisions before integrating, non-destructively.** `promoteSandbox` detects the paths
-     it would overwrite (untracked in the primary tree ∩ added/changed by the branch), backs each one
-     up under `<project>/.huginn/promotion-backup/<stamp>/` with its mode preserved, removes the
-     working-tree copy, and then integrates. The backup directory is part of the result.
+  1. **Resolve collisions before integrating, non-destructively.** `promoteSandbox` detects both
+     classes of paths it would overwrite — untracked files **and** tracked files with staged/unstaged
+     local changes — and parks each one under `<project>/.huginn/promotion-backup/<stamp>/` with its
+     mode/symlink form preserved. Untracked copies are removed from the working tree; tracked files are
+     reset to `HEAD` (index **and** worktree) so the merge/cherry-pick can proceed. A `manifest.json`
+     records every parked path, including a tracked deletion that has no content copy. The backup
+     directory is part of the result and is named in the run log/post-cycle message.
   2. **Fail recoverable.** If integration still fails, the primary tree is restored to its
-     pre-promotion state (every backup put back), the branch is preserved for manual recovery, and the
-     manager returns `promoted:false` with the detail — never a silent discard.
+     pre-promotion state — every backup put back, and a tracked file's staged/unstaged state
+     reproduced (`git add` or `git rm --cached`) — the branch is preserved for manual recovery, and the
+     manager returns `promoted:false` with the detail, never a silent discard. Partial staging and a
+     staged *new* file are refused (fail closed) rather than guessed: their exact index state cannot be
+     restored without copying index blobs, and the branch already holds the iteration.
   3. **Report the outcome, do not overload it.** The engine records
      `state.promotion = { status, branch, backups?, detail? }`; a promotion failure is an
-     `error`/`conflict`, not an abort. `renderProgressMarkdown` and the TUI name the preserved branch.
+     `error`/`conflict`, not an abort. `renderProgressMarkdown`, the run dashboard and the live
+     post-cycle prompt all read the outcome — a failed cycle can never render “Cycle completed!”.
 - **Consequences**:
   - *Positive*: a completed iteration's work is always reachable — either on the primary branch or on
-    a named branch with a backup of anything that had to move; `ABORTED` regains its meaning (the user
-    stopped the run).
-  - *Negative*: promotion now writes to `.huginn/promotion-backup/` (which is gitignored), and the
-    state schema grows an optional `promotion` field that the renderer must handle for old state files.
+    a named branch with a backup of anything that had to move; a user's uncommitted tracked edit no
+    longer blocks the increment (it is parked, with a manifest, and named in the post-cycle prompt);
+    `ABORTED` regains its meaning (the user stopped the run).
+  - *Negative*: promotion now writes tracked local changes out of the working tree into
+    `.huginn/promotion-backup/` (gitignored, self-ignoring), the state schema grows an optional
+    `promotion` field that the renderer must handle for old state files, and partial staging/staged-new
+    collisions keep the old fail-closed path.
 
 ## ADR-49: One root for Muninn — the `--project` root governs the database and the project record
 
@@ -1400,17 +1412,24 @@ avoids. They are ordered by how central the decision is to the design.
   only when `runtime.id === "opencode"`. Every subprocess runtime therefore emits nothing, and the
   `run` dashboard's `StreamCard` rendered `(waiting for agent stream / tool executions...)` for the
   entire run — while the phase's real `PhaseResult.text` was discarded down to a one-line
-  `ReportPill`. The user read this, correctly, as a dead console.
-- **Decision**: the panel always has something true to show. When no stream content has arrived and a
-  phase has finished, it renders the tail of that phase's real report. When nothing has arrived at all,
-  it renders an idle raven state — a small two-raven ASCII composition (Huginn and Muninn) beside a
-  rotating raven-voiced phrase — and, for runtimes that cannot stream, one honest line naming the
-  runtime and the reason. The capability is a flag on `IAgentRuntime`, not a hardcoded id list, so a
-  future streaming adapter is described correctly without a second edit.
+  `ReportPill`. The user read this, correctly, as a dead console. A second report showed a blank
+  stream buffer (`[""]`, the result of flushing a phase that emitted nothing) being counted as a
+  stream, which hid the report behind an empty row.
+- **Decision**: the panel always has something true to show. A stream is only real when at least one
+  line has non-whitespace content (the same rule as the live view); a blank-only buffer is “no stream”.
+  When no stream content has arrived and a phase has finished, the panel renders the tail of that
+  phase's real report. When nothing has arrived at all, it renders an idle raven state — a small
+  two-raven ASCII composition (Huginn and Muninn) beside a rotating raven-voiced phrase — and, for
+  runtimes that cannot stream, one honest line naming the runtime and the reason. The capability is a
+  flag on `IAgentRuntime`, not a hardcoded id list, so a future streaming adapter is described
+  correctly without a second edit. The live view applies the same rule: with only one card mounted,
+  Tab is not a silent no-op — it explains that the agent-output panel appears with stream content and
+  points at PgUp/PgDn for the conversation, and the footer stops advertising `[Tab] Focus` until
+  there are two cards.
 - **Consequences**:
   - *Positive*: the panel never looks broken; the agent's actual output is visible with every runtime;
     the live console's adaptive rule (REQ-35.1/35.2) is now shared behaviour rather than a live-only
-    quirk.
+    quirk; a collapsed panel no longer makes a documented key look broken.
   - *Negative*: the panel has three body modes (stream / report / idle) that must each fit the card's
     row budget at 80×24, and the idle copy is one more string to keep sanitized.
 
@@ -1470,3 +1489,63 @@ avoids. They are ordered by how central the decision is to the design.
     registry/cheat sheet/context panel all surface it.
   - *Negative*: the "applies to the next cycle" rule must be stated in the UI and tested, and the live
     engine now holds one more settable field that the header and `/status` must reflect.
+
+## ADR-54: Iterations are verified increments, not prompt-shaped layers
+
+- **Date**: 2026-11-25
+- **Status**: Accepted
+- **Context**: the plan format only required `## Iteration N — Title` plus an optional `modules:`
+  line. The thinker could (and did) schedule “foundations only” layers, and the engine had no
+  deterministic proof that an increment left the app runnable: `TEST_MODULE`/`VALIDATE_STEP` are
+  model-judged, and a dirty sandbox with no commits was discarded by `promoteSandbox`. Stopping a run
+  could therefore leave the primary tree at an arbitrary state, and a completed iteration could vanish
+  if `COMMIT_ALL` did not commit.
+- **Decision**:
+  1. **Plan contract.** `planPrompt`/`remainingPlanPrompt` carry the shared `INCREMENT_CONTRACT`
+     (vertical slice, runnable app, green tests, no forward dependency, hello-world first). Every
+     iteration must declare `Goal`, `Acceptance criteria` and a fenced `Verification:` block;
+     `parsePlan` extracts them into `Iteration` while keeping the body as the verbatim executor prompt.
+     New drafts are validated against the contract; plans already on disk stay loadable.
+  2. **Deterministic `VERIFY`.** A first-class phase runs the declared commands in the sandbox,
+     sequentially, with a per-command deadline and process-group termination, and gates on the real
+     exit codes (`authoritativeVerdict`). A failure feeds `FIX_VERIFY`; every profile runs `VERIFY`
+     before `COMMIT_ALL`; `--no-verify` / `"verify": false` disables execution.
+  3. **Atomic increment.** After the phase loop and before promotion, `commitPendingChanges` commits
+     anything `COMMIT_ALL` left uncommitted (`chore(iter-N): checkpoint — …`), using the harness
+     identity and `--no-gpg-sign`. Promotion integrates commits, so a successful increment cannot be
+     discarded; stopping mid-iteration discards the sandbox and leaves the primary tree at the last
+     promoted increment. In-place execution warns that it cannot offer the guarantee.
+- **Consequences**:
+  - *Positive*: an iteration boundary is a real, testable state; “it works” is an exit code rather
+    than a model's sentence; the post-cycle view and `PROGRESS.md` can name exactly what was verified.
+  - *Negative*: `Verification:` is trusted plan input executed in the sandbox (documented, sandboxed,
+    and opt-out), the plan contract makes drafting stricter, and every profile/state/glyph enumeration
+    grows `VERIFY`/`FIX_VERIFY`.
+
+## ADR-55: Native runtimes report MCP through the port, not through a hardcoded empty report
+
+- **Date**: 2026-11-25
+- **Status**: Accepted
+- **Context**: `getEngineRuntime("pi")` wraps the native in-process driver with
+  `toLegacyRuntime`, whose `getMcpStatus()` returned an empty, unverified report. The badge therefore
+  said `MCP: ⚪ none · pi` even when pi had `muninn` and `rea` connected, while the CLI-shaped
+  `PiRuntimeAdapter` could already read `~/.pi/agent/mcp.json` and `<project>/.pi/mcp.json`. The port
+  also had a `mcpListing` capability but no way to answer it.
+- **Decision**:
+  1. `RuntimePort` gains optional `listMcpServers()` and `mcpStatus()`; `toRuntimePort`/`toLegacyRuntime`
+     forward them, and a driver that omits them still reports `unverified: true` rather than healthy.
+     The conformance suite fails a driver that claims `mcpListing` without either method.
+  2. The native pi driver runs `pi mcp list --json` (bounded, `cwd = project`) for real state and tool
+     counts, and reads the two config files as the fast fallback. `McpServerListing` carries
+     `toolsCount`/`tools`, so `reportFromListings` totals them (`🟢 2 connected (214 tools) · pi`).
+  3. `fetchMcpStatusWithTimeout` reserves a slice of its budget for config discovery, so a slow listing
+     shows `⚪ n configured` instead of a bare timeout; the in-flight listing lands in the 60 s cache.
+  4. The default pi session keeps the SDK's `DefaultResourceLoader`, so pi's own MCP servers, skills
+     and `AGENTS.md` are available to the phase prompt; huginn only observes and reports them.
+- **Consequences**:
+  - *Positive*: the badge stops lying for the native driver; failed servers are `🟡 error` and
+    configured servers are `⚪ configured`, never “connected” without a probe; the same port works for
+    future native drivers.
+  - *Negative*: the pi CLI becomes the liveness source (a config-only fallback is honest but not live),
+    and a project-scoped `.pi`/`.agents` directory is symlinked into sandboxes so untracked resources
+    still reach the session.

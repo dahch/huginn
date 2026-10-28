@@ -96,7 +96,7 @@ src/
 │   │   ├── types.ts        Skill contract (id, name, description, triggers, body, filePath, builtin)
 │   │   └── index.ts        barrel export for the skills subsystem
 │   ├── engineEvents.ts     global typed event emitter
-│   ├── worktree.ts         git worktree sandbox manager (create/promote/discard/list/cleanup, untracked-file parking + branch preservation)
+│   ├── worktree.ts         git worktree sandbox manager (create/promote/discard/list/cleanup, untracked/tracked-collision parking + branch preservation)
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
 ├── muninn/
 │   ├── db/
@@ -213,6 +213,7 @@ interface PipelineStep {
 | EXECUTE | `execute` | none | — | — | — |
 | VALIDATE_STEP | `validateStep` | validate-step | FIX_VALIDATE | ✅ | ✅ |
 | TEST_MODULE | `testModule` | judge | FIX_TEST | ✅ | — |
+| VERIFY | `verifyIteration` | none (structural) | FIX_VERIFY | ✅ | — |
 | SECURE_CHECK | `secureCheck` | judge | FIX_SECURITY | ✅ | ✅ |
 | REVIEW | `review` | judge | FIX_REVIEW | ✅ | ✅ |
 | DOC_SYNC | `docSync` | none | — | — | — |
@@ -224,11 +225,25 @@ name opencode's built-in `build` agent (§ 28.2). The `readOnly` flag is enforce
 engine hashes the work tree before and after the step (`treeHash`) and forces `blocked` when the
 signature is missing or changed (§ 5).
 
+`VERIFY` is the one step that is **not** a prompt: `verifyIteration` (`src/engine/verify.ts`) runs the
+plan's `**Verification:**` commands in the iteration sandbox with a per-command deadline and process
+group termination, and returns `authoritativeVerdict` from the real exit codes. The plan parser
+(`src/plan/parser.ts`) supplies those commands, plus `Goal` and `Acceptance criteria`, to `EXECUTE`,
+`TEST_MODULE` and the QA audit. A plan without the sections passes with a note (`--no-verify` skips
+the execution entirely).
+
+After the phase loop, `CycleEngine.runIteration` makes the increment atomic: it calls
+`WorktreeManager.commitPendingChanges` for anything `COMMIT_ALL` left uncommitted, writes the receipt,
+and only then promotes the sandbox. A dirty sandbox with zero commits is a failed promotion that
+preserves the worktree; an abort discards the sandbox and leaves the primary tree at the last
+promoted increment.
+
 That table is the **Huginn Cycle** — `profile: "huginn"`, the default. Since REQ-36 the pipeline is
 selected per run from `PROFILES` (`src/engine/profiles.ts`), a record of named `PhaseName[]`
 pipelines; `sdd`/`odd`/`rdd` reorder or subset these same steps (each step keeps its own `gate`/`fix`
 column), and `strict-tdd` adds a second `TEST_MODULE` that is *expected to fail* and never blocks
-(REQ-36, § 27.4). `--only-phase` validates against the union of every profile's phases.
+(REQ-36, § 27.4). Every profile runs `VERIFY` before `COMMIT_ALL`, so no methodology can promote an
+unverified increment. `--only-phase` validates against the union of every profile's phases.
 
 The retry/fix/escalation loop (`runPhase`) is the same for every step:
 
@@ -517,10 +532,10 @@ treated like any other gate — fail closed to a human decision
 
 - **Interactive TUI & Markdown Rendering** (`src/tui/LiveDashboard.tsx`, `src/tui/markdown.tsx`):
   - Two parallel scrollable cards (`ScrollableChatCard` for human-thinker dialogue, `ScrollableStreamCard` for real-time thinking and reasoning tokens) rendered concurrently.
-  - `[Tab]` toggles active card focus with visual border highlighting (`cyanBright` on the active panel).
+  - `[Tab]` toggles active card focus with visual border highlighting (`cyanBright` on the active panel) when both cards are mounted; if the agent-output card is collapsed (no stream content), it explains that and points at `PgUp`/`PgDn`, and the footer omits the `[Tab] Focus` hint.
   - `[PageUp]` / `[PageDown]` scrolls the focused card by 4 lines at any time without losing in-flight input; `[↑]` / `[↓]` recall previous composer submissions while the draft is empty, and scroll the focused agent-output card when it is shown and focused.
   - Native terminal Markdown token rendering via `MarkdownLine` formats inline bold, italic, code backticks, headers, bullet points, numbered lists, and code blocks natively in Ink.
-  - Post-execution continuous loop: upon completing all plan iterations in `live` mode, a `post-cycle-live` decision modal prompts the user to either exit cleanly (`[c]` / `[a]`) or return to the live refinement loop (`[r]`) with state and thinker context preserved for the next set of tasks.
+  - Post-execution continuous loop: after `cycle.run()` in `live` mode, a `post-cycle-live` decision modal reads the **outcome** — completed, aborted, or error with the preserved branch/backups — and prompts the user to either exit cleanly (`[c]` / `[a]`) or return to the live refinement loop (`[r]`) with state and thinker context preserved. A failed promotion can never render “Cycle completed!”.
 
 ## 9. Concurrency and event model
 
@@ -630,7 +645,7 @@ flowchart LR
 16. **Stdio Transport Stream Hygiene**: `huginn mcp run` maintains absolute silence on `stdout` (no banners, no startup logging, no ANSI color sequences) to ensure standard JSON-RPC 2.0 frames over stdio are never corrupted.
 17. **Disambiguated Keyword Positionals**: The CLI parser separates subcommand names from subsequent positional arguments (`_positionals[0]` vs `_positionals.slice(1)`), preventing argument shadowing when keywords like `"search"` or `"sync"` are searched or referenced.
 18. **Boolean Flag Ingestion Safety**: `BOOLEAN_FLAGS` enforcement in `parseArgs` guarantees that standalone flags (e.g. `--import`, `--yes`, `--force`) never consume subsequent positional tokens or flags.
-19. **A completed iteration is never stranded or silently discarded**: `promoteSandbox` parks (never overwrites) the untracked files an integration would have clobbered, a failure puts them back and keeps the `huginn/task-iter-<N>` branch, and the run reports a **promotion failure** rather than an abort; the next run renames the branch under `huginn/preserved/` before its sweep, which does not match the reclaim pattern. A `git log` failure is reported as a failure, never as "no commits" (§ 19.4, ADR-48).
+19. **A completed iteration is never stranded or silently discarded**: `promoteSandbox` parks (never overwrites) the local paths an integration would have clobbered — untracked files **and** tracked files with staged/unstaged changes — a failure puts them back (including the index state) and keeps the `huginn/task-iter-<N>` branch, and the run reports a **promotion failure** rather than an abort; the next run renames the branch under `huginn/preserved/` before its sweep, which does not match the reclaim pattern. A `git log` failure is reported as a failure, never as "no commits" (§ 19.4, ADR-48).
 20. **One root for Muninn**: the database file and the project row are resolved from the same `--project` root (or the git root of the start directory), and every `.huginn` write — database, JSONL export (both directions), promotion backup — is symlink-screened (§ 13, ADR-49).
 21. **A panel never claims output it cannot receive**: `IAgentRuntime.streamsOutput` decides whether an output surface may present itself as live; every other runtime shows the phase report or an idle state (§ 32.2, ADR-50).
 
@@ -775,7 +790,7 @@ agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`
 | `codex` | OpenAI Codex CLI | `<home>/.codex/config.toml` | `toml` (`[mcp_servers.muninn]`) | `AGENTS.md` |
 | `agy` | Antigravity CLI (agy) | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` | `AGENTS.md` |
 | `kimi` | Kimi Code CLI | `<home>/.kimi-code/mcp.json`, `<project>/.kimi/mcp.json` | `mcpServers` | `AGENTS.md` |
-| `pi` | Pi coding agent | `<home>/.pi/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` | `AGENTS.md` |
+| `pi` | Pi coding agent | `<home>/.pi/agent/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` | `AGENTS.md` |
 | `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.commandcode/mcp.json` | `mcpServers` | `AGENTS.md` |
 | `omp` | Oh My Pi | `<home>/.omp/mcp.json`, `<project>/.omp/mcp.json` | `mcpServers` | `AGENTS.md` |
 | `mcode` | MiniMax Code | `<project>/.mcp.json` | `mcpServers` | `AGENTS.md` |
@@ -863,11 +878,11 @@ stateDiagram-v2
     Running --> Discarded: abort / phase error → discardSandbox()
     Promoted --> [*]: merge --ff-only | cherry-pick; worktree+branch removed
     Discarded --> [*]: worktree+branch removed; primary tree untouched
-    Running --> Parked: untracked collisions → .huginn/promotion-backup/<stamp>/
+    Running --> Parked: local collisions (untracked / tracked-modified) → .huginn/promotion-backup/<stamp>/
     Parked --> Promoted: integration retried (ff, else cherry-pick)
     Parked --> Failed: parking failed → no integration attempt
     Running --> Conflict: integration fails both strategies
-    Conflict --> [*]: cherry-pick --abort, parked files restored, worktree removed, branch KEPT, run fails closed as an error
+    Conflict --> [*]: cherry-pick --abort, parked files restored (index state included), worktree removed, branch KEPT, run fails closed as an error
     Failed --> [*]: worktree removed, branch KEPT, parked files put back, run fails closed as an error
 ```
 
@@ -876,36 +891,46 @@ stateDiagram-v2
 | method | behavior |
 |---|---|
 | `createSandbox(projectRoot, iteration)` | resolves HEAD, **fails closed** (throws, no mutation) if the repo has no HEAD commit or the branch/path already exists, and screens the target path with `assertDocPath` (a tracked `.huginn` symlink cannot redirect the worktree out of the project, SEC-104); then `git worktree add -b <branch> <path> HEAD` (parent `0o700`); symlinks shared deps |
-| `promoteSandbox(sandbox)` | parks untracked collisions, then integrates via `git merge --ff-only <branch>`, else `git cherry-pick <baseCommit>..<branch>`; returns `{ promoted, method: "ff"\|"cherry-pick"\|"none", commits, backups?, detail?, failure? }` |
+| `promoteSandbox(sandbox)` | parks local collisions (untracked and tracked-modified), then integrates via `git merge --ff-only <branch>`, else `git cherry-pick <baseCommit>..<branch>`; returns `{ promoted, method: "ff"\|"cherry-pick"\|"none", commits, backups?, detail?, failure? }` |
 | `discardSandbox(sandbox)` | removes the worktree (`--force`, tolerant) and deletes the ephemeral branch; idempotent; never touches the primary tree |
 | `listSandboxes()` | parses `git worktree list --porcelain`, keeping only entries under `<root>/.huginn/worktrees/` |
 | `cleanupAll()` | discards every listed sandbox **and** deletes orphaned `huginn/task-iter-*` branches with no worktree (safety net); returns the reclaimed resource count |
 | `preserveOrphanBranch(branch)` | renames a preserved sandbox branch out of the reclaim namespace (`huginn/task-iter-<N>` → `huginn/preserved/task-iter-<N>-<stamp>`); returns the new name, or `null` when the name is not a sandbox branch or it does not exist |
 
-- **Dependency symlinks (AC-17.3)**: if `node_modules` and/or `.env` exist at the project root and
-  not already in the sandbox, a symlink is created pointing at the root copy (never overwriting a
-  real file/dir). Symlink failures are non-fatal warnings.
-- **Untracked-collision parking (AC-49.1)**: `untrackedCollisions(root, sandbox)` intersects
-  `git ls-files -z --others --exclude-standard` in the primary tree with
-  `git diff --name-only -z <baseCommit>..<branch>` (paths escaping the project, and huginn's own
-  `.huginn/`/`.harness/` artifacts, are dropped) — exactly the paths `git merge` refuses to overwrite,
-  which is what used to strand a completed iteration. Each one is parked under
-  `<root>/.huginn/promotion-backup/<stamp>/<relPath>`: a **symlink is backed up as a link** (never
-  followed), a regular file with its mode minus setuid/setgid bits, and anything else (a directory, a
-  FIFO) is refused because it could not be restored. The directory is allocated through `assertDocPath`
-  (`action: "write"`, a unique `<stamp>`/`<stamp>-<n>` retry), created `0o700` with a self-ignoring
-  `.gitignore` holding `*`, so parked content is never committed even on a project whose `.gitignore`
-  does not list `.huginn/`.
+- **Dependency symlinks (AC-17.3)**: if `node_modules`, `.env`, `.pi` and/or `.agents` exist at the
+  project root and not already in the sandbox, a symlink is created pointing at the root copy (never
+  overwriting a real file/dir). This keeps the iteration runnable and keeps the agent's own
+  project-scoped MCP config/skills available even when they are untracked. Symlink failures are
+  non-fatal warnings.
+- **Collision parking (AC-49.1)**: `parkCollisions` handles both classes of paths `git merge` refuses
+  to overwrite:
+  - **Untracked**: `git ls-files -z --others --exclude-standard` ∩
+    `git diff --name-only -z <baseCommit>..<branch>`.
+  - **Tracked-modified**: `git diff --name-only -z` (unstaged) and
+    `git diff --cached --name-only -z` (staged) ∩ the branch's paths, restricted to paths present in
+    `HEAD`. The user's content is copied (or the deletion recorded), then
+    `git restore --source=HEAD --staged --worktree` resets the path so integration can proceed.
+  - Paths escaping the project and huginn's own `.huginn/`/`.harness/` artifacts are dropped. Partial
+    staging and staged *new* files are refused (`failure: "failed"`) rather than guessed.
+  - Each one is parked under `<root>/.huginn/promotion-backup/<stamp>/<relPath>`: a **symlink is
+    backed up as a link** (never followed), a regular file with its mode minus setuid/setgid bits, and
+    anything else (a directory, a FIFO) is refused because it could not be restored. A
+    `manifest.json` records every entry (including a tracked deletion and its staged bit). The
+    directory is allocated through `assertDocPath` (`action: "write"`, a unique
+    `<stamp>`/`<stamp>-<n>` retry), created `0o700` with a self-ignoring `.gitignore` holding `*`, so
+    parked content is never committed even on a project whose `.gitignore` does not list `.huginn/`.
 - **Promotion & failure policy (AC-17.4, AC-49.2)**: on success the worktree and branch are removed and
-  any backup directory is returned in `backups` so the files are discoverable. On a **conflict** (both
-  strategies fail) the primary tree is restored with `git cherry-pick --abort`, **every parked file is
-  put back**, the worktree is removed, but the `huginn/task-iter-<N>` branch is **kept** so the sandbox
-  work stays recoverable by hand; the result carries `failure: "conflict"` and a sanitized `detail`. A
-  parking failure never attempts the integration at all: the result is `failure: "failed"` with the
-  branch (and any un-restorable backup directory) preserved. A `git log` that cannot be read is
-  reported as `failure: "failed"` rather than "no commits", so a read error can never delete a branch
-  (REV-005). A zero-commit sandbox stays a `method: "none"` no-op that still cleans up; only a
-  directory that still holds content is ever named in `backups` (NFR-17).
+  any backup directory is returned in `backups` so the files are discoverable (and named in the run
+  log and live post-cycle prompt). On a **conflict** (both strategies fail) the primary tree is
+  restored with `git cherry-pick --abort`, **every parked file is put back** — including a tracked
+  file's staged/unstaged state (`git add` / `git rm --cached`) — the worktree is removed, but the
+  `huginn/task-iter-<N>` branch is **kept** so the sandbox work stays recoverable by hand; the result
+  carries `failure: "conflict"` and a sanitized `detail`. A parking failure never attempts the
+  integration at all: the result is `failure: "failed"` with the branch (and any un-restorable backup
+  directory) preserved. A `git log` that cannot be read is reported as `failure: "failed"` rather than
+  "no commits", so a read error can never delete a branch (REV-005). A zero-commit sandbox stays a
+  `method: "none"` no-op that still cleans up; only a directory that still holds content is ever named
+  in `backups` (NFR-17).
 
 #### CycleEngine wiring (AC-17.6)
 
@@ -1486,6 +1511,22 @@ In addition to target agent configuration files (e.g. `~/.config/opencode/openco
 
 ---
 
+### 23.8 Native driver reporting (`pi`)
+
+The badge originally described the active `IAgentRuntime`. After the native `pi` driver landed, the
+engine runtime is a `RuntimePort` wrapped by `toLegacyRuntime`, whose `getMcpStatus()` used to return
+an empty, unverified report — so the badge said `none` even when pi had servers. The fix moves the
+question into the port:
+
+- `RuntimePort` gains optional `listMcpServers()` and `mcpStatus()`; both bridges forward them, and a
+  driver that omits them still yields `unverified: true`, never a healthy report.
+- `pi-sdk.ts` implements `listMcpServers()` with `pi mcp list --json` (bounded, `cwd = project`) and
+  `mcpStatus()` with `~/.pi/agent/mcp.json` + `<project>/.pi/mcp.json` (`readMcpConfigFile`). The
+  listing carries `toolsCount`/`tools`, so `reportFromListings` can total them.
+- `fetchMcpStatusWithTimeout` reserves a slice of its budget for the config fallback: a slow listing
+  that outruns the poll shows `⚪ n configured` instead of `🟡 timeout`, and the in-flight listing lands
+  in the 60 s cache for the next poll.
+
 ## 24. Extensible Skills System & Rich Live Slash Commands
 
 Iteration 23 adds a file-based **skills subsystem** (`src/engine/skills/`) and turns the Live console input bar into a first-class command surface (`/help`, `/agent`, `/skills`, `/status`, …) backed by two new modals (`HelpModal`, `SkillsModal`).
@@ -1991,11 +2032,11 @@ optional `preamble` folded into the iteration prompt:
 
 | profile | phases | evidence |
 |---|---|---|
-| `huginn` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → SECURE_CHECK → REVIEW → DOC_SYNC → COMMIT_ALL | none |
-| `sdd` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → REVIEW → DOC_SYNC → COMMIT_ALL (+ spec-first preamble) | receipt |
-| `odd` | EXECUTE → TEST_MODULE → COMMIT_ALL | none |
-| `rdd` | EXECUTE → TEST_MODULE → VALIDATE_STEP → COMMIT_ALL | receipt |
-| `strict-tdd` | TEST_MODULE → EXECUTE → TEST_MODULE → VALIDATE_STEP → COMMIT_ALL | snapshot |
+| `huginn` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → VERIFY → SECURE_CHECK → REVIEW → DOC_SYNC → COMMIT_ALL | none |
+| `sdd` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → REVIEW → DOC_SYNC → VERIFY → COMMIT_ALL (+ spec-first preamble) | receipt |
+| `odd` | EXECUTE → TEST_MODULE → VERIFY → COMMIT_ALL | none |
+| `rdd` | EXECUTE → TEST_MODULE → VALIDATE_STEP → VERIFY → COMMIT_ALL | receipt |
+| `strict-tdd` | TEST_MODULE → EXECUTE → TEST_MODULE → VALIDATE_STEP → VERIFY → COMMIT_ALL | snapshot |
 
 - **Surface.** `--profile <id>` on `run` and `live`, `profile` in `RunConfig`/`UserConfig`/
   `stateSchema` (sanitized like `mode`), and `huginn config set --profile`. `resolveProfile` fails
@@ -2172,7 +2213,7 @@ flowchart LR
 - `promptWithContext` is the only path a step takes, and the only `agent` it ever names is opencode's
   built-in `build` (`EXECUTE` and the `FIX_*` phases), so a subprocess runtime receives the same text
   as a plain prompt and opencode's session keeps the build agent's tools. Nothing calls `runCommand`
-  any more, which is why the same eight phases now run on every runtime.
+  any more, which is why the same phases (including the deterministic `VERIFY`) run on every runtime.
 - `validateStep` is huginn-orchestrated: qa (`auditOnlyGuardrails()` → `AUDIT-ONLY MODE`, run the
   suite once non-interactively, write no artefact), spec-auditor, security, then a synthesis turn
   that receives the three reports. The sub-prompts demand the deterministic final lines
@@ -2465,7 +2506,7 @@ there; the pieces that live outside `worktree.ts`:
   written before this sub-phase still parse. The engine records it on every iteration (reset per
   iteration) and persists it with the failure.
 - **`renderProgressMarkdown`** (`src/state/store.ts`) renders a failure as
-  `✕ PROMOTION FAILED — branch \`<branch>\` preserved (untracked file(s) backed up under …)`, and keeps
+  `✕ PROMOTION FAILED — branch \`<branch>\` preserved (local change(s) backed up under …)`, and keeps
   `✕ ABORTED` (`STATUS_GLYPHS.blocked`) for a genuine abort and `✓ COMPLETED` (`STATUS_GLYPHS.pass`)
   for success; every interpolated branch/backup path is `sanitizeTerminalText`ed.
 - **Fail-closed but honest**: a promotion failure sets `outcome.reason = "error"` and finishes the run
@@ -2484,6 +2525,11 @@ there; the pieces that live outside `worktree.ts`:
    `IDLE_AGENT_PHRASES`/`idleAgentPhrase` (`src/tui/feedback.ts`), and one honesty line naming the
    active runtime and stating that each phase's report appears when it ends.
 
+A stream is only real when at least one line has non-whitespace content (the same rule as the live
+view): a buffer that only holds `""` — a phase that emitted nothing — falls through to the report or
+idle state instead of hiding it behind a blank row. The live view's collapsed-stream Tab hint is the
+same rule applied to focus: no second card, no `[Tab] Focus` claim.
+
 The capability comes from `IAgentRuntime.streamsOutput` (`src/engine/agent/types.ts`), not from a
 hardcoded target list: `true` on `OpencodeRuntimeAdapter`, `false` on
 `GenericSubprocessRuntimeAdapter` (and therefore on every adapter that inherits it), `undefined` read as
@@ -2501,7 +2547,7 @@ layout budget (`VIEWPORT_RESERVED_ROWS`) so it can never push the frame off-scre
 |---|---|
 | `STATUS_GLYPHS` | `pending` `·` · `running` the existing braille spinner (`⠋`) · `pass` `✓` · `warning` `!` · `blocked` `✕` · `skipped` `–` |
 | `verdictGlyph(v)` | the status glyph for a `Verdict` (replaces `verdictIcon`'s emoji) |
-| `phaseGlyph(phase)` | `SPEC_AUDIT` `?` · `EXECUTE` `>` · `VALIDATE_STEP` `=` · `TEST_MODULE` `%` · `SECURE_CHECK` `#` · `REVIEW` `@` · `DOC_SYNC` `~` · `COMMIT_ALL` `.` · any `FIX_*`/unknown `+` |
+| `phaseGlyph(phase)` | `SPEC_AUDIT` `?` · `EXECUTE` `>` · `VALIDATE_STEP` `=` · `TEST_MODULE` `%` · `VERIFY` `V` · `SECURE_CHECK` `#` · `REVIEW` `@` · `DOC_SYNC` `~` · `COMMIT_ALL` `.` · any `FIX_*`/unknown `+` |
 
 - `verdictIcon` (`src/format.ts`) now delegates to `verdictGlyph`, so a colour token is still resolved
   by the TUI while the character comes from the table (AC-52.4).
