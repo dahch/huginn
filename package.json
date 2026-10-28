@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "dev": "bun run src/cli.ts",
-    "build": "bun build src/cli.ts --target=bun --outdir=dist --minify --external @earendil-works/pi-coding-agent --external @openai/codex-sdk --external @anthropic-ai/claude-agent-sdk --external better-sqlite3",
+    "build": "bun build src/cli.ts --target=bun --outdir=dist --minify --external @earendil-works/pi-coding-agent --external @openai/codex-sdk --external @anthropic-ai/claude-agent-sdk --external better-sqlite3 --external @dahch/muninn --external typescript",
     "typecheck": "tsc --noEmit",
     "test": "bun test src && vitest run",
     "prepublishOnly": "bun run build && npm run test && bun run typecheck"
