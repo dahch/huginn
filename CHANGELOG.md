@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.3
+
+Thirteen commits since `2.0.0-rc.2`, 61 files: `src/engine` +1308/−92, `test` +538/−17,
+`src/plan` +288/−1, `src/tui` +63/−19, docs +588/−1077 (`DESIGN.md` alone drops 1001 lines that now
+live in [dahch/muninn](https://github.com/dahch/muninn)). Three features — the increment contract,
+the deterministic `VERIFY` phase with atomic promotion, and native pi MCP — land on top of a TUI
+correction pass (honest cycle outcome, reachable panels, a readable palette) and the packaging and
+documentation fixes below.
 
 ### Added
 
@@ -29,6 +36,10 @@
   increment sections still run (the phase passes with a note).
 - The `MCP` badge distinguishes a failed server (`🟡 error`) from an unprobed one (`⚪ configured`)
   and reserves part of its poll budget for fast config discovery.
+- The models are shown once, in the status header; the LIVE CONTEXT panel no longer repeats
+  `thinker`/`executor` (two rows freed, and a test keeps them out).
+- Re-tagging is safe now: the publish step skips when the version is already on npm, and the release
+  job updates the existing page from the changelog instead of skipping it.
 
 ### Fixed
 
@@ -49,12 +60,14 @@
 - The dark palette's secondary text was ANSI `gray` (bright black, ~#7f7f7f) and nearly invisible on
   a dark terminal: `muted`/`system` are `#9aa5b1` and the border `#5b6572`.
 
-### Changed
+### Docs
 
-- The models are shown once, in the status header; the LIVE CONTEXT panel no longer repeats
-  `thinker`/`executor` (two rows freed, and a test keeps them out).
-- Re-tagging is safe now: the publish step skips when the version is already on npm, and the release
-  job updates the existing page from the changelog instead of skipping it.
+- `DESIGN.md` replaces the in-tree Muninn chapters (13-18) with pointers to the package's own
+  design document, keeping only the wrapper surface and the two integration points; `ADR-54`
+  (verified increments) and `ADR-55` (MCP through the port) are new, and `SPEC.md` gains `REQ-49`,
+  `REQ-57`, `REQ-58` and `REQ-59`.
+- The README now says what a gate actually guarantees — it is parsed, not read, and it can block —
+  and how a receipt pins an iteration to its base commit, resulting commit and verified tree hash.
 
 ## 2.0.0-rc.2
 

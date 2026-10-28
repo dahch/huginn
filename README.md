@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/%40dahch%2Fhuginn)](https://www.npmjs.com/package/@dahch/huginn) [![license](https://img.shields.io/github/license/dahch/huginn)](https://github.com/dahch/huginn/blob/main/LICENSE) [![ci](https://img.shields.io/github/actions/workflow/status/dahch/huginn/publish.yml)](https://github.com/dahch/huginn/actions) [![stars](https://img.shields.io/github/stars/dahch/huginn)](https://github.com/dahch/huginn/stargazers) [![issues](https://img.shields.io/github/issues/dahch/huginn)](https://github.com/dahch/huginn/issues) [![bun](https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun)](https://bun.sh) [![TypeScript](https://img.shields.io/badge/stack-TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-> ### 2.0.0-rc.2 — the SDK rewrite, out for testing
+> ### 2.0.0-rc.3 — the SDK rewrite, out for testing
 >
 > Huginn now executes **five runtimes** instead of driving thirteen agent CLIs: `pi` and `codex` run
 > their SDK in-process or over their app-server, `claude` uses its agent SDK (optional, external, and
