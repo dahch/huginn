@@ -860,7 +860,10 @@ export class GenericSubprocessRuntimeAdapter implements IAgentRuntime {
   async listMcpServers(): Promise<McpServerListing[]> {
     const spec = this.options.mcpListCommand;
     if (!spec) return [];
-    return listMcpServersViaCommand(spec, { env: this.options.env });
+    return listMcpServersViaCommand(spec, {
+      env: this.options.env,
+      cwd: this.options.projectPath,
+    });
   }
 
   async getMcpStatus(): Promise<McpStatusReport> {

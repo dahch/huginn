@@ -101,6 +101,13 @@ export function toRuntimePort(runtime: IAgentRuntime): RuntimePort {
       return bridgeSession(session, options.sink);
     },
 
+    // The legacy contract already has these two methods; the port is where the
+    // native drivers put them, so forwarding keeps a CLI adapter usable both ways.
+    ...(typeof runtime.listMcpServers === "function"
+      ? { listMcpServers: () => runtime.listMcpServers!() }
+      : {}),
+    mcpStatus: () => runtime.getMcpStatus(),
+
     async dispose() {
       await runtime.stopDaemon?.();
     },
@@ -173,10 +180,27 @@ export function toLegacyRuntime(port: RuntimePort): IAgentRuntime {
       return port.listModels();
     },
 
+    ...(port.listMcpServers
+      ? { listMcpServers: () => port.listMcpServers!() }
+      : {}),
+
     async getMcpStatus(): Promise<McpStatusReport> {
-      // A native driver owns no MCP client of its own, so claiming health would
-      // be the always-green badge again: report "nothing verified" instead.
-      return { servers: [], totalTools: 0, healthy: false, unverified: true };
+      if (!port.mcpStatus) {
+        // A driver that cannot see MCP says "nothing verified", never "healthy":
+        // the always-green badge is exactly what this contract exists to stop.
+        return { servers: [], totalTools: 0, healthy: false, unverified: true };
+      }
+      try {
+        return await port.mcpStatus();
+      } catch (err) {
+        return {
+          servers: [],
+          totalTools: 0,
+          healthy: false,
+          degraded: true,
+          error: messageOf(err),
+        };
+      }
     },
 
     async createSession(options) {

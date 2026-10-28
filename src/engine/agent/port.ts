@@ -1,5 +1,10 @@
 import type { RuntimeId } from "../../agents/integrator.js";
-import type { ModelCatalog, PromptResult } from "./types.js";
+import type {
+  McpServerListing,
+  McpStatusReport,
+  ModelCatalog,
+  PromptResult,
+} from "./types.js";
 
 // The runtime id is defined next to the provisioning targets so the mapping
 // between the two concepts lives in one place (M4b).
@@ -129,6 +134,18 @@ export interface RuntimePort {
    */
   resolveModel(reference: string): ModelResolution;
   createSession(options: RuntimeSessionOptions): Promise<RuntimeSession>;
+  /**
+   * The servers this driver's agent has configured, through its own CLI when it
+   * has one. `undefined` means the driver has no listing; `[]` means it asked
+   * and nothing was enumerated (the caller may fall back to config discovery).
+   */
+  listMcpServers?(): Promise<McpServerListing[]>;
+  /**
+   * The driver's config/probe view of its MCP servers. Optional for the same
+   * reason as {@link listMcpServers}: a driver that cannot see MCP says so by
+   * omitting it, never by fabricating a healthy report.
+   */
+  mcpStatus?(): Promise<McpStatusReport>;
   /** Stop any daemon or pooled resource the driver owns. */
   dispose?(): Promise<void>;
 }

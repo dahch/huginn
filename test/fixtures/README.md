@@ -11,6 +11,7 @@ so the parsers under test are verified against the actual formats they must hand
 | `claude-mcp-list.txt` | `claude mcp list` | `Checking MCP server health…` preamble, blank line, then `<name>: <command> - ✔ Connected`. The CLI health-checks every server (≈ 23 s measured), which is why the listing has its own generous deadline. 3 servers. Parser: `parseClaudeMcpList`. |
 | `pi-models.txt` | `pi --list-models` | Pi coding agent `@earendil-works/pi-coding-agent` 0.87.1, captured 2026-09-29. 3 lines: the aligned header `provider  model  context  max-out  thinking  images` plus two model rows. Parses to **2** models. Parser: `parsePiModels` (AC-27.4). |
 | `codex-mcp-list.json` | `codex mcp list --json` | OpenAI `codex-cli` 0.158.0, captured 2026-09-29. One-element JSON array: a `stdio` server (`muninn`) with the absolute project path redacted to `/home/dev/projects/huginn`. `enabled` is Codex's own configuration word; nothing is a liveness probe. 1 server. Parser: `parseCodexMcpList` (AC-32.1). |
+| `pi-mcp-list.json` | `pi mcp list --json` | Pi 1.4.0, captured 2026-11-25. `{ servers: [...] }` with user (`rea`) and project (`muninn`) entries, each carrying `scope`, `source`, `transport`, `state` and `tools`. Home/project paths redacted to `/home/dev/…`; the row shape is untouched. Parser: `parsePiMcpListJson` (REQ-32). |
 
 ## Provenance and redaction of the `pi` / `codex` fixtures
 

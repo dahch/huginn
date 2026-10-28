@@ -392,7 +392,13 @@ export function getRuntimePort(target: AgentTarget | "generic", options: Runtime
   if (target === "generic") return getGenericRuntimePort(options);
   // Drivers that own their SDK; every other target is still the legacy adapter
   // behind the bridge until its driver lands.
-  if (target === "pi") return createPiSdkPort();
+  if (target === "pi") {
+    return createPiSdkPort(undefined, {
+      projectPath: options.projectPath,
+      homeDir: options.homeDir,
+      env: options.env,
+    });
+  }
   if (target === "codex") return createCodexSdkPort();
   if (target === "claude") return createClaudeSdkPort();
   return toRuntimePort(getAgentRuntime(target, options));
@@ -408,7 +414,15 @@ export function getRuntimePort(target: AgentTarget | "generic", options: Runtime
  * `RuntimePort` directly; every other target is the configured generic bridge.
  */
 export function getEngineRuntime(target: AgentTarget, options: RuntimeOptions = {}): IAgentRuntime {
-  if (target === "pi") return toLegacyRuntime(createPiSdkPort());
+  if (target === "pi") {
+    return toLegacyRuntime(
+      createPiSdkPort(undefined, {
+        projectPath: options.projectPath,
+        homeDir: options.homeDir,
+        env: options.env,
+      }),
+    );
+  }
   if (target === "codex") return toLegacyRuntime(createCodexSdkPort());
   if (target === "claude") return toLegacyRuntime(createClaudeSdkPort());
   return getAgentRuntime(target, options);

@@ -43,7 +43,13 @@ export type McpServerState = "connected" | "disconnected" | "unknown" | "error";
  * `connected` may be described as live. `unknown` is the honest default for a
  * status Huginn does not recognise.
  */
-export type McpListingStatus = "connected" | "enabled" | "disabled" | "pending" | "unknown";
+export type McpListingStatus =
+  | "connected"
+  | "enabled"
+  | "disabled"
+  | "pending"
+  | "error"
+  | "unknown";
 
 /**
  * One server as enumerated by the active agent's own CLI (REQ-32 / AC-32.1).
@@ -58,6 +64,10 @@ export interface McpServerListing {
   status: McpListingStatus;
   /** Whatever per-server detail the listing exposed (command, scope, auth, URL). */
   detail?: string;
+  /** Tool count the listing reported, when it reports one. */
+  toolsCount?: number;
+  /** Tool names the listing reported, when it reports them. */
+  tools?: string[];
 }
 
 export interface McpServerStatus {

@@ -50,7 +50,8 @@ const OPENCODE_GUTTER = /^[│┃|]\s*/;
  * - `enabled` / `configured` / `➜` → `enabled` (configured, **not** probed)
  * - `disabled` → `disabled`
  * - `pending approval` → `pending`
- * - anything else (including `disconnected`, `failed`, `✗`) → `unknown`
+ * - `failed` / `error` → `error` (a real failure, rendered as degraded)
+ * - anything else (including `disconnected`, `not connected`, `✗`) → `unknown`
  *
  * Matching is token-based on purpose: a naive `includes("connected")` would
  * upgrade `disconnected` and `not connected` to a live probe.
@@ -64,6 +65,7 @@ export function mapMcpListingStatus(raw?: string): McpListingStatus {
 
   if (has("disabled")) return "disabled";
   if (has("pending")) return "pending";
+  if (has("error") || has("failed") || has("fail")) return "error";
   // `disconnected` is a single distinct token, so it can never match here.
   if (has("connected") && !has("not")) return "connected";
   if (has("healthy")) return "connected";
@@ -181,6 +183,8 @@ export interface McpListCommandSpec {
   parse: (stdout: string) => McpServerListing[];
   /** Bounded spawn deadline; defaults to {@link MCP_LIST_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /** Project directory for CLIs that read project-scoped config. */
+  cwd?: string;
 }
 
 /** Outcome of one listing spawn: parsed listings, or the reason there are none. */
@@ -200,7 +204,11 @@ export interface McpListCommandResult {
  */
 export async function runMcpListCommand(
   spec: McpListCommandSpec,
-  options: { env?: Record<string, string | undefined>; timeoutMs?: number } = {},
+  options: {
+    env?: Record<string, string | undefined>;
+    timeoutMs?: number;
+    cwd?: string;
+  } = {},
 ): Promise<McpListCommandResult> {
   const timeoutMs = options.timeoutMs ?? spec.timeoutMs ?? MCP_LIST_TIMEOUT_MS;
   const commandLine = `${spec.command} ${spec.args.join(" ")}`.trim();
@@ -208,6 +216,7 @@ export async function runMcpListCommand(
   const result = await runModelListCommand(spec.command, spec.args, {
     env: options.env,
     timeoutMs,
+    cwd: options.cwd ?? spec.cwd,
   });
   if (result.error || result.stdout === undefined) {
     return { error: result.error ?? `\`${commandLine}\` printed no output` };
@@ -225,7 +234,11 @@ export async function runMcpListCommand(
 /** {@link runMcpListCommand} collapsed to the `IAgentRuntime` contract: `[]` on any failure. */
 export async function listMcpServersViaCommand(
   spec: McpListCommandSpec,
-  options: { env?: Record<string, string | undefined>; timeoutMs?: number } = {},
+  options: {
+    env?: Record<string, string | undefined>;
+    timeoutMs?: number;
+    cwd?: string;
+  } = {},
 ): Promise<McpServerListing[]> {
   const result = await runMcpListCommand(spec, options);
   return result.listings ?? [];

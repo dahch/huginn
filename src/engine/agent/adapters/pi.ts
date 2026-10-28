@@ -1,5 +1,6 @@
 import { GenericSubprocessRuntimeAdapter, type GenericSubprocessOptions } from "./generic.js";
 import type { ModelInfo } from "../types.js";
+import { parsePiMcpListJson, PI_MCP_LIST_TIMEOUT_MS } from "../drivers/pi-sdk.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
 
 /**
@@ -125,10 +126,10 @@ export function parsePiModels(stdout: string): ModelInfo[] {
  * previous `["-m", model]` was parsed as *messages*: a real Phase 3C bug).
  * Verified live with `pi -p --model deepseek/deepseek-v4-pro`.
  *
- * Listings: `pi --list-models` feeds model discovery (AC-27.4). Pi exposes no
- * `mcp` command (`pi --help`: install, remove/uninstall, update, list, config,
- * auth), so `listMcpServers()` honestly resolves `[]` and the panel falls back
- * to config-file discovery (`AGENT_REGISTRY.pi.mcpPaths`).
+ * Listings: `pi --list-models` feeds model discovery (AC-27.4). Pi 1.4.x also
+ * exposes `pi mcp list --json`, which connects to every server and reports its
+ * state and tools; that is the honest source for `listMcpServers()`, with
+ * config-file discovery (`AGENT_REGISTRY.pi.mcpPaths`) as the fallback.
  *
  * Permissions: launched with `--approve` (project-resource trust) and announced
  * as *assumed* — see {@link PI_PERMISSION_ARGS}.
@@ -154,6 +155,13 @@ export class PiRuntimeAdapter extends GenericSubprocessRuntimeAdapter {
         args: ["--list-models"],
         parse: parsePiModels,
         timeoutMs: PI_MODEL_LIST_TIMEOUT_MS,
+      },
+      mcpListCommand: options.mcpListCommand ?? {
+        command,
+        args: ["mcp", "list", "--json"],
+        parse: parsePiMcpListJson,
+        timeoutMs: PI_MCP_LIST_TIMEOUT_MS,
+        cwd: options.projectPath,
       },
       projectPath: options.projectPath,
       homeDir: options.homeDir,

@@ -79,7 +79,12 @@ function describeStderr(stderr: string): string | undefined {
 export function runModelListCommand(
   command: string,
   args: string[],
-  options: { env?: Record<string, string | undefined>; timeoutMs?: number } = {},
+  options: {
+    env?: Record<string, string | undefined>;
+    timeoutMs?: number;
+    /** Working directory for project-scoped listings (`pi mcp list`). */
+    cwd?: string;
+  } = {},
 ): Promise<ModelListCommandResult> {
   const timeoutMs = options.timeoutMs ?? MODEL_LIST_TIMEOUT_MS;
 
@@ -106,6 +111,7 @@ export function runModelListCommand(
     let child: ChildProcess;
     try {
       child = spawn(command, args, {
+        cwd: options.cwd,
         env: { ...process.env, ...options.env },
         // SEC-001: stderr is captured (bounded) rather than discarded so failures
         // can be explained truthfully.

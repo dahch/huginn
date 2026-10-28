@@ -70,6 +70,7 @@ export function hasUnverified(report?: McpStatusReport | null): boolean {
 export function mapListingToServerState(status: McpListingStatus): McpServerState {
   if (status === "connected") return "connected";
   if (status === "disabled") return "disconnected";
+  if (status === "error") return "error";
   // `enabled` / `pending` / `unknown`: configured (or not probed), never live.
   return "unknown";
 }
@@ -97,20 +98,28 @@ export function reportFromListings(
 
     const transport = sanitizeTerminalText(listing?.transport ?? "").trim();
     const detail = sanitizeTerminalText(listing?.detail ?? "").trim();
+    const tools = Array.isArray(listing?.tools)
+      ? listing.tools
+          .filter((tool): tool is string => typeof tool === "string")
+          .map((tool) => ({ name: sanitizeTerminalText(tool) }))
+          .filter((tool) => tool.name.length > 0)
+      : undefined;
+    const toolsCount = count(listing?.toolsCount) || tools?.length || 0;
     servers.push({
       id: `${sanitizeTerminalText(runtimeId) || "agent"}:${name}`,
       name,
       status: mapListingToServerState(listing?.status ?? "unknown"),
       // The CLI reported no transport → say so rather than assume one.
       transport: transport || "unknown",
-      toolsCount: 0,
+      toolsCount,
+      tools,
       detail: detail || undefined,
     });
   }
 
   return {
     servers,
-    totalTools: 0,
+    totalTools: servers.reduce((sum, server) => sum + server.toolsCount, 0),
     healthy: servers.length > 0 && servers.every((s) => s.status === "connected"),
     // AC-32.4/AC-32.5: a listing that probed nothing is *configured*, not live.
     unverified: servers.some((s) => s.status === "unknown"),
@@ -173,6 +182,10 @@ export async function fetchMcpStatusWithTimeout(
 ): Promise<McpStatusReport> {
   const deadlineAt = Date.now() + Math.max(0, timeoutMs);
   const remaining = (): number => Math.max(0, deadlineAt - Date.now());
+  // Keep a slice of the budget for config discovery: when a slow listing (a
+  // health check that connects to every server) outruns the poll, saying
+  // "2 configured" is better than a bare timeout badge.
+  const fallbackReserve = Math.min(1000, Math.max(0, Math.floor(timeoutMs / 4)));
 
   const timeoutReport = (): McpStatusReport => ({
     servers: [],
@@ -210,7 +223,7 @@ export async function fetchMcpStatusWithTimeout(
       inFlightListings.set(key, pending);
     }
 
-    const attempt = await withDeadline(() => pending, remaining());
+    const attempt = await withDeadline(() => pending, Math.max(0, remaining() - fallbackReserve));
     if ("value" in attempt) {
       const listings = attempt.value;
       // An empty listing means "nothing enumerated" (no listing command, missing
@@ -222,9 +235,10 @@ export async function fetchMcpStatusWithTimeout(
     } else if (cached) {
       // Deadline lost, but we have a real earlier answer: prefer it over a timeout.
       return reportFromListings(key, cached.listings);
-    } else {
-      return timeoutReport();
     }
+    // A timed-out listing with no cache falls through to config discovery below,
+    // on the reserved slice of the budget. The in-flight listing keeps running
+    // and lands in the cache for the next poll.
   }
 
   // 2. The runtime's own probe / config discovery, on the remaining budget.

@@ -105,11 +105,11 @@ describe("honest listing→status mapping (AC-32.2)", () => {
       ["disabled", "disabled"],
       ["pending approval", "pending"],
       ["pending", "pending"],
-      // Anything unrecognised — including failed and disconnected — is unknown,
-      // never an upgrade to live.
+      // A real failure is degraded; a negation or anything unrecognised is
+      // unknown, never an upgrade to live.
       ["disconnected", "unknown"],
       ["not connected", "unknown"],
-      ["✗ Failed to connect", "unknown"],
+      ["✗ Failed to connect", "error"],
       ["", "unknown"],
       ["weird", "unknown"],
     ];

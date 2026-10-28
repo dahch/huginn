@@ -71,13 +71,22 @@ export function conformanceCases(options: ConformanceOptions): ConformanceCase[]
     {
       name: "only claims capabilities that imply each other",
       async run() {
-        const caps = options.makePort().capabilities;
+        const port = options.makePort();
+        const caps = port.capabilities;
         // A resumed session is a session with history, or resuming is meaningless.
         assert(!caps.sessionResume || caps.sessionHistory, "sessionResume requires sessionHistory");
         // Per-tool questions need a way to stop a turn.
         assert(!(caps.permissions === "interactive") || caps.interrupt, "interactive permissions require interrupt");
         // Incremental text is the minimal structured event.
         assert(!caps.streaming || caps.structuredEvents, "streaming requires structuredEvents");
+        // Claiming MCP enumeration without a way to answer would recreate the
+        // always-empty badge this port exists to stop.
+        assert(
+          !caps.mcpListing ||
+            typeof port.listMcpServers === "function" ||
+            typeof port.mcpStatus === "function",
+          "mcpListing requires listMcpServers() or mcpStatus()",
+        );
       },
     },
 

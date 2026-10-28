@@ -84,6 +84,45 @@ export function loadProjectMcpConfig(projectPath: string): ProjectMcpConfig | nu
   return out;
 }
 
+/**
+ * Read one JSON MCP config file (`mcpServers`, `mcp` or `servers`) and report
+ * every declared server as configured-but-unverified.
+ *
+ * A declaration in a file is not a liveness proof (AC-30.1), so anything that
+ * would otherwise read as `connected` becomes `unknown`; an explicit
+ * `error`/`disconnected` in the file is kept because it is already honest. The
+ * helper never throws: an unreadable, oversized or malformed file is simply
+ * "nothing to report", and the caller can fall back or surface its own reason.
+ */
+export function readMcpConfigFile(path: string): McpServerStatus[] {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return [];
+    const parsed = JSON.parse(readFileSync(path, "utf8"), (key, value) => {
+      if (isReservedKey(key)) return undefined;
+      return value;
+    }) as Record<string, unknown>;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+
+    const container = (parsed.mcpServers ?? parsed.mcp ?? parsed.servers) as unknown;
+    if (typeof container !== "object" || container === null || Array.isArray(container)) return [];
+
+    const servers: McpServerStatus[] = [];
+    for (const [name, value] of Object.entries(container as Record<string, unknown>)) {
+      if (isReservedKey(name)) continue;
+      const entry = parseMcpServerEntry(name, value);
+      servers.push(
+        entry.status === "error" || entry.status === "disconnected"
+          ? entry
+          : { ...entry, status: "unknown" },
+      );
+    }
+    return servers;
+  } catch {
+    return [];
+  }
+}
+
 export function parseMcpServerEntry(name: string, val: unknown): McpServerStatus {
   const safeName = sanitizeTerminalText(name);
   if (typeof val !== "object" || val === null) {

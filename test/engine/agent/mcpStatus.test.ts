@@ -8,6 +8,8 @@ import {
   MCP_BADGE_REASON_WIDTH,
   fetchMcpStatusWithTimeout,
   formatMcpBadge,
+  mapListingToServerState,
+  reportFromListings,
 } from "../../../src/engine/agent/mcpStatus.js";
 import {
   isReservedKey,
@@ -758,5 +760,58 @@ describe("Project-level .huginn/mcp.json parsing (AC-24.3)", () => {
       const fallbackEntry = parseMcpServerEntry("fallback_srv", {});
       expect(fallbackEntry.transport).toBe("stdio");
     });
+  });
+});
+
+describe("listing reports carry real tool counts and failures (REQ-32)", () => {
+  it("sums the tools a listing reported and keeps a connected badge meaningful", () => {
+    const report = reportFromListings("pi", [
+      { name: "rea", status: "connected", toolsCount: 207 },
+      { name: "muninn", status: "connected", toolsCount: 7 },
+    ]);
+    expect(report.totalTools).toBe(214);
+    expect(report.servers.map((server) => server.toolsCount)).toEqual([207, 7]);
+    expect(report.healthy).toBe(true);
+    expect(formatMcpBadge(report, "Pi (in-process)").text).toBe(
+      "MCP: 🟢 2 connected (214 tools) · Pi (in-process)",
+    );
+  });
+
+  it("maps a failed listing row to a degraded report, never to live", () => {
+    expect(mapListingToServerState("error")).toBe("error");
+    const report = reportFromListings("pi", [
+      { name: "rea", status: "connected", toolsCount: 1 },
+      { name: "broken", status: "error" },
+    ]);
+    expect(report.degraded).toBe(true);
+    expect(formatMcpBadge(report, "pi").status).toBe("degraded");
+  });
+
+  it("falls back to config discovery when a slow listing outruns the poll", async () => {
+    const runtime: IAgentRuntime = {
+      id: "slow-listing-test",
+      name: "Slow listing",
+      isAvailable: async () => true,
+      getAvailableModels: async () => [],
+      listMcpServers: () => new Promise(() => {}),
+      getMcpStatus: async () => ({
+        servers: [
+          {
+            id: "slow-listing-test:muninn",
+            name: "muninn",
+            status: "unknown",
+            transport: "stdio",
+            toolsCount: 0,
+          },
+        ],
+        totalTools: 0,
+        healthy: false,
+        unverified: true,
+      }),
+      createSession: async () => ({} as any),
+    };
+    const report = await fetchMcpStatusWithTimeout(runtime, 100);
+    expect(report.servers.map((server) => server.name)).toEqual(["muninn"]);
+    expect(report.unverified).toBe(true);
   });
 });

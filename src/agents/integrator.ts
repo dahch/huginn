@@ -284,7 +284,7 @@ export const AGENT_REGISTRY: Record<AgentTarget, AgentSpec> = {
     id: "pi",
     label: "Pi coding agent",
     format: "mcpServers",
-    mcpPaths: ["{home}/.pi/mcp.json", "{project}/.pi/mcp.json"],
+    mcpPaths: ["{home}/.pi/agent/mcp.json", "{project}/.pi/mcp.json"],
     rulesFile: "AGENTS.md",
   },
   commandcode: {
