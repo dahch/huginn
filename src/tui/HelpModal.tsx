@@ -32,12 +32,19 @@ const COMMAND_COLUMN_WIDTH =
   SLASH_COMMANDS.reduce((widest, entry) => Math.max(widest, entry.command.length), 0) + 3;
 
 export const NAVIGATION_SHORTCUTS: ShortcutItem[] = [
-  { key: "Tab", description: "Cycle focus between Chat and Stream viewports" },
+  {
+    key: "Tab / Shift+Tab",
+    description: "Cycle focus: composer → conversation → agent stream (skipped while collapsed)",
+  },
   {
     key: "/ then ↑ / ↓",
     description: "Filter the inline command palette (Tab accepts, Enter runs, Esc dismisses)",
   },
-  { key: "↑ / ↓ or j / k", description: "Scroll viewport (or move the command palette while typing a /command)" },
+  {
+    key: "↑ / ↓ or j / k",
+    description:
+      "Composer: recall your submissions. Focused viewport: scroll it (or move the command palette while typing a /command)",
+  },
   { key: "PageUp / PageDown", description: "Fast-scroll focused viewport (4 lines)" },
   { key: "Esc or q", description: "Close modal / cancel current view" },
   { key: "Enter", description: "Submit command or prompt" },

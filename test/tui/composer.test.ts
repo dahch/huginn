@@ -2,7 +2,7 @@ import React from "react";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "ink";
-import { LiveApp } from "../../src/tui/LiveDashboard";
+import { LiveApp, nextFocus } from "../../src/tui/LiveDashboard";
 import { events } from "../../src/engine/engineEvents";
 import type { LiveEngine } from "../../src/engine/liveMode";
 import type { RunConfig } from "../../src/config";
@@ -52,6 +52,7 @@ function createMockLive(overrides?: Partial<LiveEngine>): LiveEngine {
     ideaText: "",
     // Phase 4D: the view hydrates its conversation from the transcript at mount.
     getTranscript: vi.fn().mockReturnValue([]),
+    getResumePoint: vi.fn().mockReturnValue(undefined),
     clearTranscript: vi.fn(),
     start: vi.fn().mockResolvedValue(undefined),
     chat: vi.fn().mockResolvedValue(undefined),
@@ -212,13 +213,17 @@ describe("Composer history & adaptive panels (REQ-34, REQ-35)", () => {
     expect(h.output()).not.toContain("THINKING & LIVE AGENT STREAM");
   });
 
-  it("explains Tab when the stream panel is collapsed instead of silently ignoring it", async () => {
+  it("moves focus to the conversation with Tab while the stream panel is collapsed", async () => {
     const h = await mountLive(createMockLive());
     h.stdin.write("\t");
     await tick(80);
     h.unmount();
-    expect(h.output()).toContain("collapsed");
-    expect(h.output()).toContain("PgUp/PgDn");
+
+    expect(h.output()).toContain("Conversation ● [Focused]");
+    // Tab must never write into the chat: one press, one line is how a repeated
+    // key turns into a wall of identical notices.
+    expect(h.output()).not.toContain("collapsed");
+    expect(h.output()).not.toContain("PgUp/PgDn to scroll the conversation");
   });
 
   it("shows the agent-output panel once real stream content arrives (AC-35.2)", async () => {
@@ -249,13 +254,15 @@ describe("Composer history & adaptive panels (REQ-34, REQ-35)", () => {
     expect(h.output()).toContain("▲ +");
   });
 
-  it("keeps arrow-scrolling available on the focused stream card, not history (AC-34.3)", async () => {
+  it("keeps arrow-scrolling on the focused cards, never history (AC-34.3)", async () => {
     const h = await mountLive(createMockLive());
     await submit(h.stdin, "a prompt that becomes history");
 
-    // With stream content present, Tab focuses the stream card (both cards mounted).
+    // With stream content present the tab order is composer → conversation → stream.
     events.emit("phaseStream", { text: "streaming…" });
     await tick(120);
+    h.stdin.write("\t");
+    await tick();
     h.stdin.write("\t");
     await tick();
     h.stdin.write("\u001B[A"); // must scroll the card, never recall into the composer
@@ -264,5 +271,62 @@ describe("Composer history & adaptive panels (REQ-34, REQ-35)", () => {
 
     // The composer is untouched by the arrow press.
     expect(h.output()).not.toContain("❯ a prompt that becomes history\n");
+  });
+
+  it("scrolls the conversation with the arrow keys even when input history exists", async () => {
+    const transcript = Array.from({ length: 60 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      text: `message ${index} `.repeat(4),
+    }));
+    const h = await mountLive(
+      createMockLive({ getTranscript: vi.fn().mockReturnValue(transcript) }),
+    );
+    await submit(h.stdin, "a prompt that becomes history");
+    h.stdin.write("\t"); // focus the conversation
+    await tick();
+    h.stdin.write("\u001B[A");
+    await tick(80);
+    h.unmount();
+
+    // Focus decides the arrows: recall used to win whenever the draft was empty,
+    // so the conversation could not be scrolled at all once anything was sent.
+    expect(h.output()).toContain("▲ +");
+    expect(h.output()).not.toContain("❯ a prompt that becomes history\n");
+  });
+
+  it("returns focus to the composer on the first editing key", async () => {
+    const h = await mountLive(createMockLive());
+    h.stdin.write("\t"); // conversation
+    await tick();
+    h.stdin.write("x");
+    await tick(80);
+    h.unmount();
+
+    expect(h.output()).toContain("❯ x");
+    expect(h.output()).toContain("Conversation ○ [Tab to focus]");
+  });
+
+  it("cycles focus backwards with Shift+Tab", async () => {
+    const h = await mountLive(createMockLive());
+    h.stdin.write("\t"); // composer → conversation
+    await tick();
+    h.stdin.write("\u001B[Z"); // Shift+Tab → composer
+    await tick(80);
+    h.unmount();
+
+    expect(h.output()).toContain("Conversation ○ [Tab to focus]");
+    expect(h.output()).toContain("[Tab] Focus: input");
+  });
+});
+
+describe("focus order", () => {
+  it("skips the collapsed stream card and wraps in both directions", () => {
+    expect(nextFocus("composer", false)).toBe("chat");
+    expect(nextFocus("chat", false)).toBe("composer");
+    expect(nextFocus("composer", true)).toBe("chat");
+    expect(nextFocus("chat", true)).toBe("stream");
+    expect(nextFocus("stream", true)).toBe("composer");
+    expect(nextFocus("composer", true, true)).toBe("stream");
+    expect(nextFocus("composer", false, true)).toBe("chat");
   });
 });

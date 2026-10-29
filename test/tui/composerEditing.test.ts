@@ -63,6 +63,7 @@ function createMockLive(overrides?: Partial<LiveEngine>): LiveEngine {
     currentStage: "refine",
     ideaText: "",
     getTranscript: vi.fn().mockReturnValue([]),
+    getResumePoint: vi.fn().mockReturnValue(undefined),
     clearTranscript: vi.fn(),
     start: vi.fn().mockResolvedValue(undefined),
     chat: vi.fn().mockResolvedValue(undefined),

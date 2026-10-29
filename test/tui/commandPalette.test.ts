@@ -58,6 +58,7 @@ function createMockLive(overrides?: Partial<LiveEngine>): LiveEngine {
     ideaText: "",
     // Phase 4D: the view hydrates its conversation from the transcript at mount.
     getTranscript: vi.fn().mockReturnValue([]),
+    getResumePoint: vi.fn().mockReturnValue(undefined),
     clearTranscript: vi.fn(),
     start: vi.fn().mockResolvedValue(undefined),
     chat: vi.fn().mockResolvedValue(undefined),

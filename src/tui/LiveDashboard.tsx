@@ -165,6 +165,30 @@ function statusRow(label: string, value: string): string {
   return `│ ${label.padEnd(STATUS_LABEL_WIDTH)} ${value.padEnd(STATUS_VALUE_WIDTH)}│`;
 }
 
+/**
+ * Which surface owns the arrow keys. The composer is the only place you type, so
+ * it is a focus target of its own: without it, Tab could only trade the two
+ * read-only cards and the history recall had to steal the arrows from the
+ * conversation by inspecting the draft instead of the focus.
+ */
+export type FocusTarget = "composer" | "chat" | "stream";
+
+/**
+ * Tab order for the live console: composer → conversation → agent stream →
+ * composer (reversed for Shift+Tab). A collapsed stream card is skipped rather
+ * than announced, so Tab always lands somewhere the user can see.
+ */
+export function nextFocus(
+  current: FocusTarget,
+  hasStream: boolean,
+  backwards = false,
+): FocusTarget {
+  const order: FocusTarget[] = hasStream ? ["composer", "chat", "stream"] : ["composer", "chat"];
+  const index = Math.max(0, order.indexOf(current));
+  const step = backwards ? -1 : 1;
+  return order[(index + step + order.length) % order.length] ?? "composer";
+}
+
 interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
@@ -452,7 +476,7 @@ function RefineView({
   const [diagnostics, setDiagnostics] = useState<DiagnosticsInfo | null>(null);
   const [currentThinker, setCurrentThinker] = useState(cfg.thinker);
   const [currentExecutor, setCurrentExecutor] = useState(cfg.executor);
-  const [focusCard, setFocusCard] = useState<"chat" | "stream">("chat");
+  const [focus, setFocus] = useState<FocusTarget>("composer");
   const [chatScroll, setChatScroll] = useState(0);
   const [streamScroll, setStreamScroll] = useState(0);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -1420,8 +1444,8 @@ function RefineView({
 
   // Never leave focus on a card that is not rendered.
   useEffect(() => {
-    if (!showStreamPanel && focusCard === "stream") setFocusCard("chat");
-  }, [showStreamPanel, focusCard]);
+    if (!showStreamPanel && focus === "stream") setFocus("chat");
+  }, [showStreamPanel, focus]);
 
   const visibleChatLinesCount = Math.max(1, chatHeight - 3);
   const visibleStreamLinesCount = Math.max(1, streamHeight - 3);
@@ -1515,85 +1539,71 @@ function RefineView({
       return;
     }
     if (key.tab) {
-      // Focus only has meaning while both cards are mounted (REV-3207). With no
-      // stream content the agent-output card is deliberately collapsed, so say
-      // what to use instead of letting the key be a silent no-op.
-      if (showStreamPanel) {
-        setFocusCard((f) => (f === "chat" ? "stream" : "chat"));
-      } else {
-        emitSystem(
-          "The agent-output panel is collapsed until the runtime emits stream content. " +
-            "Use PgUp/PgDn to scroll the conversation.",
-        );
-      }
+      // Tab moves focus and nothing else: composer → conversation → stream →
+      // composer (Shift+Tab reverses). A collapsed stream card is skipped, so the
+      // key always lands somewhere visible. It must never append a notice to the
+      // chat: one press, one line is how a "helpful" hint becomes a wall of text.
+      setFocus((current) => nextFocus(current, showStreamPanel, key.shift));
       return;
     }
 
-    // Scroll controls (PageUp / PageDown always scroll focused card)
+    // PageUp/PageDown scroll the focused surface; the composer counts as the
+    // conversation, since it has nothing of its own to page.
     if (key.pageUp) {
-      if (focusCard === "chat") setChatScroll((s) => Math.min(s + 4, maxChatScroll));
-      else setStreamScroll((s) => Math.min(s + 4, maxStreamScroll));
+      if (focus === "stream") setStreamScroll((s) => Math.min(s + 4, maxStreamScroll));
+      else setChatScroll((s) => Math.min(s + 4, maxChatScroll));
       return;
     }
     if (key.pageDown) {
-      if (focusCard === "chat") setChatScroll((s) => Math.max(s - 4, 0));
-      else setStreamScroll((s) => Math.max(s - 4, 0));
+      if (focus === "stream") setStreamScroll((s) => Math.max(s - 4, 0));
+      else setChatScroll((s) => Math.max(s - 4, 0));
       return;
     }
 
-    // Composer history (REQ-34 / AC-34.1): ↑ recalls the previous submission when
-    // the draft is empty (or while already recalling); ↓ walks forward and ends at
-    // the empty draft. PageUp/Down and the focused stream card still scroll.
-    if (inputEnabled) {
-      // The focused stream card keeps the arrow keys for scrolling (AC-34.3):
-      // recall lives on the composer, which is the only place you type.
-      const canRecall = (draftInput === "" && focusCard === "chat") || historyIndex !== null;
-      if (key.upArrow && canRecall && inputHistory.length > 0) {
-        const next = historyIndex === null ? inputHistory.length - 1 : Math.max(0, historyIndex - 1);
+    // Arrow keys belong to the focused surface, not to the draft's emptiness
+    // (AC-34.3): a focused card always scrolls, so a non-empty history can no
+    // longer steal the scroll keys; the composer keeps the history recall
+    // (REQ-34) and the multi-line caret (REQ-6).
+    if (key.upArrow || key.downArrow) {
+      if (focus === "stream") {
+        if (key.upArrow) setStreamScroll((s) => Math.min(s + 2, maxStreamScroll));
+        else setStreamScroll((s) => Math.max(s - 2, 0));
+        return;
+      }
+      if (focus === "chat") {
+        if (key.upArrow) setChatScroll((s) => Math.min(s + 2, maxChatScroll));
+        else setChatScroll((s) => Math.max(s - 2, 0));
+        return;
+      }
+      if (!inputEnabled) return;
+
+      const recalling = historyIndex !== null;
+      if (key.upArrow && (draftInput === "" || recalling) && inputHistory.length > 0) {
+        const next = recalling ? Math.max(0, (historyIndex ?? 0) - 1) : inputHistory.length - 1;
         const recalled = inputHistory[next] ?? "";
         setHistoryIndex(next);
         setDraft({ text: recalled, cursor: recalled.length });
         return;
       }
-      if (key.downArrow && historyIndex !== null) {
-        const next = historyIndex + 1;
+      if (key.downArrow && recalling) {
+        const next = (historyIndex ?? 0) + 1;
         const recalled = next >= inputHistory.length ? "" : inputHistory[next] ?? "";
         setHistoryIndex(next >= inputHistory.length ? null : next);
         setDraft({ text: recalled, cursor: recalled.length });
         return;
       }
-    }
-
-    // Multi-line caret (REQ-6): with a draft that wraps onto several visual rows,
-    // ↑/↓ move the caret between them. A single-row draft has nowhere to move, so
-    // the key is swallowed — the terminal still never scrolls (AC-21.4).
-    if (inputEnabled && focusCard === "chat" && draftInput !== "" && (key.upArrow || key.downArrow)) {
-      setDraft((current) => {
-        const layout = layoutComposer(current.text, current.cursor, composerTextWidth);
-        if (layout.rows.length <= 1) return current;
-        const target = key.upArrow
-          ? Math.max(0, layout.cursorRow - 1)
-          : Math.min(layout.rows.length - 1, layout.cursorRow + 1);
-        if (target === layout.cursorRow) return current;
-        return { text: current.text, cursor: cursorIndexAtRow(layout, target, layout.cursorCol) };
-      });
-      return;
-    }
-
-    // Arrow keys scroll when input is empty or when stream card is focused
-    if ((draftInput === "" || focusCard === "stream") && key.upArrow) {
-      if (focusCard === "chat") setChatScroll((s) => Math.min(s + 2, maxChatScroll));
-      else setStreamScroll((s) => Math.min(s + 2, maxStreamScroll));
-      return;
-    }
-    if ((draftInput === "" || focusCard === "stream") && key.downArrow) {
-      if (focusCard === "chat") setChatScroll((s) => Math.max(s - 2, 0));
-      else setStreamScroll((s) => Math.max(s - 2, 0));
-      return;
-    }
-
-    // Trap arrow keys when typing to prevent terminal window scroll leakage
-    if (key.upArrow || key.downArrow) {
+      if (draftInput !== "") {
+        setDraft((current) => {
+          const layout = layoutComposer(current.text, current.cursor, composerTextWidth);
+          if (layout.rows.length <= 1) return current;
+          const target = key.upArrow
+            ? Math.max(0, layout.cursorRow - 1)
+            : Math.min(layout.rows.length - 1, layout.cursorRow + 1);
+          if (target === layout.cursorRow) return current;
+          return { text: current.text, cursor: cursorIndexAtRow(layout, target, layout.cursorCol) };
+        });
+      }
+      // Swallowed either way: the terminal must never scroll (AC-21.4).
       return;
     }
 
@@ -1611,6 +1621,11 @@ function RefineView({
     // Ctrl/⌥ for whole words; Home/End jump to the ends; Backspace and Delete act
     // on the caret; printable text is inserted where the caret is. Every update is
     // functional, so a held key or a pasted block can never read a stale draft.
+    //
+    // Everything below edits the draft, and the composer is the only surface that
+    // can consume text — so the first editing key takes the focus back. Typing can
+    // never be a dead keypress just because a read-only card owned the arrows.
+    if (focus !== "composer") setFocus("composer");
     if (key.leftArrow) {
       setHistoryIndex(null);
       setDraft((current) => ({
@@ -1771,7 +1786,7 @@ function RefineView({
               totalLines={formattedChatLines.length}
               scrollOffset={chatScroll}
               maxScroll={maxChatScroll}
-              isFocused={focusCard === "chat"}
+              isFocused={focus === "chat"}
               busy={busy}
               spinner={spinner}
               height={chatHeight}
@@ -1788,7 +1803,7 @@ function RefineView({
                 totalLines={streamLines.length}
                 scrollOffset={streamScroll}
                 chars={streamChars}
-                isFocused={focusCard === "stream"}
+                isFocused={focus === "stream"}
                 spinner={spinner}
                 busy={busy}
                 height={streamHeight}
@@ -1815,6 +1830,7 @@ function RefineView({
           <ChatInputRow
             value={draftInput}
             enabled={inputEnabled}
+            isFocused={focus === "composer"}
             placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect"
             historyHint={historyHint}
             width={composerTextWidth}
@@ -1839,9 +1855,9 @@ function RefineView({
                 <Text color={THEME.muted} wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
               ) : (
                 <Text color={THEME.muted} wrap="truncate">
-                  {showStreamPanel
-                    ? "[Tab] Focus · [PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands"
-                    : "[PgUp/Dn] Scroll · [↑/↓] History · [Enter] Send · / commands"}
+                  {`[Tab] Focus: ${focus === "composer" ? "input" : focus} · [↑/↓] ${
+                    focus === "composer" ? "History" : "Scroll"
+                  } · [PgUp/Dn] Scroll · [Enter] Send · / commands`}
                 </Text>
               )}
             </Box>
@@ -2174,6 +2190,7 @@ function ScrollableStreamCard({
 function ChatInputRow({
   value,
   enabled,
+  isFocused,
   placeholder,
   historyHint = "",
   width,
@@ -2184,6 +2201,8 @@ function ChatInputRow({
 }: {
   value: string;
   enabled: boolean;
+  /** The composer owns the keyboard: focus is shown by the border and the caret. */
+  isFocused: boolean;
   placeholder: string;
   /** Recall hint shown beside the first row (`""` hides it). */
   historyHint?: string;
@@ -2198,7 +2217,11 @@ function ChatInputRow({
   /** Content rows the box shows (the composer's budget); the rest scroll. */
   visibleRows: number;
 }) {
-  const accent: string | undefined = enabled ? THEME.executor : THEME.border;
+  const accent: string | undefined = !enabled
+    ? THEME.border
+    : isFocused
+      ? THEME.borderFocus
+      : THEME.executor;
   const contentRows = Math.max(1, visibleRows);
   const scroll = composerScroll(cursorRow, rows.length, contentRows);
   const window = rows.slice(scroll, scroll + contentRows);
@@ -2226,7 +2249,7 @@ function ChatInputRow({
                 <CursorLine
                   line={line}
                   width={width}
-                  cursor={row === cursorRow ? cursorCol : null}
+                  cursor={isFocused && row === cursorRow ? cursorCol : null}
                   color={accent}
                 />
               </Box>
