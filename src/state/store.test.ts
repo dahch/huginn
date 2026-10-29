@@ -51,6 +51,58 @@ describe("harness state store", () => {
     expect(loadState(dir)).toBeNull();
   });
 
+  it("round-trips the resume cursor and keeps it optional for older state", () => {
+    const s = freshState({
+      planHash: "abc",
+      planPath: join(dir, "plan.md"),
+      specPath: join(dir, "spec.md"),
+      adrPath: join(dir, "adr.md"),
+      thinker: "p/x",
+      executor: "e/y",
+      mode: "auto",
+    });
+    saveState(dir, s);
+    expect(loadState(dir)!.resume).toBeUndefined();
+
+    s.resume = {
+      iteration: 2,
+      phase: "VALIDATE_STEP",
+      at: new Date().toISOString(),
+      sandboxBranch: "huginn/task-iter-2",
+      sandboxPath: join(dir, ".huginn", "worktrees", "task-iter-2"),
+    };
+    saveState(dir, s);
+    expect(loadState(dir)!.resume).toEqual(s.resume);
+
+    // A state file written before the cursor existed still parses.
+    const raw = JSON.parse(readFileSync(join(dir, ".harness", "state.json"), "utf8"));
+    delete raw.resume;
+    writeFileSync(join(dir, ".harness", "state.json"), JSON.stringify(raw));
+    expect(loadState(dir)!.resume).toBeUndefined();
+  });
+
+  it("names the resume point in PROGRESS.md so an interrupted step is visible", () => {
+    const s = freshState({
+      planHash: "abc",
+      planPath: join(dir, "plan.md"),
+      specPath: join(dir, "spec.md"),
+      adrPath: join(dir, "adr.md"),
+      thinker: "p/x",
+      executor: "e/y",
+      mode: "auto",
+    });
+    s.resume = {
+      iteration: 2,
+      phase: "VALIDATE_STEP",
+      at: new Date().toISOString(),
+      sandboxBranch: "huginn/task-iter-2",
+    };
+    const md = readFileSync(renderProgressMarkdown(dir, s), "utf8");
+    expect(md).toContain("Resume point");
+    expect(md).toContain("VALIDATE_STEP");
+    expect(md).toContain("huginn/task-iter-2");
+  });
+
   it("throws on corrupt state", () => {
     mkdirSync(join(dir, ".harness"), { recursive: true });
     writeFileSync(join(dir, ".harness", "state.json"), "{not json");

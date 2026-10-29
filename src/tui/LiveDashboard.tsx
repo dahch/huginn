@@ -1044,6 +1044,10 @@ function RefineView({
           const safeRuntime = sanitizeTerminalText(diag.runtimeName).slice(0, STATUS_VALUE_WIDTH);
           const safeThinker = sanitizeTerminalText(diag.thinkerModel).slice(0, STATUS_VALUE_WIDTH);
           const safeExecutor = sanitizeTerminalText(diag.executorModel).slice(0, STATUS_VALUE_WIDTH);
+          // ADR-56: an interrupted run leaves a resume point behind; naming it
+          // here is the fastest way to know *where* `/resume` would continue.
+          const point = live.getResumePoint();
+          const resumeStr = point ? `iteration ${point.iteration} · ${point.phase}` : "none";
           const statusText = [
             `╭─ ${STATUS_TITLE} ${"─".repeat(STATUS_LINE_WIDTH - STATUS_TITLE.length - 5)}╮`,
             statusRow("Git Branch:", safeBranch),
@@ -1054,6 +1058,7 @@ function RefineView({
             statusRow("Thinker Model:", safeThinker),
             statusRow("Executor Model:", safeExecutor),
             statusRow("Muninn Memory:", memStr),
+            statusRow("Resume Point:", sanitizeTerminalText(resumeStr).slice(0, STATUS_VALUE_WIDTH)),
             `╰${"─".repeat(STATUS_LINE_WIDTH - 2)}╯`,
           ].join("\n");
           emitSystem(statusText);
@@ -1075,6 +1080,35 @@ function RefineView({
         setChatScroll(0);
         setStreamScroll(0);
         emitSystem(okFeedback("Conversation and stream viewport cleared."));
+        return;
+      }
+      case "/resume": {
+        // ADR-56: continue the saved run from the step it was interrupted on.
+        // Unlike /draft this never re-plans: the documents are already on disk,
+        // and `execute()` only keeps the harness state when their hash matches.
+        const point = live.getResumePoint();
+        if (!point) {
+          emitSystem(
+            warnFeedback(
+              "No saved run to continue — start one with /draft, or check /status.",
+            ),
+          );
+          return;
+        }
+        clearStream();
+        setBusy(true);
+        emitSystem(
+          busyFeedback(
+            `Continuing iteration ${point.iteration} at ${sanitizeTerminalText(point.phase)}…`,
+          ),
+        );
+        try {
+          await onApprove();
+        } catch (err) {
+          failSession(err);
+        } finally {
+          setBusy(false);
+        }
         return;
       }
       case "/draft": {

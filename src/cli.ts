@@ -214,6 +214,8 @@ Optional:
   --no-sandbox          run iterations in place (disables worktree sandboxing)
   --no-verify           do not run the plan's Verification: commands before promotion
   --resume              resume from saved state; errors if no saved state exists
+                        (an interrupted iteration restarts the step it stopped on,
+                         in the sandbox it kept)
   --force-restart       discard saved state and start over
   --ignore-plan-changes resume even if plan.md/spec.md/adr.md changed
   --continue, -c        (live) resume the latest live session of this project
@@ -836,7 +838,9 @@ export async function main(argv: string[]): Promise<void> {
   process.on("SIGINT", async () => {
     engine.requestAbort();
     try {
-      engine.cleanupSandboxes();
+      // Keep the interrupted iteration's sandbox, committed, so the next run can
+      // restart the step it was on instead of redoing the whole iteration.
+      engine.parkForResume();
     } catch {
       // best-effort
     }
@@ -845,7 +849,7 @@ export async function main(argv: string[]): Promise<void> {
   process.on("SIGTERM", async () => {
     engine.requestAbort();
     try {
-      engine.cleanupSandboxes();
+      engine.parkForResume();
     } catch {
       // best-effort
     }
@@ -1233,7 +1237,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   process.on("SIGINT", async () => {
     live.requestAbort();
     try {
-      live.cycleEngine?.cleanupSandboxes();
+      live.cycleEngine?.parkForResume();
     } catch {
       // best-effort
     }
@@ -1242,7 +1246,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   process.on("SIGTERM", async () => {
     live.requestAbort();
     try {
-      live.cycleEngine?.cleanupSandboxes();
+      live.cycleEngine?.parkForResume();
     } catch {
       // best-effort
     }

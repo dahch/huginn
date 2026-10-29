@@ -179,6 +179,18 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
           } (${state.finishedAt})`
         : `- **Status**: > RUNNING — current iteration ${state.currentIteration}, phase \`${state.currentPhase}\``,
   );
+  if (state.resume) {
+    // What the next run will restart: the step that was in flight when the run
+    // was interrupted, not the last one that finished.
+    const kept = state.resume.sandboxBranch
+      ? ` (sandbox \`${sanitizeTerminalText(state.resume.sandboxBranch)}\` kept)`
+      : "";
+    lines.push(
+      `- **Resume point**: iteration ${state.resume.iteration}, phase \`${sanitizeTerminalText(
+        state.resume.phase,
+      )}\` — the next run restarts that step${kept}`,
+    );
+  }
   lines.push("");
 
   for (let i = 1; i <= maxIter; i++) {

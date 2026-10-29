@@ -28,6 +28,23 @@ export const promotionSchema = z.object({
   detail: z.string().optional(),
 });
 
+/**
+ * Where an interrupted run stopped (ADR-56).
+ *
+ * `currentPhase` records the last phase that *finished*; this cursor records the
+ * step that was in flight (or blocked) when the run ended, so the next run can
+ * restart exactly that step instead of redoing the whole iteration. The sandbox
+ * fields are what let a sandboxed run reattach the worktree that holds the
+ * partially-done work. Optional so state written before the cursor still parses.
+ */
+export const resumeCursorSchema = z.object({
+  iteration: z.number(),
+  phase: z.string(),
+  at: z.string(),
+  sandboxBranch: z.string().optional(),
+  sandboxPath: z.string().optional(),
+});
+
 export const stateSchema = z.object({
   version: z.literal(1),
   planHash: z.string(),
@@ -49,9 +66,11 @@ export const stateSchema = z.object({
   finishedAt: z.string().optional(),
   aborted: z.boolean().optional(),
   promotion: promotionSchema.optional(),
+  resume: resumeCursorSchema.optional(),
   history: z.array(historyEntrySchema),
 });
 
 export type HarnessState = z.infer<typeof stateSchema>;
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 export type PromotionRecord = z.infer<typeof promotionSchema>;
+export type ResumeCursor = z.infer<typeof resumeCursorSchema>;

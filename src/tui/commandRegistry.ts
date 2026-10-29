@@ -99,6 +99,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     takesArgs: false,
   },
   {
+    id: "/resume",
+    aliases: ["/resume"],
+    description: "Continue the saved run from the step it was interrupted on",
+    category: "workflow",
+    takesArgs: false,
+  },
+  {
     id: "/quit",
     aliases: ["/quit", "/abort"],
     description: "Exit the live session (asks for confirmation twice)",

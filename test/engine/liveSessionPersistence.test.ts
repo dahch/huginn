@@ -555,7 +555,7 @@ describe("LiveEngine live-session persistence (Phase 4B)", () => {
     expect(latestLiveSession(dir)!.messages.map((m) => m.text)).toEqual(["survive the reset", "kept"]);
   });
 
-  it("execute() clears .harness but keeps the live session", async () => {
+  it("execute() resets a non-matching .harness but keeps the live session", async () => {
     const SCOPE_REPLY = "SCOPE:\n```markdown\nAdd a notifications module\n```";
     const SPEC_REPLY = "# Spec: notifications\n\nREQ-1: notify users\n";
     const ADR_REPLY = "NONE";
@@ -575,7 +575,7 @@ describe("LiveEngine live-session persistence (Phase 4B)", () => {
       await engine.chat("add notifications");
       expect(await engine.draft()).toBe("approved");
 
-      // stand in for a previous cycle's harness state
+      // stand in for a previous cycle's harness state (corrupt: not resumable)
       mkdirSync(join(dir, ".harness", "reports"), { recursive: true });
       writeFileSync(join(dir, ".harness", "state.json"), "{}");
       const liveBefore = JSON.parse(readFileSync(liveSessionsPath(dir), "utf8")).sessions[0];

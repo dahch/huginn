@@ -51,6 +51,7 @@ function createMockLive(overrides?: Partial<LiveEngine>): LiveEngine {
     ideaText: "",
     // Phase 4D: the view hydrates its conversation from the transcript at mount.
     getTranscript: vi.fn().mockReturnValue([]),
+    getResumePoint: vi.fn().mockReturnValue(undefined),
     clearTranscript: vi.fn(),
     start: vi.fn().mockResolvedValue(undefined),
     chat: vi.fn().mockResolvedValue(undefined),
@@ -681,6 +682,36 @@ describe("LiveDashboard Slash Commands", () => {
 
     expect(live.updateModels).not.toHaveBeenCalled();
     expect(systemMessages.some((m) => m.includes('Invalid model format "invalid-model-format"'))).toBe(true);
+  });
+
+  it("fails closed on /resume when there is no saved run, pointing at /draft", async () => {
+    const stdout = createMockStdout();
+    const stdin = createMockStdin();
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const live = createMockLive({ execute });
+
+    const systemMessages: string[] = [];
+    const off = events.on("liveChat", (e) => {
+      if (e.role === "system") systemMessages.push(e.text);
+    });
+
+    const instance = render(
+      React.createElement(LiveApp, {
+        live,
+        cfg: mockCfg,
+      }),
+      { stdout, stdin, patchConsole: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+    await typeCommand(stdin, "/resume");
+    instance.unmount();
+    off();
+
+    // No resume point: nothing is handed off, and the answer names the next step.
+    expect(execute).not.toHaveBeenCalled();
+    expect(systemMessages.some((m) => m.includes("No saved run to continue"))).toBe(true);
+    expect(systemMessages.some((m) => m.includes("/draft"))).toBe(true);
   });
 
   it("renders a rectangular /status box with aligned borders", async () => {

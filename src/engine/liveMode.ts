@@ -29,6 +29,8 @@ import { embedUntrusted } from "./steps/context.js";
 import { git } from "./diff.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { getLiveSession, newLiveSessionId, saveLiveSession, type LiveSession } from "../state/liveSession";
+import { computePlanHash, loadState } from "../state/store";
+import type { HarnessState } from "../state/schema";
 
 /** How long an unanswered clarifying question waits before the turn aborts (AC-37.4). */
 const QUESTION_TIMEOUT_MS = 10 * 60_000;
@@ -406,6 +408,27 @@ export class LiveEngine {
 
   getConfig(): RunConfig {
     return this.cfg;
+  }
+
+  /**
+   * The step a previous run of this project stopped on (ADR-56), or `undefined`
+   * when there is nothing to continue. This is what `--continue` announces and
+   * what `/resume` acts on: the run's own state lives in `.harness/state.json`,
+   * which the live console otherwise never reads.
+   */
+  getResumePoint(): { iteration: number; phase: string } | undefined {
+    try {
+      const state = loadState(this.cfg.projectPath);
+      if (!state?.resume) return undefined;
+      // The point belongs to the documents it was recorded against: editing
+      // spec/adr/plan by hand makes it stale, and offering it would promise a
+      // continuation that `execute()` would reset away.
+      if (state.planHash !== this.planHash()) return undefined;
+      return { iteration: state.resume.iteration, phase: state.resume.phase };
+    } catch {
+      // A corrupt state file is the run's problem, not the console's.
+      return undefined;
+    }
   }
 
   /**
@@ -1027,6 +1050,18 @@ export class LiveEngine {
         `Refinement session open. Context: project ${this.cfg.projectPath}, thinker ${formatModel(this.models.thinker)}.\n` +
         `Describe what you want to do, refine together, then type /draft when ready.`,
     });
+    // A previous run of this project may have been interrupted (ADR-56). Say so
+    // once, here, so the console can offer to continue instead of the user having
+    // to remember which iteration they stopped at.
+    const resumePoint = this.getResumePoint();
+    if (resumePoint) {
+      events.emit("liveChat", {
+        role: "system",
+        text:
+          `Saved run: iteration ${resumePoint.iteration} — interrupted at ${resumePoint.phase}. ` +
+          `/resume continues from that step; /draft re-plans.`,
+      });
+    }
   }
 
   /**
@@ -1322,6 +1357,16 @@ export class LiveEngine {
   }
 
   /**
+   * The plan hash in the canonical order the run recorded it in (`cli.ts` and
+   * `freshState` use plan → spec → adr). `computePlanHash` is order-sensitive,
+   * so the handoff must not hash `docPaths()` in its own order or every saved
+   * run would look like a different plan.
+   */
+  private planHash(): string {
+    return computePlanHash([this.cfg.planPath, this.cfg.specPath, this.cfg.adrPath]);
+  }
+
+  /**
    * Refinement → docs draft → human approval. Resolves once the user decides.
    * "approved" → call `execute()`; "aborted" → the session ended (intent-to-add
    * staging is dropped so no review-only state lingers in the index).
@@ -1370,10 +1415,30 @@ export class LiveEngine {
     } else {
       events.emit("log", { level: "info", message: "docs unchanged — nothing to commit" });
     }
-    // Wipes `.harness` **only** (the cycle state). The live session lives in
-    // `<project>/.huginn/live/`, which this must never touch: the handoff is not
-    // the end of the live conversation, and 4C resumes it from there.
-    resetHarnessState(this.cfg.projectPath);
+    // Wipes `.harness` **only** when the plan on disk is not the plan the saved
+    // run was built from: a hand-off after a fresh draft has nothing to resume,
+    // but an unchanged plan must keep its state so the interrupted step can be
+    // restarted instead of losing the whole cycle (ADR-56). The live session
+    // lives in `<project>/.huginn/live/`, which neither branch touches: the
+    // handoff is not the end of the live conversation, and 4C resumes it.
+    let loaded: HarnessState | null = null;
+    try {
+      loaded = loadState(this.cfg.projectPath);
+    } catch {
+      // A corrupt state file is not a plan change: the handoff resets it below.
+      loaded = null;
+    }
+    const resumable = loaded && loaded.planHash === this.planHash() ? loaded : undefined;
+    if (resumable) {
+      events.emit("log", {
+        level: "info",
+        message: resumable.resume
+          ? `[resume] saved run kept: iteration ${resumable.resume.iteration} — ${resumable.resume.phase}`
+          : "[resume] saved run kept: continuing from its harness state",
+      });
+    } else {
+      resetHarnessState(this.cfg.projectPath);
+    }
     // A checkpoint after the reset confirms the persisted session outlives the
     // handoff (and records the stage as `execute`).
     this.persistLiveSession();
@@ -1383,6 +1448,15 @@ export class LiveEngine {
       plan,
       client: this.client,
       runtime: this.runtime,
+      ...(resumable
+        ? {
+            state: {
+              ...resumable,
+              models: { thinker: this.cfg.thinker, executor: this.cfg.executor },
+              mode: this.cfg.mode,
+            },
+          }
+        : {}),
     });
     this.cycle = engine;
     return engine;

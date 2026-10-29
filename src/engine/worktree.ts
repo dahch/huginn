@@ -384,6 +384,49 @@ export class WorktreeManager {
   }
 
   /**
+   * Reattach the sandbox an interrupted run left behind (ADR-56).
+   *
+   * A run that is aborted mid-iteration now keeps its worktree and branch, so the
+   * partially-done work survives. The next run reuses them instead of creating a
+   * fresh worktree from `HEAD` (which would throw the work away and re-run every
+   * phase). Returns `null` when there is nothing safe to reattach, and the caller
+   * creates a new sandbox instead.
+   *
+   * Fails closed on a directory that git does not list as a worktree: writing into
+   * it could touch a real directory of the user's.
+   */
+  attachSandbox(projectRoot: string, iteration: number): Sandbox | null {
+    const root = projectRoot || this.projectRoot;
+    const branch = sandboxBranch(iteration);
+    const existing = this.listSandboxes().find((sandbox) => sandbox.branch === branch);
+    if (existing) {
+      this.linkSharedDeps(root, existing.path);
+      return existing;
+    }
+
+    const path = sandboxPath(root, iteration);
+    if (existsSync(path)) return null;
+    if (!this.branchExists(root, branch)) return null;
+
+    try {
+      assertDocPath(path, {
+        projectPath: root,
+        label: "the sandbox worktree",
+        action: "create",
+      });
+    } catch {
+      return null;
+    }
+
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const res = git(root, ["worktree", "add", path, branch]);
+    if (res.code !== 0) return null;
+
+    this.linkSharedDeps(root, path);
+    return { iteration, path, branch, projectRoot: root, baseCommit: headCommit(path) ?? "" };
+  }
+
+  /**
    * Commit everything the iteration left in the sandbox, so a successful
    * increment is always made of commits and cannot be discarded by
    * {@link promoteSandbox}. Returns the new HEAD when it had to commit.
@@ -830,19 +873,29 @@ export class WorktreeManager {
    * `huginn/task-iter-*` branches with no worktree (e.g. a branch preserved by
    * a conflicted promotion). Returns how many resources were reclaimed so the
    * caller can log an accurate count.
+   *
+   * `keepIteration` is the iteration an interrupted run is about to resume: its
+   * worktree and branch are the only copy of that iteration's work, so the sweep
+   * must leave them alone (ADR-56). Everything else is still reclaimed.
    */
-  cleanupAll(): number {
-    const sandboxes = this.listSandboxes();
-    for (const sandbox of sandboxes) {
+  cleanupAll(keepIteration?: number): number {
+    let reclaimed = 0;
+    for (const sandbox of this.listSandboxes()) {
+      if (keepIteration !== undefined && sandbox.iteration === keepIteration) continue;
       this.discardSandbox(sandbox);
+      reclaimed += 1;
     }
-    const orphanedBranches = this.orphanedSandboxBranches();
+    const keptBranch =
+      keepIteration === undefined ? undefined : `huginn/task-iter-${keepIteration}`;
+    const orphanedBranches = this.orphanedSandboxBranches().filter(
+      (branch) => branch !== keptBranch,
+    );
     for (const branch of orphanedBranches) {
       // Best-effort: a branch still checked out in a worktree makes git refuse,
       // which is exactly the correct outcome (it is not orphaned).
       git(this.projectRoot, ["branch", "-D", branch]);
     }
-    return sandboxes.length + orphanedBranches.length;
+    return reclaimed + orphanedBranches.length;
   }
 
   /**

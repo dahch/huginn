@@ -37,9 +37,9 @@ import {
   renderProgressMarkdown,
   computePlanHash,
 } from "../state/store";
-import type { HarnessState, HistoryEntry, PromotionRecord } from "../state/schema";
+import type { HarnessState, HistoryEntry, PromotionRecord, ResumeCursor } from "../state/schema";
 import { createClient, createSession, sessionExists, abortSession } from "../server/client";
-import { WorktreeManager, type Sandbox } from "./worktree";
+import { WorktreeManager, sandboxBranch, sandboxPath, type Sandbox } from "./worktree";
 import { resolveDatabasePath } from "@dahch/muninn";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
 import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
@@ -200,6 +200,8 @@ export class CycleEngine {
    * preserved branch recorded — instead of being reported as an abort.
    */
   private promotionFailure?: PromotionRecord;
+  /** Sandboxes already checkpointed by {@link parkForResume} (idempotent park). */
+  private parkedBranches = new Set<string>();
   private outcome: { reason: "completed" | "aborted" | "error"; error?: string } = { reason: "completed" };
 
   constructor(opts: CycleEngineOptions) {
@@ -247,16 +249,46 @@ export class CycleEngine {
   }
 
   /**
-   * Best-effort removal of every sandbox worktree. Registered on process
-   * termination so an unexpected exit never leaves `.huginn/worktrees` behind.
+   * Keep the in-flight iteration's work instead of deleting it (ADR-56).
+   *
+   * Registered on SIGINT/SIGTERM and used by the abort path. Everything the
+   * interrupted step produced is committed into the sandbox (so it survives even
+   * if the worktree has to be recreated later) and the worktree plus its branch
+   * stay on disk with the resume cursor naming the step to restart. Idempotent:
+   * the signal handler and the engine's own unwinding can both call it.
    */
-  cleanupSandboxes(): void {
+  parkForResume(): void {
     try {
-      this.getWorktrees().cleanupAll();
+      for (const sandbox of this.getWorktrees().listSandboxes()) {
+        if (this.parkedBranches.has(sandbox.branch)) continue;
+        this.parkedBranches.add(sandbox.branch);
+        try {
+          const checkpoint = this.getWorktrees().commitPendingChanges(
+            sandbox,
+            `chore(iter-${sandbox.iteration}): interrupted checkpoint`,
+          );
+          events.emit("log", {
+            level: "info",
+            message: checkpoint.commit
+              ? `[sandbox] iteration ${sandbox.iteration}: parked for resume (checkpoint ${checkpoint.commit.slice(0, 12)})`
+              : `[sandbox] iteration ${sandbox.iteration}: parked for resume (nothing to commit)`,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (err) {
+          events.emit("log", {
+            level: "warn",
+            message: `[sandbox] could not checkpoint the interrupted sandbox ${sandbox.branch}: ${
+              (err as Error).message
+            }`,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+      this.persist();
     } catch (err) {
       events.emit("log", {
         level: "warn",
-        message: `[sandbox] cleanup failed: ${(err as Error).message}`,
+        message: `[sandbox] park-for-resume failed: ${(err as Error).message}`,
         timestamp: new Date().toISOString(),
       });
     }
@@ -268,6 +300,24 @@ export class CycleEngine {
       this.worktrees = new WorktreeManager(this.cfg.projectPath);
     }
     return this.worktrees;
+  }
+
+  /**
+   * The step an interrupted run must restart (ADR-56).
+   *
+   * Only the iteration that has not completed can be resumed; a cursor naming any
+   * other iteration is stale (the plan changed, or the state was edited by hand)
+   * and is dropped here, so it can never point at work that no longer exists.
+   */
+  private resumeCursor(): ResumeCursor | undefined {
+    const cursor = this.state.resume;
+    if (!cursor) return undefined;
+    if (cursor.iteration !== this.state.currentIteration) {
+      this.state.resume = undefined;
+      this.persist();
+      return undefined;
+    }
+    return cursor;
   }
 
   /**
@@ -360,15 +410,23 @@ export class CycleEngine {
     }
 
     // Best-effort: reclaim worktrees (and orphaned branches) left behind by a
-    // previous interrupted run before creating this run's sandboxes.
+    // previous interrupted run before creating this run's sandboxes — except the
+    // one this run is about to resume, whose worktree holds the only copy of the
+    // interrupted iteration's work (ADR-56).
+    const resume = this.resumeCursor();
     if (this.sandboxingEnabled()) {
       try {
         // A branch a failed promotion preserved holds the only copy of that
         // iteration's commits: rename it out of the reclaim namespace before the
         // sweep, so a plain re-run can neither delete it nor be blocked by it
-        // (REV-001).
+        // (REV-001). A branch the resume cursor owns is not preserved: renaming it
+        // would strand the worktree the run is about to reattach.
         const preserved = this.state.promotion;
-        if (preserved && (preserved.status === "conflict" || preserved.status === "failed")) {
+        if (
+          preserved &&
+          (preserved.status === "conflict" || preserved.status === "failed") &&
+          preserved.branch !== resume?.sandboxBranch
+        ) {
           const kept = this.getWorktrees().preserveOrphanBranch(preserved.branch);
           if (kept) {
             events.emit("log", {
@@ -378,7 +436,7 @@ export class CycleEngine {
             });
           }
         }
-        const reclaimed = this.getWorktrees().cleanupAll();
+        const reclaimed = this.getWorktrees().cleanupAll(resume?.iteration);
         if (reclaimed > 0) {
           events.emit("log", {
             level: "info",
@@ -393,6 +451,13 @@ export class CycleEngine {
           timestamp: new Date().toISOString(),
         });
       }
+    }
+    if (resume) {
+      events.emit("log", {
+        level: "info",
+        message: `[resume] iteration ${resume.iteration} — restarting ${resume.phase}`,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     try {
@@ -499,6 +564,8 @@ export class CycleEngine {
       // mark iteration complete
       this.state.currentIteration = iteration.index + 1;
       this.state.currentPhase = "SPEC_AUDIT";
+      // The increment is promoted: there is nothing left to resume.
+      this.state.resume = undefined;
       this.persist();
     }
   }
@@ -509,9 +576,58 @@ export class CycleEngine {
     // touched by `promoteSandbox` on success. The sandbox is created first so
     // its path can scope the agent session. `settled` guarantees the sandbox is
     // cleaned up exactly once (promoted OR discarded), even on abort/throw.
-    const sandbox = this.sandboxingEnabled()
-      ? this.getWorktrees().createSandbox(this.cfg.projectPath, iteration.index)
-      : undefined;
+    //
+    // An interrupted iteration keeps its sandbox, so the resuming run reattaches
+    // it instead of starting from HEAD (ADR-56) — otherwise every phase's work
+    // would be gone and the whole iteration would have to re-run.
+    const cursor = this.resumeCursor();
+    let sandbox: Sandbox | undefined;
+    let reattached = false;
+    if (this.sandboxingEnabled()) {
+      const attached = cursor
+        ? this.getWorktrees().attachSandbox(this.cfg.projectPath, iteration.index)
+        : null;
+      if (attached) {
+        sandbox = attached;
+        reattached = true;
+        events.emit("log", {
+          level: "info",
+          message: `[resume] iteration ${iteration.index}: reattached the interrupted sandbox`,
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        if (cursor) {
+          // The worktree is gone, so the resume point cannot be honoured. The
+          // branch may still hold the only copy of that iteration's work, so it
+          // is renamed out of the reclaim namespace instead of deleted (the same
+          // recovery rule a conflicted promotion uses); then the iteration
+          // replays from its first step.
+          const kept = this.getWorktrees().preserveOrphanBranch(sandboxBranch(iteration.index));
+          if (kept) {
+            events.emit("log", {
+              level: "warn",
+              message: `[resume] iteration ${iteration.index}: the interrupted sandbox is gone; its branch was preserved as ${kept}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          this.getWorktrees().discardSandbox({
+            iteration: iteration.index,
+            path: sandboxPath(this.cfg.projectPath, iteration.index),
+            branch: sandboxBranch(iteration.index),
+            projectRoot: this.cfg.projectPath,
+            baseCommit: "",
+          });
+          this.state.resume = undefined;
+          this.persist();
+          events.emit("log", {
+            level: "warn",
+            message: `[resume] iteration ${iteration.index}: restarting the iteration from its first step`,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        sandbox = this.getWorktrees().createSandbox(this.cfg.projectPath, iteration.index);
+      }
+    }
     const workPath = sandbox?.path ?? this.cfg.projectPath;
 
     // Each iteration starts with a clean promotion record so a previous
@@ -535,7 +651,11 @@ export class CycleEngine {
 
     let settled = false;
     try {
-      const baseCommit = headCommit(workPath) ?? undefined;
+      // A reattached sandbox already contains the interrupted iteration's
+      // commits, so its HEAD is not the diff base — the persisted one is.
+      const baseCommit = reattached
+        ? (this.state.iterationBaseCommit ?? headCommit(workPath) ?? undefined)
+        : (headCommit(workPath) ?? undefined);
       this.state.iterationBaseCommit = baseCommit;
       this.persist();
 
@@ -562,31 +682,46 @@ export class CycleEngine {
         verify: this.cfg.verify !== false,
       };
 
-      // resume point: only meaningful when resuming the exact iteration we are on.
-      // Capture it once; currentPhase advances as steps run. An ephemeral sandbox
-      // cannot resume mid-iteration: a prior run's worktree was discarded at
-      // startup (cleanupAll), so any earlier phase's changes are gone and must re-run.
+      // Resume point (ADR-56). The cursor names the step that was in flight when
+      // the run ended, and restarting *that* step is the whole point: its work may
+      // be half-done, so moving on to the next one would validate a step nobody
+      // finished. Under sandboxing the cursor is only usable when its worktree
+      // could be reattached; otherwise the earlier phases' changes are gone and
+      // the iteration replays from the start. The history scan stays as the
+      // fallback for state written before the cursor existed (in-place runs only).
       const steps = pipelineFor(this.cfg.profile);
-      // Resume at the first step this iteration has not recorded yet. Keying the
-      // cursor off a phase *id* was wrong: `currentPhase` starts at SPEC_AUDIT every
-      // iteration, so a profile that does not begin with SPEC_AUDIT (odd/rdd/
-      // strict-tdd) matched no step and silently ran nothing (REV-001).
       let resumeIndex = 0;
-      if (!this.cfg.onlyPhase && !sandbox && this.state.currentIteration === iteration.index) {
-        const recorded = this.state.history
-          .filter((h) => h.iteration === iteration.index)
-          .map((h) => h.phase);
-        resumeIndex = steps.length;
-        const seen = new Map<PhaseName, number>();
-        for (let i = 0; i < steps.length; i += 1) {
-          const phase = steps[i]!.phase;
-          const occurrence = (seen.get(phase) ?? 0) + 1;
-          seen.set(phase, occurrence);
-          if (occurrence > recorded.filter((p) => p === phase).length) {
-            resumeIndex = i;
-            break;
+      if (!this.cfg.onlyPhase && this.state.currentIteration === iteration.index) {
+        if (cursor && (!sandbox || reattached)) {
+          const index = steps.findIndex((step) => step.phase === cursor.phase);
+          if (index >= 0) resumeIndex = index;
+        } else if (!sandbox) {
+          // Resume at the first step this iteration has not recorded yet. Keying
+          // the cursor off a phase *id* was wrong: `currentPhase` starts at
+          // SPEC_AUDIT every iteration, so a profile that does not begin with
+          // SPEC_AUDIT (odd/rdd/strict-tdd) matched no step and ran nothing.
+          const recorded = this.state.history
+            .filter((h) => h.iteration === iteration.index)
+            .map((h) => h.phase);
+          resumeIndex = steps.length;
+          const seen = new Map<PhaseName, number>();
+          for (let i = 0; i < steps.length; i += 1) {
+            const phase = steps[i]!.phase;
+            const occurrence = (seen.get(phase) ?? 0) + 1;
+            seen.set(phase, occurrence);
+            if (occurrence > recorded.filter((p) => p === phase).length) {
+              resumeIndex = i;
+              break;
+            }
           }
         }
+      }
+      if (resumeIndex > 0) {
+        events.emit("log", {
+          level: "info",
+          message: `[resume] iteration ${iteration.index} — restarting ${steps[resumeIndex]!.phase} (${resumeIndex} earlier step(s) kept)`,
+          timestamp: new Date().toISOString(),
+        });
       }
       // Frozen evidence for the profiles that require it (REQ-36 / AC-36.4).
       const verdicts: Array<{ phase: PhaseName; verdict?: Verdict }> = [];
@@ -601,6 +736,20 @@ export class CycleEngine {
 
         this.state.currentPhase = step.phase;
         this.lastVerdict = undefined;
+        // Record the step *before* it runs (ADR-56): a run killed mid-phase
+        // (SIGKILL, OOM, power loss) must still know which step to restart, and
+        // `currentPhase` only advances once a phase has finished. A debug run
+        // (`--only-phase`) discards its sandbox, so it neither creates nor
+        // destroys a resume point.
+        if (!this.cfg.onlyPhase) {
+          this.state.resume = {
+            iteration: iteration.index,
+            phase: step.phase,
+            at: new Date().toISOString(),
+            ...(sandbox ? { sandboxBranch: sandbox.branch, sandboxPath: sandbox.path } : {}),
+          };
+          this.persist();
+        }
 
         // refresh modules once the iteration has produced changes
         if (step.phase === "VALIDATE_STEP" || step.phase === "TEST_MODULE") {
@@ -616,7 +765,16 @@ export class CycleEngine {
           await this.runPhase(step, ctx, sessionId, iteration);
         }
 
+        // An abort keeps the cursor: it names the step that was interrupted, and
+        // that is exactly the step the next run must restart. A step that
+        // finished cleanly is not a resume point any more; a blocked one stays,
+        // so resuming retries the gate instead of stepping past it.
         if (this.abortRequested) return;
+        if (this.lastVerdict !== "blocked" && this.state.resume) {
+          this.state.resume = undefined;
+          this.persist();
+        }
+
         verdicts.push({ phase: step.phase, verdict: this.lastVerdict ?? "skipped" });
         this.persist();
       }
@@ -754,8 +912,16 @@ export class CycleEngine {
         }
       }
     } finally {
-      // Aborted, --only-phase, or a thrown phase error: never touch the primary
-      // tree — discard the sandbox (worktree + branch). Exactly once.
+      // An aborted iteration keeps its sandbox, committed, so the next run can
+      // reattach it and restart the step that was in flight (ADR-56) — discarding
+      // it would throw away work the user already paid for. Everything else
+      // (--only-phase, a promotion failure, a thrown engine error) still discards
+      // the sandbox: never touch the primary tree, exactly once.
+      const keepForResume = this.abortRequested && !this.cfg.onlyPhase && sandbox !== undefined;
+      if (keepForResume) {
+        this.parkForResume();
+        settled = true;
+      }
       if (sandbox && !settled) {
         this.getWorktrees().discardSandbox(sandbox);
       }

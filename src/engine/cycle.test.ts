@@ -682,26 +682,34 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
   interface SpiedWorktrees {
     manager: WorktreeManager;
     created: Sandbox[];
+    attached: Sandbox[];
     promoted: Sandbox[];
     checkpointed: Sandbox[];
     discarded: Sandbox[];
-    cleaned: { count: number };
+    cleaned: { count: number; keep: Array<number | undefined> };
   }
 
   /** Real WorktreeManager with its public methods spied for assertions. */
   function spyWorktrees(root: string): SpiedWorktrees {
     const real = new WorktreeManager(root);
     const created: Sandbox[] = [];
+    const attached: Sandbox[] = [];
     const promoted: Sandbox[] = [];
     const checkpointed: Sandbox[] = [];
     const discarded: Sandbox[] = [];
-    const cleaned = { count: 0 };
+    const cleaned = { count: 0, keep: [] as Array<number | undefined> };
     const manager = {
       createSandbox: (r: string, iteration: number): Sandbox => {
         const s = real.createSandbox(r, iteration);
         created.push(s);
         return s;
       },
+      attachSandbox: (r: string, iteration: number): Sandbox | null => {
+        const s = real.attachSandbox(r, iteration);
+        if (s) attached.push(s);
+        return s;
+      },
+      listSandboxes: () => real.listSandboxes(),
       promoteSandbox: (s: Sandbox) => {
         promoted.push(s);
         return real.promoteSandbox(s);
@@ -714,12 +722,13 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
         discarded.push(s);
         real.discardSandbox(s);
       },
-      cleanupAll: () => {
+      cleanupAll: (keep?: number) => {
         cleaned.count++;
-        return real.cleanupAll();
+        cleaned.keep.push(keep);
+        return real.cleanupAll(keep);
       },
     } as unknown as WorktreeManager;
-    return { manager, created, promoted, checkpointed, discarded, cleaned };
+    return { manager, created, attached, promoted, checkpointed, discarded, cleaned };
   }
 
   it("creates a sandbox, runs phases against its path and promotes on success", async () => {
@@ -774,7 +783,7 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     expect(existsSync(sandbox.path)).toBe(false);
   });
 
-  it("discards the sandbox and never promotes when the iteration aborts", async () => {
+  it("keeps the interrupted sandbox and its resume cursor when the iteration aborts", async () => {
     commitEmpty(dir);
     const spy = spyWorktrees(dir);
 
@@ -807,26 +816,42 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
 
     expect(outcome.reason).toBe("aborted");
     expect(spy.created).toHaveLength(1);
-    // The sandbox was discarded (not promoted) and the primary tree is intact.
+    const sandbox = spy.created[0]!;
+    // ADR-56: the interrupted iteration is never promoted, and its sandbox is
+    // kept (committed) so the next run can restart the step — discarding it would
+    // throw away the work the user already paid for.
     expect(spy.promoted).toHaveLength(0);
-    expect(spy.discarded).toEqual([spy.created[0]]);
-    expect(existsSync(spy.created[0].path)).toBe(false);
+    expect(spy.discarded).toHaveLength(0);
+    expect(existsSync(sandbox.path)).toBe(true);
+    expect(spy.checkpointed).toContainEqual(sandbox);
+
+    // The cursor names the step that was in flight, not the last one that finished.
+    const cursor = engine.getState().resume;
+    expect(cursor).toMatchObject({
+      iteration: 1,
+      phase: "EXECUTE",
+      sandboxBranch: "huginn/task-iter-1",
+      sandboxPath: sandbox.path,
+    });
     expect(engine.getState().currentIteration).toBe(1);
   });
 
-  it("ignores a mid-iteration resume phase when sandboxing and re-runs from the start", async () => {
+  it("reattaches the kept sandbox and restarts the interrupted step (ADR-56)", async () => {
     commitEmpty(dir);
     const spy = spyWorktrees(dir);
+
+    // A previous run aborted at VALIDATE_STEP: its worktree and branch survived,
+    // with EXECUTE's work already committed in it.
+    const kept = new WorktreeManager(dir).createSandbox(dir, 1);
+    writeFileSync(join(kept.path, "src.ts"), "export const x = 1;\n");
+    git(kept.path, ["add", "-A"]);
+    expect(git(kept.path, ["commit", "-m", "work", "--no-gpg-sign"]).code).toBe(0);
 
     const client = makeClient(async () => ({
       info: { id: "msg", error: undefined },
       parts: [{ type: "text", text: '{"status":"pass","summary":"ok","actionItems":[]}' }],
     }));
 
-    // A prior run aborted after EXECUTE had completed: the persisted state sits
-    // at iteration 1 / VALIDATE_STEP. Its ephemeral worktree (and EXECUTE's
-    // changes) were reclaimed at startup, so resuming would validate an empty
-    // sandbox. Sandboxing must therefore re-run the whole iteration.
     const cfg = makeCfg({ sandbox: true });
     const state = freshState({
       planHash: "resume-test",
@@ -838,19 +863,67 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
       mode: cfg.mode,
     });
     state.currentIteration = 1;
-    state.currentPhase = "VALIDATE_STEP";
+    state.currentPhase = "EXECUTE";
+    state.resume = {
+      iteration: 1,
+      phase: "VALIDATE_STEP",
+      at: new Date().toISOString(),
+      sandboxBranch: kept.branch,
+      sandboxPath: kept.path,
+    };
 
     const engine = new CycleEngine({ cfg, client, plan: makePlan(), worktrees: spy.manager, state });
     const outcome = await engine.run();
 
     expect(outcome.reason).toBe("completed");
-    // Resume point was ignored: EXECUTE ran in this run despite the saved phase.
-    expect(engine.getState().history.some((h) => h.iteration === 1 && h.phase === "EXECUTE")).toBe(true);
-    // A full successful iteration promoted its sandbox.
-    expect(spy.created).toHaveLength(1);
+    // The kept sandbox was reattached, never recreated.
+    expect(spy.attached).toHaveLength(1);
+    expect(spy.created).toHaveLength(0);
+    // The pre-run sweep left the resumable sandbox alone.
+    expect(spy.cleaned.keep).toContain(1);
+    // The interrupted step restarted: EXECUTE (already done) did not run again,
+    // and VALIDATE_STEP did.
+    expect(engine.getState().history.some((h) => h.phase === "EXECUTE")).toBe(false);
+    expect(engine.getState().history.some((h) => h.phase === "VALIDATE_STEP")).toBe(true);
+    // The increment promoted, so there is no resume point left.
     expect(spy.promoted).toHaveLength(1);
-    expect(spy.discarded).toHaveLength(0);
+    expect(engine.getState().resume).toBeUndefined();
     expect(engine.getState().currentIteration).toBe(2);
+  });
+
+  it("drops a resume cursor that no longer matches the iteration to run", async () => {
+    commitEmpty(dir);
+    const spy = spyWorktrees(dir);
+    const client = makeClient(async () => ({
+      info: { id: "msg", error: undefined },
+      parts: [{ type: "text", text: '{"status":"pass","summary":"ok","actionItems":[]}' }],
+    }));
+
+    const cfg = makeCfg({ sandbox: true });
+    const state = freshState({
+      planHash: "stale-cursor",
+      planPath: cfg.planPath,
+      specPath: cfg.specPath,
+      adrPath: cfg.adrPath,
+      thinker: cfg.thinker,
+      executor: cfg.executor,
+      mode: cfg.mode,
+    });
+    // The state advanced past iteration 1 but the cursor still names it.
+    state.currentIteration = 2;
+    state.resume = {
+      iteration: 1,
+      phase: "EXECUTE",
+      at: new Date().toISOString(),
+      sandboxBranch: "huginn/task-iter-1",
+    };
+
+    const engine = new CycleEngine({ cfg, client, plan: makePlan(), worktrees: spy.manager, state });
+    await engine.run();
+
+    expect(engine.getState().resume).toBeUndefined();
+    expect(spy.created).toHaveLength(0);
+    expect(spy.attached).toHaveLength(0);
   });
 
   it("scopes the agent session, prompts and commands to the sandbox directory (REQ-17)", async () => {

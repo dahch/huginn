@@ -24,7 +24,7 @@ import { events } from "./engineEvents";
 import type { DecisionChoice } from "./types";
 import { git } from "./diff";
 import { repoContext } from "./liveRepo";
-import { computePlanHash } from "../state/store";
+import { computePlanHash, freshState, loadState, saveState } from "../state/store";
 import type { RunConfig } from "../config";
 
 let dir: string;
@@ -345,6 +345,67 @@ describe("LiveEngine flow", () => {
     } finally {
       offs.forEach((off) => off());
     }
+  });
+
+  it("keeps the saved run (and its resume cursor) when the handed-off plan is unchanged", async () => {
+    const cfg = makeCfg();
+    // The documents the interrupted run was planned against, already committed.
+    writeFileSync(cfg.specPath, "# Spec\n");
+    writeFileSync(cfg.adrPath, "# ADR\n");
+    writeFileSync(cfg.planPath, "## Iteration 1 — one\n\n**Prompt:**\nwork\n");
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-m", "docs", "--no-gpg-sign"]);
+
+    const planHash = computePlanHash([cfg.planPath, cfg.specPath, cfg.adrPath]);
+    const state = freshState({
+      planHash,
+      planPath: cfg.planPath,
+      specPath: cfg.specPath,
+      adrPath: cfg.adrPath,
+      thinker: cfg.thinker,
+      executor: cfg.executor,
+      mode: cfg.mode,
+    });
+    state.currentIteration = 1;
+    state.resume = {
+      iteration: 1,
+      phase: "VALIDATE_STEP",
+      at: new Date().toISOString(),
+      sandboxBranch: "huginn/task-iter-1",
+    };
+    saveState(dir, state);
+
+    const engine = new LiveEngine({ cfg, client: routingClient(), idea: "" });
+    expect(engine.getResumePoint()).toEqual({ iteration: 1, phase: "VALIDATE_STEP" });
+
+    const ce = await engine.execute();
+
+    // ADR-56: the handoff must not wipe the state it is going to resume from.
+    expect(loadState(dir)?.resume).toEqual(state.resume);
+    expect(ce.getState().resume).toEqual(state.resume);
+    expect(ce.getState().planHash).toBe(planHash);
+  });
+
+  it("reports no resume point once the documents no longer match the saved hash", async () => {
+    const cfg = makeCfg();
+    writeFileSync(cfg.specPath, "# Spec\n");
+    writeFileSync(cfg.adrPath, "# ADR\n");
+    writeFileSync(cfg.planPath, "## Iteration 1 — one\n\n**Prompt:**\nwork\n");
+
+    const state = freshState({
+      planHash: "stale-hash",
+      planPath: cfg.planPath,
+      specPath: cfg.specPath,
+      adrPath: cfg.adrPath,
+      thinker: cfg.thinker,
+      executor: cfg.executor,
+      mode: cfg.mode,
+    });
+    state.resume = { iteration: 2, phase: "EXECUTE", at: new Date().toISOString() };
+    saveState(dir, state);
+
+    const engine = new LiveEngine({ cfg, client: routingClient(), idea: "" });
+    expect(engine.getResumePoint()).toBeUndefined();
   });
 
   it("falls back to the last user message when scope extraction yields no SCOPE block", async () => {
