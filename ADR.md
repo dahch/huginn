@@ -1549,3 +1549,57 @@ avoids. They are ordered by how central the decision is to the design.
   - *Negative*: the pi CLI becomes the liveness source (a config-only fallback is honest but not live),
     and a project-scoped `.pi`/`.agents` directory is symlinked into sandboxes so untracked resources
     still reach the session.
+
+## ADR-56: An interrupted iteration is parked and resumes at the step that was in flight
+
+- **Date**: 2026-10-29
+- **Status**: Accepted
+- **Context**: `currentPhase` records the last phase that *finished*, and under sandboxing there was no
+  mid-iteration resume at all: the abort path (`finally` → `discardSandbox`) and the `SIGINT` handler
+  (`cleanupSandboxes()`) destroyed the iteration's worktree, and the next run's pre-run sweep reclaimed
+  whatever was left. A run interrupted at `VALIDATE_STEP` therefore replayed `EXECUTE` from scratch, and
+  the live hand-off made it worse by wiping `.harness` unconditionally, so returning from a cycle lost
+  the progress even when the plan had not changed.
+- **Decision**:
+  1. `state.resume` is an optional cursor `{ iteration, phase, at, sandboxBranch?, sandboxPath? }`,
+     written **before** a step runs (so a `SIGKILL` still records it) and cleared once that step finishes
+     without a `blocked` verdict. A blocked step keeps it, so resuming retries the gate.
+  2. An abort parks the sandbox instead of discarding it: `parkForResume()` commits
+     (`chore(iter-N): interrupted checkpoint`) and leaves the worktree and branch in place. It is
+     idempotent (the signal handler and the engine's unwinding both call it) and is what
+     `SIGINT`/`SIGTERM` register; `cleanupAll(keepIteration)` then spares exactly that iteration.
+  3. `WorktreeManager.attachSandbox()` reattaches a kept worktree (or re-creates it from the kept
+     branch) and the step loop starts at `resume.phase`, re-running it: earlier steps keep their work and
+     a step that was interrupted is never skipped. A cursor naming a different iteration is stale and
+     dropped; if the worktree is gone, the branch is preserved under `huginn/preserved/` and the
+     iteration replays.
+  4. The live hand-off only resets `.harness` when the documents' `planHash` differs from the state's,
+     and otherwise passes the state into the `CycleEngine`; `/resume` continues it without re-planning.
+- **Consequences**:
+  - *Positive*: an interrupted increment costs one step, not one iteration; the resume point is visible
+    (`PROGRESS.md`, `/status`) and the work is recoverable even when reattachment fails.
+  - *Negative*: one worktree can outlive the process until the next run (bounded by the cursor) and
+    `.huginn/worktrees/` needs `--force-restart` to be wiped outright. The agent session is still new
+    on resume (it was bound to the previous process), so a phase restarts from its prompt, not from
+    mid-prompt state.
+
+## ADR-57: A signal death in `VERIFY` is an environment failure, not a failing expectation
+
+- **Date**: 2026-10-29
+- **Status**: Accepted
+- **Context**: `runVerificationCommand` kept only the exit code, so a test binary killed by SIGSEGV
+  (a GPU/driver crash: Mesa and a vendor Vulkan ICD unloading in one process) surfaced as
+  `FAILED (exit 139)`, indistinguishable from an assertion. The gate then spent its fix budget asking
+  the thinker to repair source code that caused nothing.
+- **Decision**:
+  1. The runner captures the signal (`close(code, signal)`) and maps the shell's `128 + n` status to the
+     signal it encodes, so `crashed`/`signal` are structured fields of the result.
+  2. The report says `CRASHED (SIGSEGV)` and adds a huginn-authored section explaining that a signal
+     death is an environment failure (driver, display, OOM, stack overflow) and what to do instead of a
+     blind source edit. `VERIFY` returns `crash` and `runPhase` skips the `FIX_VERIFY` rounds, escalating
+     to the human (or aborting in `auto`/headless).
+- **Consequences**:
+  - *Positive*: no fixer budget is burned on a driver crash, and the report names the real class of
+    failure; `FIX_VERIFY` still receives the trusted hint when the human chooses to retry.
+  - *Negative*: a command that deliberately exits `128 + n` is reported as a crash; the shell convention
+    makes the two indistinguishable, and the human decision still lets the run continue.

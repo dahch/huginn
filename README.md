@@ -279,7 +279,7 @@ override the detected locations.
 | `--only-phase <name>` | — | run a single phase per iteration (debugging) |
 | `--sandbox` / `--no-sandbox` | `--sandbox` | run each iteration in an isolated git worktree under `.huginn/worktrees/` (see [Sandboxing](#sandboxing-git-worktrees)); `--no-sandbox` runs iterations in place |
 | `--no-verify` | — | do not run the plan's `Verification:` commands before promoting an increment (they run by default; a failure blocks the promotion) |
-| `--resume` | — | resume from saved state; fails if no saved state exists (plain re-runs auto-resume anyway) |
+| `--resume` | — | resume from saved state; fails if no saved state exists (plain re-runs auto-resume anyway). A run interrupted mid-iteration restarts the step it was on, in the sandbox it kept |
 | `--force-restart` | — | discard saved state and start over |
 | `--ignore-plan-changes` | — | resume even if plan/spec/adr changed |
 | `--continue`, `-c` | — | (live) resume the project's most recently updated live session |
@@ -374,7 +374,11 @@ the primary branch while the agent works:
 - `node_modules`, `.env`, `.pi` and `.agents` are symlinked from the primary tree into the sandbox
   when they exist there and are absent from the worktree, so an untracked `.pi/mcp.json` or a
   project skill still reaches the agent's session.
-- On abort or a phase error the sandbox is discarded and your working tree is never touched.
+- On abort the sandbox is **parked, not discarded**: everything the interrupted step produced is
+  committed into it (`chore(iter-N): interrupted checkpoint`) and the worktree + branch stay on disk,
+  with `.harness/state.json` recording the step that was in flight. The next run reattaches that
+  sandbox and restarts exactly that step — earlier steps keep their work, and the interrupted step is
+  re-run rather than skipped (ADR-56). Your working tree is still never touched.
 - If promotion fails, the primary tree is restored (a conflict aborts the cherry-pick and puts every
   parked file back, including a tracked file's staged/unstaged index state), the worktree is removed,
   the `huginn/task-iter-<N>` branch is **kept** so the
@@ -387,7 +391,8 @@ the primary branch while the agent works:
 - `--no-sandbox` runs iterations in place, exactly as before.
 
 Stale worktrees **and** any orphaned `huginn/task-iter-*` branches from a crashed run are reclaimed
-at the start of the next run, and `SIGINT`/`SIGTERM` trigger a best-effort cleanup.
+at the start of the next run — except the one an interrupted run is about to resume. `SIGINT`/`SIGTERM`
+park the in-flight sandbox instead of deleting it; `--force-restart` is what wipes everything.
 
 ## Plan mode (`huginn plan`)
 
@@ -507,9 +512,10 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
   - `/profile`: opens the **methodology-profile picker** (`ProfilePickerModal`) — every profile with its display name, one-line description and the active marker; `↑`/`↓` (or `j`/`k`) move, `Enter` applies it for the session, `p` also saves it to the project config and `g` globally, `Esc` cancels. `/profile <id>` sets one directly; an unknown id fails closed with the valid list and changes nothing. The console always says that the pipeline is chosen when a cycle starts, so a change applies to the **next** cycle.
   - `/mcp [id]`: opens the MCP inspector, optionally pre-selecting a server by id.
   - `/skills` (or bare `/skill`): opens the skills browser; `/skill <name>` executes a skill immediately.
-  - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, the active **methodology profile**, and Muninn entity/observation counts (a failed Muninn database open reports the error instead of `0 entities, 0 observations`).
+  - `/status`: renders a system-diagnostics box — git branch, clean/dirty working tree, worktree-sandbox state, active runtime, thinker/executor models, the active **methodology profile**, the **resume point** of an interrupted run, and Muninn entity/observation counts (a failed Muninn database open reports the error instead of `0 entities, 0 observations`).
   - `/clear`: clears the conversation and stream viewports.
   - `/draft` (alias `/go`): runs scope extraction and document drafting.
+  - `/resume`: continues a saved run from the step it was interrupted on, without re-planning. It only appears as an option when `.harness/state.json` holds a resume point recorded against the documents currently on disk; otherwise it says so and points at `/draft`.
   - `/quit` (alias `/abort`): exits the session after a two-step confirmation.
 - **Extensible Skills System (`/skills`, `/skill <name>`)**: Markdown skills in `<project>/.huginn/skills/` and `<project>/.opencode/skills/` (`.huginn` wins) are discovered automatically and browsable/executable in-app. Each skill pairs flat frontmatter metadata (`name`/`title`, `description`/`desc`, `triggers` as a YAML list, `[a, b]` or comma list) with a reusable prompt body; a file without frontmatter falls back to its basename + first paragraph. Three built-in skills (`audit`, `refactor`, `explain`) ship by default. See [Project skills](#project-skills-huginnskills).
 - **Consistent Action Feedback**: every action answers in the conversation with one of three prefixes — `✓` (done), `⚠` (problem, always naming the next step such as `/model <id>`, `/agent` or `/mcp`, with the raw cause on a `cause:` line) or `…` (running) — so no input is a silent no-op. An empty conversation shows raven-flavoured first-run hints for the palette, `/draft`, `/mcp`, `/status` and `/help`.
@@ -621,7 +627,10 @@ tools). The verdict of a huginn-run gate is huginn's own:
 7. **DOC_SYNC** — the embedded doc-sync instruction (informative, never blocks).
 8. **VERIFY** — deterministic proof that the increment works: huginn runs the iteration's
    `Verification:` commands inside the sandbox and gates on their real exit codes. A failing command
-   blocks the iteration and feeds the `FIX_VERIFY` turn. A plan with no `Verification:` section stays
+   blocks the iteration and feeds the `FIX_VERIFY` turn. A command killed by a signal is reported as
+   `CRASHED (SIGSEGV)` (not `FAILED (exit 139)`) and **skips the fix rounds**: a crash is an
+   environment failure — driver, display, OOM — so no source edit can fix it and huginn escalates to
+   you instead of burning the budget (ADR-57). A plan with no `Verification:` section stays
    compatible (the phase passes with a note); `--no-verify` / `"verify": false` disables it.
 9. **COMMIT_ALL** — the embedded commit instruction produces the semantic commits.
 

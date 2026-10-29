@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Resume the step that was interrupted.** An aborted iteration (Ctrl-C, `q`/`Esc`, an abort at a
+  gate) no longer discards its sandbox: everything is committed into it and the worktree plus its
+  branch stay on disk, with `state.resume` naming the step that was in flight. The next run reattaches
+  that sandbox and restarts exactly that step — earlier steps keep their work, and the interrupted
+  step is re-run rather than skipped past. The live hand-off (`live` → run) now only resets `.harness`
+  when the plan on disk actually changed, so returning from a cycle keeps the progress. New `/resume`
+  command and a `Resume Point` row in `/status` / `.harness/PROGRESS.md`.
+- **Crash-aware `VERIFY`.** A verification command killed by a signal is reported as
+  `CRASHED (SIGSEGV)` with a trusted "crash, not an assertion" note instead of `FAILED (exit 139)`,
+  and the fix rounds are skipped: a driver/GPU crash is an environment failure, so huginn escalates to
+  you (or aborts in `auto`/headless) instead of paying a thinker to "fix" the source.
+
+### Fixed
+
+- **Live focus is real.** `Tab`/`Shift+Tab` cycle composer → conversation → agent stream (skipping a
+  collapsed stream card) and the focused surface owns `↑`/`↓`/`PgUp`/`PgDn`; the arrow keys no longer
+  jump to input history just because the draft is empty, so the conversation is scrollable while a
+  history exists. `Tab` never appends a line to the chat, which used to build a wall of identical
+  "panel is collapsed" notices.
+
 ## 2.0.0-rc.3
 
 Thirteen commits since `2.0.0-rc.2`, 61 files: `src/engine` +1308/−92, `test` +538/−17,

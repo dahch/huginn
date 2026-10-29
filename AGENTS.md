@@ -89,7 +89,7 @@ enforced by huginn (see §4).
 | `EXECUTE` | `executePrompt` | the iteration's prompt verbatim (+ the profile preamble) | non-blocking, but an empty report still fails closed |
 | `VALIDATE_STEP` | `validateStepSubPrompts` (qa / spec / security) + `validateStepSynthesisPrompt` | three independent audits, then a consolidation turn | huginn computes it (§4) |
 | `TEST_MODULE` | `testModulePrompt` | qa role + module scope + increment criteria/verification | judge pass (`judgePhase`) |
-| `VERIFY` | `verifyIteration` (`src/engine/verify.ts`) | the iteration's `Verification:` commands, run deterministically in the sandbox | `authoritativeVerdict` from the real exit codes |
+| `VERIFY` | `verifyIteration` (`src/engine/verify.ts`) | the iteration's `Verification:` commands, run deterministically in the sandbox | `authoritativeVerdict` from the real exit codes (+ `crash` when one died from a signal: no fix round is attempted, the run escalates — ADR-57) |
 | `SECURE_CHECK` | `secureCheckPrompt` | security role + scoped diff | judge pass |
 | `REVIEW` | `reviewPrompt` | reviewing role + pre-PR diff | judge pass |
 | `DOC_SYNC` | `docSyncPrompt` | doc-writer role + recent history | informative (never blocks) |
@@ -371,10 +371,17 @@ forwarded to the model.
 | `/mcp [id]` | Opens the MCP inspector, optionally preselecting a server id. | `src/tui/McpInspectorModal.tsx` |
 | `/skills`, `/skill` | Opens the skills browser (`SkillsModal`). | `src/tui/SkillsModal.tsx` |
 | `/skill <name>` | Resolves a skill by id/name/trigger and runs its `body` as the prompt. | `findSkill()` |
-| `/status` | Renders branch, dirty state, worktree sandbox, runtime, models and Muninn counts. | `LiveEngine.getDiagnostics()` |
+| `/status` | Renders branch, dirty state, worktree sandbox, runtime, models, the resume point of an interrupted run and Muninn counts. | `LiveEngine.getDiagnostics()` + `getResumePoint()` |
 | `/clear` | Clears chat + stream viewports. | — |
 | `/draft` / `/go` | Runs scope extraction and drafting. | `LiveEngine.draft()` |
+| `/resume` | Continues the saved run from the step it was interrupted on, without re-planning. Refuses (and points at `/draft`) unless `.harness/state.json` holds a resume point whose `planHash` matches the documents on disk. | `LiveEngine.getResumePoint()` → `execute()` |
 | `/quit` / `/abort` | Two-step confirmation, then aborts. | `LiveEngine.requestAbort()` |
+
+**Focus is a three-state union** (`"composer" | "chat" | "stream"`, `FocusTarget` in
+`LiveDashboard.tsx`): `Tab`/`Shift+Tab` cycle it through `nextFocus()` — skipping the agent-stream
+card while it is collapsed — and it, **not the draft's emptiness**, decides where `↑`/`↓`/`PgUp`/
+`PgDn` go (composer: history recall + caret; card: scroll). Any editing key claims the composer back.
+A focus move never writes to the chat: a key with nothing to do must not append a line.
 
 Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `--session <id>` and
 `--list-sessions`/`-sl` read `<project>/.huginn/live/sessions.json` (`src/state/liveSession.ts`). The

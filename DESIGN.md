@@ -982,12 +982,21 @@ letting `createSandbox` throw.
   promotion failure distinctly instead of `✕ ABORTED`. A run that completes clears the sticky
   `aborted` flag (`state.aborted = false`), so a resumed-then-successful run cannot report ABORTED
   beside a successful exit.
-- **Mid-iteration resume is disabled under sandboxing**: the resume phase is only honored when
-  `!sandbox`, because a prior run's worktree was discarded at startup — an ephemeral sandbox cannot
-  resume mid-iteration, so earlier phases re-run.
+- **An interrupted iteration is parked, not discarded (ADR-56)**: on abort (and on `SIGINT`/`SIGTERM`
+  through `parkForResume()`) every live sandbox is committed (`chore(iter-N): interrupted checkpoint`)
+  and left on disk. `state.resume` names the step that was **in flight** (written *before* the step
+  runs, so a `SIGKILL` still records it) and the pre-run sweep only keeps that one sandbox
+  (`cleanupAll(keepIteration)`). The next run reattaches it (`attachSandbox`) and restarts exactly that
+  step: earlier steps keep their work, and a step that was interrupted is re-run rather than skipped.
+  A cursor naming a different iteration is stale and dropped; a missing worktree falls back to a fresh
+  sandbox and a full replay.
+- **The live hand-off only resets `.harness` when the plan changed**: `execute()` compares
+  `state.planHash` with the documents it just committed, keeps the state (and the cursor) when they
+  match, and passes it to the `CycleEngine`. A corrupt state file is treated as "not resumable", never
+  as a crash.
 - `--no-sandbox` preserves the previous in-place behavior exactly. `cleanupSandboxes()` delegates to
-  `cleanupAll()` and is registered on `SIGINT`/`SIGTERM` in `cli.ts` for both `run` and the live
-  handoff path, so an unexpected exit never leaves `.huginn/worktrees/` behind.
+  `cleanupAll()` for an explicit reclamation; `parkForResume()` — not a cleanup — is what
+  `SIGINT`/`SIGTERM` register in `cli.ts` for both `run` and the live handoff path.
 
 ---
 
@@ -1633,9 +1642,10 @@ Because skills are read from the repository, the loader treats discovery and rea
 | `/mcp`, `/mcp <id>` | Mounts `McpInspectorModal`, optionally pre-selecting a server by id (`text.slice(4).trim()`). |
 | `/skills`, bare `/skill` | Refreshes via `loadSkills(cfg.projectPath)` and mounts `SkillsModal`; `Enter` on a skill executes it (`live.chat(skill.body)`). |
 | `/skill <name>` | Resolves `findSkill(...)`; a match runs its `body` immediately, otherwise the browser hint message is shown. |
-| `/status` | Calls `LiveEngine.getDiagnostics()` and renders a bordered box (branch, clean/dirty, worktree sandbox, runtime, thinker/executor, Muninn entity/observation counts). |
+| `/status` | Calls `LiveEngine.getDiagnostics()` and renders a bordered box (branch, clean/dirty, worktree sandbox, runtime, thinker/executor, resume point, Muninn entity/observation counts). |
 | `/clear` | Clears chat messages, stream buffer and both scroll offsets. |
 | `/draft` (alias `/go`) | Runs `live.draft()` and, on approval, `onApprove()`. |
+| `/resume` | Continues a saved run without re-planning: `getResumePoint()` (which validates `planHash`) then `onApprove()`; with no valid point it answers with a warning pointing at `/draft`. |
 | `/quit` (alias `/abort`) | **Two-step confirmation**: the first invocation only asks to confirm; a second within the same session aborts. Any other command resets the pending confirmation. |
 
 Each branch above answers with a sanitized acknowledgement from `feedback.ts` (`✓` result, `⚠` problem naming the next step with the raw cause on a `cause:` line, `…` while running), so no dispatched input is a silent no-op (REQ-31). While a bare `/…` draft has matches, the palette takes `↑`/`↓` (and `j`/`k`) / `Tab` / `Enter` / `Esc` *before* the dashboard's focus-toggle (`Tab`) and scroll-trap (`↑`/`↓`) handlers, and a draft with no matches does not count as open (REQ-28 / AC-28.3).
