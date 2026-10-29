@@ -42,6 +42,12 @@ import type { Verdict } from "./types";
  */
 export interface PhaseOutput extends PromptResult {
   authoritativeVerdict?: GateVerdict;
+  /**
+   * Set by `VERIFY` when a command died from a signal instead of returning an
+   * exit status. A crash is an environment failure, not a failing expectation:
+   * the engine must not spend fix rounds asking the thinker to "fix" it.
+   */
+  crash?: { command: string; signal: string };
 }
 
 export interface PhaseContext extends StepContext {
@@ -176,10 +182,14 @@ export async function verifyIteration(ctx: PhaseContext): Promise<PhaseOutput> {
     cwd: ctx.projectPath,
     timeoutMs: ctx.phaseTimeoutMs,
   });
+  const crashed = result.results.find((command) => command.crashed);
   return {
     messageId: "verification",
     text: formatVerificationReport(ctx.iteration, result),
     authoritativeVerdict: result.ok ? "pass" : "blocked",
+    ...(crashed
+      ? { crash: { command: crashed.command, signal: crashed.signal ?? "signal" } }
+      : {}),
   };
 }
 

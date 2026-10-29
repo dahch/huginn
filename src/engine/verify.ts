@@ -11,6 +11,10 @@ const REPORT_TAIL_LINES = 40;
 export interface VerificationCommandResult {
   command: string;
   exitCode: number | null;
+  /** Signal the process died from, when it did. `null` for an ordinary exit. */
+  signal: string | null;
+  /** The process died from a signal instead of returning an exit status. */
+  crashed: boolean;
   timedOut: boolean;
   durationMs: number;
   stdout: string;
@@ -20,6 +24,43 @@ export interface VerificationCommandResult {
 export interface VerificationResult {
   results: VerificationCommandResult[];
   ok: boolean;
+}
+
+/**
+ * The fatal signals a verification command can plausibly die from. A crash is
+ * *not* an assertion failure: it says nothing about the source, so the fixer must
+ * not be asked to "fix" it blind (see {@link formatVerificationReport}).
+ */
+const FATAL_SIGNALS: Record<number, string> = {
+  1: "SIGHUP",
+  2: "SIGINT",
+  3: "SIGQUIT",
+  4: "SIGILL",
+  5: "SIGTRAP",
+  6: "SIGABRT",
+  7: "SIGBUS",
+  8: "SIGFPE",
+  9: "SIGKILL",
+  10: "SIGUSR1",
+  11: "SIGSEGV",
+  12: "SIGUSR2",
+  13: "SIGPIPE",
+  14: "SIGALRM",
+  15: "SIGTERM",
+  31: "SIGSYS",
+};
+
+/**
+ * The signal an exit status encodes, if any.
+ *
+ * Commands run through `shell: true`, so the direct child is the shell: when the
+ * real command dies from SIGSEGV the shell survives and reports `128 + 11`
+ * (139) with `signal === null`. Without this mapping that crash is
+ * indistinguishable from a command that deliberately exited 139.
+ */
+export function signalFromExitCode(exitCode: number | null): string | null {
+  if (exitCode === null || exitCode <= 128 || exitCode > 128 + 31) return null;
+  return FATAL_SIGNALS[exitCode - 128] ?? null;
 }
 
 function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -61,16 +102,21 @@ export function runVerificationCommand(
     let stdoutBytes = 0;
     let stderrBytes = 0;
 
-    const finish = (exitCode: number | null, timedOut: boolean) => {
+    const finish = (exitCode: number | null, timedOut: boolean, signal: string | null = null) => {
       if (settled) return;
       settled = true;
       if (timer) {
         clearTimeout(timer);
         timer = undefined;
       }
+      // A timeout is our own SIGKILL, so it is reported as a timeout and never
+      // as a crash: the command did not die on its own.
+      const diedBySignal = timedOut ? null : (signal ?? signalFromExitCode(exitCode));
       resolve({
         command,
         exitCode,
+        signal: diedBySignal,
+        crashed: diedBySignal !== null,
         timedOut,
         durationMs: Date.now() - startedAt,
         stdout,
@@ -114,7 +160,7 @@ export function runVerificationCommand(
       stderr += `\n${sanitizeTerminalText(err instanceof Error ? err.message : String(err))}`;
       finish(null, false);
     });
-    child.on("close", (code) => finish(code, false));
+    child.on("close", (code, signal) => finish(code, false, signal ?? null));
 
     if (options.timeoutMs > 0) {
       timer = setTimeout(() => {
@@ -175,9 +221,11 @@ export function formatVerificationReport(
   for (const command of result.results) {
     const status = command.timedOut
       ? "TIMED OUT"
-      : command.exitCode === 0
-        ? "PASS"
-        : `FAILED (exit ${command.exitCode ?? "unknown"})`;
+      : command.crashed
+        ? `CRASHED (${command.signal ?? `exit ${command.exitCode ?? "unknown"}`})`
+        : command.exitCode === 0
+          ? "PASS"
+          : `FAILED (exit ${command.exitCode ?? "unknown"})`;
     lines.push(`## \`${sanitizeTerminalText(command.command)}\``);
     lines.push(`- Status: **${status}**`);
     lines.push(`- Duration: ${(command.durationMs / 1000).toFixed(1)}s`);
@@ -190,10 +238,34 @@ export function formatVerificationReport(
     lines.push("");
   }
 
+  const crashes = result.results.filter((command) => command.crashed);
+  if (crashes.length > 0) {
+    // huginn writes this section itself, so it is trusted text and reaches the
+    // fixer verbatim — unlike the command's output, which is untrusted data.
+    const names = crashes
+      .map((command) => command.signal ?? `exit ${command.exitCode ?? "unknown"}`)
+      .join(", ");
+    lines.push(
+      "### Crash, not an assertion",
+      "",
+      `The verification command died from ${names}. No source edit caused this and none can fix it: ` +
+        "a signal death is a crash, not a failing expectation.",
+      "",
+      "A crash while a suite starts is usually the environment — conflicting GPU/display drivers " +
+        "(e.g. Mesa and a vendor Vulkan/EGL driver loaded in the same process), no display, " +
+        "out of memory, or a stack overflow. Before touching code: isolate or serialize the " +
+        "offending test, pin the driver, or remove the command from `Verification:`.",
+      "",
+    );
+  }
+
   lines.push(
     result.ok
       ? "### Verification status: PASS"
-      : "### Verification status: BLOCKED — fix the failing command(s) before this increment can be promoted.",
+      : crashes.length > 0
+        ? "### Verification status: BLOCKED — the verification command crashed " +
+          `(${crashes[0]!.signal ?? "signal"}); this is an environment failure, not a source defect.`
+        : "### Verification status: BLOCKED — fix the failing command(s) before this increment can be promoted.",
   );
   return lines.join("\n");
 }

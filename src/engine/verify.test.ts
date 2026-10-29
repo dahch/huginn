@@ -70,6 +70,38 @@ describe("deterministic verification", () => {
     expect(report).toContain("No `Verification:` commands");
     expect(report).toContain("Verification status: PASS");
   });
+
+  it("reports a signal death as a crash, not as an assertion failure", async () => {
+    if (process.platform === "win32") return; // no SIGSEGV there
+    const result = await runVerificationCommand("kill -SEGV $$", {
+      cwd: workdir(),
+      timeoutMs: 5000,
+    });
+    expect(result.crashed).toBe(true);
+    expect(result.signal).toBe("SIGSEGV");
+    expect(result.timedOut).toBe(false);
+
+    const report = formatVerificationReport(iteration, { results: [result], ok: false });
+    expect(report).toContain("CRASHED (SIGSEGV)");
+    expect(report).toContain("### Crash, not an assertion");
+    expect(report).toContain("environment failure, not a source defect");
+  });
+
+  it("maps a shell's 128+n status to the signal that killed the command", async () => {
+    const result = await runVerificationCommand(exits(139), { cwd: workdir(), timeoutMs: 5000 });
+    expect(result.exitCode).toBe(139);
+    expect(result.crashed).toBe(true);
+    expect(result.signal).toBe("SIGSEGV");
+  });
+
+  it("never calls an ordinary failure a crash", async () => {
+    const result = await runVerificationCommand(exits(1), { cwd: workdir(), timeoutMs: 5000 });
+    expect(result.crashed).toBe(false);
+    expect(result.signal).toBeNull();
+    const report = formatVerificationReport(iteration, { results: [result], ok: false });
+    expect(report).toContain("FAILED (exit 1)");
+    expect(report).not.toContain("Crash, not an assertion");
+  });
 });
 
 describe("VERIFY phase", () => {
@@ -107,5 +139,13 @@ describe("VERIFY phase", () => {
     const result = await verifyIteration(context([exits(2)], false));
     expect(result.authoritativeVerdict).toBe("pass");
     expect(result.text).toContain("disabled");
+  });
+
+  it("flags a crashing command structurally so the engine can skip the fix rounds", async () => {
+    if (process.platform === "win32") return;
+    const result = await verifyIteration(context(["kill -SEGV $$"]));
+    expect(result.authoritativeVerdict).toBe("blocked");
+    expect(result.crash?.signal).toBe("SIGSEGV");
+    expect(result.crash?.command).toBe("kill -SEGV $$");
   });
 });

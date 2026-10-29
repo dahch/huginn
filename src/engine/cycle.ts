@@ -54,6 +54,7 @@ type PhaseFn = (ctx: PhaseContext) => Promise<{
   text: string;
   messageId: string;
   authoritativeVerdict?: Verdict;
+  crash?: { command: string; signal: string };
 }>;
 
 /** A phase result plus the verdict fields the engine may have attached to it. */
@@ -61,6 +62,8 @@ type GatedPhaseResult = PhaseResult & {
   raw: string;
   forcedVerdict?: Verdict;
   authoritativeVerdict?: Verdict;
+  /** `VERIFY` only: a command died from a signal (see `PhaseOutput.crash`). */
+  crash?: { command: string; signal: string };
 };
 
 interface PipelineStep {
@@ -904,6 +907,42 @@ export class CycleEngine {
         timestamp: new Date().toISOString(),
       });
 
+      // A signal death is an environment failure, not a failing expectation. The
+      // fix rounds exist to change the source, and no source edit can stop a
+      // driver crash — so escalate now with an explicit message instead of
+      // spending the retry budget on a blind "fix" (see `PhaseOutput.crash`).
+      if (result.crash) {
+        const crash = result.crash;
+        events.emit("log", {
+          level: "warn",
+          message:
+            `[${step.phase}] crashed (${crash.signal}) in \`${crash.command}\` — ` +
+            "environment failure, not a source defect; skipping the fix rounds",
+          timestamp: new Date().toISOString(),
+        });
+        const decision = await this.requestDecision({
+          id: crypto.randomUUID(),
+          kind: "gate-blocked",
+          iteration: iteration.index,
+          phase: step.phase,
+          attempt: curAttempt,
+          message:
+            `Verification crashed (${crash.signal}): \`${crash.command}\` died from a signal, ` +
+            "so no fix round was attempted — this is the environment, not the source. " +
+            "Fix the environment (isolate/serialize the test, pin the driver, or drop the " +
+            "command from `Verification:`) and retry, force-continue, or abort?",
+        });
+        if (decision === "abort") {
+          this.abortRequested = true;
+          return;
+        }
+        if (decision === "continue") {
+          return;
+        }
+        attemptRun = -1; // retry, reset loop
+        continue;
+      }
+
       // blocking → fix with thinker, unless out of retries
       if (attemptRun < this.cfg.maxRetries && step.fixPhase) {
         await this.waitIfPaused();
@@ -1047,6 +1086,7 @@ export class CycleEngine {
         : res.authoritativeVerdict
           ? { authoritativeVerdict: res.authoritativeVerdict }
           : {}),
+      ...(res.crash && !readOnlyViolation ? { crash: res.crash } : {}),
     };
     events.emit("phaseEnd", { result, durationMs });
     return result;
