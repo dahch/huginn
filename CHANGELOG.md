@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Memory-capped subprocesses.** Every agent prompt and every `Verification:` command now runs
+  inside a transient `systemd-run --user --scope` with `MemoryMax` (default 70 % of RAM, clamped to
+  2–12 GiB), `MemorySwapMax=4G` and `TasksMax=1024`, so a runaway build is killed inside its own
+  cgroup instead of exhausting RAM and freezing the host. The cap is opt-out
+  (`HUGINN_MEMORY_MAX=off`), tunable with `HUGINN_MEMORY_SWAP_MAX`/`HUGINN_TASKS_MAX`, and degrades
+  to the previous plain spawn where no user systemd manager exists.
 - **Resume the step that was interrupted.** An aborted iteration (Ctrl-C, `q`/`Esc`, an abort at a
   gate) no longer discards its sandbox: everything is committed into it and the worktree plus its
   branch stay on disk, with `state.resume` naming the step that was in flight. The next run reattaches
@@ -18,6 +24,13 @@
 
 ### Fixed
 
+- **The audit-only QA step no longer rebuilds the workspace for coverage.** `ROLE_QA` and the
+  `VALIDATE_STEP` qa task told the auditor to "run coverage report" while `auditOnlyGuardrails()`
+  forbade coverage artifacts; the model resolved the contradiction by instrumenting and rebuilding
+  the whole workspace (`cargo llvm-cov`) on top of the format/lint/build commands `VERIFY` runs
+  later. The audit now reports the coverage the repository already publishes (or "not measured in
+  audit mode"), runs one heavy command at a time, and is told never to build in `/tmp` — a
+  RAM-backed `tmpfs` on Linux.
 - **Live focus is real.** `Tab`/`Shift+Tab` cycle composer → conversation → agent stream (skipping a
   collapsed stream card) and the focused surface owns `↑`/`↓`/`PgUp`/`PgDn`; the arrow keys no longer
   jump to input history just because the draft is empty, so the conversation is scrollable while a

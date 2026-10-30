@@ -42,7 +42,12 @@ enforced by huginn (see §4).
   `jest --watchAll=false --ci --runInBand` / `bun test` / `pytest -q`). Searches must never
   recursively glob package-manager/build-cache directories (`node_modules`, `build/`, `dist/`,
   `.git/`, `~/.gradle`, `~/.m2`, `~/.npm`, `Pods/`, `.build/`) — scope to the project tree with
-  bounded patterns instead.
+  bounded patterns instead. In **audit mode** the suite runs **once**, one heavy command at a time
+  (never `fmt && clippy && test && coverage`), and **no coverage tool ever runs**: instrumentation
+  rebuilds the whole workspace and writes the artifacts the read-only guard rejects, so the report
+  reads the coverage the repository already publishes or says "not measured in audit mode". Build
+  artifacts never go to `/tmp` (RAM-backed `tmpfs` on Linux): use the project's gitignored target
+  directory or `$HOME/.cache/`.
 - **Driven by**: `TEST_MODULE` (full mode, `testModulePrompt`) and sub-prompt 1 of `VALIDATE_STEP`
   (`validateStepQaPrompt`), where `auditOnlyGuardrails()` (`src/engine/steps/context.ts`) appends the
   audit-only contract: run the existing suite **once**, non-interactively and read-only; write **no**
@@ -149,6 +154,14 @@ decides the outcome:
   (`src/util/docPath.ts`), and every `git` call goes through the hardened seam in
   `src/engine/diff.ts` (no pager/fsmonitor/hooks, `--no-ext-diff --no-textconv`, a subcommand
   allowlist and a forbidden-argument screen).
+- **Subprocess memory containment.** Every agent prompt (`generic.ts`) and every `Verification:`
+  command (`verify.ts`) is launched through `planScopedCommand`/`planScopedShellCommand`
+  (`src/engine/sandbox.ts`) inside a transient `systemd-run --user --scope` with `MemoryMax`
+  (70 % of RAM clamped to 2–12 GiB by default), `MemorySwapMax=4G` and `TasksMax=1024`. A runaway
+  build is killed in its own cgroup instead of thrashing the host; the phase sees a crashed command.
+  Payload arguments have `$` doubled (`escapeSystemdArgument`) because systemd expands `$VAR` in
+  `ExecStart` and `$$` is its escape. The cap is opt-out (`HUGINN_MEMORY_MAX=off`) and degrades to a
+  plain spawn off Linux or without a user manager — so no test or platform depends on it existing.
 - **Atomic increments.** Every profile runs `VERIFY` (the plan's commands, real exit codes) before
   its commit. After the phase loop, `WorktreeManager.commitPendingChanges` creates a deterministic
   `chore(iter-N): checkpoint — …` commit for anything `COMMIT_ALL` left uncommitted, and only then is
@@ -319,6 +332,9 @@ sub-prompts plus synthesis, the deterministic verdict and the single imposed gat
 | `HUGINN_THEME` | `light` \| `dark` \| `auto` (default) — pins the TUI palette (`src/tui/theme.ts`). |
 | `NO_COLOR` | Any non-empty value clears every theme token and `dimColor` (per no-color.org). |
 | `CI` | Every prompt (`promptLine`/`promptYesNo`, `src/util/prompt.ts`) returns its fallback instead of reading stdin; nothing blocks on a human. |
+| `HUGINN_MEMORY_MAX` | `MemoryMax` for the systemd scope around agent/verification subprocesses (`src/engine/sandbox.ts`); default 70 % of RAM clamped to 2–12 GiB, `off` disables the scope. |
+| `HUGINN_MEMORY_SWAP_MAX` | `MemorySwapMax` inside that scope (default `4G`, `off` for none). |
+| `HUGINN_TASKS_MAX` | `TasksMax` inside that scope (default `1024`). |
 
 ### Testing the step prompts and the verdict contract
 

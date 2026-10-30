@@ -394,6 +394,37 @@ Stale worktrees **and** any orphaned `huginn/task-iter-*` branches from a crashe
 at the start of the next run — except the one an interrupted run is about to resume. `SIGINT`/`SIGTERM`
 park the in-flight sandbox instead of deleting it; `--force-restart` is what wipes everything.
 
+### Resource limits (memory cap)
+
+The worktree sandbox isolates *where* an agent writes; it does not bound *how much* it can allocate.
+A debug build can exhaust RAM long before a gate notices, and the kernel then thrashes swap until the
+desktop freezes. So huginn also contains the processes it spawns:
+
+- Every agent prompt and every `Verification:` command runs inside a **transient systemd user scope**
+  (`systemd-run --user --scope`) with `MemoryMax`, `MemorySwapMax` and `TasksMax`. A runaway process
+  tree is killed inside its own cgroup, the command is reported as crashed/failed, and the run keeps
+  going (or escalates) instead of taking the machine with it.
+- The default limit is **70 % of RAM**, clamped to **[2 GiB, 12 GiB]**; swap inside the scope defaults
+  to `4G` and tasks to `1024`.
+- It degrades to a no-op where it cannot work — macOS, Windows, a container without a user manager, or
+  no `systemd-run` on `PATH` — so the pipeline behaves exactly as before there.
+
+| Variable | Effect |
+|---|---|
+| `HUGINN_MEMORY_MAX` | `off` (or `none`/`0`/`false`) disables the scope entirely; a size (`6G`, `512M`, bytes) overrides the automatic limit. |
+| `HUGINN_MEMORY_SWAP_MAX` | Swap allowed inside the scope (default `4G`; `off` for none). |
+| `HUGINN_TASKS_MAX` | `TasksMax` for the scope (default `1024`). |
+
+`huginn` itself is not inside that scope (it is your terminal's process); to cap the orchestrator too,
+start it through systemd:
+
+```sh
+systemd-run --user --scope -p MemoryMax=9G huginn -c
+```
+
+When huginn composes the payload it escapes `$` as `$$`, because systemd expands `$VAR` in
+`ExecStart`: without it a command such as `kill -SEGV $$` would reach the shell as `kill -SEGV $`.
+
 ## Plan mode (`huginn plan`)
 
 Generate the three input documents from a single idea using the thinker model:
