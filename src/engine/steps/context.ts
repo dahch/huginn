@@ -405,13 +405,25 @@ export function fidelityContract(): string {
  */
 export function auditOnlyGuardrails(): string {
   return [
-    "## Audit-only guardrails (mandatory)",
+    "## Audit-only guardrails (mandatory — these override Step 4-audit)",
     "1. Run the existing suite ONCE, non-interactively and read-only:",
     "   `vitest run --ci`, `bun test`, `jest --ci --watchAll=false`, `pytest -q`.",
-    "2. Write NO artifacts: no coverage output (leave `--coverage` off, or use",
+    "2. Never run a coverage tool in this audit. Instrumentation rebuilds the",
+    "   whole workspace (a debug Rust `cargo llvm-cov` can take the host down)",
+    "   and writes artifacts: report the coverage the repository already",
+    "   publishes, or say \"not measured in audit mode\". The deterministic",
+    "   `VERIFY` phase runs the iteration's `Verification:` block afterwards, so",
+    "   do not duplicate its format, lint or build commands either.",
+    "3. One heavy command at a time: never chain builds, linters, tests and",
+    "   coverage with `&&`, and never run them concurrently.",
+    "4. Never build into `/tmp`: on Linux it is a RAM-backed `tmpfs`, so build",
+    "   artifacts there consume memory and can freeze the machine. Use the",
+    "   project's own (gitignored) target directory or a disk path under",
+    "   `$HOME/.cache/`.",
+    "5. Write NO artifacts: no coverage output (leave `--coverage` off, or use",
     "   `--coverage.enabled=false`), never update snapshots (`-u`/`--update` are",
     "   FORBIDDEN), no JUnit/JSON reporters that write files.",
-    "3. Do not create, modify, move or delete any file under the repository",
+    "6. Do not create, modify, move or delete any file under the repository",
     "   (including lockfiles, caches and test fixtures). Report only.",
   ].join("\n");
 }
