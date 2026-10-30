@@ -16,6 +16,7 @@ import { sanitizeTerminalText } from "../../../util/text.js";
 import { events } from "../../engineEvents.js";
 import { isExecutableBinary } from "../binaryUtils.js";
 import { listMcpServersViaCommand, type McpListCommandSpec } from "./mcpList.js";
+import { planScopedCommand } from "../../sandbox.js";
 import { runModelListCommand } from "./modelList.js";
 import type {
   CommandOptions,
@@ -545,9 +546,13 @@ export class GenericSubprocessSession implements IAgentSession {
         resolve(res);
       };
 
+      // Bound the agent's process tree inside its own cgroup: a runaway build
+      // must fail the phase, not exhaust RAM and freeze the host (see
+      // src/engine/sandbox.ts). A no-op where no user scope is available.
+      const scoped = planScopedCommand(command, childArgs);
       let child: ChildProcess;
       try {
-        child = spawn(command, childArgs, {
+        child = spawn(scoped.command, scoped.args, {
           cwd,
           env: {
             ...process.env,

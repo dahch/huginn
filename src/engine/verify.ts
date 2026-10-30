@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Iteration } from "../plan/types";
 import { sanitizeTerminalText } from "../util/text.js";
+import { planScopedShellCommand } from "./sandbox.js";
 
 /** Bound each captured stream so a runaway command cannot exhaust memory. */
 const MAX_CAPTURE_BYTES = 64 * 1024;
@@ -124,12 +125,16 @@ export function runVerificationCommand(
       });
     };
 
+    // Verification is the heaviest thing huginn runs (format, lint, a full test
+    // suite, a GPU build): keep it inside the same memory-capped scope as the
+    // agent, and let the scope own the shell when it is in play.
+    const scoped = planScopedShellCommand(command);
     let child: ChildProcess;
     try {
-      child = spawn(command, {
+      child = spawn(scoped.command, scoped.args, {
         cwd: options.cwd,
         env: { ...process.env, ...options.env },
-        shell: true,
+        shell: !scoped.scoped,
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });
