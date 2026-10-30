@@ -400,10 +400,11 @@ The worktree sandbox isolates *where* an agent writes; it does not bound *how mu
 A debug build can exhaust RAM long before a gate notices, and the kernel then thrashes swap until the
 desktop freezes. So huginn also contains the processes it spawns:
 
-- Every agent prompt and every `Verification:` command runs inside a **transient systemd user scope**
-  (`systemd-run --user --scope`) with `MemoryMax`, `MemorySwapMax` and `TasksMax`. A runaway process
-  tree is killed inside its own cgroup, the command is reported as crashed/failed, and the run keeps
-  going (or escalates) instead of taking the machine with it.
+- Every **subprocess** agent prompt (the CLI-shaped `generic` runtimes) and every `Verification:`
+  command runs inside a **transient systemd user scope** (`systemd-run --user --scope`) with
+  `MemoryMax`, `MemorySwapMax` and `TasksMax`. A runaway process tree is killed inside its own
+  cgroup, the command is reported as crashed/failed, and the run keeps going (or escalates) instead of
+  taking the machine with it.
 - The default limit is **70 % of RAM**, clamped to **[2 GiB, 12 GiB]**; swap inside the scope defaults
   to `4G` and tasks to `1024`.
 - It degrades to a no-op where it cannot work — macOS, Windows, a container without a user manager, or
@@ -415,12 +416,15 @@ desktop freezes. So huginn also contains the processes it spawns:
 | `HUGINN_MEMORY_SWAP_MAX` | Swap allowed inside the scope (default `4G`; `off` for none). |
 | `HUGINN_TASKS_MAX` | `TasksMax` for the scope (default `1024`). |
 
-`huginn` itself is not inside that scope (it is your terminal's process); to cap the orchestrator too,
-start it through systemd:
+Runtimes that execute **in huginn's own process** — the native `pi`, `codex` and `claude` drivers —
+cannot be wrapped from inside, so they are only capped when the orchestrator itself runs under a scope.
+That is also the simplest way to cap the agent's own builds end to end. Start huginn through systemd:
 
 ```sh
-systemd-run --user --scope -p MemoryMax=9G huginn -c
+systemd-run --user --scope -p MemoryMax=9G -p MemorySwapMax=4G huginn -c
 ```
+
+(`huginn-capped`, if you installed the wrapper from the setup notes, does exactly this.)
 
 When huginn composes the payload it escapes `$` as `$$`, because systemd expands `$VAR` in
 `ExecStart`: without it a command such as `kill -SEGV $$` would reach the shell as `kill -SEGV $`.
