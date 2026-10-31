@@ -943,9 +943,12 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     const sandbox = spy.created[0];
     expect(sandbox).toBeDefined();
 
-    // The session was created bound to the sandbox directory.
-    expect(calls.create).toHaveLength(1);
-    expect((calls.create[0].query as { directory?: string }).directory).toBe(sandbox.path);
+    // Every phase opens its own clean session, and every one is bound to the
+    // sandbox directory (never the primary tree).
+    expect(calls.create.length).toBeGreaterThan(1);
+    for (const call of calls.create) {
+      expect((call.query as { directory?: string }).directory).toBe(sandbox.path);
+    }
 
     // Phase prompts (EXECUTE etc.) carry the sandbox directory; judge prompts
     // (issued outside PhaseContext) may omit it but must never name another dir.
@@ -1068,9 +1071,11 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     expect(spy.discarded).toHaveLength(0);
     // Pre-run cleanup is skipped for an in-place run.
     expect(spy.cleaned.count).toBe(0);
-    // The session is scoped to the primary project root, not a sandbox.
-    expect(calls.create).toHaveLength(1);
-    expect((calls.create[0].query as { directory?: string }).directory).toBe(dir);
+    // Every phase session is scoped to the primary project root, not a sandbox.
+    expect(calls.create.length).toBeGreaterThan(1);
+    for (const call of calls.create) {
+      expect((call.query as { directory?: string }).directory).toBe(dir);
+    }
   });
 
   it("persists indexed symbols to the PRIMARY database across sandbox promotion (memory durability)", async () => {
@@ -1149,5 +1154,142 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
     } finally {
       mem.close?.();
     }
+  });
+});
+
+describe("escalating FIX_*: thinker diagnosis → executor application", () => {
+  interface RecordedPrompt {
+    text: string;
+    model?: string;
+    agent?: string;
+  }
+
+  const BLOCKED_JUDGE =
+    '{"status":"blocked","summary":"tests fail","actionItems":["fix the failing assertion"]}';
+  const PASS_JUDGE = '{"status":"pass","summary":"ok","actionItems":[]}';
+
+  function makeFixRuntime(opts: {
+    judge: (call: number) => string;
+    diagnose?: () => void;
+  }): { runtime: IAgentRuntime; prompts: RecordedPrompt[] } {
+    let judgeCalls = 0;
+    const prompts: RecordedPrompt[] = [];
+    const session: IAgentSession = {
+      id: "ses_fix",
+      async prompt(text: string, options?: { model?: string; agent?: string }) {
+        prompts.push({ text, model: options?.model, agent: options?.agent });
+        if (text.includes("You are a strict validation judge")) {
+          judgeCalls += 1;
+          return { messageId: `judge-${judgeCalls}`, text: opts.judge(judgeCalls) };
+        }
+        if (text.includes("Lead Architect / Diagnostician")) {
+          opts.diagnose?.();
+          return {
+            messageId: "diagnosis",
+            text: "### Root Cause\nbad\n\n### Step-by-Step Edits for Executor\nEdit src/a.ts",
+          };
+        }
+        if (text.includes("flagged as BLOCKING")) {
+          return { messageId: "fix", text: "applied the fix" };
+        }
+        return { messageId: "default", text: "TESTS OK" };
+      },
+      async abort() {},
+    };
+    const runtime: IAgentRuntime = {
+      id: "opencode",
+      name: "fix runtime",
+      async isAvailable() {
+        return true;
+      },
+      async getAvailableModels() {
+        return [];
+      },
+      async getMcpStatus() {
+        return { servers: [], totalTools: 0, healthy: true };
+      },
+      async createSession() {
+        return session;
+      },
+    };
+    return { runtime, prompts };
+  }
+
+  function commit(repo: string): void {
+    git(repo, ["config", "user.email", "t@t"]);
+    git(repo, ["config", "user.name", "t"]);
+    expect(git(repo, ["commit", "--allow-empty", "-m", "init", "--no-gpg-sign"]).code).toBe(0);
+  }
+
+  function runOnlyTestModule(runtime: IAgentRuntime) {
+    return new CycleEngine({
+      cfg: makeCfg({ maxRetries: 2, onlyPhase: "TEST_MODULE" }),
+      runtime,
+      plan: makePlan(),
+    });
+  }
+
+  it("attempt 1 is a direct executor fix; attempt 2 diagnoses with the thinker first", async () => {
+    commit(dir);
+    const { runtime, prompts } = makeFixRuntime({
+      judge: (call) => (call <= 2 ? BLOCKED_JUDGE : PASS_JUDGE),
+    });
+    const engine = runOnlyTestModule(runtime);
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    const diagnoses = prompts.filter((p) => p.text.includes("Lead Architect / Diagnostician"));
+    const fixes = prompts.filter((p) => p.text.includes("flagged as BLOCKING"));
+
+    // The tactical first attempt skips the architect; the repeat failure diagnoses.
+    expect(diagnoses).toHaveLength(1);
+    expect(fixes).toHaveLength(2);
+
+    // The judge's structured action items reach the direct fix.
+    expect(fixes[0]!.text).toContain("fix the failing assertion");
+    expect(fixes[0]!.text).not.toContain("Remediation Plan");
+    // The diagnosed fix follows the architect's plan.
+    expect(fixes[1]!.text).toContain("Remediation Plan");
+    expect(fixes[1]!.text).toContain("Edit src/a.ts");
+
+    // FIX_* never runs the thinker with the build agent's write toolset.
+    expect(diagnoses[0]!.model).toBe("opencode-go/deepseek-v4-pro");
+    expect(diagnoses[0]!.agent).toBeUndefined();
+    expect(fixes.every((f) => f.model === "opencode-go/deepseek-v4-flash")).toBe(true);
+    expect(fixes.every((f) => f.agent === "build")).toBe(true);
+
+    // History names both real models.
+    const fixHistory = engine.getState().history.filter((h) => h.phase === "FIX_TEST");
+    expect(
+      fixHistory.some(
+        (h) =>
+          h.model === "opencode-go/deepseek-v4-pro" && h.summary.startsWith("Diagnosis:"),
+      ),
+    ).toBe(true);
+    expect(fixHistory.some((h) => h.model === "opencode-go/deepseek-v4-flash")).toBe(true);
+  });
+
+  it("discards the remediation plan when the thinker mutates the tree (read-only guard)", async () => {
+    commit(dir);
+    const { runtime, prompts } = makeFixRuntime({
+      judge: (call) => (call <= 2 ? BLOCKED_JUDGE : PASS_JUDGE),
+      diagnose: () => writeFileSync(join(dir, "tampered.txt"), "should not exist\n"),
+    });
+    const engine = runOnlyTestModule(runtime);
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    const fixes = prompts.filter((p) => p.text.includes("flagged as BLOCKING"));
+    // The violation discards the plan: the executor falls back to the report.
+    expect(fixes[1]!.text).not.toContain("Remediation Plan");
+
+    const diagnosis = engine
+      .getState()
+      .history.find(
+        (h) => h.phase === "FIX_TEST" && h.summary.startsWith("Diagnosis:"),
+      );
+    expect(diagnosis?.summary).toContain("read-only violation");
+    // The diagnosis is still persisted for auditability.
+    expect(existsSync(join(dir, ".harness", "reports", "01-FIX_TEST-2-diagnosis.md"))).toBe(true);
   });
 });

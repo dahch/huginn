@@ -88,6 +88,8 @@ export interface RuntimeSessionOptions {
   readonly directory?: string;
   readonly model?: string;
   readonly agent?: string;
+  /** The run's `--permissions` mode, for drivers that can wire it to the CLI. */
+  readonly permissions?: "auto" | "ask" | "deny";
   /** Where this session reports progress; omit when the caller only wants the result. */
   readonly sink?: EventSink;
 }

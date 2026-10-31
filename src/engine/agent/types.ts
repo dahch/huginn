@@ -116,6 +116,8 @@ export interface SessionOptions {
   directory?: string;
   model?: string;
   agent?: string;
+  /** The run's `--permissions` mode, for drivers that can wire it to the CLI. */
+  permissions?: "auto" | "ask" | "deny";
 }
 
 export interface PromptOptions {
@@ -145,6 +147,12 @@ export interface IAgentSession {
   prompt(text: string, options?: PromptOptions): Promise<PromptResult>;
   runCommand?(command: string, args: string, options?: CommandOptions): Promise<PromptResult>;
   abort(): Promise<void>;
+  /**
+   * Release whatever the session holds (a native driver keeps file handles and
+   * a session file). Optional so a legacy adapter or a test fake can omit it;
+   * the engine calls it when it rotates to a fresh session per phase.
+   */
+  close?(): Promise<void>;
 }
 
 export interface IAgentRuntime {

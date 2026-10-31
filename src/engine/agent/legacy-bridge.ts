@@ -97,6 +97,7 @@ export function toRuntimePort(runtime: IAgentRuntime): RuntimePort {
         directory: options.directory,
         model: options.model,
         agent: options.agent,
+        permissions: options.permissions,
       });
       return bridgeSession(session, options.sink);
     },
@@ -144,8 +145,8 @@ function bridgeSession(session: IAgentSession, sink?: EventSink): RuntimeSession
     },
 
     async close() {
-      // A legacy session owns no resource the caller must release: the adapter
-      // either talks to the shared opencode daemon or spawns a short-lived CLI.
+      // A legacy adapter may hold nothing; when it does, release it.
+      await session.close?.();
     },
   };
 }
@@ -209,6 +210,7 @@ export function toLegacyRuntime(port: RuntimePort): IAgentRuntime {
         directory: options.directory,
         model: options.model,
         agent: options.agent,
+        permissions: options.permissions,
       });
       const legacy: IAgentSession = {
         id: session.id,
@@ -225,6 +227,9 @@ export function toLegacyRuntime(port: RuntimePort): IAgentRuntime {
           // The engine's abort ends the run, so the handle is released too: a
           // native driver keeps file handles and a session file otherwise.
           await session.interrupt("aborted by the engine");
+          await session.close();
+        },
+        async close() {
           await session.close();
         },
       };

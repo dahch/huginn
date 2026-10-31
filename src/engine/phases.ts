@@ -21,6 +21,7 @@ import {
   reviewPrompt,
   docSyncPrompt,
   commitAllPrompt,
+  diagnoseFindingsPrompt,
   fixFindingsPrompt,
   validateStepSubPrompts,
   validateStepSynthesisPrompt,
@@ -578,106 +579,142 @@ export async function docSync(ctx: PhaseContext): Promise<PromptResult> {
 }
 
 export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
-  // Capture modified files before committing, because the commit step cleans the
-  // working tree (REV-008)
-  let preModified: string[] = [];
-  try {
-    preModified = ctx.baseCommit
-      ? changedFilesSince(ctx.projectPath, ctx.baseCommit)
-      : pendingChanges(ctx.projectPath);
-  } catch {
-    // ignore git error
-  }
-
-  const result = await promptWithContext(ctx, {
+  // Indexing moved out of this phase: it must run only after the iteration has
+  // been promoted, or a failed promotion would leave the durable symbol graph
+  // describing files that never reached the primary tree. See
+  // `indexIterationSourceFiles`, called by `CycleEngine` post-promotion.
+  return promptWithContext(ctx, {
     text: commitAllPrompt(ctx),
     model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
+}
 
-  // Post-execution: Automatically index modified files into Muninn AST symbol graph
+/**
+ * Index an iteration's changed source files into Muninn's durable symbol graph.
+ *
+ * Best-effort and non-blocking, but never silent (AC-30.5): `HUGINN_DEBUG`
+ * surfaces why the graph was not updated. Memory is durable state that must
+ * outlive an ephemeral sandbox, so the project root and database path resolve
+ * from the PRIMARY project while the files are read from the promoted tree.
+ */
+export function indexIterationSourceFiles(opts: {
+  projectPath: string;
+  baseCommit?: string;
+  primaryProjectRoot: string;
+  dbPath?: string;
+}): void {
   try {
-    let postModified: string[] = [];
+    let modified: string[] = [];
     try {
-      if (ctx.baseCommit) {
-        postModified = changedFilesSince(ctx.projectPath, ctx.baseCommit);
-      }
+      modified = opts.baseCommit
+        ? changedFilesSince(opts.projectPath, opts.baseCommit)
+        : pendingChanges(opts.projectPath);
     } catch {
       // ignore git error
     }
 
-    const modifiedSet = new Set([...preModified, ...postModified]);
-    const sourceFiles = Array.from(modifiedSet).filter(
-      (f) =>
-        /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f) &&
-        existsSync(path.resolve(ctx.projectPath, f))
+    const sourceFiles = Array.from(new Set(modified)).filter(
+      (file) =>
+        /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(file) &&
+        existsSync(path.resolve(opts.projectPath, file)),
     );
+    if (sourceFiles.length === 0) return;
 
-    if (sourceFiles.length > 0) {
-      // Memory is durable state that must outlive an ephemeral sandbox: the
-      // database path and the project record entities are linked to must use
-      // the PRIMARY project root, while the scan root stays the worktree where
-      // the modified files live until the sandbox is promoted. Resolving through
-      // `resolveDatabasePath` keeps this consistent with `CycleEngine`'s own
-      // resolution (git root / explicit path) instead of a second convention.
-      const muninnRoot = ctx.primaryProjectRoot ?? ctx.projectPath;
-      const resolvedDbPath = resolveDatabasePath(ctx.dbPath, muninnRoot);
-      const memoryService = new MemoryService({
-        projectRoot: muninnRoot,
-        dbPath: resolvedDbPath,
-      });
-      try {
-        indexFilesIntoMuninn(memoryService, sourceFiles, {
-          projectRoot: ctx.projectPath,
-        });
-      } finally {
-        memoryService.close?.();
-      }
+    const muninnRoot = opts.primaryProjectRoot;
+    const resolvedDbPath = resolveDatabasePath(opts.dbPath, muninnRoot);
+    const memoryService = new MemoryService({ projectRoot: muninnRoot, dbPath: resolvedDbPath });
+    try {
+      indexFilesIntoMuninn(memoryService, sourceFiles, { projectRoot: opts.projectPath });
+    } finally {
+      memoryService.close?.();
     }
   } catch (err) {
-    // Best-effort Muninn indexing: non-blocking, but never *silent* (AC-30.5) —
-    // HUGINN_DEBUG surfaces why the symbol graph was not updated.
     if (process.env.HUGINN_DEBUG) {
       console.error(
-        "[huginn] Muninn post-execution indexing failed (non-fatal):",
+        "[huginn] Muninn post-promotion indexing failed (non-fatal):",
         err instanceof Error ? err.message : String(err),
       );
     }
   }
-
-  return result;
 }
 
-export async function fixFindings(
+/**
+ * What the architect diagnosed for a blocked gate: a deterministic plan of exact
+ * edits and/or the judge's structured action items. `fixFindings` forwards both
+ * to the executor's prompt.
+ */
+export interface Remediation {
+  plan?: string;
+  actionItems?: string[];
+}
+
+/**
+ * `DIAGNOSE` — the `thinker` root-causes a blocked gate in READ-ONLY mode and
+ * emits a Remediation Plan. No `agent: "build"`: the architect never gets the
+ * editing toolset, and the engine additionally guards the working tree.
+ */
+export async function diagnoseFindings(
   ctx: PhaseContext,
   label: string,
   report: string,
   extraInstructions?: string,
+  actionItems?: string[],
 ): Promise<PromptResult> {
   return promptWithContext(ctx, {
-    text: fixFindingsPrompt(ctx, label, report, extraInstructions),
-    agent: "build",
+    text: diagnoseFindingsPrompt(ctx, label, report, { extraInstructions, actionItems }),
     model: ctx.models.thinker,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
 }
 
-export async function fixSpec(ctx: PhaseContext, report: string): Promise<PromptResult> {
+/**
+ * `APPLY_FIX` — the `executor` applies the remediation. Every `FIX_*` gate is
+ * build work, so it always runs on the executor model with the build agent's
+ * toolset; the architect's plan (when there is one) is passed through verbatim.
+ */
+export async function fixFindings(
+  ctx: PhaseContext,
+  label: string,
+  report: string,
+  extraInstructions?: string,
+  remediation?: Remediation,
+): Promise<PromptResult> {
+  return promptWithContext(ctx, {
+    text: fixFindingsPrompt(ctx, label, report, extraInstructions, remediation),
+    agent: "build",
+    model: ctx.models.executor,
+    timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
+  });
+}
+
+export async function fixSpec(
+  ctx: PhaseContext,
+  report: string,
+  remediation?: Remediation,
+): Promise<PromptResult> {
   return fixFindings(
     ctx,
     "spec audit",
     report,
     "Decide per finding whether to (A) implement the spec as written (preferred) or (B) — only if the spec is objectively wrong — align the spec. Do not silently drop findings.",
+    remediation,
   );
 }
 
-export async function fixSecurity(ctx: PhaseContext, report: string): Promise<PromptResult> {
+export async function fixSecurity(
+  ctx: PhaseContext,
+  report: string,
+  remediation?: Remediation,
+): Promise<PromptResult> {
   return fixFindings(
     ctx,
     "security audit",
     report,
     "Absolute requirement: every single breach must be fixed. Do not advance past any security issue.",
+    remediation,
   );
 }

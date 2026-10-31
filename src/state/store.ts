@@ -110,8 +110,14 @@ export function writeReport(
   phase: PhaseName,
   attempt: number,
   content: string,
+  /**
+   * Extra filename discriminator, e.g. `"-diagnosis"` for the read-only
+   * architect report that precedes a `FIX_*` application. Empty by default so
+   * the ordinary one-report-per-phase name is unchanged.
+   */
+  suffix = "",
 ): string {
-  const name = `${String(iteration).padStart(2, "0")}-${phase}-${attempt}.md`;
+  const name = `${String(iteration).padStart(2, "0")}-${phase}-${attempt}${suffix}.md`;
   const p = join(reportsDir(projectPath), name);
   const target = assertDocPath(p, {
     projectPath,

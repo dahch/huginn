@@ -59,18 +59,21 @@ export const PROFILES: Record<ProfileName, ProfileSpec> = {
     id: "huginn",
     name: "Huginn Cycle",
     description: "Audit the spec, build, gate, test, secure, review, document, commit",
+    // `VERIFY` sits right after `EXECUTE`: the plan's own commands are the
+    // cheapest, most deterministic gate, so a failure is caught before any LLM
+    // audit spends tokens on code that does not run.
     phases: [
       "SPEC_AUDIT",
       "EXECUTE",
+      "VERIFY",
       "VALIDATE_STEP",
       "TEST_MODULE",
       "SECURE_CHECK",
       "REVIEW",
       "DOC_SYNC",
-      "VERIFY",
       "COMMIT_ALL",
     ],
-    evidence: "none",
+    evidence: "receipt",
   },
   sdd: {
     id: "sdd",

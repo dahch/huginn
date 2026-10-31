@@ -6,6 +6,7 @@ import type { OpencodeClient } from "@opencode-ai/sdk";
 import {
   validateStep,
   commitAll,
+  indexIterationSourceFiles,
   getIterationFiles,
   computeValidateVerdict,
   computeSubReportVerdict,
@@ -607,6 +608,22 @@ export const greeting: string = 12345;
   });
 
   describe("commitAll", () => {
+    /**
+     * The engine now indexes after a successful promotion, not inside
+     * `commitAll`; this mirrors that pair so the indexing assertions still
+     * exercise the moved behaviour.
+     */
+    async function commitAndIndex(ctx: PhaseContext) {
+      const result = await commitAll(ctx);
+      indexIterationSourceFiles({
+        projectPath: ctx.projectPath,
+        baseCommit: ctx.baseCommit,
+        primaryProjectRoot: ctx.primaryProjectRoot ?? ctx.projectPath,
+        dbPath: ctx.dbPath,
+      });
+      return result;
+    }
+
     it("sends the commit prompt and attempts indexFilesIntoMuninn without throwing", async () => {
       // Initialize temporary git repository
       git(tempDir, ["init", "-q"]);
@@ -629,7 +646,7 @@ export class UserService {
         modules: ["user.ts"],
       });
 
-      const result = await commitAll(ctx);
+      const result = await commitAndIndex(ctx);
 
       // The commit step is an injected prompt, never a slash command (REQ-7).
       expect(commandCalls).toHaveLength(0);
@@ -670,7 +687,7 @@ export function helper(): string {
         baseCommit,
       });
 
-      const result = await commitAll(ctx);
+      const result = await commitAndIndex(ctx);
 
       expect(commandCalls).toHaveLength(0);
       expect(promptCalls).toHaveLength(1);
@@ -693,7 +710,7 @@ export function helper(): string {
       const { ctx, commandCalls, promptCalls } = createMockContext(tempDir);
 
       // Must not throw despite indexing failure
-      const result = await commitAll(ctx);
+      const result = await commitAndIndex(ctx);
 
       expect(commandCalls).toHaveLength(0);
       expect(promptCalls).toHaveLength(1);
@@ -712,7 +729,7 @@ export function helper(): string {
 
       const { ctx, commandCalls, promptCalls } = createMockContext(tempDir);
 
-      const result = await commitAll(ctx);
+      const result = await commitAndIndex(ctx);
 
       expect(commandCalls).toHaveLength(0);
       expect(promptCalls).toHaveLength(1);
@@ -726,10 +743,17 @@ export function helper(): string {
       git(tempDir, ["config", "user.name", "Test Runner"]);
       git(tempDir, ["config", "user.email", "test@example.com"]);
 
+      // A real iteration always has a base commit; indexing diffs against it, so
+      // a file the commit step commits is still visible (REV-008).
+      fs.writeFileSync(path.join(tempDir, "README.md"), "init");
+      git(tempDir, ["add", "README.md"]);
+      git(tempDir, ["commit", "-m", "initial commit"]);
+      const baseCommit = git(tempDir, ["rev-parse", "HEAD"]).stdout.trim();
+
       const sourceCode = "export class ProductService { getProduct(): string { return 'laptop'; } }\n";
       fs.writeFileSync(path.join(tempDir, "product.ts"), sourceCode);
 
-      const { ctx, promptCalls } = createMockContext(tempDir);
+      const { ctx, promptCalls } = createMockContext(tempDir, { baseCommit });
 
       // Simulate a real commit step that stages and commits everything during the prompt
       const origPrompt = ctx.client.session.prompt;
@@ -739,7 +763,7 @@ export function helper(): string {
         return origPrompt(params);
       };
 
-      const result = await commitAll(ctx);
+      const result = await commitAndIndex(ctx);
 
       expect(result.messageId).toBe("prompt_msg_id");
       expect(promptCalls).toHaveLength(1);
@@ -773,7 +797,7 @@ export function helper(): string {
         dbPath: customDbPath,
       });
 
-      await commitAll(ctx);
+      await commitAndIndex(ctx);
 
       // Verify the custom database was created at customDbPath
       expect(fs.existsSync(customDbPath)).toBe(true);
@@ -802,7 +826,7 @@ export function helper(): string {
         dbPath: undefined,
       });
 
-      await commitAll(ctx);
+      await commitAndIndex(ctx);
 
       const expectedDbPath = path.join(tempDir, ".huginn", "muninn.db");
       expect(fs.existsSync(expectedDbPath)).toBe(true);
@@ -833,8 +857,8 @@ export function helper(): string {
       fs.unlinkSync(oldFile);
 
       const { ctx } = createMockContext(tempDir);
-      // commitAll should run cleanly and not fail on missing deleted file
-      const result = await commitAll(ctx);
+      // Indexing should run cleanly and not fail on the missing deleted file
+      const result = await commitAndIndex(ctx);
       expect(result.messageId).toBe("prompt_msg_id");
     });
 
@@ -862,7 +886,7 @@ export function helper(): string {
           dbPath: undefined,
         });
 
-        const result = await commitAll(ctx);
+        const result = await commitAndIndex(ctx);
 
         expect(commandCalls).toHaveLength(0);
         expect(promptCalls).toHaveLength(1);

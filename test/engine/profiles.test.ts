@@ -37,12 +37,12 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
     expect(phasesForProfile(undefined)).toEqual([
       "SPEC_AUDIT",
       "EXECUTE",
+      "VERIFY",
       "VALIDATE_STEP",
       "TEST_MODULE",
       "SECURE_CHECK",
       "REVIEW",
       "DOC_SYNC",
-      "VERIFY",
       "COMMIT_ALL",
     ]);
     expect(profileSpec(undefined).name).toBe("Huginn Cycle");
@@ -111,15 +111,6 @@ describe("frozen iteration evidence (AC-36.4)", () => {
   it("produces no receipt for the profiles that do not require evidence", () => {
     expect(
       buildIterationReceipt({
-        profile: "huginn",
-        iteration: 1,
-        title: "x",
-        projectPath: "/tmp/does-not-matter",
-        verdicts: [],
-      }),
-    ).toBeUndefined();
-    expect(
-      buildIterationReceipt({
         profile: "odd",
         iteration: 1,
         title: "x",
@@ -127,6 +118,16 @@ describe("frozen iteration evidence (AC-36.4)", () => {
         verdicts: [],
       }),
     ).toBeUndefined();
+    // The default profile now freezes a receipt too.
+    expect(
+      buildIterationReceipt({
+        profile: "huginn",
+        iteration: 1,
+        title: "x",
+        projectPath: "/tmp/does-not-matter",
+        verdicts: [],
+      })?.evidence,
+    ).toBe("receipt");
   });
 
   it("freezes a receipt for rdd and a pre-EXECUTE snapshot for strict-tdd", () => {

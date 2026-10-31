@@ -13,10 +13,13 @@ import {
   review,
   docSync,
   commitAll,
+  diagnoseFindings,
   fixFindings,
+  indexIterationSourceFiles,
   fixSpec,
   fixSecurity,
   type PhaseContext,
+  type Remediation,
 } from "./phases";
 import { parseValidateStepVerdict, parseSpecAuditVerdict, judgePhase } from "./gate";
 import { profilePreamble, profileSpec, validateProfilePhases, type ProfileName } from "./profiles";
@@ -38,7 +41,7 @@ import {
   computePlanHash,
 } from "../state/store";
 import type { HarnessState, HistoryEntry, PromotionRecord, ResumeCursor } from "../state/schema";
-import { createClient, createSession, sessionExists, abortSession } from "../server/client";
+import { createClient, abortSession } from "../server/client";
 import { WorktreeManager, sandboxBranch, sandboxPath, type Sandbox } from "./worktree";
 import { resolveDatabasePath } from "@dahch/muninn";
 import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
@@ -64,6 +67,12 @@ type GatedPhaseResult = PhaseResult & {
   authoritativeVerdict?: Verdict;
   /** `VERIFY` only: a command died from a signal (see `PhaseOutput.crash`). */
   crash?: { command: string; signal: string };
+  /**
+   * The judge's structured action items for a `judge`-gated phase. Kept on the
+   * result so the remediation turn (architect and then executor) receives the
+   * exact blocking items instead of re-deriving them from prose.
+   */
+  actionItems?: string[];
 };
 
 interface PipelineStep {
@@ -643,11 +652,12 @@ export class CycleEngine {
     // reads target the isolated worktree.
     const primaryDbPath = resolveDatabasePath(undefined, this.cfg.projectPath);
 
-    // Scope the server-side agent session to `workPath` so the build agent's
-    // tools edit the sandbox rather than the primary tree (REQ-17). Under
-    // sandboxing a fresh session is required: any persisted `iterationSessionId`
-    // was bound to a different directory and must not be reused.
-    const sessionId = await this.ensureSession(iteration, workPath, sandbox !== undefined);
+    // Every phase opens its own clean session scoped to `workPath` (see
+    // `runPhase`): a role never inherits another role's accumulated context, and
+    // the build agent's tools edit the sandbox rather than the primary tree
+    // (REQ-17). The context below intentionally starts session-less; `runPhase`
+    // fills it in per step.
+    const sessionId = "";
 
     let settled = false;
     try {
@@ -662,7 +672,7 @@ export class CycleEngine {
       const explicitModules = iteration.modules ?? [];
       const ctx: PhaseContext = {
         client: this.client,
-        session: this.activeSession,
+        session: undefined,
         sessionId,
         models: this.models,
         projectPath: workPath,
@@ -779,6 +789,17 @@ export class CycleEngine {
         this.persist();
       }
 
+      // In-place runs have no promotion step, so the iteration's files are
+      // already in the primary tree: index them here. Sandboxed runs index after
+      // a successful promotion instead (below).
+      if (!sandbox && !this.abortRequested) {
+        indexIterationSourceFiles({
+          projectPath: this.cfg.projectPath,
+          baseCommit: ctx.baseCommit,
+          primaryProjectRoot: this.cfg.projectPath,
+        });
+      }
+
       // Atomic increment: promotion integrates *commits*, so a successful
       // iteration must never reach promoteSandbox with uncommitted work. The
       // agent's COMMIT_ALL phase normally leaves a clean tree; this checkpoint is
@@ -859,6 +880,14 @@ export class CycleEngine {
             ? ` (local change(s) parked under ${result.backups.join(", ")})`
             : "";
         if (result.promoted) {
+          // The symbol graph is durable, so it may only be updated once the
+          // iteration's files really reached the primary tree (a failed
+          // promotion must not leave the graph describing ghost files).
+          indexIterationSourceFiles({
+            projectPath: this.cfg.projectPath,
+            baseCommit: ctx.baseCommit,
+            primaryProjectRoot: this.cfg.projectPath,
+          });
           this.state.promotion = {
             status: "promoted",
             branch: sandbox.branch,
@@ -928,32 +957,67 @@ export class CycleEngine {
     }
   }
 
-  private async ensureSession(
+  /**
+   * Open one clean, directory-scoped session for a single phase/role and close
+   * it when the phase ends (ADR: clean sessions per phase).
+   *
+   * Reusing one iteration-wide session made every role share 150k–300k tokens of
+   * someone else's tool loop: the prompt cache was invalidated on each
+   * `executor`↔`thinker` switch and a builder effectively graded its own work.
+   * The one call site that must keep the old behaviour is a test that injects a
+   * fake runtime; `close` is optional on {@link IAgentSession}, so such a fake
+   * is simply not closed.
+   */
+  private async withPhaseSession<T>(
+    ctx: PhaseContext,
     iteration: Iteration,
-    directory: string,
-    sandboxed: boolean,
-  ): Promise<string> {
-    // A persisted session was bound to the directory it was created with; under
-    // sandboxing that directory changes every run, so never reuse it.
-    const existing = this.state.iterationSessionId;
-    if (!sandboxed && existing && this.activeSession && this.activeSession.id === existing) {
-      return existing;
-    }
+    label: string,
+    model: Models[keyof Models],
+    fn: (scopedCtx: PhaseContext, sessionId: string) => Promise<T>,
+  ): Promise<T> {
     const session = await this.runtime.createSession({
-      title: `iter ${iteration.index}: ${sanitizeTerminalText(iteration.title)}`,
-      directory,
+      title: `iter ${iteration.index}: ${sanitizeTerminalText(label)}`,
+      directory: ctx.directory ?? ctx.projectPath,
+      model: formatModel(model),
+      permissions: this.cfg.permissions,
     });
+    const previous = this.activeSession;
     this.activeSession = session;
-    this.state.iterationSessionId = session.id;
-    this.persist();
-    return session.id;
+    const scopedCtx: PhaseContext = { ...ctx, session, sessionId: session.id };
+    try {
+      return await fn(scopedCtx, session.id);
+    } finally {
+      if (this.activeSession === session) this.activeSession = previous;
+      await session.close?.();
+    }
   }
 
   private attemptKey(iteration: number, phase: PhaseName): string {
     return `${iteration}:${phase}`;
   }
 
+  /**
+   * Run one pipeline step in its own clean session. The session is created per
+   * *phase* (not per prompt): a phase's sub-audits share one role, while the
+   * next phase starts fresh.
+   */
   private async runPhase(
+    step: PipelineStep,
+    ctx: PhaseContext,
+    _sessionId: string,
+    iteration: Iteration,
+  ): Promise<void> {
+    // `VERIFY` runs deterministic commands and never prompts an agent, so it
+    // gets no session: opening one would be waste (and one more failure point).
+    if (step.phase === "VERIFY") {
+      return this.runPhaseBody(step, ctx, ctx.sessionId, iteration);
+    }
+    await this.withPhaseSession(ctx, iteration, step.phase, this.models.executor, (scopedCtx, scopedId) =>
+      this.runPhaseBody(step, scopedCtx, scopedId, iteration),
+    );
+  }
+
+  private async runPhaseBody(
     step: PipelineStep,
     ctx: PhaseContext,
     sessionId: string,
@@ -1042,6 +1106,9 @@ export class CycleEngine {
           this.cfg.phaseTimeoutMs,
         );
         verdict = judge.status;
+        // Keep the structured items for the remediation turn instead of
+        // discarding them and forcing the fixer to re-read the prose.
+        if (judge.actionItems.length > 0) result.actionItems = judge.actionItems;
         if (!judge.parsed) {
           events.emit("log", {
             level: "warn",
@@ -1109,27 +1176,54 @@ export class CycleEngine {
         continue;
       }
 
-      // blocking → fix with thinker, unless out of retries
+      // Blocking → escalate. A first failure of a purely mechanical gate
+      // (VERIFY / TEST) is fixed directly by the executor from the console
+      // output and the judge's action items (zero thinker tokens). Anything
+      // architectural — or any repeat failure — is diagnosed read-only by the
+      // thinker first, and the executor then applies that plan.
       if (attemptRun < this.cfg.maxRetries && step.fixPhase) {
         await this.waitIfPaused();
         if (this.abortRequested) return;
+
+        const tactical = step.fixPhase === "FIX_VERIFY" || step.fixPhase === "FIX_TEST";
+        const direct = tactical && curAttempt === 1;
+        let remediation: Remediation = { actionItems: result.actionItems };
+        if (!direct) {
+          const diagnosed = await this.runDiagnosis(
+            step,
+            ctx,
+            iteration,
+            curAttempt,
+            result.raw,
+            result.actionItems,
+          );
+          remediation = { plan: diagnosed.plan, actionItems: result.actionItems };
+        }
+
         events.emit("phaseStart", {
           iteration: iteration.index,
           totalIterations: this.plan.iterations.length,
           iterationTitle: sanitizeTerminalText(iteration.title),
           phase: step.fixPhase,
           attempt: curAttempt,
-          model: formatModel(this.models.thinker),
+          model: formatModel(this.models.executor),
           startedAt: new Date().toISOString(),
         });
-        const fixCtx = ctx;
-        let fixRes;
-        if (step.fixPhase === "FIX_SPEC") fixRes = await fixSpec(fixCtx, result.raw);
-        else if (step.fixPhase === "FIX_SECURITY") fixRes = await fixSecurity(fixCtx, result.raw);
-        else fixRes = await fixFindings(fixCtx, step.fixLabel, result.raw);
-        const fixKey = this.attemptKey(iteration.index, step.fixPhase);
+        const fixPhase = step.fixPhase;
+        const fixRes = await this.withPhaseSession(
+          ctx,
+          iteration,
+          fixPhase,
+          this.models.executor,
+          async (fixCtx) => {
+            if (fixPhase === "FIX_SPEC") return fixSpec(fixCtx, result.raw, remediation);
+            if (fixPhase === "FIX_SECURITY") return fixSecurity(fixCtx, result.raw, remediation);
+            return fixFindings(fixCtx, step.fixLabel, result.raw, undefined, remediation);
+          },
+        );
+        const fixKey = this.attemptKey(iteration.index, fixPhase);
         this.state.phaseAttempts[fixKey] = (this.state.phaseAttempts[fixKey] ?? 0) + 1;
-        this.recordFix(fixRes, iteration.index, step, curAttempt);
+        this.recordFix(fixRes, iteration.index, step, curAttempt, formatModel(this.models.executor));
         this.persist();
         continue;
       }
@@ -1142,7 +1236,7 @@ export class CycleEngine {
           iteration: iteration.index,
           phase: step.phase,
           attempt: curAttempt,
-          message: `Gate ${step.phase} is blocked. Retry with thinker, force-continue, or abort?`,
+          message: `Gate ${step.phase} is blocked. Retry (thinker diagnosis → executor), force-continue, or abort?`,
         });
         if (decision === "abort") {
           this.abortRequested = true;
@@ -1362,26 +1456,100 @@ export class CycleEngine {
     });
   }
 
+  /**
+   * Ask the architect (`thinker`) to root-cause a blocked gate in READ-ONLY
+   * mode, under the same worker-tree guard the auditors use.
+   *
+   * The diagnosis is persisted to `.harness/reports/II-FIX_*-N-diagnosis.md` and
+   * recorded as its own history entry naming the real thinker model, so the model
+   * that reasoned and the executor that edits are both auditable. A tree
+   * mutation discards the plan (the architect cannot be trusted after writing)
+   * and the executor falls back to the raw report + action items.
+   */
+  private async runDiagnosis(
+    step: PipelineStep,
+    ctx: PhaseContext,
+    iteration: Iteration,
+    attempt: number,
+    report: string,
+    actionItems: string[] | undefined,
+  ): Promise<{ plan?: string; reportPath?: string }> {
+    const fixPhase = step.fixPhase;
+    if (!fixPhase) return {};
+
+    const before = treeHash(ctx.projectPath);
+    let res: { text: string; messageId: string };
+    try {
+      res = await this.withPhaseSession(ctx, iteration, `${fixPhase} diagnosis`, this.models.thinker, (diagnosisCtx) =>
+        diagnoseFindings(diagnosisCtx, step.fixLabel, report, undefined, actionItems),
+      );
+    } catch (err) {
+      events.emit("log", {
+        level: "warn",
+        message: `[${fixPhase}] diagnosis failed (${
+          err instanceof Error ? err.message : String(err)
+        }); the executor will fix from the report`,
+        timestamp: new Date().toISOString(),
+      });
+      return {};
+    }
+
+    const violation = readOnlyTreeViolation(before, treeHash(ctx.projectPath));
+    const text = violation ? this.readOnlyViolationReport(fixPhase, res.text) : res.text;
+    const reportPath = writeReport(
+      this.cfg.projectPath,
+      iteration.index,
+      fixPhase,
+      attempt,
+      sanitizeTerminalText(text),
+      "-diagnosis",
+    );
+    this.recordFix(
+      { text, messageId: res.messageId },
+      iteration.index,
+      step,
+      attempt,
+      formatModel(this.models.thinker),
+      { reportPath, label: "Diagnosis", emitLifecycle: false },
+    );
+    if (violation) {
+      events.emit("log", {
+        level: "warn",
+        message: `[${fixPhase}] read-only violation during diagnosis; its remediation plan was discarded`,
+        timestamp: new Date().toISOString(),
+      });
+      return { reportPath };
+    }
+    return { plan: res.text, reportPath };
+  }
+
   private recordFix(
     res: { text: string; messageId: string },
     iteration: number,
     step: PipelineStep,
     attempt: number,
+    model: string,
+    opts: { reportPath?: string; label?: string; emitLifecycle?: boolean } = {},
   ): void {
     if (!step.fixPhase) return;
     const now = new Date().toISOString();
+    const prefix = opts.label ? `${opts.label}: ` : "";
     const entry: HistoryEntry = {
       iteration,
       phase: step.fixPhase,
       attempt,
-      model: formatModel(this.models.thinker),
+      model,
       sessionId: "",
       messageId: res.messageId,
-      summary: sanitizeTerminalText(res.text).slice(0, SUMMARY_MAX_LENGTH),
+      summary: sanitizeTerminalText(`${prefix}${res.text}`).slice(0, SUMMARY_MAX_LENGTH),
+      ...(opts.reportPath ? { reportPath: opts.reportPath } : {}),
       startedAt: now,
       finishedAt: now,
     };
     this.state.history.push(entry);
+    // A diagnosis is recorded for traceability only; the application turn owns
+    // the UI row and its verdict.
+    if (opts.emitLifecycle === false) return;
     // A finished fix phase must terminate its UI row: runPhase already emitted
     // `phaseStart` for the FIX phase, so close the loop with a pass verdict.
     this.emitVerdict(iteration, step.fixPhase, "pass", attempt);

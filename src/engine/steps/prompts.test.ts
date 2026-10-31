@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   commitAllPrompt,
+  diagnoseFindingsPrompt,
   docSyncPrompt,
   executePrompt,
   fixFindingsPrompt,
@@ -193,6 +194,35 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).toContain("Fix ALL of them");
     expect(p).toContain("SEC-001 breach");
     expect(p).toContain("Every breach must be fixed.");
+  });
+
+  it("fixFindingsPrompt follows the architect's remediation plan and action items", () => {
+    const p = fixFindingsPrompt(ctx(), "test failures", "REPORT", undefined, {
+      plan: "PLAN BODY: edit src/a.ts",
+      actionItems: ["fix the failing assertion"],
+    });
+    expect(p).toContain("Remediation Plan (from the Architect / Thinker)");
+    expect(p).toContain("PLAN BODY: edit src/a.ts");
+    expect(p).toContain("Extracted blocking action items");
+    expect(p).toContain("fix the failing assertion");
+    expect(p).toContain("Follow this plan strictly");
+  });
+
+  it("diagnoseFindingsPrompt is a read-only architect contract with a Remediation Plan", () => {
+    const p = diagnoseFindingsPrompt(ctx(), "test failures", "FAILING REPORT", {
+      actionItems: ["fix the failing assertion"],
+    });
+    expect(p).toContain("READ-ONLY MODE");
+    expect(p).toContain("Do NOT create, edit, move, or delete any file");
+    expect(p).toContain("do NOT run test suites or builds");
+    expect(p).toContain("fix the failing assertion");
+    expect(p).toContain("FAILING REPORT");
+    expect(p).toContain("### Root Cause");
+    expect(p).toContain("### Step-by-Step Edits for Executor");
+    expect(p).toContain("### Verification");
+    // The read-only prompt must not carry EXECUTE's "run the verification
+    // commands before finishing" instruction, which contradicts it.
+    expect(p).not.toContain("Run the verification commands before finishing");
   });
 
   it("validateStep sub-prompts: qa is AUDIT-ONLY, then spec-auditor, then security", () => {

@@ -254,15 +254,91 @@ export function commitAllPrompt(ctx: StepContext): string {
   return joinBlocks(resolveShellInterpolations(ctx, COMMAND_COMMIT_ALL));
 }
 
-/** Fix prompt for a blocked gate: apply every flagged finding. */
-export function fixFindingsPrompt(ctx: StepContext, label: string, report: string, extraInstructions?: string): string {
+/** A bounded `git diff --stat` for the diagnostic prompt. */
+function diffStat(ctx: StepContext): string {
+  const args = ctx.baseCommit ? ["diff", "--stat", ctx.baseCommit] : ["diff", "--stat"];
+  // A failed `git diff` can dump the whole usage text on stderr; keep the
+  // diagnostic prompt small even then.
+  return gitOutput(ctx, args, 2_000) || "(no changes)";
+}
+
+/** The structured action items a judge extracted, as a prompt block. */
+function actionItemsBlock(actionItems: string[] | undefined): string {
+  if (!actionItems || actionItems.length === 0) return "";
+  return [
+    "## Extracted blocking action items",
+    ...actionItems.map((item, index) => `${index + 1}. ${item}`),
+  ].join("\n");
+}
+
+/**
+ * Fix prompt for a blocked gate: apply every flagged finding.
+ *
+ * `remediation` carries what the architect (`thinker`) diagnosed: a
+ * read-only `plan` of exact edits, and/or the judge's structured action items.
+ * When a plan is present the executor must follow it strictly instead of
+ * re-diagnosing the failure.
+ */
+export function fixFindingsPrompt(
+  ctx: StepContext,
+  label: string,
+  report: string,
+  extraInstructions?: string,
+  remediation?: { plan?: string; actionItems?: string[] },
+): string {
+  const plan = remediation?.plan?.trim()
+    ? [
+        "## Remediation Plan (from the Architect / Thinker)",
+        "Follow this plan strictly. Do not improvise changes outside its scope; if it is wrong, correct it minimally and say why.",
+        embedUntrusted("remediation plan", boundEmbedded(remediation.plan, 24_000)),
+      ].join("\n")
+    : "";
   return joinBlocks(
     `The following "${label}" findings were flagged as BLOCKING. Fix ALL of them in the codebase now.`,
     extraInstructions ?? "",
+    actionItemsBlock(remediation?.actionItems),
     "## Findings report",
     embedUntrusted("findings report", report),
+    plan,
     "Apply the fixes, then summarize exactly what you changed and why.",
     `Current repository state:\n${repoStatus(ctx)}`,
+  );
+}
+
+/**
+ * Diagnostic prompt for the `thinker` (READ-ONLY): root-cause a blocked gate and
+ * emit a deterministic Remediation Plan the executor applies.
+ *
+ * It deliberately receives bounded, role-appropriate evidence only — the
+ * increment's goal/acceptance/verification, the judge's action items, a bounded
+ * failing report and the diff/status — and is forbidden from writing anything or
+ * running builds. `definitionOfDone` is *not* used here: its "run the
+ * verification commands" instruction contradicts read-only mode.
+ */
+export function diagnoseFindingsPrompt(
+  ctx: StepContext,
+  label: string,
+  report: string,
+  opts: { extraInstructions?: string; actionItems?: string[] } = {},
+): string {
+  return joinBlocks(
+    `You are the Lead Architect / Diagnostician (READ-ONLY MODE) for a blocked "${label}" gate.`,
+    "CRITICAL: Do NOT create, edit, move, or delete any file, and do NOT run test suites or builds. Your sole job is root-cause diagnosis and producing a deterministic Remediation Plan for the Executor model.",
+    opts.extraInstructions ?? "",
+    incrementEvidence(ctx, "iteration acceptance criteria"),
+    actionItemsBlock(opts.actionItems),
+    "## Blocking gate report",
+    embedUntrusted("findings report", boundEmbedded(report, 24_000)),
+    `## Recent changes (git diff --stat)\n${embedUntrusted("git diff --stat", diffStat(ctx))}`,
+    `## Current repository status\n${repoStatus(ctx)}`,
+    [
+      "## Required output — Remediation Plan",
+      "Produce a concise, surgical markdown plan with these exact sections:",
+      "1. `### Root Cause` — why the gate failed (exact files, symbols, contracts).",
+      "2. `### Decisions` — how each ambiguity or spec/security constraint is resolved.",
+      "3. `### Step-by-Step Edits for Executor` — exact file-by-file changes to apply.",
+      "4. `### Verification` — exact non-interactive commands the Executor must run.",
+    ].join("\n"),
   );
 }
 

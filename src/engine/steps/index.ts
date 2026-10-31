@@ -13,6 +13,7 @@ export {
 } from "./context.js";
 export {
   commitAllPrompt,
+  diagnoseFindingsPrompt,
   docSyncPrompt,
   executePrompt,
   fixFindingsPrompt,
