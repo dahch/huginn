@@ -4,6 +4,8 @@ import chalk from "chalk";
 import { MemoryService } from "@dahch/muninn";
 import { startMcpServer } from "@dahch/muninn";
 import { indexFilesIntoMuninn } from "@dahch/muninn";
+import { resolveDatabasePath } from "@dahch/muninn";
+import { recordAdrsAsDecisions } from "../engine/memory/adr.js";
 import { sanitizeTerminalText } from "../util/text.js";
 
 const IGNORED_INDEX_DIRS = new Set([
@@ -61,12 +63,14 @@ Usage:
   huginn memory search <query> [--category <cat>] [--limit <n>] [--project <path>]
   huginn memory sync [--import] [--file <path>] [--project <path>]
   huginn memory index [files...] [--project <path>] [--db <path>]
+  huginn memory decisions [--adr <path>] [--project <path>] [--db <path>] [--dry-run]
 
 Subcommands:
   init     Initialize SQLite database and verify schema
   search   Search observations with BM25 relevance ranking
   sync     Export observations to disk (.jsonl) or import with --import
   index    Index AST symbols and dependencies into Muninn memory
+  decisions  Persist adr.md sections as decision observations (idempotent)
 `);
 }
 
@@ -241,6 +245,32 @@ export async function handleMemoryCommand(
     } finally {
       service.close?.();
     }
+    return;
+  }
+
+  if (subcommand === "decisions") {
+    const root = projectRoot ?? process.cwd();
+    const adrPath =
+      typeof args["--adr"] === "string"
+        ? path.resolve(args["--adr"])
+        : path.join(root, "adr.md");
+    const result = recordAdrsAsDecisions({
+      adrPath,
+      projectRoot: root,
+      dbPath: resolveDatabasePath(dbPath, root),
+      dryRun: Boolean(args["--dry-run"]),
+    });
+    if (args["--dry-run"]) {
+      console.log(chalk.green(`would save ${result.sections.length} decision(s) from ${adrPath}`));
+      return;
+    }
+    console.log(
+      chalk.green(
+        `✔ ADR decisions: ${result.saved} saved, ${result.updated} updated, ${result.unchanged} unchanged` +
+          (result.skipped > 0 ? `, ${result.skipped} skipped (empty)` : "") +
+          ` (database: ${resolveDatabasePath(dbPath, root)})`,
+      ),
+    );
     return;
   }
 
