@@ -208,13 +208,30 @@ export function planScopedCommand(
 }
 
 /**
+ * Wrapper that keeps a signal death visible to the caller.
+ *
+ * Older systemd releases (255, as shipped on ubuntu-24.04 CI runners) return a
+ * plain `1` from `systemd-run --scope` when the payload dies from a signal,
+ * while newer ones report `128+n`; either way the job that died cannot be the
+ * scope's main process if it is a child of this shell. Running the payload in a
+ * nested `/bin/sh -c` lets this shell observe `128+n` and exit with it, so
+ * {@link signalFromExitCode} sees the same code on every systemd version.
+ */
+const SIGNAL_STATUS_WRAPPER = 'status=0; /bin/sh -c "$1" || status=$?; exit "$status"';
+
+/**
  * Plan a **shell** command (`Verification:` lines run through `/bin/sh -c`).
  *
- * When scoped, the shell itself is what the scope runs, so the caller must spawn
- * with `shell: false`. When not scoped, the original command is returned with no
- * arguments and the caller keeps `shell: true` — the behaviour is unchanged.
+ * When scoped, the scope runs a shell that executes the payload in a nested
+ * shell, so the caller must spawn with `shell: false`. When not scoped, the
+ * original command is returned with no arguments and the caller keeps
+ * `shell: true` — the behaviour is unchanged.
  */
 export function planScopedShellCommand(command: string, options: ScopeOptions = {}): ScopedCommand {
-  const scoped = planScopedCommand("/bin/sh", ["-c", command], options);
+  const scoped = planScopedCommand(
+    "/bin/sh",
+    ["-c", SIGNAL_STATUS_WRAPPER, "huginn-verify", command],
+    options,
+  );
   return scoped.scoped ? scoped : { command, args: [], scoped: false };
 }

@@ -160,10 +160,16 @@ describe("planScopedCommand", () => {
 });
 
 describe("planScopedShellCommand", () => {
-  it("runs verification commands through sh -c inside the scope", () => {
+  it("runs verification commands through a signal-aware sh -c inside the scope", () => {
     const planned = planScopedShellCommand("cargo test --workspace", scopeable());
     expect(planned.scoped).toBe(true);
-    expect(planned.args.slice(-3)).toEqual(["/bin/sh", "-c", "cargo test --workspace"]);
+    const tail = planned.args.slice(-5);
+    // A nested shell reports the payload's 128+n status on every systemd
+    // version, instead of the scope swallowing a signal as exit 1.
+    expect(tail.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
+    expect(tail[2]).toContain("status=");
+    expect(tail[3]).toBe("huginn-verify");
+    expect(tail[4]).toBe("cargo test --workspace");
   });
 
   it("keeps the caller's shell semantics when unscoped", () => {
