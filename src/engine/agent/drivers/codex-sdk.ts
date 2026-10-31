@@ -12,7 +12,7 @@ import type {
 export interface CodexThreadHandle {
   /** The provider's thread id, known only after the first turn. */
   currentId(): string | null;
-  run(prompt: string): Promise<string>;
+  run(prompt: string, options?: { signal?: AbortSignal }): Promise<string>;
 }
 
 /**
@@ -25,7 +25,7 @@ export interface CodexThreadHandle {
 export interface CodexSdkAdapter {
   /** Resolve the SDK (and its bundled CLI) without starting a turn. */
   probe(): Promise<void>;
-  startThread(options: { model?: string }): Promise<CodexThreadHandle>;
+  startThread(options: { model?: string; workingDirectory?: string }): Promise<CodexThreadHandle>;
 }
 
 const CAPABILITIES: RuntimeCapabilities = {
@@ -84,11 +84,13 @@ export function createCodexSdkPort(adapter: CodexSdkAdapter = createDefaultCodex
     },
 
     async createSession(options: RuntimeSessionOptions): Promise<RuntimeSession> {
-      // Known gap: the SDK fixes the model when the thread starts and offers no
-      // per-turn override. Switching mid-session would need a new thread and would
-      // drop the conversation, so `request.model` is ignored here. The pi and claude
-      // drivers do honour it (setModel / run(prompt, model)).
-      const thread = await adapter.startThread({ model: options.model });
+      // The thread is created in the session's directory, so the agent edits the
+      // sandbox rather than whatever cwd huginn itself was launched from.
+      let thread = await adapter.startThread({
+        model: options.model,
+        workingDirectory: options.directory,
+      });
+      let threadModel = options.model;
       const sink = options.sink;
       // The provider id is null until the first turn, so huginn's handle is its
       // own: a session must have an id before it has run anything.
@@ -97,15 +99,39 @@ export function createCodexSdkPort(adapter: CodexSdkAdapter = createDefaultCodex
         id,
         resumable: false,
         async prompt(request) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
           try {
-            const text = await thread.run(request.text);
+            // The SDK fixes the model when the thread starts, so a per-turn
+            // switch needs a new thread. It drops the conversation, which is the
+            // honest trade: huginn rotates a session per phase anyway.
+            if (request.model && request.model !== threadModel) {
+              thread = await adapter.startThread({
+                model: request.model,
+                workingDirectory: options.directory,
+              });
+              threadModel = request.model;
+            }
+            const controller = new AbortController();
+            if (request.timeoutMs && request.timeoutMs > 0) {
+              timer = setTimeout(() => controller.abort(), request.timeoutMs);
+            }
+            const text = await thread.run(request.text, { signal: controller.signal });
             const result = { messageId: `${id}:last`, text };
             if (text) sink?.({ type: "text", text });
             sink?.({ type: "done", result });
             return result;
           } catch (err) {
+            if (err instanceof Error && err.name === "AbortError" && request.timeoutMs) {
+              const timeoutError = new Error(
+                `codex turn timed out after ${request.timeoutMs}ms`,
+              );
+              sink?.({ type: "error", message: timeoutError.message });
+              throw timeoutError;
+            }
             sink?.({ type: "error", message: err instanceof Error ? err.message : String(err) });
             throw err;
+          } finally {
+            if (timer) clearTimeout(timer);
           }
         },
         async interrupt() {
@@ -133,16 +159,19 @@ export function createDefaultCodexAdapter(): CodexSdkAdapter {
       new Codex();
     },
 
-    async startThread({ model }) {
+    async startThread({ model, workingDirectory }) {
       const { Codex } = await sdk();
       const codex = new Codex();
-      const thread = codex.startThread(model ? { model } : undefined);
+      const thread = codex.startThread({
+        ...(model ? { model } : {}),
+        ...(workingDirectory ? { workingDirectory } : {}),
+      });
       return {
         currentId() {
           return thread.id;
         },
-        async run(prompt: string) {
-          const turn = await thread.run(prompt);
+        async run(prompt: string, options?: { signal?: AbortSignal }) {
+          const turn = await thread.run(prompt, options?.signal ? { signal: options.signal } : undefined);
           return turn.finalResponse;
         },
       };

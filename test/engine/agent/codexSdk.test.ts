@@ -64,7 +64,10 @@ describe("codex SDK driver specifics", () => {
     const startThread = vi.fn(async () => fakeThread());
     const port = createCodexSdkPort(fakeAdapter({ startThread }));
     const session = await port.createSession({ title: "t", model: "gpt-5.1-codex" });
-    expect(startThread).toHaveBeenCalledWith({ model: "gpt-5.1-codex" });
+    expect(startThread).toHaveBeenCalledWith({
+      model: "gpt-5.1-codex",
+      workingDirectory: undefined,
+    });
     const result = await session.prompt({ text: "hola" });
     expect(result.text).toBe("codex says: hola");
     await session.close();
@@ -102,5 +105,53 @@ describe("codex SDK driver specifics", () => {
     const session = await port.createSession({ title: "t" });
     await expect(session.interrupt()).resolves.toBeUndefined();
     await session.close();
+  });
+
+  it("starts the thread in the session's directory, not huginn's cwd", async () => {
+    const startThread = vi.fn(async () => fakeThread());
+    const port = createCodexSdkPort(fakeAdapter({ startThread }));
+    await port.createSession({ title: "t", directory: "/repo/sandbox" });
+    expect(startThread).toHaveBeenCalledWith({
+      model: undefined,
+      workingDirectory: "/repo/sandbox",
+    });
+  });
+
+  it("recreates the thread when the engine asks for a different model", async () => {
+    const threads: string[] = [];
+    const startThread = vi.fn(async (opts: { model?: string }) => {
+      threads.push(opts.model ?? "<default>");
+      return fakeThread();
+    });
+    const port = createCodexSdkPort(fakeAdapter({ startThread }));
+    const session = await port.createSession({ title: "t", model: "gpt-5.1-codex" });
+    await session.prompt({ text: "a", model: "gpt-5.1-codex" });
+    expect(threads).toEqual(["gpt-5.1-codex"]);
+    await session.prompt({ text: "b", model: "gpt-5.1-mini" });
+    expect(threads).toEqual(["gpt-5.1-codex", "gpt-5.1-mini"]);
+  });
+
+  it("aborts a turn that exceeds the engine's timeout", async () => {
+    const port = createCodexSdkPort(
+      fakeAdapter({
+        async startThread() {
+          return fakeThread({
+            run(_prompt: string, options?: { signal?: AbortSignal }) {
+              return new Promise<string>((_, reject) => {
+                options?.signal?.addEventListener("abort", () => {
+                  const err = new Error("aborted");
+                  err.name = "AbortError";
+                  reject(err);
+                });
+              });
+            },
+          });
+        },
+      }),
+    );
+    const session = await port.createSession({ title: "t" });
+    await expect(session.prompt({ text: "slow", timeoutMs: 10 })).rejects.toThrow(
+      /timed out after 10ms/,
+    );
   });
 });

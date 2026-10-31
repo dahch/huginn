@@ -2,9 +2,13 @@ import { describe, it, expect, vi } from "vitest";
 import { conformanceCases } from "../../../src/engine/agent/conformance.js";
 import {
   createClaudeSdkPort,
+  createDefaultClaudeAdapter,
   type ClaudeSdkAdapter,
   type ClaudeTurnHandle,
 } from "../../../src/engine/agent/drivers/claude-sdk.js";
+
+const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
 
 function fakeTurn(overrides: Partial<ClaudeTurnHandle> = {}): ClaudeTurnHandle {
   return {
@@ -67,7 +71,11 @@ describe("claude SDK driver specifics", () => {
     const startTurn = vi.fn(async () => fakeTurn());
     const port = createClaudeSdkPort(fakeAdapter({ startTurn }));
     const session = await port.createSession({ title: "t", directory: "/tmp/p", model: "claude-opus-4-5" });
-    expect(startTurn).toHaveBeenCalledWith({ cwd: "/tmp/p", model: "claude-opus-4-5" });
+    expect(startTurn).toHaveBeenCalledWith({
+      cwd: "/tmp/p",
+      model: "claude-opus-4-5",
+      permissions: undefined,
+    });
     await session.close();
   });
 
@@ -89,14 +97,52 @@ describe("claude SDK driver specifics", () => {
     expect(abort).toHaveBeenCalledTimes(1);
   });
 
-  it("honours the model the engine asks for on each turn", async () => {
-    const run = vi.fn(async (_prompt: string, _model?: string) => "ok");
+  it("honours the model and timeout the engine asks for on each turn", async () => {
+    const run = vi.fn(async (_prompt: string, _options?: { model?: string; timeoutMs?: number }) => "ok");
     const port = createClaudeSdkPort(
       fakeAdapter({ async startTurn() { return fakeTurn({ run }); } }),
     );
     const session = await port.createSession({ title: "t" });
-    await session.prompt({ text: "a", model: "claude-opus-4-5" });
-    expect(run).toHaveBeenCalledWith("a", "claude-opus-4-5");
+    await session.prompt({ text: "a", model: "claude-opus-4-5", timeoutMs: 1234 });
+    expect(run).toHaveBeenCalledWith("a", { model: "claude-opus-4-5", timeoutMs: 1234 });
+  });
+
+  it("passes the run's permission mode to the SDK", async () => {
+    const startTurn = vi.fn(async () => fakeTurn());
+    const port = createClaudeSdkPort(fakeAdapter({ startTurn }));
+    await port.createSession({ title: "t", permissions: "auto" });
+    expect(startTurn).toHaveBeenCalledWith({
+      cwd: undefined,
+      model: undefined,
+      permissions: "auto",
+    });
+  });
+
+  it("resumes the captured session and strips the anthropic/ model prefix", async () => {
+    queryMock.mockReset();
+    queryMock.mockImplementation(async function* () {
+      yield { type: "result", subtype: "success", result: "first", session_id: "sess-1" };
+    });
+    const port = createClaudeSdkPort(createDefaultClaudeAdapter());
+    const session = await port.createSession({
+      title: "t",
+      model: "anthropic/claude-opus-4-5",
+      permissions: "auto",
+    });
+
+    await session.prompt({ text: "one", model: "anthropic/claude-opus-4-5" });
+    const first = queryMock.mock.calls[0]![0] as { options: Record<string, unknown> };
+    expect(first.options.model).toBe("claude-opus-4-5");
+    expect(first.options.resume).toBeUndefined();
+    expect(first.options.permissionMode).toBe("bypassPermissions");
+    expect(first.options.allowDangerouslySkipPermissions).toBe(true);
+
+    queryMock.mockImplementation(async function* () {
+      yield { type: "result", subtype: "success", result: "second", session_id: "sess-1" };
+    });
+    await session.prompt({ text: "two", model: "anthropic/claude-opus-4-5" });
+    const second = queryMock.mock.calls[1]![0] as { options: Record<string, unknown> };
+    expect(second.options.resume).toBe("sess-1");
   });
 
   it("reports an unloadable SDK as unavailable with the reason", async () => {

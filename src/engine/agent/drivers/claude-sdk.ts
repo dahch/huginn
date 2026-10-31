@@ -10,8 +10,8 @@ import type {
 
 /** One Claude Code turn, as huginn needs it. */
 export interface ClaudeTurnHandle {
-  /** `model` overrides the one the turn was started with, per prompt. */
-  run(prompt: string, model?: string): Promise<string>;
+  /** Per-prompt model override and wall-clock bound. */
+  run(prompt: string, options?: { model?: string; timeoutMs?: number }): Promise<string>;
   abort(): void;
 }
 
@@ -24,7 +24,11 @@ export interface ClaudeTurnHandle {
  */
 export interface ClaudeSdkAdapter {
   probe(): Promise<void>;
-  startTurn(options: { cwd?: string; model?: string }): Promise<ClaudeTurnHandle>;
+  startTurn(options: {
+    cwd?: string;
+    model?: string;
+    permissions?: "auto" | "ask" | "deny";
+  }): Promise<ClaudeTurnHandle>;
 }
 
 const CAPABILITIES: RuntimeCapabilities = {
@@ -73,7 +77,11 @@ export function createClaudeSdkPort(adapter: ClaudeSdkAdapter = createDefaultCla
     },
 
     async createSession(options: RuntimeSessionOptions): Promise<RuntimeSession> {
-      const turn = await adapter.startTurn({ cwd: options.directory, model: options.model });
+      const turn = await adapter.startTurn({
+        cwd: options.directory,
+        model: options.model,
+        permissions: options.permissions,
+      });
       const sink = options.sink;
       const id = randomUUID();
       return {
@@ -83,7 +91,10 @@ export function createClaudeSdkPort(adapter: ClaudeSdkAdapter = createDefaultCla
           try {
             // Each turn is its own query, so the model the engine asks for is
             // applied without restarting the session (and without persisting it).
-            const text = await turn.run(request.text, request.model);
+            const text = await turn.run(request.text, {
+              model: request.model,
+              timeoutMs: request.timeoutMs,
+            });
             const result = { messageId: `${id}:last`, text };
             if (text) sink?.({ type: "text", text });
             sink?.({ type: "done", result });
@@ -104,6 +115,17 @@ export function createClaudeSdkPort(adapter: ClaudeSdkAdapter = createDefaultCla
   };
 }
 
+/**
+ * The Claude CLI wants a bare model id (`claude-sonnet-4-...`), not huginn's
+ * canonical `anthropic/...` reference. Other providers are passed through
+ * unchanged so the CLI can still report a mismatch instead of a silent guess.
+ */
+function stripProviderPrefix(reference: string | undefined): string | undefined {
+  if (!reference) return reference;
+  const prefix = "anthropic/";
+  return reference.startsWith(prefix) ? reference.slice(prefix.length) : reference;
+}
+
 /** The real SDK behind the seam. */
 export function createDefaultClaudeAdapter(): ClaudeSdkAdapter {
   async function sdk() {
@@ -115,29 +137,59 @@ export function createDefaultClaudeAdapter(): ClaudeSdkAdapter {
       await sdk();
     },
 
-    async startTurn({ cwd, model }) {
+    async startTurn({ cwd, model, permissions }) {
       const { query } = await sdk();
-      const controller = new AbortController();
+      // The CLI's own session id, captured from the result stream so later turns
+      // of the *same* huginn session resume the conversation instead of starting
+      // over (the SDK's `resume` option).
+      let sessionId: string | undefined;
+      let controller: AbortController | undefined;
       return {
         abort() {
-          controller.abort();
+          controller?.abort();
         },
-        async run(prompt: string, overrideModel?: string) {
-          const stream = query({
-            prompt,
-            options: {
-              cwd,
-              model: overrideModel ?? model,
-              abortController: controller,
-            },
-          });
-          let text = "";
-          for await (const message of stream) {
-            if (message.type === "result" && message.subtype === "success") {
-              text = message.result;
+        async run(prompt: string, options?: { model?: string; timeoutMs?: number }) {
+          // A fresh controller per turn: aborting a timed-out turn must not
+          // poison the next one.
+          controller = new AbortController();
+          const active = controller;
+          const timeoutMs = options?.timeoutMs;
+          const timer =
+            timeoutMs && timeoutMs > 0 ? setTimeout(() => active.abort(), timeoutMs) : undefined;
+          const requestedModel = stripProviderPrefix(options?.model ?? model);
+          try {
+            const stream = query({
+              prompt,
+              options: {
+                cwd,
+                ...(requestedModel ? { model: requestedModel } : {}),
+                abortController: active,
+                ...(sessionId ? { resume: sessionId } : {}),
+                ...(permissions === "auto"
+                  ? {
+                      permissionMode: "bypassPermissions" as const,
+                      allowDangerouslySkipPermissions: true,
+                    }
+                  : {}),
+              },
+            });
+            let text = "";
+            for await (const message of stream) {
+              const id = (message as { session_id?: unknown }).session_id;
+              if (typeof id === "string" && id.length > 0) sessionId = id;
+              if (message.type === "result" && message.subtype === "success") {
+                text = message.result;
+              }
             }
+            return text;
+          } catch (err) {
+            if (active.signal.aborted && timeoutMs) {
+              throw new Error(`claude turn timed out after ${timeoutMs}ms`);
+            }
+            throw err;
+          } finally {
+            if (timer) clearTimeout(timer);
           }
-          return text;
         },
       };
     },

@@ -67,6 +67,31 @@ export interface PiPortOptions {
 /** `pi mcp list --json` connects to every server, so it gets a generous bound. */
 export const PI_MCP_LIST_TIMEOUT_MS = 30000;
 
+/**
+ * Bound one in-process turn, interrupting the loop when the engine's timeout
+ * expires. The original promise stays observed (the race attaches handlers), so
+ * a late settlement cannot surface as an unhandled rejection.
+ */
+async function withTurnTimeout<T>(
+  turn: Promise<T>,
+  timeoutMs: number,
+  interrupt: () => Promise<void>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      void interrupt().finally(() =>
+        reject(new Error(`pi turn timed out after ${timeoutMs}ms`)),
+      );
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([turn, expiry]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const CAPABILITIES: RuntimeCapabilities = {
   // The agent loop runs in huginn's own process: no CLI, no daemon.
   inProcess: true,
@@ -269,7 +294,14 @@ export function createPiSdkPort(
               }
               await handle.setModel(request.model);
             }
-            const text = await handle.prompt(request.text);
+            // The engine's `timeoutMs` is a wall-clock bound on a turn. When it
+            // expires the in-process loop is interrupted instead of letting a
+            // stalled provider hold the phase open.
+            const text = request.timeoutMs
+              ? await withTurnTimeout(handle.prompt(request.text), request.timeoutMs, () =>
+                  handle.interrupt(),
+                )
+              : await handle.prompt(request.text);
             const result = { messageId: `${handle.id}:last`, text };
             if (text) sink?.({ type: "text", text });
             sink?.({ type: "done", result });
