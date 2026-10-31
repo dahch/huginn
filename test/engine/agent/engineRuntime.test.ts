@@ -1,23 +1,24 @@
 import { describe, it, expect } from "vitest";
-import { getAgentRuntime, getEngineRuntime } from "../../../src/engine/agent/registry.js";
+import { getAgentRuntime, getEnginePort } from "../../../src/engine/agent/registry.js";
 
-describe("getEngineRuntime", () => {
-  it("routes pi to the native in-process driver", () => {
-    const runtime = getEngineRuntime("pi");
-    expect(runtime.id).toBe("pi");
-    expect(runtime.name).toContain("in-process");
-    // A native session keeps history; it does not stream yet, and it says so.
-    expect(runtime.sessionHistory).toBe(true);
-    expect(runtime.streamsOutput).toBe(false);
+describe("getEnginePort", () => {
+  it("returns a native port for every runtime with a driver", () => {
+    expect(getEnginePort("pi").id).toBe("pi");
+    expect(getEnginePort("opencode").id).toBe("opencode");
+    expect(getEnginePort("codex").id).toBe("codex");
+    expect(getEnginePort("claude").id).toBe("claude");
   });
 
-  it("leaves every other target on the adapter the cycle already used", () => {
-    expect(getEngineRuntime("opencode").id).toBe("opencode");
-    expect(getEngineRuntime("codex").id).toBe("codex");
+  it("keeps the provisioning factory separate (getAgentRuntime)", () => {
+    // The CLI-shaped view still exists for setup/model discovery.
+    expect(getAgentRuntime("opencode").id).toBe("opencode");
   });
 
-  it("keeps the CLI-shaped factory on the subprocess adapter", () => {
-    // Provisioning, model discovery and the argv-level tests keep the CLI shape.
-    expect(getAgentRuntime("pi").name).not.toContain("in-process");
+  it("declares the capabilities the engines rely on", () => {
+    const opencode = getEnginePort("opencode");
+    expect(opencode.capabilities.streaming).toBe(true);
+    expect(opencode.capabilities.sessionResume).toBe(true);
+    expect(opencode.capabilities.permissions).toBe("interactive");
+    expect(typeof opencode.resumeSession).toBe("function");
   });
 });

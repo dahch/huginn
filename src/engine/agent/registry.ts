@@ -9,7 +9,7 @@ import {
   type AgentTarget,
 } from "../../agents/integrator.js";
 import type { IAgentRuntime } from "./types.js";
-import { toLegacyRuntime, toRuntimePort } from "./legacy-bridge.js";
+import { toRuntimePort } from "./legacy-bridge.js";
 import { createPiSdkPort } from "./drivers/pi-sdk.js";
 import { createCodexSdkPort } from "./drivers/codex-sdk.js";
 import { createClaudeSdkPort } from "./drivers/claude-sdk.js";
@@ -425,26 +425,4 @@ export function getEnginePort(target: AgentTarget, options: RuntimeOptions = {})
   return getRuntimePort(target, options);
 }
 
-/**
- * The legacy runtime view the CLI surfaces still consume.
- *
- * Deliberately separate from {@link getAgentRuntime}: that factory still returns
- * the CLI-shaped adapters, which is what provisioning, model discovery and the
- * argv-level tests rely on. Here, a target with a native driver runs it (pi,
- * codex, claude) presented through the reverse bridge until the engines consume
- * `RuntimePort` directly; every other target is the configured generic bridge.
- */
-export function getEngineRuntime(target: AgentTarget, options: RuntimeOptions = {}): IAgentRuntime {
-  if (target === "pi") {
-    return toLegacyRuntime(
-      createPiSdkPort(undefined, {
-        projectPath: options.projectPath,
-        homeDir: options.homeDir,
-        env: options.env,
-      }),
-    );
-  }
-  if (target === "codex") return toLegacyRuntime(createCodexSdkPort());
-  if (target === "claude") return toLegacyRuntime(createClaudeSdkPort());
-  return getAgentRuntime(target, options);
-}
+

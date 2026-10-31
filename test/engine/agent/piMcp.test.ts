@@ -8,8 +8,8 @@ import {
   type PiSdkAdapter,
   type PiSessionHandle,
 } from "../../../src/engine/agent/drivers/pi-sdk.js";
-import { toLegacyRuntime } from "../../../src/engine/agent/legacy-bridge.js";
-import { getEngineRuntime } from "../../../src/engine/agent/registry.js";
+import { getEnginePort } from "../../../src/engine/agent/registry.js";
+import { fetchMcpStatusWithTimeout } from "../../../src/engine/agent/mcpStatus.js";
 import { formatMcpBadge, reportFromListings } from "../../../src/engine/agent/mcpStatus.js";
 
 const dirs: string[] = [];
@@ -117,15 +117,13 @@ describe("MCP reporting for the native pi driver", () => {
     expect(await port.listMcpServers!()).toHaveLength(2);
     expect((await port.mcpStatus!()).unverified).toBe(true);
 
-    const legacy = toLegacyRuntime(port);
-    expect(await legacy.listMcpServers!()).toHaveLength(2);
-    expect((await legacy.getMcpStatus()).unverified).toBe(true);
   });
 
   it("stays honest when the adapter cannot enumerate MCP", async () => {
-    const legacy = toLegacyRuntime(createPiSdkPort(fakeAdapter()));
-    expect(legacy.listMcpServers).toBeUndefined();
-    const status = await legacy.getMcpStatus();
+    const port = createPiSdkPort(fakeAdapter());
+    expect(port.listMcpServers).toBeUndefined();
+    expect(port.mcpStatus).toBeUndefined();
+    const status = await fetchMcpStatusWithTimeout(port, 50);
     expect(status).toMatchObject({ servers: [], healthy: false, unverified: true });
   });
 
@@ -145,7 +143,7 @@ describe("MCP reporting for the native pi driver", () => {
     expect(formatMcpBadge(degraded, "Pi (in-process)").status).toBe("degraded");
   });
 
-  it("discovers the project and user config files through getEngineRuntime", async () => {
+  it("discovers the project and user config files through the engine port", async () => {
     const home = tempDir("huginn-pi-home-");
     const project = tempDir("huginn-pi-project-");
     mkdirSync(join(home, ".pi", "agent"), { recursive: true });
@@ -161,10 +159,10 @@ describe("MCP reporting for the native pi driver", () => {
       }),
     );
 
-    const runtime = getEngineRuntime("pi", { projectPath: project, homeDir: home });
+    const runtime = getEnginePort("pi", { projectPath: project, homeDir: home });
     // The in-process driver can enumerate MCP, so the badge is no longer "none".
     expect(typeof runtime.listMcpServers).toBe("function");
-    const status = await runtime.getMcpStatus();
+    const status = await runtime.mcpStatus!();
     expect(status.servers.map((server) => server.name).sort()).toEqual(["muninn", "rea"]);
     // Config discovery is not a liveness probe.
     expect(status.servers.every((server) => server.status === "unknown")).toBe(true);
