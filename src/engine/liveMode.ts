@@ -1097,9 +1097,8 @@ export class LiveEngine {
     let assistantTurn = replyText;
 
     if (parsed.questions.length > 0) {
-      const choice = await this.askQuestion(parsed.questions);
-      const answers = this.decisions.takeAnswers();
-      if (choice === "deny" || choice === "abort") {
+      const resolution = await this.askQuestions(parsed.questions);
+      if (resolution.choice === "deny" || resolution.choice === "abort") {
         events.emit("liveChat", {
           role: "system",
           text: "Question declined — continuing without those answers.",
@@ -1111,7 +1110,7 @@ export class LiveEngine {
         // once, never duplicated into the very prompt that is sent.
         this.pushMessage("assistant", questionTurn(parsed.questions, replyText));
 
-        const answer = formatQuestionAnswer(parsed.questions, answers);
+        const answer = formatQuestionAnswer(parsed.questions, resolution.answers);
         const followUp = await this.sendPrompt(answer);
         // The answer is recorded *after* sending, so the transcript embedded in
         // the follow-up prompt does not contain the turn now being answered.
@@ -1134,10 +1133,33 @@ export class LiveEngine {
   }
 
   /**
+   * Ask every question a block carried, one modal at a time, and collect one
+   * answer per question (REQ-37 / AC-37.3). A block with several questions used
+   * to show only the first and silently reuse its answer for the rest; asking
+   * each in turn makes the "answer the first, the rest follow" promise true.
+   */
+  private async askQuestions(
+    questions: QuestionItem[],
+  ): Promise<{ choice: DecisionChoice; answers: string[] }> {
+    const answers: string[] = [];
+    for (let index = 0; index < questions.length; index += 1) {
+      const choice = await this.askQuestion(questions[index]!, index, questions.length);
+      const picked = this.decisions.takeAnswers();
+      if (choice === "deny" || choice === "abort") return { choice, answers };
+      answers.push(picked[0] ?? "");
+    }
+    return { choice: "continue", answers };
+  }
+
+  /**
    * Ask the user, with a deadline (AC-37.4): a question that is never answered
    * must abort the turn with a message rather than hanging forever.
    */
-  private async askQuestion(questions: QuestionItem[]): Promise<DecisionChoice> {
+  private async askQuestion(
+    question: QuestionItem,
+    index: number,
+    total: number,
+  ): Promise<DecisionChoice> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<DecisionChoice>((resolve) => {
       timer = setTimeout(() => resolve("abort"), QUESTION_TIMEOUT_MS);
@@ -1151,8 +1173,10 @@ export class LiveEngine {
           iteration: 0,
           phase: "LIVE",
           attempt: 1,
-          message: questions.map((q) => q.question).join("\n"),
-          questionItems: questions,
+          message: question.question,
+          questionItems: [question],
+          questionIndex: index,
+          questionTotal: total,
         }),
         timeout,
       ]);

@@ -1044,6 +1044,54 @@ describe("Phase 4A · live context on runtimes without session history", () => {
     expect(answer).toContain("Which database? → Postgres");
   });
 
+  it("asks every question of a block in turn and pairs each answer with its own", async () => {
+    const twoQuestions = [
+      "I need two decisions.",
+      "",
+      QUESTION_BLOCK_START,
+      JSON.stringify([
+        { question: "Which database?", options: [{ label: "Postgres" }, { label: "SQLite" }] },
+        { question: "Which cache?", options: [{ label: "Redis" }, { label: "Memcached" }] },
+      ]),
+      QUESTION_BLOCK_END,
+    ].join("\n");
+    const { runtime, prompts } = scriptedRuntime({
+      id: "codex",
+      replies: [twoQuestions, "Continuing."],
+    });
+    const engine = new LiveEngine({ cfg: makeCfg(), runtime });
+    const requests: Array<{ index?: number; total?: number; count: number }> = [];
+    const off = events.on("decision", (req) => {
+      if (req.kind !== "question") return;
+      requests.push({
+        index: req.questionIndex,
+        total: req.questionTotal,
+        count: req.questionItems?.length ?? 0,
+      });
+      const answers = ["Postgres", "Redis"];
+      setTimeout(
+        () => engine.resolveDecision("continue", [answers[req.questionIndex ?? 0]!]),
+        0,
+      );
+    });
+
+    try {
+      await engine.chat("add notifications");
+    } finally {
+      off();
+    }
+
+    // One modal per question, each carrying only the question on screen.
+    expect(requests).toEqual([
+      { index: 0, total: 2, count: 1 },
+      { index: 1, total: 2, count: 1 },
+    ]);
+    expect(prompts).toHaveLength(2);
+    // No answer is reused across questions: each pairs with its own question.
+    expect(prompts[1]).toContain("Which database? → Postgres");
+    expect(prompts[1]).toContain("Which cache? → Redis");
+  });
+
   it("does not replay the transcript when the runtime keeps session history (opencode)", async () => {
     const { runtime, prompts } = scriptedRuntime({
       id: "opencode",

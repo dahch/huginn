@@ -82,4 +82,8 @@ export interface DecisionRequest {
   questionId?: string;
   questionSessionId?: string;
   questionItems?: QuestionItem[];
+  /** 0-based position of the question being asked, when a block carries several. */
+  questionIndex?: number;
+  /** How many questions the block carried in total (with `questionIndex`). */
+  questionTotal?: number;
 }
