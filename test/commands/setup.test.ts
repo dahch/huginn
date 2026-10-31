@@ -157,9 +157,12 @@ describe("registerMcpForTarget", () => {
         if (AGENT_REGISTRY[target].format === "toml") {
           expect(raw).toContain("[mcp_servers.muninn]");
           expect(raw).toContain('command = "huginn"');
-          expect(raw).toContain(
-            `args = ["mcp", "run", "--project", ${JSON.stringify(env.project)}]`,
-          );
+          // A user-global config (e.g. ~/.codex/config.toml) must not pin one
+          // project; only a project-local file carries --project.
+          const args = path.startsWith(env.project)
+            ? ["mcp", "run", "--project", env.project]
+            : ["mcp", "run"];
+          expect(raw).toContain(`args = ${JSON.stringify(args)}`);
         } else {
           const parsed = JSON.parse(raw) as Record<string, unknown>;
           const container =
@@ -186,13 +189,24 @@ describe("registerMcpForTarget", () => {
     expect(existsSync(join(env.home, ".config", "devin", "mcp_config.json"))).toBe(true);
   });
 
+  it("pins --project only in project-local configs, never in user-global ones", () => {
+    const env = makeEnv();
+    registerMcpForTarget("cursor", baseOpts(env));
+    const project = JSON.parse(readFileSync(join(env.project, ".cursor", "mcp.json"), "utf8"));
+    const global = JSON.parse(readFileSync(join(env.home, ".cursor", "mcp.json"), "utf8"));
+    expect(project.mcpServers.muninn.args).toEqual(["mcp", "run", "--project", env.project]);
+    // A user-global file is shared by every project; it resolves cwd at runtime.
+    expect(global.mcpServers.muninn.args).toEqual(["mcp", "run"]);
+  });
+
   it("writes the opencode shape exactly", () => {
     const env = makeEnv();
     registerMcpForTarget("opencode", baseOpts(env));
     const parsed = JSON.parse(readFileSync(join(env.opencodeConfigDir, "opencode.json"), "utf8"));
+    // The opencode config dir is user-global: no project path is pinned.
     expect(parsed.mcp.muninn).toEqual({
       type: "local",
-      command: ["huginn", "mcp", "run", "--project", env.project],
+      command: ["huginn", "mcp", "run"],
       enabled: true,
     });
   });
@@ -213,9 +227,10 @@ describe("registerMcpForTarget", () => {
     const mimo = JSON.parse(
       readFileSync(join(env.home, ".config", "mimocode", "mimocode.json"), "utf8"),
     );
+    // mimo's config is user-global (`~/.config/mimocode`): no project path.
     expect(mimo.mcp.muninn).toEqual({
       type: "local",
-      command: ["huginn", "mcp", "run", "--project", env.project],
+      command: ["huginn", "mcp", "run"],
       enabled: true,
     });
 
@@ -322,7 +337,8 @@ describe("TOML handling (codex)", () => {
     expect(raw).toContain("[mcp_servers.existing]");
     expect(raw).toContain('command = "foo"');
     expect(raw).toContain("[mcp_servers.muninn]");
-    expect(raw).toContain(`args = ["mcp", "run", "--project", ${JSON.stringify(env.project)}]`);
+    // ~/.codex/config.toml is user-global, so it resolves the project from cwd.
+    expect(raw).toContain(`args = ${JSON.stringify(["mcp", "run"])}`);
   });
 
   it("is idempotent with byte-identical output", () => {
@@ -369,9 +385,10 @@ describe("portable fallback", () => {
     expect(result.path).toBe(join(env.home, ".huginn", "mcp.json"));
     expect(result.changed).toBe(true);
     const parsed = JSON.parse(readFileSync(result.path, "utf8"));
+    // The portable fallback lives under $HOME, so it must not pin a project.
     expect(parsed.mcpServers.muninn).toEqual({
       command: "huginn",
-      args: ["mcp", "run", "--project", env.project],
+      args: ["mcp", "run"],
     });
     expect(writePortableMcpConfig(baseOpts(env)).changed).toBe(false);
   });

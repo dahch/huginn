@@ -1778,6 +1778,7 @@ describe("greenfield launch ergonomics", () => {
     const portable = JSON.parse(readFileSync(portablePath, "utf8")) as {
       mcpServers: { muninn: { args: string[] } };
     };
-    expect(portable.mcpServers.muninn.args).toEqual(["mcp", "run", "--project", env.project]);
+    // The portable fallback is user-global; it resolves the project from cwd.
+    expect(portable.mcpServers.muninn.args).toEqual(["mcp", "run"]);
   });
 });

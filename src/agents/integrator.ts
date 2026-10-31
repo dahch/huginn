@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 
 /**
  * Universal Agent Integrator (REQ-15). Everything agent-specific lives in the
@@ -625,14 +625,14 @@ function parseMuninnTable(body: string[]): { ok: boolean; command?: string; args
  */
 function mergeToml(
   content: string,
-  projectPath: string,
+  projectPath: string | undefined,
   force: boolean,
 ): { content: string; changed: boolean; skipped: boolean } {
   const lines = content.length === 0 ? [] : content.split("\n");
-  const desiredBody = [
-    'command = "huginn"',
-    `args = ["mcp", "run", "--project", ${JSON.stringify(projectPath)}]`,
-  ];
+  const desiredArgs = projectPath
+    ? ["mcp", "run", "--project", projectPath]
+    : ["mcp", "run"];
+  const desiredBody = ['command = "huginn"', `args = ${JSON.stringify(desiredArgs)}`];
 
   let start = -1;
   let end = -1;
@@ -653,7 +653,7 @@ function mergeToml(
     if (
       existing.command === "huginn" &&
       Array.isArray(existing.args) &&
-      deepEqual(existing.args, ["mcp", "run", "--project", projectPath])
+      deepEqual(existing.args, desiredArgs)
     ) {
       return { content, changed: false, skipped: false };
     }
@@ -681,7 +681,7 @@ function ensureTrailingNewline(content: string): string {
 function registerTomlPath(
   target: AgentTarget,
   path: string,
-  projectPath: string,
+  projectPath: string | undefined,
   force: boolean,
   dryRun = false,
 ): MCPRegistration {
@@ -734,18 +734,31 @@ function registerJsonPath(
   };
 }
 
+/**
+ * Whether an MCP config path belongs to the project rather than the user.
+ * A user-global config (`~/.claude.json`, `~/.codex/config.toml`,
+ * `~/.config/opencode/...`) must not bake in one project's absolute path: it
+ * would be copied into every project the user opens.
+ */
+function isProjectScopedPath(path: string, projectPath: string): boolean {
+  const rel = relative(projectPath, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 function desiredJsonEntry(
   format: McpFormat,
   projectPath: string,
+  includeProject = true,
 ): Record<string, unknown> {
+  const args = includeProject ? ["mcp", "run", "--project", projectPath] : ["mcp", "run"];
   if (format === "opencode") {
     return {
       type: "local",
-      command: ["huginn", "mcp", "run", "--project", projectPath],
+      command: ["huginn", ...args],
       enabled: true,
     };
   }
-  return { command: "huginn", args: ["mcp", "run", "--project", projectPath] };
+  return { command: "huginn", args };
 }
 
 /**
@@ -759,11 +772,22 @@ export function registerMcpForTarget(
 ): MCPRegistration[] {
   const spec = AGENT_REGISTRY[target];
   const force = opts.force === true;
-  const desired = desiredJsonEntry(spec.format, opts.projectPath);
   return resolveMcpPaths(target, opts).map((path) => {
-    if (spec.format === "toml")
-      return registerTomlPath(target, path, opts.projectPath, force, opts.dryRun === true);
+    // The `--project` flag is only meaningful in a project-local config. A
+    // user-global file is shared by every project, so huginn resolves the
+    // database from `process.cwd()` there instead of pinning one path.
+    const includeProject = isProjectScopedPath(path, opts.projectPath);
+    if (spec.format === "toml") {
+      return registerTomlPath(
+        target,
+        path,
+        includeProject ? opts.projectPath : undefined,
+        force,
+        opts.dryRun === true,
+      );
+    }
     const containerKey = spec.format === "opencode" ? "mcp" : "mcpServers";
+    const desired = desiredJsonEntry(spec.format, opts.projectPath, includeProject);
     return registerJsonPath(target, path, containerKey, desired, force, opts.dryRun === true);
   });
 }
@@ -773,7 +797,8 @@ export function writePortableMcpConfig(
   opts: RegistrationOptions,
 ): { path: string; changed: boolean } {
   const path = join(opts.homeDir, ".huginn", "mcp.json");
-  const desired = desiredJsonEntry("mcpServers", opts.projectPath);
+  // Portable fallback under `$HOME`: user-global, so it must not pin a project.
+  const desired = desiredJsonEntry("mcpServers", opts.projectPath, false);
   const result = mergeJsonFile(path, "mcpServers", desired, opts.force === true, opts.dryRun);
   return { path, changed: result.changed };
 }
