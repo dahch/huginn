@@ -350,6 +350,22 @@ export function sandboxPath(projectRoot: string, iteration: number): string {
 }
 
 /**
+ * The commit an integration is measured from: the merge base between the
+ * primary branch and `branch`.
+ *
+ * A sandbox's range is `baseCommit..branch`, so taking the branch **tip** as the
+ * base (which `git worktree list --porcelain` reports as `HEAD`) makes the range
+ * empty and a promotion would delete the branch without integrating anything.
+ * The merge base is the only commit both histories agree on.
+ */
+export function integrationBase(projectRoot: string, branch: string): string | undefined {
+  const res = git(projectRoot, ["merge-base", "HEAD", branch]);
+  if (res.code !== 0) return undefined;
+  const sha = res.stdout.trim();
+  return sha.length > 0 ? sha : undefined;
+}
+
+/**
  * Resolve symlinks in a path (e.g. macOS `/var` → `/private/var`) so paths
  * reported by `git worktree list` can be compared with the caller's root.
  */
@@ -438,10 +454,16 @@ export class WorktreeManager {
   attachSandbox(projectRoot: string, iteration: number): Sandbox | null {
     const root = projectRoot || this.projectRoot;
     const branch = sandboxBranch(iteration);
+    // `listSandboxes` reports the worktree's own HEAD as `baseCommit`, which is
+    // the branch tip: promoting with that range is empty and would delete the
+    // preserved work. The merge base is the real integration base (REV-003).
     const existing = this.listSandboxes().find((sandbox) => sandbox.branch === branch);
     if (existing) {
       this.linkSharedDeps(root, existing.path);
-      return existing;
+      return {
+        ...existing,
+        baseCommit: integrationBase(root, existing.branch) ?? existing.baseCommit,
+      };
     }
 
     const path = sandboxPath(root, iteration);
@@ -463,7 +485,13 @@ export class WorktreeManager {
     if (res.code !== 0) return null;
 
     this.linkSharedDeps(root, path);
-    return { iteration, path, branch, projectRoot: root, baseCommit: headCommit(path) ?? "" };
+    return {
+      iteration,
+      path,
+      branch,
+      projectRoot: root,
+      baseCommit: integrationBase(root, branch) ?? headCommit(path) ?? "",
+    };
   }
 
   /**

@@ -5,6 +5,7 @@ import path from "node:path";
 import { git, headCommit } from "../../src/engine/diff.js";
 import {
   WorktreeManager,
+  integrationBase,
   promotionBackupDir,
   sandboxBranch,
   sandboxPath,
@@ -735,4 +736,32 @@ describe("WorktreeManager — atomic increment checkpoint", () => {
     // The only copy of the work is still on disk.
     expect(fs.existsSync(path.join(sandbox.path, "increment.txt"))).toBe(true);
   });
+});
+
+describe("promotion recovery primitives (ADR-62)", () => {
+  /**
+   * REV-003: `listSandboxes` reports the worktree's own HEAD, which is the branch
+   * tip. Using that as `baseCommit` makes the integration range `base..branch`
+   * empty, and the "no commits" path deletes the branch — losing the preserved
+   * work. The base has to be the merge base.
+   */
+  it("attaches an adopted sandbox with the merge base so its commits still promote", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 2);
+    fs.writeFileSync(path.join(sandbox.path, "sandbox.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+    git(root, ["worktree", "remove", "--force", sandbox.path]);
+
+    expect(integrationBase(root, sandbox.branch)).toBe(sandbox.baseCommit);
+    const adopted = mgr.attachSandbox(root, 2);
+    expect(adopted).not.toBeNull();
+    expect(adopted!.baseCommit).toBe(sandbox.baseCommit);
+
+    const result = mgr.promoteSandbox(adopted!);
+    expect(result.promoted).toBe(true);
+    expect(result.commits).toHaveLength(1);
+    expect(fs.readFileSync(path.join(root, "sandbox.txt"), "utf8")).toBe("iteration\n");
+  });
+
 });
