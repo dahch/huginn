@@ -2,8 +2,8 @@
 
 ## 2.0.0-rc.4
 
-Fifteen commits since `2.0.0-rc.3`, 40 files: `src` +1482/−176, `test` +178/−9,
-docs +227/−29 (`ADR.md`, `AGENTS.md`, `DESIGN.md`, `README.md`, `SPEC.md`). Three engine
+Sixteen commits since `2.0.0-rc.3`, 40 files: `src` +1513/−176, `test` +178/−9,
+docs +229/−29 (`ADR.md`, `AGENTS.md`, `DESIGN.md`, `README.md`, `SPEC.md`). Three engine
 features land — memory-capped subprocesses, resumable interrupted iterations, and a
 crash-aware `VERIFY` — alongside the live console's real focus model, a corrected account
 of the step prompts in `AGENTS.md`, the fix that makes every clarifying question and every
@@ -37,7 +37,9 @@ and a scope wrapper that keeps signal deaths visible on every systemd version.
   so `VERIFY` saw an ordinary failure instead of a crash and would have paid the fix rounds.
   The scoped shell now runs the payload in a nested `sh -c` and exits with its `128+n`
   status; the wrapper carries no shell variables of its own, because older systemd expands
-  `$…` in `ExecStart` differently and would erase them.
+  `$…` in `ExecStart` differently and would erase them. It also sets `ulimit -c 0` (a scope
+  rejects `LimitCORE=`), so a crashing fixture cannot leave a core dump for
+  systemd-coredump and DrKonqi.
 - **`@dahch/muninn` installs from npm.** The v0.1.0 tarball URL attached to the GitHub
   release started returning 404 (the asset moved), which broke `bun install --frozen-lockfile`
   in CI and the publish build. Now that the package ships on the registry, the dependency is

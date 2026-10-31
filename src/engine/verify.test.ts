@@ -23,6 +23,26 @@ afterAll(() => {
 
 const executable = JSON.stringify(process.execPath);
 const exits = (code: number) => `${executable} -e "process.exit(${code})"`;
+/**
+ * The shell kills itself, so the process really dies from SIGSEGV. The tests
+ * that use it run with the memory scope disabled: systemd 255 (the CI runner)
+ * expands `$` in `ExecStart` differently from 259, and `$$` is what makes this
+ * command mean "my own pid". Scoped signal propagation is covered by
+ * `sandbox.test.ts`; here the mapping from a signal to a crash is what matters.
+ */
+const crashes = "kill -SEGV $$";
+
+/** Run `fn` with the memory scope disabled, restoring the previous value. */
+async function withoutScope<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.HUGGINN_MEMORY_MAX;
+  process.env.HUGGINN_MEMORY_MAX = "off";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.HUGGINN_MEMORY_MAX;
+    else process.env.HUGGINN_MEMORY_MAX = previous;
+  }
+}
 
 const iteration: Iteration = {
   index: 3,
@@ -73,18 +93,20 @@ describe("deterministic verification", () => {
 
   it("reports a signal death as a crash, not as an assertion failure", async () => {
     if (process.platform === "win32") return; // no SIGSEGV there
-    const result = await runVerificationCommand("kill -SEGV $$", {
-      cwd: workdir(),
-      timeoutMs: 5000,
-    });
-    expect(result.crashed).toBe(true);
-    expect(result.signal).toBe("SIGSEGV");
-    expect(result.timedOut).toBe(false);
+    await withoutScope(async () => {
+      const result = await runVerificationCommand(crashes, {
+        cwd: workdir(),
+        timeoutMs: 5000,
+      });
+      expect(result.crashed).toBe(true);
+      expect(result.signal).toBe("SIGSEGV");
+      expect(result.timedOut).toBe(false);
 
-    const report = formatVerificationReport(iteration, { results: [result], ok: false });
-    expect(report).toContain("CRASHED (SIGSEGV)");
-    expect(report).toContain("### Crash, not an assertion");
-    expect(report).toContain("environment failure, not a source defect");
+      const report = formatVerificationReport(iteration, { results: [result], ok: false });
+      expect(report).toContain("CRASHED (SIGSEGV)");
+      expect(report).toContain("### Crash, not an assertion");
+      expect(report).toContain("environment failure, not a source defect");
+    });
   });
 
   it("maps a shell's 128+n status to the signal that killed the command", async () => {
@@ -143,9 +165,11 @@ describe("VERIFY phase", () => {
 
   it("flags a crashing command structurally so the engine can skip the fix rounds", async () => {
     if (process.platform === "win32") return;
-    const result = await verifyIteration(context(["kill -SEGV $$"]));
-    expect(result.authoritativeVerdict).toBe("blocked");
-    expect(result.crash?.signal).toBe("SIGSEGV");
-    expect(result.crash?.command).toBe("kill -SEGV $$");
+    await withoutScope(async () => {
+      const result = await verifyIteration(context([crashes]));
+      expect(result.authoritativeVerdict).toBe("blocked");
+      expect(result.crash?.signal).toBe("SIGSEGV");
+      expect(result.crash?.command).toBe(crashes);
+    });
   });
 });

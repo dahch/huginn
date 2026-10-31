@@ -228,7 +228,12 @@ function shellQuote(text: string): string {
  * {@link escapeSystemdArgument}.
  */
 function signalStatusWrapper(command: string): string {
-  return `/bin/sh -c ${shellQuote(command)}\nexit`;
+  // Crash fixtures (SIGSEGV) must not leave a core dump that drags
+  // systemd-coredump and DrKonqi onto the user's desktop. `systemd-run --scope`
+  // rejects `LimitCORE=` (Unknown assignment on systemd 259), so the limit is
+  // set here, inside the shell that owns the payload. It never changes the
+  // `128+n` status the next line propagates.
+  return `ulimit -c 0 2>/dev/null\n/bin/sh -c ${shellQuote(command)}\nexit`;
 }
 
 /**

@@ -169,13 +169,15 @@ describe("planScopedShellCommand", () => {
     expect(planned.args.slice(-3)).toEqual([
       "/bin/sh",
       "-c",
-      "/bin/sh -c 'cargo test --workspace'\nexit",
+      "ulimit -c 0 2>/dev/null\n/bin/sh -c 'cargo test --workspace'\nexit",
     ]);
   });
 
   it("keeps the payload's own dollars through the wrapper", () => {
     const planned = planScopedShellCommand("kill -SEGV $$", scopeable());
-    expect(planned.args.at(-1)).toBe("/bin/sh -c 'kill -SEGV $$$$'\nexit");
+    expect(planned.args.at(-1)).toBe(
+      "ulimit -c 0 2>/dev/null\n/bin/sh -c 'kill -SEGV $$$$'\nexit",
+    );
   });
 
   it("keeps the caller's shell semantics when unscoped", () => {
