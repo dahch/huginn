@@ -26,4 +26,12 @@ export interface StepContext {
   profile?: ProfileName;
   /** Number of iterations in the plan, for the deterministic commit body. */
   totalIterations?: number;
+  /**
+   * Explicit Muninn database path. Under sandboxing this is the PRIMARY
+   * project's database, so memory reads survive worktree cleanup. Retrieval
+   * never resolves a path itself: no `dbPath` means no memory block.
+   */
+  dbPath?: string;
+  /** Project root Muninn attributes entities/observations to (the primary project). */
+  primaryProjectRoot?: string;
 }
