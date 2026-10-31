@@ -83,6 +83,9 @@ src/
 │   ├── profiles.ts         PROFILES: the named pipelines (huginn Cycle + sdd/odd/rdd/strict-tdd) over the phase vocabulary (REQ-36), plus the commit mode (REQ-63)
 │   ├── steps/commitMessage.ts  deterministic `feat|fix|docs(<scope>): <subject>` from the iteration (REQ-63)
 │   ├── steps/retrieval.ts  bounded Muninn context block for EXECUTE / SPEC_AUDIT / VALIDATE_STEP (REQ-66)
+│   ├── runtimeEvents.ts    the one RuntimeEvent → engine bus mapper (deltas, tools, usage)
+│   ├── permissionPolicy.ts the one --permissions → PermissionHandler mapping
+│   ├── agent/drivers/opencode.ts  native opencode port: one SSE fan-out, permissions, questions, resume
 │   ├── memory/db.ts        fail-open open + topic-keyed upsert (never creates for a reader)
 │   ├── memory/queries.ts   decisions, observations and module-symbol SQL over Muninn
 │   ├── memory/adr.ts       parse `## ADR-N` and persist decisions (REQ-64)
@@ -157,6 +160,17 @@ src/
 ```
 
 ### Runtime wiring (`src/cli.ts` → engine → frontends)
+
+The engines consume `RuntimePort` only. `getEnginePort(target)` returns the native driver (pi,
+codex, claude, opencode) or a bridged configured generic adapter; `cli.ts` calls
+`port.start()`, prints `port.endpoint()`, and disposes it at the end. `opencode`'s native port
+owns the SSE subscription and fans typed events into the sessions; `src/engine/runtimeEvents.ts`
+maps them onto the bus (deltas only when the driver streams, `usage` into `state.usage`, nothing
+for `done`). `permissionHandlerFor` is the one `--permissions` → handler mapping, and
+`onQuestion` routes opencode's questions through the decision broker. The reverse
+`toLegacyRuntime` bridge is gone.
+
+
 
 ```mermaid
 flowchart TD

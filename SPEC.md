@@ -1110,3 +1110,19 @@ iteration and 6 afterwards** (down from 14).
   increment (≤24 KB), with the bounded whole-file embed as the fallback.
 - **AC-66.4 (Kill switch)**: `HUGINN_MEMORY=0` disables retrieval; writers are unaffected.
 
+### REQ-67: One runtime port for every driver
+- **AC-67.1 (Engines consume the port)**: `CycleEngine`, `LiveEngine`, the judge and every phase
+  call `session.prompt(request)` on a `RuntimePort` `RuntimeSession`. A legacy `IAgentRuntime`
+  passed by a test or embedder is bridged once, at construction (`asRuntimePort`).
+- **AC-67.2 (Native opencode driver)**: `drivers/opencode.ts` owns one SSE subscription, fans
+  text/reasoning/tool/usage events to the sessions that own them, answers permissions through
+  `onPermission` (deny when absent, auto only when the run asked) and questions through
+  `onQuestion`, and exposes `start`/`endpoint`/`resumeSession`/`probeSession`/`abortSession`.
+- **AC-67.3 (One event mapper)**: `src/engine/runtimeEvents.ts` is the only `RuntimeEvent → engine
+  bus` mapping; a one-shot driver's single text event is suppressed and `done` emits nothing.
+- **AC-67.4 (Usage telemetry)**: a driver that reports tokens/cost emits `usage`; the engine
+  accumulates `state.usage`, `PROGRESS.md` and both footers render it only when measured.
+- **AC-67.5 (No reverse bridge)**: `toLegacyRuntime`/`getEngineRuntime` are gone;
+  `getRuntimePort`/`getEnginePort` is what executes and `getAgentRuntime` remains the CLI-shaped
+  provisioning/argv view. `legacyCapabilities` never claims streaming or structured events.
+

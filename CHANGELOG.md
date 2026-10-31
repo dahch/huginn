@@ -26,11 +26,21 @@
   `plan`/`live` persist every ADR as a `decision` observation (`adr-<n>`, idempotent), each promoted
   increment leaves one `iter-<n>` observation, and `huginn memory decisions` backfills an existing
   `adr.md`. Every write is fail-open; `HUGINN_MEMORY=0` disables retrieval.
+- **Token and cost usage is real.** A driver that reports `usage` now feeds `state.usage`, the
+  `PROGRESS.md` header and both dashboards' existing footer row; `formatUsage` refuses to render a
+  fake `0 in / 0 out`, and a sub-cent cost reads `<$0.01`.
 - **`SPEC_AUDIT` bounds the plan embed.** The auditor receives the iteration index plus the current
   increment (24 KB) instead of the whole document.
 
 ### Changed
 
+- **The engines run on one `RuntimePort`.** `CycleEngine`, `LiveEngine`, the judge and every phase
+  call `session.prompt(...)` on the port; a legacy `IAgentRuntime` is bridged once at construction.
+  `opencode` now has a native driver that owns the SSE subscription, streams typed events, answers
+  permissions through `onPermission` (deny when absent) and questions through `onQuestion`, and
+  supports `resumeSession`/`probeSession`. The CLI no longer wires a second subscriber (which would
+  duplicate every delta), `toLegacyRuntime`/`getEngineRuntime` are gone, and `getEnginePort` is the
+  single "what executes" factory.
 - **A clean iteration costs ~6 model turns instead of 14.** Each audit role now ends on its own
   `### Audit status:` line, and the judge pass (a second model call re-deriving what the role just
   stated) runs only when that line is warning/blocked or missing — so a green `TEST_MODULE`,
@@ -71,7 +81,7 @@
 ### Documentation
 
 - `AGENTS.md` §1–§4 and §6, `SPEC.md` (AC-40.2…AC-40.4, AC-57.1, the new `REQ-60`…`REQ-63` turn
-  budget), `DESIGN.md` (§5 gate model, §5.1 turn table) and the README describe the
+  budget), `DESIGN.md` (§5 gate model, §5.1 turn table, runtime wiring) and the README describe the
   `DIAGNOSE` → `APPLY_FIX` flow, the per-phase sessions, the single-report `VALIDATE_STEP`, the
   on-demand judge, the `SPEC_AUDIT` cadence and the deterministic commit. `ADR.md` gains ADR-58
   (Muninn as the context engine) and ADR-59 (deterministic gates, on-demand judge); the README

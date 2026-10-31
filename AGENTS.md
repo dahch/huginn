@@ -208,8 +208,8 @@ decides the outcome:
 1. **Bun** (the bin is `#!/usr/bin/env bun`; the bundle is Bun-target).
 2. **An agent CLI on `$PATH`** — huginn has 13 **provisioning targets** but only 5 **runtimes**
    (`pi`, `codex`, `claude`, `opencode`, `generic`). `opencode` is the default and the only runtime
-   with a native permission subscriber (`--permissions ask|deny`), server-side session history, and
-   an incremental output channel (`IAgentRuntime.streamsOutput`, `true` only there — every subprocess
+   with a native permission channel (`--permissions ask|deny`), server-side session history, and an
+   incremental output channel (`RuntimeCapabilities.streaming`, true only there — every subprocess
    CLI buffers stdout and resolves once, so a surface shows the phase report instead of pretending to
    stream); when it is used, huginn starts it itself via
    `opencode serve --port <n> --hostname 127.0.0.1` in the project dir (logs to
@@ -239,8 +239,8 @@ register Muninn — 13 values, unchanged. `RuntimeId` is what executes the cycle
 legacy `IAgentRuntime.id` still carries the provisioning-target shape during the transition; the
 port maps it to a `RuntimeId` when it wraps an adapter.
 
-`getRuntimePort()` returns the native driver for `pi`, `codex` and `claude`, the bridged
-`opencode` adapter, or a bridged configured generic adapter for every other target.
+`getRuntimePort()` returns the native driver for `pi`, `codex`, `claude` and `opencode`, or a
+bridged configured generic adapter for every other target.
 `getGenericRuntimePort()` is the `generic` catalog entry used by `huginn runtime list` (it probes
 whether any generic-target CLI is installed; `createSession` there says it needs a concrete target).
 `pi` is the first driver implemented natively (`drivers/pi-sdk.ts`): it runs `createAgentSession()`
@@ -251,12 +251,22 @@ catalog and keeps a real session history. It also enumerates MCP: `listMcpServer
 uses pi's `DefaultResourceLoader`, so pi's own MCP servers, skills (`~/.agents/skills`, `.pi/skills`)
 and `AGENTS.md` are already available to the phase prompt; huginn only reports them. Its events,
 permissions and resume are **not** wired yet, so it declares `streaming`, `structuredEvents` and
-`sessionResume` false — the engine switch is what turns them on. `toLegacyRuntime()` is the reverse
-bridge that plugs it into the current engine:
-`getEngineRuntime()` — what `run` and `live` build — returns the native driver for `pi`,
-`codex` and `claude` and the configured generic bridge for every other target, while
-`getAgentRuntime()` keeps returning the CLI-shaped adapter for provisioning, model discovery and the
-argv-level tests.
+`sessionResume` false.
+
+**The engines speak only the port.** `CycleEngine` and `LiveEngine` call
+`createSession({ sink, onPermission, onQuestion })` and `session.prompt(...)`;
+`getEnginePort()` is what `run` and `live` build, and `getAgentRuntime()` remains the
+CLI-shaped adapter for provisioning, model discovery and the argv-level tests. The reverse
+`toLegacyRuntime` bridge and `getEngineRuntime` are gone; `asRuntimePort()` lets a test or an
+embedder hand the engine either shape (a legacy fake is bridged at construction).
+
+`opencode` is the native driver (`drivers/opencode.ts`): it owns one SSE subscription and fans
+typed events out to its sessions, answers permissions through the session's `onPermission`
+(deny when absent) and questions through `onQuestion`, and exposes `start`/`endpoint`/
+`resumeSession`/`probeSession`/`abortSession`. `src/engine/runtimeEvents.ts` is the single
+`RuntimeEvent → engine bus` mapper: text/reasoning deltas only when the driver streams, tools to
+the stream and the log, `usage` to the new event (and `state.usage`), and nothing for `done`.
+`permissionHandlerFor()` is the one mapping from `--permissions` to a handler.
 
 The eight CLI-only targets retired as **runtimes** (`agy`, `commandcode`, `devin`, `kimi`,
 `mcode`, `mimo`, `omp`, `qwen`) remain **provisioning targets**: `huginn setup --status` still
@@ -285,7 +295,7 @@ known gap, recorded next to the code.
 
 All three SDKs are `--external` in the build, so pi, codex and claude stay out of the bundle.
 
-A driver *declares* its capabilities instead of implying them (`streamsOutput` → `streaming`, and
+A driver *declares* its capabilities instead of implying them (and
 `permissions: "none"` for every legacy adapter because none of them has a channel back mid-turn), and
 the conformance suite (`conformance.ts`, run for every target in
 `test/engine/agent/conformance.test.ts`) fails a driver that claims more than it delivers:
@@ -344,7 +354,10 @@ command runner), `src/plan/parser.test.ts` (increment metadata), `src/engine/ste
 `src/engine/steps/context.test.ts` (composition, bounding, nonce delimitation, the git-interpolation
 allowlist, doc containment), `test/engine/phases.test.ts` (the single-report `VALIDATE_STEP`, the
 deterministic verdict, the imposed gate/handoff line and the deterministic commit),
-`src/engine/steps/retrieval.test.ts` + `src/engine/memory/adr.test.ts` +
+`test/engine/agent/opencodePort.test.ts` (the native driver's SSE fan-out, permissions and
+resume), `src/engine/runtimeEvents.test.ts` + `src/engine/permissionPolicy.test.ts` (the event
+mapper and the `--permissions` mapping), `src/engine/steps/retrieval.test.ts` +
+`src/engine/memory/adr.test.ts` +
 `src/engine/memory/curation.test.ts` (bounded retrieval, read-only refusal, idempotent ADR/curation
 writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verification that throws fails closed),
 `test/engine/agent/piMcp.test.ts` (the `pi mcp list --json` parser and the native driver's MCP bridge),
@@ -446,7 +459,7 @@ Two display conventions a TUI change must follow:
   three-way contract, the second are producer output.
 - **An output panel only claims what the runtime can deliver**: the run dashboard's `StreamCard` shows
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
-  title and waiting placeholder **only** for a runtime whose `IAgentRuntime.streamsOutput` is `true`
+  title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`
   (`opencode`); everything else is titled `AGENT OUTPUT` and names itself (REQ-51).
 
 **Project skills** (`src/engine/skills/loader.ts`): `loadSkills()` discovers `*.md` skills in
