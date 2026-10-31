@@ -34,13 +34,13 @@ const crashes = "kill -SEGV $$";
 
 /** Run `fn` with the memory scope disabled, restoring the previous value. */
 async function withoutScope<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = process.env.HUGGINN_MEMORY_MAX;
-  process.env.HUGGINN_MEMORY_MAX = "off";
+  const previous = process.env.HUGINN_MEMORY_MAX;
+  process.env.HUGINN_MEMORY_MAX = "off";
   try {
     return await fn();
   } finally {
-    if (previous === undefined) delete process.env.HUGGINN_MEMORY_MAX;
-    else process.env.HUGGINN_MEMORY_MAX = previous;
+    if (previous === undefined) delete process.env.HUGINN_MEMORY_MAX;
+    else process.env.HUGINN_MEMORY_MAX = previous;
   }
 }
 

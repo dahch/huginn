@@ -2,7 +2,7 @@
 
 ## 2.0.0-rc.4
 
-Sixteen commits since `2.0.0-rc.3`, 40 files: `src` +1513/−176, `test` +178/−9,
+Seventeen commits since `2.0.0-rc.3`, 40 files: `src` +1513/−176, `test` +178/−9,
 docs +229/−29 (`ADR.md`, `AGENTS.md`, `DESIGN.md`, `README.md`, `SPEC.md`). Three engine
 features land — memory-capped subprocesses, resumable interrupted iterations, and a
 crash-aware `VERIFY` — alongside the live console's real focus model, a corrected account
