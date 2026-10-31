@@ -163,13 +163,19 @@ describe("planScopedShellCommand", () => {
   it("runs verification commands through a signal-aware sh -c inside the scope", () => {
     const planned = planScopedShellCommand("cargo test --workspace", scopeable());
     expect(planned.scoped).toBe(true);
-    const tail = planned.args.slice(-5);
     // A nested shell reports the payload's 128+n status on every systemd
-    // version, instead of the scope swallowing a signal as exit 1.
-    expect(tail.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
-    expect(tail[2]).toContain("status=");
-    expect(tail[3]).toBe("huginn-verify");
-    expect(tail[4]).toBe("cargo test --workspace");
+    // version, instead of the scope swallowing a signal as exit 1. The wrapper
+    // carries no `$` of its own; only the payload keeps its dollars (escaped).
+    expect(planned.args.slice(-3)).toEqual([
+      "/bin/sh",
+      "-c",
+      "/bin/sh -c 'cargo test --workspace'\nexit",
+    ]);
+  });
+
+  it("keeps the payload's own dollars through the wrapper", () => {
+    const planned = planScopedShellCommand("kill -SEGV $$", scopeable());
+    expect(planned.args.at(-1)).toBe("/bin/sh -c 'kill -SEGV $$$$'\nexit");
   });
 
   it("keeps the caller's shell semantics when unscoped", () => {

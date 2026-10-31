@@ -207,17 +207,29 @@ export function planScopedCommand(
   return { command: systemdRun, args: argv, scoped: true };
 }
 
+/** POSIX single-quote `text`, so the outer shell passes it through untouched. */
+function shellQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
 /**
  * Wrapper that keeps a signal death visible to the caller.
  *
  * Older systemd releases (255, as shipped on ubuntu-24.04 CI runners) return a
  * plain `1` from `systemd-run --scope` when the payload dies from a signal,
- * while newer ones report `128+n`; either way the job that died cannot be the
- * scope's main process if it is a child of this shell. Running the payload in a
- * nested `/bin/sh -c` lets this shell observe `128+n` and exit with it, so
- * {@link signalFromExitCode} sees the same code on every systemd version.
+ * while newer ones report `128+n`. Running the payload in a nested `/bin/sh -c`
+ * makes it a *child* of this shell: `exit` without an argument then exits with
+ * the child's `128+n` status, which every systemd version propagates as a plain
+ * exit code and {@link signalFromExitCode} maps back to the signal.
+ *
+ * The wrapper deliberately carries no shell variables: systemd expands `$…`
+ * in `ExecStart` and older releases do not honour the `$$` escape the same way,
+ * which would erase `$?`/`$1`. Only the payload keeps its own `$`, escaped by
+ * {@link escapeSystemdArgument}.
  */
-const SIGNAL_STATUS_WRAPPER = 'status=0; /bin/sh -c "$1" || status=$?; exit "$status"';
+function signalStatusWrapper(command: string): string {
+  return `/bin/sh -c ${shellQuote(command)}\nexit`;
+}
 
 /**
  * Plan a **shell** command (`Verification:` lines run through `/bin/sh -c`).
@@ -228,10 +240,6 @@ const SIGNAL_STATUS_WRAPPER = 'status=0; /bin/sh -c "$1" || status=$?; exit "$st
  * `shell: true` — the behaviour is unchanged.
  */
 export function planScopedShellCommand(command: string, options: ScopeOptions = {}): ScopedCommand {
-  const scoped = planScopedCommand(
-    "/bin/sh",
-    ["-c", SIGNAL_STATUS_WRAPPER, "huginn-verify", command],
-    options,
-  );
+  const scoped = planScopedCommand("/bin/sh", ["-c", signalStatusWrapper(command)], options);
   return scoped.scoped ? scoped : { command, args: [], scoped: false };
 }
