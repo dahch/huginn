@@ -916,7 +916,11 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
           : req.kind === "post-cycle-live"
             ? "CYCLE FINISHED · Next Action"
             : isQuestion
-              ? "❓ QUESTION FROM AGENT · Input required"
+              ? `❓ QUESTION FROM AGENT · Input required${
+                  req.questionTotal && req.questionTotal > 1
+                    ? ` (${(req.questionIndex ?? 0) + 1}/${req.questionTotal})`
+                    : ""
+                }`
               : `⚠️ DECISION REQUIRED · Gate ${req.phase} (Iteration ${req.iteration})`;
   const keys =
     req.kind === "approve-draft" ? (
@@ -980,9 +984,24 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
           </Box>
         ))}
         {req.questionItems && req.questionItems.length > 1 ? (
-          <Text color={THEME.muted}>
-            + {req.questionItems.length - 1} more question(s) — answer the first, the rest follow.
-          </Text>
+          <>
+            {/* A block that arrived whole (opencode's native channel) still only
+                lets one question be answered, but the rest stay visible instead
+                of collapsing into an unreadable "+N more". */}
+            {req.questionItems.slice(1).map((item, index) => (
+              <Box key={`more-${index}`} flexDirection="column">
+                <Text color={THEME.muted}>• {item.question}</Text>
+                {(item.options ?? []).map((option, optionIndex) => (
+                  <Text key={`more-${index}-${optionIndex}`} color={THEME.muted}>
+                    {`    (${optionIndex + 1}) ${option.label}`}
+                  </Text>
+                ))}
+              </Box>
+            ))}
+            <Text color={THEME.muted}>
+              + {req.questionItems.length - 1} more question(s) — answer the first, the rest follow.
+            </Text>
+          </>
         ) : null}
         <Text>
           <Text bold color={THEME.ok}>[1-9/Enter] </Text>
@@ -1002,13 +1021,24 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
       </>
     );
   return (
-    <Box marginTop={0} borderStyle="double" borderColor={THEME.warn} paddingX={1} flexDirection="column">
+    <Box
+      marginTop={0}
+      borderStyle="double"
+      borderColor={THEME.warn}
+      paddingX={1}
+      flexDirection="column"
+      flexShrink={0}
+    >
       <Text bold color={THEME.warn}>
         {title}
       </Text>
-      <Text color={THEME.text} bold>
-        {req.message}
-      </Text>
+      {/* A question already renders its own text below, so repeating the
+          request's message there would show the same sentence twice. */}
+      {!(isQuestion && req.questionItems?.[0]) && (
+        <Text color={THEME.text} bold>
+          {req.message}
+        </Text>
+      )}
       {/* A column, not a <Text>: Ink does not render a <Box> subtree inside a
           <Text>, which made the question options invisible (REV-001). */}
       <Box marginTop={1} flexDirection="column">{keys}</Box>

@@ -706,10 +706,11 @@ function RefineView({
   else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
   else if (terminalSize.rows >= 25) maxLogsAllowed = 2;
   else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
-  // While the palette or the agent picker is open it owns the row budget: the log
-  // tail steps aside so neither can push the input row or the frame off-screen
-  // (AC-28.4 / REV-303).
-  if (suggestionsOpen || showAgentPicker || showProfilePicker) maxLogsAllowed = 0;
+  // While the palette, the agent picker or a decision is open it owns the row
+  // budget: the log tail steps aside so none of them can push the input row or
+  // the frame off-screen (AC-28.4 / REV-303). A decision especially needs the
+  // rows, since the modal keeps its natural height instead of clipping options.
+  if (decision || suggestionsOpen || showAgentPicker || showProfilePicker) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
   const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
