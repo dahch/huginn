@@ -1506,7 +1506,7 @@ describe("huginn init routing & help hierarchy (AC-26.2)", () => {
 
   it("groups the concise help around the core commands", () => {
     const core = usageCore();
-    for (const command of ["live", "run", "init", "setup", "doctor"]) {
+    for (const command of ["live", "run", "promote", "init", "setup", "doctor"]) {
       expect(core).toContain(command);
     }
     expect(core).toContain("Core commands");
@@ -1524,7 +1524,7 @@ describe("huginn init routing & help hierarchy (AC-26.2)", () => {
       if (line.trim().length === 0 || !line.startsWith("  ")) break;
       coreCommands.push(line.trim().split(/\s+/)[0]);
     }
-    expect(coreCommands).toEqual(["live", "run", "init", "setup", "doctor"]);
+    expect(coreCommands).toEqual(["live", "run", "promote", "init", "setup", "doctor"]);
     for (const command of coreCommands) {
       expect(usage()).toContain(`\n  ${command} `);
     }

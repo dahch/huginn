@@ -48,6 +48,10 @@ import { handleInstallCommand } from "./commands/install";
 import { latestLiveSession, listLiveSessions, type LiveSession } from "./state/liveSession";
 import { sanitizeTerminalText } from "./util/text";
 import { checkDocPath } from "./util/docPath";
+import {
+  describePromotionRetry,
+  promotionRepairEligibility,
+} from "./engine/promotionRepair";
 
 /**
  * Concise two-tier help (REQ-26 / AC-26.2): the Core commands and the flags a
@@ -68,6 +72,7 @@ Usage:
 Core commands:
   live     interactive refinement + autonomous execution in one dashboard
   run      execute the build cycle against plan.md/spec.md/adr.md
+  promote  recover a failed sandbox promotion (--retry, or --repair for a conflict)
   init     guided onboarding: agent, models, Muninn MCP and .huginn/config.json
   setup    register the Muninn MCP + rules with Cursor, Claude, OpenCode, Devin, …
   doctor   diagnose the local environment, providers and Muninn database
@@ -132,6 +137,9 @@ Default (live-first):
 
 Commands:
   run     execute the build cycle against plan.md/spec.md/adr.md
+  promote recover a failed sandbox promotion: --retry re-attempts the integration
+          with no model turn, --repair diagnoses and resolves a real conflict in
+          the preserved branch, verifies and integrates it
   init    guided onboarding wizard: detects the git repo, package manager and
           agent CLIs, prompts for the default agent and models, registers the
           Muninn MCP with \`setup\` and writes <project>/.huginn/config.json
@@ -289,6 +297,7 @@ const KNOWN_COMMANDS = new Set([
   "setup",
   "doctor",
   "config",
+  "promote",
 ]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -732,6 +741,10 @@ export async function main(argv: string[]): Promise<void> {
     await handleDoctorCommand(args as Record<string, string | boolean | undefined>);
     return;
   }
+  if (command === "promote") {
+    process.exitCode = await runPromote(args);
+    return;
+  }
   // Live-first default (REQ-14.4): an unknown/absent subcommand — including a
   // free-text idea such as `huginn "crear módulo"` — enters live mode. A bare
   // invocation inside a repository that never ran huginn is the one exception:
@@ -941,6 +954,136 @@ export async function main(argv: string[]): Promise<void> {
     console.error(chalk.red(`[huginn] fatal: ${(err as Error).message}`));
   } finally {
     await runtime.dispose?.();
+  }
+}
+
+/**
+ * `huginn promote [--retry | --repair]` — recover a failed sandbox promotion
+ * (ADR-62).
+ *
+ * The iteration's commits are on a preserved branch and the primary tree is
+ * intact; `--retry` re-attempts the integration deterministically (no model turn)
+ * and `--repair` additionally diagnoses and resolves a real integration conflict
+ * with the thinker and the executor, re-running the iteration's `Verification:`
+ * before promoting. Both refuse when there is no `conflict`/`failed` record, and
+ * every failure keeps the branch and exits non-zero.
+ */
+export async function runPromote(args: ParsedArgs): Promise<number> {
+  if (args["--help"] || args["-h"]) {
+    printBanner({});
+    console.log(
+      [
+        "Usage: huginn promote [--retry | --repair] [--project <path>]",
+        "",
+        "  --retry    Re-attempt the integration of the preserved branch (no model turn).",
+        "  --repair   Diagnose and repair a real integration conflict (thinker + executor, one attempt).",
+        "",
+        "Reads .harness/state.json; a promotion record with status conflict|failed is required.",
+        "The iteration's commits stay on the preserved branch until the integration succeeds.",
+      ].join("\n"),
+    );
+    return 0;
+  }
+
+  const projectPath = canonicalize(
+    typeof args["--project"] === "string" ? args["--project"] : process.cwd(),
+  );
+  const existing = loadState(projectPath);
+  const record = existing?.promotion;
+  if (!existing || !record || (record.status !== "conflict" && record.status !== "failed")) {
+    console.error(
+      `[huginn] no failed promotion to recover in ${projectPath}` +
+        (record ? ` (last promotion: ${record.status})` : " (no saved harness state)"),
+    );
+    return 1;
+  }
+
+  const planPath = resolveTrackedDoc(projectPath, args["--plan"], "plan.md", "PLAN.md");
+  if (!existsSync(planPath)) {
+    console.error(`Missing plan file: ${planPath}`);
+    return 1;
+  }
+  const plan = loadPlan(planPath);
+
+  const repair = Boolean(args["--repair"]);
+  if (repair) {
+    const eligibility = promotionRepairEligibility(record);
+    if (!eligibility.ok) {
+      console.error(`[huginn] ${eligibility.reason}`);
+      return 1;
+    }
+  }
+
+  const permissions = resolvePermissions(args["--permissions"]);
+  const layers = loadConfigLayers(projectPath);
+  const { thinker, executor } = resolveModelsFromConfig({
+    flagThinker: typeof args["--thinker"] === "string" ? args["--thinker"] : undefined,
+    flagExecutor: typeof args["--executor"] === "string" ? args["--executor"] : undefined,
+    projectConfig: layers.project,
+    userConfig: layers.user,
+  });
+  const resolvedAgent = await resolveAgent({
+    flagAgent: typeof args["--agent"] === "string" ? args["--agent"] : undefined,
+    projectConfig: layers.project,
+    userConfig: layers.user,
+  });
+
+  const cfg: RunConfig = {
+    projectPath,
+    planPath,
+    specPath: resolveTrackedDoc(projectPath, args["--spec"], "spec.md", "SPEC.md"),
+    adrPath: resolveTrackedDoc(projectPath, args["--adr"], "adr.md", "ADR.md"),
+    thinker,
+    executor,
+    agent: resolvedAgent,
+    mode: "auto",
+    profile: resolveProfile(args["--profile"], layers.project.profile ?? layers.user.profile),
+    commit: resolveCommit(args["--commit"], layers.project.commit ?? layers.user.commit),
+    permissions,
+    maxRetries: 0,
+    ignorePlanChanges: true,
+    tui: false,
+    port: num(args["--port"], 0),
+    serverTimeoutMs: num(args["--server-timeout"], 60000),
+    phaseTimeoutMs: num(args["--phase-timeout"], 20 * 60 * 1000),
+    sandbox: true,
+    verify: args["--no-verify"] ? false : (layers.project.verify ?? layers.user.verify) !== false,
+  };
+
+  let runtime: RuntimePort | undefined;
+  if (repair) {
+    // Only the assisted repair prompts an agent; the deterministic retry opens no
+    // session and therefore starts no runtime.
+    if (cfg.port === 0) cfg.port = await getFreePort();
+    runtime = getEnginePort(resolvedAgent as AgentTarget, {
+      projectPath,
+      port: cfg.port,
+      serverTimeoutMs: cfg.serverTimeoutMs,
+      permissions: cfg.permissions,
+    });
+    assertPortPermissionModeSupported(runtime, cfg.permissions);
+    try {
+      await runtime.start?.();
+    } catch (err) {
+      console.error(
+        chalk.red(`[huginn] failed to start ${runtime.name}: ${(err as Error).message}`),
+      );
+      return 1;
+    }
+  }
+
+  try {
+    const engine = new CycleEngine({ cfg, plan, state: existing, runtime });
+    const result = repair ? await engine.repairPromotion() : await engine.retryPromotion();
+    const text = describePromotionRetry(result);
+    console.log(
+      result.promoted
+        ? chalk.green(`✓ [huginn] ${text}`)
+        : chalk.red(`✗ [huginn] ${text}`),
+    );
+    return result.promoted ? 0 : 1;
+  } finally {
+    await runtime?.dispose?.();
   }
 }
 

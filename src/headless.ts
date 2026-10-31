@@ -92,9 +92,22 @@ export async function runHeadless(engine: CycleEngine): Promise<void> {
             chalk.yellow("│"),
         );
       } else {
+        const recovery = req.choices
+          ? [
+              ...(req.choices.includes("retry-promotion")
+                ? [`${chalk.cyan.bold("[t]")} Retry promotion`]
+                : []),
+              ...(req.choices.includes("repair")
+                ? [`${chalk.magenta.bold("[p]")} Repair promotion`]
+                : []),
+            ]
+          : [];
         writeLine(
           chalk.yellow("│") +
-            padBox(`  ${chalk.cyan.bold("[r]")} Retry with Thinker   ${chalk.yellow.bold("[c]")} Force Continue   ${chalk.red.bold("[a]")} Abort`) +
+            padBox(
+              `  ${recovery.length > 0 ? `${recovery.join("   ")}   ` : ""}` +
+                `${chalk.cyan.bold("[r]")} Retry with Thinker   ${chalk.yellow.bold("[c]")} Force Continue   ${chalk.red.bold("[a]")} Abort`,
+            ) +
             chalk.yellow("│"),
         );
       }
@@ -111,6 +124,12 @@ export async function runHeadless(engine: CycleEngine): Promise<void> {
           if (c === "c" || c === "1" || c === "a" || c === "y") return resolve("continue");
           if (c === "d" || c === "n") return resolve("deny");
         } else {
+          if (c === "t" && (!req.choices || req.choices.includes("retry-promotion"))) {
+            return resolve("retry-promotion");
+          }
+          if (c === "p" && (!req.choices || req.choices.includes("repair"))) {
+            return resolve("repair");
+          }
           if (c === "r") return resolve("retry");
           if (c === "c") return resolve("continue");
           if (c === "a") return resolve("abort");

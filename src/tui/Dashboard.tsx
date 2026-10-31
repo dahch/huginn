@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import type { RunConfig } from "../config";
 import { events } from "../engine/engineEvents";
-import type { PhaseResult, DecisionRequest, Verdict } from "../engine/types";
+import type { PhaseResult, DecisionRequest, DecisionChoice, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, formatUsage, verdictIcon, verdictToken } from "../format";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
@@ -38,7 +38,7 @@ const MIDDLE_MIN_ROWS = 6;
 /** Tallest log tail the dashboard renders (5 entries + border). */
 const LOGS_MAX_ROWS = 5;
 /** The decision modal, and the last-report pill. */
-const DECISION_HEIGHT = 6;
+const DECISION_HEIGHT = 7;
 const REPORT_HEIGHT = 1;
 /** The promotion-failure notice row, shown only when an integration failed. */
 const PROMOTION_HEIGHT = 1;
@@ -368,7 +368,14 @@ export function Dashboard({
         if (c === "c" || c === "a" || c === "1" || c === "y") engine.resolveDecision("continue");
         else if (c === "d" || c === "n") engine.resolveDecision("deny");
       } else {
-        if (c === "r") engine.resolveDecision("retry");
+        // `post-cycle-live` is the only kind that can offer the promotion
+        // recovery, and it says so through `choices` (ADR-62): a key the prompt
+        // did not advertise must stay a no-op.
+        const offers = (choice: DecisionChoice): boolean =>
+          !ui.decision?.choices || ui.decision.choices.includes(choice);
+        if (c === "t" && offers("retry-promotion")) engine.resolveDecision("retry-promotion");
+        else if (c === "p" && offers("repair")) engine.resolveDecision("repair");
+        else if (c === "r") engine.resolveDecision("retry");
         else if (c === "c") engine.resolveDecision("continue");
         else if (c === "a") engine.resolveDecision("abort");
       }
@@ -960,12 +967,32 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
       </>
     ) : req.kind === "post-cycle-live" ? (
       <>
-        <Text bold color={THEME.ok}>[c] </Text>
-        <Text>Exit / Finish   </Text>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Return to Live mode   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Exit</Text>
+        {(!req.choices ||
+          req.choices.includes("retry-promotion") ||
+          req.choices.includes("repair")) && (
+          <Text>
+            {(!req.choices || req.choices.includes("retry-promotion")) && (
+              <>
+                <Text bold color={THEME.accent}>[t] </Text>
+                <Text>Retry promotion (no model)   </Text>
+              </>
+            )}
+            {(!req.choices || req.choices.includes("repair")) && (
+              <>
+                <Text bold color={THEME.thinker}>[p] </Text>
+                <Text>Repair promotion (thinker + executor)</Text>
+              </>
+            )}
+          </Text>
+        )}
+        <Text>
+          <Text bold color={THEME.ok}>[c] </Text>
+          <Text>Exit / Finish   </Text>
+          <Text bold color={THEME.accent}>[r] </Text>
+          <Text>Return to Live mode   </Text>
+          <Text bold color={THEME.danger}>[a] </Text>
+          <Text>Exit</Text>
+        </Text>
       </>
     ) : isPerm ? (
       <>

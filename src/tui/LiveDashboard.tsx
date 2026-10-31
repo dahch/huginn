@@ -26,6 +26,10 @@ import { ProfilePickerModal, type ProfileScope } from "./ProfilePickerModal";
 import { findCommand, matchCommands, type SlashCommand } from "./commandRegistry.js";
 import { profileSpec, type ProfileName } from "../engine/profiles.js";
 import {
+  describePromotionRetry,
+  promotionRecoveryChoices,
+} from "../engine/promotionRepair";
+import {
   NEXT_STEP,
   busyFeedback,
   causeText,
@@ -352,30 +356,64 @@ export function LiveApp({
           promotion?.backups && promotion.backups.length > 0
             ? `\n\nYour local changes were parked under ${promotion.backups.join(", ")} (see manifest.json).`
             : "";
-        const choice = await live.ask({
-          id: crypto.randomUUID(),
-          kind: "post-cycle-live",
-          iteration: 0,
-          phase: "LIVE",
-          attempt: 1,
-          message:
-            `${headline}${preserved}${parked}\n\n` +
-            "Would you like to return to Live mode or exit?",
-        });
-        if (choice === "retry") {
-          setCycle(null);
-          events.emit("liveChat", {
-            role: "system",
-            text: completed
-              ? "Cycle complete. Live mode reactivated. Describe what you want to build or change next."
-              : "Back in Live mode. The failed cycle's state is preserved; describe the fix or the next change.",
+        let message = `${headline}${preserved}${parked}\n\nWould you like to return to Live mode or exit?`;
+        let repaired = false;
+
+        // A promotion failure is recoverable without leaving the console
+        // (ADR-62): the same post-cycle prompt comes back after an attempt, and
+        // it only advertises what still applies to the record on disk.
+        for (;;) {
+          const choice = await live.ask({
+            id: crypto.randomUUID(),
+            kind: "post-cycle-live",
+            iteration: 0,
+            phase: "LIVE",
+            attempt: 1,
+            message,
+            choices: promotionRecoveryChoices(cycle.getState().promotion),
           });
-        } else {
-          events.emit("done", {
-            reason: outcome.reason,
-            error: outcome.error,
-          });
-          exit();
+
+          if (choice === "retry-promotion" || choice === "repair") {
+            events.emit("liveChat", {
+              role: "system",
+              text:
+                choice === "repair"
+                  ? "Diagnosing the promotion conflict (thinker, read-only), then resolving it (executor)…"
+                  : "Re-attempting the promotion deterministically (no model turn)…",
+            });
+            const result =
+              choice === "repair"
+                ? await cycle.repairPromotion()
+                : await cycle.retryPromotion();
+            repaired = repaired || result.promoted;
+            const detail = describePromotionRetry(result);
+            events.emit("liveChat", { role: "system", text: detail });
+            message =
+              `${detail}\n\n` +
+              (result.promoted
+                ? "The increment is on the primary branch and the next run continues after it. Return to Live mode or exit?"
+                : "Return to Live mode or exit?");
+            continue;
+          }
+
+          if (choice === "retry") {
+            setCycle(null);
+            events.emit("liveChat", {
+              role: "system",
+              text: repaired
+                ? "Promotion recovered. Live mode reactivated. Describe what you want to build or change next."
+                : completed
+                  ? "Cycle complete. Live mode reactivated. Describe what you want to build or change next."
+                  : "Back in Live mode. The failed cycle's state is preserved; describe the fix or the next change.",
+            });
+          } else {
+            events.emit("done", {
+              reason: repaired ? "completed" : outcome.reason,
+              ...(repaired ? {} : { error: outcome.error }),
+            });
+            exit();
+          }
+          return;
         }
       } catch (err) {
         events.emit("done", { reason: "error", error: (err as Error).message });
@@ -882,6 +920,12 @@ function RefineView({
       return undefined;
     }
     if (key?.escape) return { choice: "abort" };
+    if (c === "t" && (!decision?.choices || decision.choices.includes("retry-promotion"))) {
+      return { choice: "retry-promotion" };
+    }
+    if (c === "p" && (!decision?.choices || decision.choices.includes("repair"))) {
+      return { choice: "repair" };
+    }
     if (key?.return || c === "c") return { choice: "continue" };
     if (c === "r") return { choice: "retry" };
     if (c === "a") return { choice: "abort" };

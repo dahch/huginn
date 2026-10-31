@@ -6,6 +6,7 @@ import { Dashboard, StreamCard } from "../../src/tui/Dashboard";
 import { runLiveTui, runTui } from "../../src/tui/app";
 import { events } from "../../src/engine/engineEvents";
 import type { CycleEngine } from "../../src/engine/cycle";
+import type { DecisionRequest } from "../../src/engine/types";
 import type { RunConfig } from "../../src/config";
 import type { HarnessState } from "../../src/state/schema";
 
@@ -271,6 +272,115 @@ describe("PipelineCard order (REV-6202)", () => {
     expect(output).toContain("EXECUTE");
     expect(output).not.toContain("SPEC_AUDIT");
     expect(output).not.toContain("SECURE_CHECK");
+  });
+});
+
+describe("post-cycle promotion recovery (ADR-62)", () => {
+  const ANSI = /\u001B\[[0-9;?]*[A-Za-z]/g;
+  const tick = (ms = 80): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function postCycleRequest(choices: DecisionRequest["choices"]): DecisionRequest {
+    return {
+      id: "decision-1",
+      kind: "post-cycle-live",
+      iteration: 0,
+      phase: "LIVE",
+      attempt: 1,
+      message: "Cycle failed: Sandbox promotion conflicted.",
+      ...(choices ? { choices } : {}),
+    };
+  }
+
+  async function mount(request: DecisionRequest, resolveDecision = vi.fn()): Promise<{
+    stdin: ReturnType<typeof createMockStdin>;
+    output: () => string;
+    resolveDecision: ReturnType<typeof vi.fn>;
+    unmount: () => void;
+  }> {
+    events.clear();
+    const stdout = new PassThrough() as any;
+    stdout.columns = 120;
+    stdout.rows = 40;
+    let out = "";
+    stdout.on("data", (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    const stdin = createMockStdin();
+    const state = { currentIteration: 1, currentPhase: "VERIFY" } as unknown as HarnessState;
+    const engine = {
+      getState: () => state,
+      runtime: {
+        id: "commandcode",
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+      },
+      resolveDecision,
+      pause: () => {},
+      resume: () => {},
+      requestAbort: () => {},
+      isRunning: false,
+    } as unknown as CycleEngine;
+    const cfg = { projectPath: "/tmp/p", thinker: "a/b", executor: "c/d", mode: "auto" } as RunConfig;
+    const instance = render(React.createElement(Dashboard, { engine, cfg, autoExit: false }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+    });
+    await tick();
+    events.emit("decision", request);
+    await tick();
+    return {
+      stdin,
+      output: () => out.replace(ANSI, ""),
+      resolveDecision,
+      unmount: () => instance.unmount(),
+    };
+  }
+
+  it("advertises the recovery keys the request offers and nothing more", async () => {
+    const withRecovery = await mount(
+      postCycleRequest(["retry-promotion", "repair", "retry", "continue", "abort"]),
+    );
+    withRecovery.unmount();
+    const offered = withRecovery.output();
+    expect(offered).toContain("[t]");
+    expect(offered).toContain("[p]");
+
+    const without = await mount(postCycleRequest(["retry", "continue", "abort"]));
+    without.unmount();
+    const plain = without.output();
+    expect(plain).toContain("Return to Live mode");
+    expect(plain).not.toContain("[t]");
+    expect(plain).not.toContain("[p]");
+  });
+
+  it("answers [t]/[p] with the recovery choices the prompt offers", async () => {
+    const retry = await mount(
+      postCycleRequest(["retry-promotion", "repair", "retry", "continue", "abort"]),
+    );
+    retry.stdin.write("t");
+    await tick();
+    expect(retry.resolveDecision).toHaveBeenCalledWith("retry-promotion");
+    retry.unmount();
+
+    const repair = await mount(
+      postCycleRequest(["retry-promotion", "repair", "retry", "continue", "abort"]),
+    );
+    repair.stdin.write("p");
+    await tick();
+    expect(repair.resolveDecision).toHaveBeenCalledWith("repair");
+    repair.unmount();
+  });
+
+  it("keeps an unoffered key a no-op", async () => {
+    const onlyRetry = await mount(postCycleRequest(["retry", "continue", "abort"]));
+    onlyRetry.stdin.write("p");
+    await tick();
+    expect(onlyRetry.resolveDecision).not.toHaveBeenCalled();
+    // The keys the prompt did advertise still work.
+    onlyRetry.stdin.write("r");
+    await tick();
+    expect(onlyRetry.resolveDecision).toHaveBeenCalledWith("retry");
+    onlyRetry.unmount();
   });
 });
 
