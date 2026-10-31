@@ -886,6 +886,22 @@ makes every surface tell the truth.
   files **or** tracked files with staged/unstaged modifications — returns the backup directory in
   `PromoteResult.backups`, logs it, and records a `manifest.json` inside it, so the files (and a
   tracked deletion) are discoverable.
+- **AC-49.5 (Deterministic recovery)**: `huginn promote --retry` (and `[t]` in the live post-cycle
+  prompt) reopens the preserved branch at the iteration's **integration base** — the merge base with
+  the primary HEAD or `state.iterationBaseCommit`, never the branch tip — and re-runs the same
+  integration with **no model turn**. On success it indexes the symbols, records the iteration in
+  Muninn, advances `state.currentIteration` and clears the resume cursor; on failure it keeps the
+  branch and the primary tree untouched. An adopted sandbox (`attachSandbox`) promotes from that same
+  base, so a resumed iteration's commits are integrated rather than discarded.
+- **AC-49.6 (Conflict-only assisted repair)**: `huginn promote --repair` (and `[p]`) is offered only
+  when `state.promotion.status === "conflict"`; a `failed` record names the index problem and points
+  at `--retry` instead. The repair merges the primary HEAD into the preserved branch inside a
+  worktree with `--no-commit --no-ff`, diagnoses on the thinker (read-only, discarded on a working-tree
+  mutation), applies on the executor with `agent: "build"`, commits the merge only when no conflict
+  markers or unmerged paths remain, runs the iteration's `Verification:` commands in that worktree and
+  promotes only on a passing verdict. It makes **one** attempt: a failure aborts the merge (or resets
+  the branch to its pre-merge tip) and preserves the branch. The recovery options are advertised to
+  every surface through `DecisionRequest.choices`, and an option a request did not offer is a no-op.
 
 ### REQ-50: One root for Muninn — the database and the project record agree
 - **AC-50.1 (One root)**: the database file and the project row are resolved from the same root: the

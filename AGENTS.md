@@ -202,6 +202,16 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
   failed integration every entry is restored, including its staged/unstaged index state. A partially
   staged file or a staged *new* file fails closed (the branch is preserved) because its exact index
   state cannot be reproduced without copying index blobs.
+- **A failed promotion is recoverable (ADR-62).** `CycleEngine.retryPromotion()` reopens the preserved
+  branch (`openSandboxFromBranch`, base = `integrationBase()` or `state.iterationBaseCommit` — never
+  the branch tip) and re-attempts the integration with no model turn; it then indexes the symbols,
+  records the iteration and advances `currentIteration`, so the next run continues after the increment.
+  `repairPromotion()` is offered **only** for a `conflict`: huginn merges the primary HEAD into the
+  branch without committing, `DIAGNOSE` runs on the thinker (read-only), the executor resolves the
+  files, huginn commits the merge (refusing leftover markers) and `verifyIteration` runs in the
+  worktree before the fast-forward. A `failed` promotion is never given to a model — it names the
+  index conflict and points at `huginn promote --retry`. Neither routine is a `PipelineStep` and
+  `REPAIR_PROMOTION` is in no profile; `huginn promote` is a CLI subcommand, not a phase.
 
 ## 5. Runtime requirements
 
@@ -451,6 +461,14 @@ store and the resume precedence are documented for users too, in the `usage()` s
 
 Two display conventions a TUI change must follow:
 
+- **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
+  the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
+  never hand the card a `wrap="wrap"` line. Ink lets such a text node claim one row while it paints
+  several, which draws the extra rows over the following line and over the card's bottom border.
+  `markdownSegments` carries the block prefix (heading marker, bullet, quote bar) so the width math
+  counts it, and splitting happens between segments so a styled span is never cut mid-markup.
+  The run dashboard's `PipelineCard` likewise lists `phasesForProfile(cfg.profile)`: the profile owns
+  the order, so `VERIFY` sits right after `EXECUTE` in the Huginn Cycle.
 - **Display glyphs come from `src/tui/glyphs.ts`** — one table of single-width ASCII shared by the
   dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass, `!`
   warning, `✕` blocked, `–` skipped; phase kinds `?` `>` `=` `%` `#` `@` `~` `.`, `+` for any other).

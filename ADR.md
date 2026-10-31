@@ -17,16 +17,17 @@ avoids. They are ordered by how central the decision is to the design.
   `validate-step`, `judge`), different fix phases, and two phases that must
   never block. An imperative `if (phase === ...)` chain in the engine would
   duplicate the retry loop for each phase and make the pipeline order invisible.
-- **Decision**: The pipeline is a data table — `PIPELINE: PipelineStep[]` in
+- **Decision**: The pipeline is a data table — `STEP_BY_PHASE` in
   `src/engine/cycle.ts` — where each step declares its `phase`, phase function
   `fn`, `gate` kind, `fixPhase`, `fixLabel`, and `blocking` flag. One generic
   `runPhase()` loop drives every step: run once → gate → record → fix on the
-  thinker → retry → escalate. The eight phases of `MAIN_PHASES` in
-  `src/engine/types.ts` are the single source of truth for order; the progress
-  markdown renderer (`renderProgressMarkdown`, `src/state/store.ts`) re-derives
-  from it. The TUI's `PipelineCard` keeps its own local `BASE_PHASES` copy
-  (`src/tui/Dashboard.tsx`) that must be kept in sync with `MAIN_PHASES` by
-  hand.
+  thinker → retry → escalate. The table gives each phase its implementation, not
+  the order: since ADR-35 the order is the active methodology profile
+  (`phasesForProfile`, `src/engine/profiles.ts`), which `pipelineFor` resolves
+  into steps, and `MAIN_PHASES` in `src/engine/types.ts` remains the
+  vocabulary/index the state store's progress renderer and the CLI's
+  `--only-phase` validation share. No frontend keeps its own copy of the order:
+  the run dashboard's `PipelineCard` lists `phasesForProfile(cfg.profile)`.
 - **Consequences**:
   - *Positive*: adding a phase is adding one table row plus its `phases.ts`
     function; retry/escalation semantics cannot diverge per phase; the
@@ -1379,6 +1380,8 @@ avoids. They are ordered by how central the decision is to the design.
     `.huginn/promotion-backup/` (gitignored, self-ignoring), the state schema grows an optional
     `promotion` field that the renderer must handle for old state files, and partial staging/staged-new
     collisions keep the old fail-closed path.
+  - *Follow-up*: ADR-62 adds the recovery this record left out — a deterministic `huginn promote
+    --retry` and an opt-in, conflict-only `--repair` that never touches the index cases refused here.
 
 ## ADR-49: One root for Muninn — the `--project` root governs the database and the project record
 
@@ -1572,7 +1575,9 @@ avoids. They are ordered by how central the decision is to the design.
      branch) and the step loop starts at `resume.phase`, re-running it: earlier steps keep their work and
      a step that was interrupted is never skipped. A cursor naming a different iteration is stale and
      dropped; if the worktree is gone, the branch is preserved under `huginn/preserved/` and the
-     iteration replays.
+     iteration replays. The adopted sandbox's integration base is the **merge base** with the primary
+     HEAD, never the worktree's own HEAD: the latter made the promotion range empty and discarded the
+     checkpoint commits (fixed alongside ADR-62).
   4. The live hand-off only resets `.harness` when the documents' `planHash` differs from the state's,
      and otherwise passes the state into the `CycleEngine`; `/resume` continues it without re-planning.
 - **Consequences**:
@@ -1691,3 +1696,89 @@ avoids. They are ordered by how central the decision is to the design.
     streaming when `capabilities.streaming` is true.
   - *Negative*: the native event implementation exists only for opencode; the other drivers still
     buffer, and now say so honestly instead of through a legacy flag.
+
+## ADR-61: The conversation card wraps before Ink lays it out
+
+- **Date**: 2026-10-31
+- **Status**: Accepted
+- **Context**: `ScrollableChatCard` renders inside a card of a fixed height, one `<Text>` per message
+  line, with Ink's `wrap="wrap"`. Yoga gives that text node the single row the column budget allotted
+  it, but `render-node-to-output` still paints every wrapped row it produced — over the next message
+  line and, for the last visible one, over the card's bottom border. A long paragraph therefore came
+  out half-overwritten and unreadable, and the scroll math counted logical lines while the user saw a
+  different number of rows.
+- **Decision**:
+  1. `src/tui/markdown.tsx` parses a line into styled segments (`inlineSegments`,
+     `markdownSegments`) and wraps them with `wrapSegments`, which honours display width
+     (`string-width`, so emoji and CJK count twice) and splits **between** segments, never inside a
+     `**bold**`/`` `code` `` span. `markdownSegments` carries the block prefix (heading marker,
+     bullet, quote bar) so the width math sees it.
+  2. `LiveDashboard` builds `ChatRow[]` — one entry per *terminal* row, wrapped to
+     `cardsWidth - CARD_HORIZONTAL_CHROME` minus the body indent — and slices/scrolls that array.
+     Each row renders with `wrap="truncate"`, which cannot produce a second row.
+  3. The card clips (`overflow="hidden"`) as a last line of defence.
+- **Alternatives rejected**: (a) clipping the card only — it contains the bleed outside the card but
+  leaves a wrapped line painted over its own siblings inside it; (b) `flexShrink={0}` on every row —
+  the content then simply pushes the frame past the terminal height; (c) truncating each line to one
+  row (`wrap="truncate"` alone) — long paragraphs become unreadable instead of wrong; (d) measuring
+  after render — Ink has no layout measurement before it paints, so the row budget would lag a frame.
+- **Consequences**:
+  - *Positive*: the frame is exactly as tall as the budget says, the scroll offset counts visible
+    rows, and markdown styling survives a wrap (`test/tui/markdown.test.ts`,
+    `test/tui/liveLayout.test.ts`).
+  - *Negative*: a message line now costs an O(n) wrap per render of the card; the result is memoized on
+    `(messages, card width)`, so a resize rewraps the whole transcript.
+
+## ADR-62: A failed promotion is retried deterministically and repaired only on a conflict
+
+- **Date**: 2026-10-31
+- **Status**: Accepted
+- **Context**: ADR-48 made a promotion failure recoverable — the branch survives, the primary tree is
+  restored, and the outcome is recorded structurally — but the only exits were "return to Live mode"
+  or "quit". The iteration's commits sat on a preserved branch with no command that could integrate
+  them, so a user who had already cleared the colliding file had to reason about `git cherry-pick`
+  themselves, and a genuine merge conflict ended the run. Meanwhile the engine already had a
+  brain/hands split (`DIAGNOSE` read-only on the thinker, `APPLY_FIX` on the executor) and a
+  deterministic `VERIFY` gate it could apply to the repaired tree.
+- **Decision**:
+  1. **Recovery is a sibling routine, not a phase.** `CycleEngine.retryPromotion()` and
+     `repairPromotion()` reopen the preserved branch in the canonical worktree
+     (`WorktreeManager.openSandboxFromBranch`) and never enter `STEP_BY_PHASE`, `MAIN_PHASES` or a
+     profile; `REPAIR_PROMOTION` exists only as a `PhaseName` for reports/history.
+  2. **The integration base is the merge base.** `attachSandbox` used the worktree's own HEAD as
+     `baseCommit`, which is the branch tip: promoting an adopted sandbox computed an empty range and
+     deleted the branch. Both adoption and recovery now derive the base from `integrationBase()`
+     (merge base with the primary HEAD) or the persisted `state.iterationBaseCommit`.
+  3. **`huginn promote --retry`** re-attempts the integration with no model turn: checkpoint, then the
+     same `promoteSandbox` the iteration would have run. On success it indexes the symbols, records the
+     iteration in Muninn, advances `currentIteration` and clears the resume cursor, so the next run
+     continues after the recovered increment instead of replaying it.
+  4. **`huginn promote --repair`** (and `[p]` in the live post-cycle prompt) is offered **only** for a
+     `conflict`. It merges the primary HEAD into the preserved branch *without committing* inside the
+     worktree, asks the thinker (read-only, `treeHash`-guarded) for a remediation plan, lets the
+     executor resolve the conflicted files, commits the merge itself (refusing leftover conflict
+     markers), runs the iteration's `Verification:` commands, and only then fast-forwards the primary
+     branch. One attempt; any failure aborts the merge or resets the branch to the pre-merge tip and
+     keeps the branch.
+  5. **A `failed` promotion is never handed to a model.** It means huginn could not even attempt the
+     integration — a partially staged file, a staged-new file, an unreadable branch, an unusable
+     backup destination. Those are statements about the user's working tree, and a model editing
+     around them could silently drop uncommitted work (ADR-48 §2). The answer is
+     `commit`/`unstage`/`stash`, then the deterministic retry.
+- **Alternatives rejected**: (a) skipping the promotion and advancing to the next iteration — it
+  breaks the linear-commit invariant the receipt, `iterationBaseCommit` and the memory curation all
+  assume, and would make iteration N+1 depend on an unmerged N; (b) repairing automatically as soon
+  as a conflict is detected — it spends tokens without the user asking and mutates the primary tree on
+  a guess; (c) letting the thinker edit — it breaks the brain/hands split (the architect is read-only
+  by construction) and the `treeHash` guard would discard its own work; (d) rebasing the iteration
+  commits — it rewrites the increment's history, which the receipt already pinned.
+- **Consequences**:
+  - *Positive*: a promotion failure has two real exits that keep the commits linear; the model is
+    involved only where a model can help; `huginn promote` also removes the "unknown command falls
+    into live mode" hazard, and both commands exit non-zero on failure.
+  - *Negative*: one more engine entry point that has to keep the promotion bookkeeping in sync with
+    `runIteration` (`settlePromotion` is the shared path), a live prompt whose options depend on what
+    the record can actually offer (`DecisionRequest.choices`), and a recovery worktree that can be
+    left behind by a crash (the next attempt fails closed and names it).
+
+

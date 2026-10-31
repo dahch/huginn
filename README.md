@@ -222,6 +222,7 @@ and default — while `huginn init --help` prints the wizard's own usage.
 |---|---|---|
 | *(none)* | `huginn ["<idea>"]` | **Live-first default**: open the live console (optionally seeded with an idea) |
 | `run` | `huginn run [flags]` | Execute the build cycle against `plan.md`/`spec.md`/`adr.md` |
+| `promote` | `huginn promote [--retry \| --repair] [flags]` | Recover a failed sandbox promotion: `--retry` re-attempts the integration with no model turn (after you clear the colliding file), `--repair` diagnoses and resolves a real integration conflict (thinker + executor, one attempt). Exits non-zero if the increment is still not integrated |
 | `live` | `huginn live [flags] ["<idea>"]` | Interactive chat refinement with thinker model, drafting, approval, and execution (`--continue`/`-c`, `--session <id>`, `--list-sessions`/`-sl` resume or list persisted sessions) |
 | `plan` | `huginn plan [flags] "<idea>"` | Generate `spec.md`, `adr.md`, and `plan.md` in one shot using thinker model |
 | `init` | `huginn init [--yes] [--skip-setup] [flags]` | Guided onboarding: detect git/package manager/agent CLIs, pick agent + models (from the runtime's own catalog when it lists one), register Muninn MCP, write `.huginn/config.json` |
@@ -392,6 +393,15 @@ the primary branch while the agent works:
   error naming that branch, **never as `aborted`**. A later run renames the branch out of the reclaim
   namespace (`huginn/preserved/task-iter-<N>-<stamp>`) before the startup sweep, so a plain re-run can
   neither delete the only copy of the iteration's commits nor be blocked from re-sandboxing it.
+- **A failed promotion is recoverable without restarting the run.** After clearing whatever blocked
+  the integration (or when it was a real content conflict), `huginn promote --retry` re-attempts it
+  with **no model turn**, and `huginn promote --repair` resolves a `conflict` with the thinker
+  (diagnosis, read-only), the executor (the file edits) and the iteration's own `Verification:`
+  commands before integrating. On success the run's state advances, so the next `huginn run`
+  continues after the recovered increment. The live console offers the same two options (`[t]` /
+  `[p]`) in its post-cycle prompt; `[p]` only appears for a content conflict, because a failure caused
+  by your own partially staged or staged-new file is yours to clear, not a model's to work around
+  (ADR-62).
 - If the repository has no `HEAD` commit yet, sandboxing is skipped for that run with a warning and
   the iterations run in place — a worktree cannot be created from an empty repository.
 - `--no-sandbox` runs iterations in place, exactly as before.
@@ -514,7 +524,7 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
 - **Responsive Viewport Scaling**: Dynamically measures rows and columns via `useTerminalSize()` and auto-adapts layout cards to fill 100% of the screen upon terminal resizing without line truncation.
 - **Console Log Drawer (Zero Stdout Pollution)**: Background server logs, provider warnings, and runtime notices are intercepted via `patchConsole()` and routed into an in-app log drawer (`LogsCard`) rather than dumping to stdout and tearing the alternate screen.
 - **Stream Batching & Scroll Containment**: Real-time agent streaming (`phaseStream`) is throttled to 60ms flushes and capped with a 1,000-line ring buffer to prevent Ink rerender lag. Mouse and keyboard scrolling are trapped within the active card (`[PageUp]`/`[PageDown]` for 4 lines, `[↑]`/`[↓]` line-by-line) without leaking into the terminal scrollback history.
-- **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` aborts immediately, while `/quit` (alias `/abort`) aborts after a two-step confirmation.
+- **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. Message lines are wrapped to the card's real width before they are drawn, so a long paragraph breaks cleanly onto the next row instead of overlapping it or the card's border (and scrolling counts the rows you actually see). `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` aborts immediately, while `/quit` (alias `/abort`) aborts after a two-step confirmation.
 - **Composer with a Cursor, Multiline Growth & Input History**: the message row is the anchor of the view — its own accent border and a `❯` prompt glyph. It is a real editor: `←`/`→` move the caret (with `⌥`/`Ctrl` for whole words), `Home`/`End` jump to the ends of the caret's visual row, `Backspace`/`Delete` act at the caret (again word-wise with `⌥`/`Ctrl`), and typed text is inserted at the caret. A draft that wraps grows up to **6 rows** and then scrolls internally, and the caret is always drawn inside the frame (it never pushes a column off the row). `↑` recalls the previous submission of the session (the last 50), `↓` walks forward and ends at the empty draft. Recalled drafts stay editable and slash-command submissions are never stored. Recall applies only while the command palette is closed and the draft is empty, so it never fights the palette's own `↑`/`↓`.
 - **Terminal Theme System (`src/tui/theme.ts`)**: components ask for a semantic token (`THEME.text`, `THEME.muted`, `THEME.danger`, …) instead of hard-coding colours — the old `color="white"` chat body is gone, so nothing is invisible on a white terminal. Modes are `light`, `dark` and `auto` (default), pinned with `HUGINN_THEME`; `auto` stays background-agnostic (and sniffs `COLORFGBG` when the terminal advertises it), and a non-empty `NO_COLOR` disables every token and `dimColor`.
 - **Adaptive Agent-Output Panel & Scrolling**: the live stream card appears only once the runtime emits real content. `PgUp`/`PgDn` scroll the focused card; when the stream card is collapsed, Tab explains that it appears with stream content and the footer drops the `[Tab] Focus` hint (the conversation scrolls with `PgUp`/`PgDn`). In the run dashboard, a non-streaming runtime's `AGENT OUTPUT` shows the last finished phase's report — including when the stream buffer holds only a blank row.

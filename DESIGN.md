@@ -591,7 +591,8 @@ treated like any other gate — fail closed to a human decision
   - `[Tab]` toggles active card focus with visual border highlighting (`cyanBright` on the active panel) when both cards are mounted; if the agent-output card is collapsed (no stream content), it explains that and points at `PgUp`/`PgDn`, and the footer omits the `[Tab] Focus` hint.
   - `[PageUp]` / `[PageDown]` scrolls the focused card by 4 lines at any time without losing in-flight input; `[↑]` / `[↓]` recall previous composer submissions while the draft is empty, and scroll the focused agent-output card when it is shown and focused.
   - Native terminal Markdown token rendering via `MarkdownLine` formats inline bold, italic, code backticks, headers, bullet points, numbered lists, and code blocks natively in Ink.
-  - Post-execution continuous loop: after `cycle.run()` in `live` mode, a `post-cycle-live` decision modal reads the **outcome** — completed, aborted, or error with the preserved branch/backups — and prompts the user to either exit cleanly (`[c]` / `[a]`) or return to the live refinement loop (`[r]`) with state and thinker context preserved. A failed promotion can never render “Cycle completed!”.
+  - **The conversation wraps before Ink lays it out** (ADR-61): `markdownSegments` parses a message line into styled segments (`markdownSegments` keeps the block prefix so the width math counts it) and `wrapSegments` splits them at the card's own column budget — between segments, so a `**bold**` or `` `code` `` span is never cut mid-markup — while `segmentsWidth` counts double-width glyphs. `ScrollableChatCard` renders each resulting row with `wrap="truncate"`, so one logical line is exactly one terminal row and the scroll offset counts what the user sees. A `wrap="wrap"` line inside the fixed-height card is the bug this rules out: Ink lets such a text node claim one row while painting several, over the following line and over the card's bottom border (REV-6201).
+  - Post-execution continuous loop: after `cycle.run()` in `live` mode, a `post-cycle-live` decision modal reads the **outcome** — completed, aborted, or error with the preserved branch/backups — and prompts the user to either exit cleanly (`[c]` / `[a]`) or return to the live refinement loop (`[r]`) with state and thinker context preserved. A failed promotion can never render “Cycle completed!”. When a preserved branch exists the same prompt offers the recovery (ADR-62) through `DecisionRequest.choices`: `[t]` re-attempts the promotion deterministically (no model turn) and `[p]` diagnoses and repairs a `conflict` (thinker + executor, one attempt); after either the prompt returns with the new result instead of ending the session, and an option the request did not offer is a no-op in both keymaps and in headless mode.
 
 ## 9. Concurrency and event model
 
@@ -684,10 +685,13 @@ flowchart LR
    (`<project>/.huginn/live/sessions.json`) under a `.huginn/.gitignore` holding `*`.
 5. **The pipeline table is the only place phase wiring lives**: adding a phase
    is adding one row (plus its `phases.ts` function and its step prompt).
-   The phase-name lists that mirror the pipeline — `MAIN_PHASES`
-   (`src/engine/types.ts`), the TUI's `BASE_PHASES` (`src/tui/Dashboard.tsx`)
-   and `PHASE_LABEL` (`src/state/store.ts`) — are duplicated by hand and must
-   be updated in the same change.
+   The order of the phases is **not** in that table: a methodology profile
+   (`phasesForProfile`, `src/engine/profiles.ts`, ADR-35) is the ordered
+   selection the engine runs, and every frontend reads it instead of keeping a
+   copy — the run dashboard's `PipelineCard` takes `cfg.profile`. The phase-name
+   lists that do mirror the vocabulary — `MAIN_PHASES` (`src/engine/types.ts`)
+   and `PHASE_LABEL` (`src/state/store.ts`) — are duplicated by hand and must be
+   updated in the same change.
 6. **The engine never blocks on a human forever in unattended mode**: non-TTY
    headless aborts gate decisions rather than hanging.
 7. **Memory database integrity & privacy**: `muninn.db` runs in WAL mode with foreign keys enabled (`ON DELETE CASCADE`) and `recursive_triggers = ON`; FTS5 indexes are automatically synchronized via database triggers (`obs_ai`, `obs_ad`, `obs_au`); and git remote URLs are sanitized of basic auth credentials before persistence. Non-memory database directories are created with `0o700` (`rwx------`) permissions.
@@ -977,6 +981,20 @@ stateDiagram-v2
     directory is allocated through `assertDocPath` (`action: "write"`, a unique
     `<stamp>`/`<stamp>-<n>` retry), created `0o700` with a self-ignoring `.gitignore` holding `*`, so
     parked content is never committed even on a project whose `.gitignore` does not list `.huginn/`.
+- **Promotion recovery (ADR-62)**: `CycleEngine.retryPromotion()` reopens the preserved branch
+  (`WorktreeManager.openSandboxFromBranch`) and re-runs the same deterministic `promoteSandbox` — no
+  model turn. `repairPromotion()` is offered only for a `conflict`: `mergeRef` merges the primary HEAD
+  into the branch with `--no-commit --no-ff` *inside the worktree*, `runDiagnosis` (thinker,
+  read-only) and `repairPromotionFindings` (executor, `agent: "build"`) resolve the conflicted paths,
+  `commitMerge` stages and commits (refusing a tree that still carries markers), `verifyIteration`
+  runs the iteration's commands in the worktree, and only then does `promoteSandbox` fast-forward the
+  primary branch. One attempt: any failure aborts the merge (`abortMerge`) or resets the branch to
+  the pre-merge tip (`resetTo`) and keeps it; the recovery worktree is removed either way. Both
+  routines share `settlePromotion`, which indexes symbols, records the iteration in Muninn, advances
+  `currentIteration` and clears the resume cursor. `promotionRepairEligibility` refuses a `failed`
+  record (the user's index state) and points at `huginn promote --retry`.
+  `huginn promote [--retry|--repair]` is the headless surface and exits non-zero on failure; the live
+  post-cycle prompt offers `[t]`/`[p]` through `DecisionRequest.choices` and loops after an attempt.
 - **Promotion & failure policy (AC-17.4, AC-49.2)**: on success the worktree and branch are removed and
   any backup directory is returned in `backups` so the files are discoverable (and named in the run
   log and live post-cycle prompt). On a **conflict** (both strategies fail) the primary tree is

@@ -4,6 +4,20 @@
 
 ### Added
 
+- **A failed promotion is recoverable from the CLI and the live console.** `huginn promote --retry`
+  re-attempts the integration of the preserved branch with **no model turn** (checkpoint, then the
+  same `promoteSandbox` the iteration would have run); on success it indexes the symbols, records the
+  iteration in Muninn, advances `currentIteration` and clears the resume cursor, so the next run
+  continues after the recovered increment. `huginn promote --repair` (and `[p]` in the post-cycle
+  prompt) is offered **only** for a content `conflict`: huginn merges the primary HEAD into the
+  preserved branch without committing, the thinker diagnoses (read-only, `treeHash`-guarded), the
+  executor resolves the conflicted files, huginn commits the merge (refusing leftover conflict
+  markers) and runs the iteration's `Verification:` before fast-forwarding the primary branch. One
+  attempt; any failure aborts the merge or resets the branch to its pre-merge tip and keeps it. A
+  `failed` promotion (partially staged file, staged-new file, unreadable branch) is never handed to a
+  model — it points at the deterministic `--retry` after the user clears the tree. The live
+  post-cycle prompt advertises exactly the recovery the record can offer (`DecisionRequest.choices`)
+  and loops instead of ending the session (ADR-62).
 - **Brain vs. Hands fix rounds.** A blocked gate is no longer repaired by the thinker's tool loop.
   `DIAGNOSE` (`diagnoseFindingsPrompt`, thinker, **read-only**, no `agent: "build"`) root-causes the
   failure and emits a `Remediation Plan` persisted to `.harness/reports/II-FIX_*-N-diagnosis.md`;
@@ -53,6 +67,24 @@
 
 ### Fixed
 
+- **An adopted sandbox promotes from its merge base, not from its own tip.** `attachSandbox` reported
+  the worktree's HEAD as `baseCommit`, which is the branch tip; `promoteSandbox` computes the range
+  `base..branch`, so adopting a sandbox (a resume after a checkpoint, or any recovery) produced an
+  empty range and the "no commits" path deleted the worktree **and the branch**, losing the commits.
+  Both adoption and the new recovery path now derive the base from `git merge-base HEAD <branch>`
+  (falling back to the persisted `state.iterationBaseCommit`), pinned by
+  `test/engine/worktree.test.ts`.
+- **The live console's conversation no longer overlaps itself.** Every message line is wrapped to the
+  card's own column budget before it is rendered (`wrapSegments` in `src/tui/markdown.tsx`, width-aware
+  across styled segments so a `**bold**` or `` `code` `` span is never split mid-markup), so one
+  logical line is exactly one terminal row. Before, Ink's own `wrap="wrap"` let a text node claim a
+  single row while painting several, and the overflow drew over the following line and over the card's
+  bottom border — long paragraphs came out half-overwritten and unreadable. Scroll offsets now count
+  the rows the user actually sees, and the card clips as a last line of defence.
+- **The run dashboard's phase list follows the active profile.** `PipelineCard` renders
+  `phasesForProfile(cfg.profile)` instead of a hard-coded registry order, so the Huginn Cycle shows
+  `VERIFY` where it really runs (right after `EXECUTE`, by design) instead of last, and a
+  `odd`/`rdd`/`strict-tdd` run no longer lists phases it never executes.
 - **Codex driver**: the thread is started with the session's `workingDirectory` (the sandbox, not
   huginn's cwd), a per-prompt model change recreates the thread instead of silently billing the old
   model, and `timeoutMs` aborts the turn.
