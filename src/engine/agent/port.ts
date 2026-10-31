@@ -3,6 +3,7 @@ import type {
   McpServerListing,
   McpStatusReport,
   ModelCatalog,
+  ModelInfo,
   PromptResult,
 } from "./types.js";
 
@@ -148,6 +149,29 @@ export type ModelResolution =
  * Everything above this line is driver-neutral: the engine never learns whether
  * a runtime is an HTTP daemon, a spawned CLI or an in-process agent loop.
  */
+/**
+ * What a model picker needs from either shape: the port's `listModels()` or a
+ * legacy adapter's catalog methods. Structural so a modal takes `engine.runtime`
+ * or an injected fake without knowing which era it is.
+ */
+export interface ModelCatalogSource {
+  readonly id: string;
+  readonly name: string;
+  listModels?(): Promise<ModelCatalog>;
+  getModelCatalog?(): Promise<ModelCatalog>;
+  getAvailableModels?(): Promise<ModelInfo[]>;
+}
+
+/** What the MCP inspector needs: the port's probe or the legacy `getMcpStatus`. */
+export interface McpStatusSource {
+  readonly id?: string;
+  readonly name: string;
+  readonly target?: string;
+  listMcpServers?(): Promise<McpServerListing[]>;
+  mcpStatus?(): Promise<McpStatusReport>;
+  getMcpStatus?(): Promise<McpStatusReport>;
+}
+
 export interface RuntimePort {
   readonly id: RuntimeId;
   readonly name: string;
@@ -175,6 +199,8 @@ export interface RuntimePort {
   resumeSession?(id: string, options: RuntimeSessionOptions): Promise<RuntimeSession>;
   /** Three-valued existence probe so "gone" and "lookup failed" stay distinguishable. */
   probeSession?(id: string): Promise<"exists" | "gone" | "failed">;
+  /** Abort a session the engine no longer holds a handle for (e.g. after a restart). */
+  abortSession?(id: string): Promise<void>;
   /**
    * The servers this driver's agent has configured, through its own CLI when it
    * has one. `undefined` means the driver has no listing; `[]` means it asked

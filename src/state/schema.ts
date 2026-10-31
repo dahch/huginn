@@ -54,6 +54,13 @@ export const resumeCursorSchema = z.object({
  * the same "did the documents change" question the resume path already answers.
  * Only a non-blocking audit is memoized: a blocked one must be re-run.
  */
+/** Token/cost totals a driver reported across the run (REQ-67). */
+export const usageSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  costUsd: z.number(),
+});
+
 export const specAuditSchema = z.object({
   docHash: z.string(),
   auditedAt: z.string(),
@@ -84,6 +91,7 @@ export const stateSchema = z.object({
   promotion: promotionSchema.optional(),
   resume: resumeCursorSchema.optional(),
   specAudit: specAuditSchema.optional(),
+  usage: usageSchema.optional(),
   history: z.array(historyEntrySchema),
 });
 
@@ -92,3 +100,4 @@ export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 export type PromotionRecord = z.infer<typeof promotionSchema>;
 export type ResumeCursor = z.infer<typeof resumeCursorSchema>;
 export type SpecAuditRecord = z.infer<typeof specAuditSchema>;
+export type UsageTotalsRecord = z.infer<typeof usageSchema>;

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import type { IAgentRuntime, ModelInfo } from "../engine/agent/types.js";
+import type { ModelInfo } from "../engine/agent/types.js";
+import type { ModelCatalogSource } from "../engine/agent/port.js";
 import { discoverModelCatalog } from "../engine/agent/modelCatalog.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { THEME } from "./theme.js";
@@ -12,7 +13,7 @@ export interface ModelPickerResult {
 }
 
 export interface ModelPickerModalProps {
-  runtime: IAgentRuntime;
+  runtime: ModelCatalogSource;
   initialThinker?: string;
   initialExecutor?: string;
   onSelect: (result: ModelPickerResult) => void;

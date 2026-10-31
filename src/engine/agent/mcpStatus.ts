@@ -1,12 +1,12 @@
 import { sanitizeTerminalText } from "../../util/text.js";
 import type {
-  IAgentRuntime,
   McpListingStatus,
   McpServerListing,
   McpServerState,
   McpServerStatus,
   McpStatusReport,
 } from "./types.js";
+import type { McpStatusSource } from "./port.js";
 
 /** Columns the reason is clamped to in the header badge (the header clamps again). */
 export const MCP_BADGE_REASON_WIDTH = 40;
@@ -177,7 +177,7 @@ async function withDeadline<T>(factory: () => Promise<T>, budgetMs: number): Pro
  * 3. otherwise an honest error/timeout report.
  */
 export async function fetchMcpStatusWithTimeout(
-  runtime: IAgentRuntime,
+  source: McpStatusSource,
   timeoutMs = 1500,
 ): Promise<McpStatusReport> {
   const deadlineAt = Date.now() + Math.max(0, timeoutMs);
@@ -195,10 +195,13 @@ export async function fetchMcpStatusWithTimeout(
     error: `MCP status timed out after ${timeoutMs}ms`,
   });
 
-  // 1. The active agent's own enumeration, when it has one.
-  const listMcpServers = runtime.listMcpServers;
+  // 1. The active agent's own enumeration, when it has one. The cache is keyed
+  // by id *and* target: nine CLI-only targets share the `generic` runtime id, so
+  // keying by id alone would serve one target's listing to another.
+  const listMcpServers =
+    typeof source.listMcpServers === "function" ? source.listMcpServers.bind(source) : undefined;
   if (typeof listMcpServers === "function") {
-    const key = String(runtime.id ?? "agent");
+    const key = `${source.id ?? "agent"}:${source.target ?? ""}`;
     const cached = listingCache.get(key);
     if (cached && Date.now() - cached.at < LISTING_CACHE_TTL_MS) {
       return reportFromListings(key, cached.listings);
@@ -210,7 +213,7 @@ export async function fetchMcpStatusWithTimeout(
     // the *next* poll instead of being killed and retried forever.
     let pending = inFlightListings.get(key);
     if (!pending) {
-      pending = Promise.resolve(listMcpServers.call(runtime))
+      pending = Promise.resolve(listMcpServers())
         .then((listings) => {
           const resolved = Array.isArray(listings) ? listings : [];
           listingCache.set(key, { at: Date.now(), listings: resolved });
@@ -242,7 +245,12 @@ export async function fetchMcpStatusWithTimeout(
   }
 
   // 2. The runtime's own probe / config discovery, on the remaining budget.
-  const probe = await withDeadline(() => Promise.resolve(runtime.getMcpStatus()), remaining());
+  const probeFn = source.mcpStatus ?? source.getMcpStatus;
+  if (!probeFn) {
+    // A driver that cannot see MCP says so; it never fabricates a healthy badge.
+    return { servers: [], totalTools: 0, healthy: false, unverified: true };
+  }
+  const probe = await withDeadline(() => Promise.resolve(probeFn.call(source)), remaining());
   if ("timedOut" in probe) {
     return timeoutReport();
   }

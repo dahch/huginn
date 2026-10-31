@@ -1,7 +1,7 @@
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { AgentTarget } from "../../../agents/integrator.js";
 import {
-  abortSession,
+  abortSession as clientAbortSession,
   createSession as clientCreateSession,
   prompt as clientPrompt,
   probeSession as clientProbeSession,
@@ -301,7 +301,7 @@ export function createOpencodePort(options: OpencodePortOptions = {}): RuntimePo
       },
 
       async interrupt(): Promise<void> {
-        await abortSession(activeClient, id);
+        await clientAbortSession(activeClient, id);
       },
 
       async close(): Promise<void> {
@@ -373,6 +373,10 @@ export function createOpencodePort(options: OpencodePortOptions = {}): RuntimePo
 
     probeSession(id: string) {
       return clientProbeSession(ensureClient(), id);
+    },
+
+    async abortSession(id: string) {
+      await clientAbortSession(ensureClient(), id);
     },
 
     listMcpServers(): Promise<McpServerListing[]> {

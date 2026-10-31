@@ -59,6 +59,26 @@ function createMockContext(
   const commandCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = [];
   const promptCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = [];
 
+  // The engine now prompts through the port seam: the fake session records the
+  // same call shape `promptText` reads, so the assertions stay unchanged.
+  const session: PhaseContext["session"] = {
+    id: "ses_123",
+    resumable: false,
+    async prompt(request) {
+      promptCalls.push({
+        path: { id: "ses_123" },
+        body: { parts: [{ text: request.text }] },
+      });
+      let reply = "prompt response";
+      if (request.text.includes("## Task: audit this iteration's increment")) {
+        reply = replies.report ?? PASS_REPORT;
+      }
+      return { messageId: "prompt_msg_id", text: reply };
+    },
+    async interrupt() {},
+    async close() {},
+  };
+
   const client = {
     session: {
       create: async () => ({ id: "ses_test" }),
@@ -73,23 +93,15 @@ function createMockContext(
           parts: [{ type: "text", text: GATE_PASS_REPORT }],
         };
       },
-      prompt: async (params: { path: { id: string }; body: Record<string, unknown> }) => {
-        promptCalls.push(params);
-        const text = promptText(params);
-        let reply = "prompt response";
-        if (text.includes("## Task: audit this iteration's increment")) {
-          reply = replies.report ?? PASS_REPORT;
-        }
-        return {
-          info: { id: "prompt_msg_id" },
-          parts: [{ type: "text", text: reply }],
-        };
-      },
+      prompt: async () => ({
+        info: { id: "prompt_msg_id" },
+        parts: [{ type: "text", text: replies.report ?? PASS_REPORT }],
+      }),
     },
   } as unknown as OpencodeClient;
 
   const defaultCtx: PhaseContext = {
-    client,
+    session,
     sessionId: "ses_123",
     models: {
       thinker: { providerID: "opencode-go", modelID: "deepseek-v4-pro" },
@@ -782,11 +794,11 @@ export function helper(): string {
       const { ctx, promptCalls } = createMockContext(tempDir, { baseCommit });
 
       // Simulate a real commit step that stages and commits everything during the prompt
-      const origPrompt = ctx.client.session.prompt;
-      ctx.client.session.prompt = async (params: { path: { id: string }; body: Record<string, unknown> }) => {
+      const origPrompt = ctx.session!.prompt;
+      ctx.session!.prompt = async (request) => {
         git(tempDir, ["add", "-A"]);
         git(tempDir, ["commit", "-m", "committed by commit-all"]);
-        return origPrompt(params);
+        return origPrompt(request);
       };
 
       const result = await commitAndIndex(ctx);

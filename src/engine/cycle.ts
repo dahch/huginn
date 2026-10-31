@@ -43,11 +43,14 @@ import {
   computePlanHash,
 } from "../state/store";
 import type { HarnessState, HistoryEntry, PromotionRecord, ResumeCursor } from "../state/schema";
-import { createClient, abortSession } from "../server/client";
 import { WorktreeManager, sandboxBranch, sandboxPath, type Sandbox } from "./worktree";
 import { resolveDatabasePath } from "@dahch/muninn";
-import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
-import { OpencodeRuntimeAdapter } from "./agent/adapters/opencode.js";
+import type { RuntimePort, RuntimeSession } from "./agent/port.js";
+import { asRuntimePort } from "./agent/legacy-bridge.js";
+import type { IAgentRuntime } from "./agent/types.js";
+import { createOpencodePort } from "./agent/drivers/opencode.js";
+import { createRuntimeSink, addUsage } from "./runtimeEvents";
+import { permissionHandlerFor } from "./permissionPolicy";
 import { sanitizeTerminalText } from "../util/text.js";
 
 /**
@@ -272,8 +275,12 @@ const MAX_JUDGE_ACTION_ITEMS = 8;
 
 export interface CycleEngineOptions {
   cfg: RunConfig;
+  /**
+   * Legacy escape hatch: build the opencode port around this client. Tests and
+   * embedders use it; the engine itself only ever sees the port.
+   */
   client?: OpencodeClient;
-  runtime?: IAgentRuntime;
+  runtime?: RuntimePort | IAgentRuntime;
   plan: { content: string; iterations: Iteration[] };
   state?: HarnessState;
   /**
@@ -285,9 +292,8 @@ export interface CycleEngineOptions {
 
 export class CycleEngine {
   private cfg: RunConfig;
-  readonly client?: OpencodeClient;
-  readonly runtime: IAgentRuntime;
-  private activeSession?: IAgentSession;
+  readonly runtime: RuntimePort;
+  private activeSession?: RuntimeSession;
   private plan: { content: string; iterations: Iteration[] };
   private state: HarnessState;
   private models: Models;
@@ -310,22 +316,16 @@ export class CycleEngine {
 
   constructor(opts: CycleEngineOptions) {
     this.cfg = opts.cfg;
-    if (opts.runtime) {
-      this.runtime = opts.runtime;
-      if (opts.client) {
-        this.client = opts.client;
-      } else if ("client" in opts.runtime && (opts.runtime as unknown as { client?: OpencodeClient }).client) {
-        this.client = (opts.runtime as unknown as { client: OpencodeClient }).client;
-      }
-      // Non-OpenCode runtimes: leave client undefined — all prompts go through session
-    } else {
-      this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
-      this.runtime = new OpencodeRuntimeAdapter({
-        client: this.client,
-        port: opts.cfg.port,
-        projectPath: opts.cfg.projectPath,
-      });
-    }
+    // The engine only knows the port. An injected legacy client builds the
+    // opencode port around it, which is what the argv-level tests rely on.
+    this.runtime = opts.runtime
+      ? asRuntimePort(opts.runtime)
+      : createOpencodePort({
+          client: opts.client,
+          port: opts.cfg.port,
+          serverTimeoutMs: opts.cfg.serverTimeoutMs,
+          projectPath: opts.cfg.projectPath,
+        });
     this.plan = opts.plan;
     this.models = resolveModels(opts.cfg.thinker, opts.cfg.executor);
     this.worktrees = opts.worktrees;
@@ -477,9 +477,9 @@ export class CycleEngine {
     // immediately instead of waiting out a long phase timeout: aborting the
     // session server-side rejects the pending `session.prompt`/`command`.
     if (this.activeSession) {
-      void this.activeSession.abort();
-    } else if (this.runtime.id === "opencode" && this.client && this.state.iterationSessionId) {
-      void abortSession(this.client, this.state.iterationSessionId);
+      void this.activeSession.interrupt("aborted by the engine");
+    } else if (this.state.iterationSessionId && this.runtime.abortSession) {
+      void this.runtime.abortSession(this.state.iterationSessionId);
     }
   }
 
@@ -766,7 +766,6 @@ export class CycleEngine {
 
       const explicitModules = iteration.modules ?? [];
       const ctx: PhaseContext = {
-        client: this.client,
         session: undefined,
         sessionId,
         models: this.models,
@@ -1114,11 +1113,25 @@ export class CycleEngine {
     model: Models[keyof Models],
     fn: (scopedCtx: PhaseContext, sessionId: string) => Promise<T>,
   ): Promise<T> {
+    const sink = createRuntimeSink({
+      streaming: this.runtime.capabilities.streaming,
+      iteration: iteration.index,
+      phase: label,
+      onUsage: (event) => {
+        const current = this.state.usage ?? { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+        this.state.usage = addUsage(current, event);
+        this.persist();
+      },
+    });
     const session = await this.runtime.createSession({
       title: `iter ${iteration.index}: ${sanitizeTerminalText(label)}`,
       directory: ctx.directory ?? ctx.projectPath,
       model: formatModel(model),
       permissions: this.cfg.permissions,
+      sink,
+      onPermission: permissionHandlerFor(this.cfg.permissions, (request) =>
+        this.requestDecision(request),
+      ),
     });
     const previous = this.activeSession;
     this.activeSession = session;
@@ -1127,7 +1140,7 @@ export class CycleEngine {
       return await fn(scopedCtx, session.id);
     } finally {
       if (this.activeSession === session) this.activeSession = previous;
-      await session.close?.();
+      await session.close();
     }
   }
 
@@ -1402,13 +1415,12 @@ export class CycleEngine {
     result: GatedPhaseResult,
     sessionId: string,
   ): Promise<Awaited<ReturnType<typeof judgePhase>>> {
-    const sessionOrClient = this.activeSession ?? this.client;
-    if (!sessionOrClient) {
-      throw new Error("No agent session or OpenCode client available for judge phase");
+    const session = this.activeSession;
+    if (!session) {
+      throw new Error("No agent session available for judge phase");
     }
     const judge = await judgePhase(
-      sessionOrClient,
-      sessionId,
+      session,
       this.models.executor,
       step.phase,
       result.raw,

@@ -152,9 +152,16 @@ function bridgeSession(session: IAgentSession, sink?: EventSink): RuntimeSession
   };
 }
 
+/** Accept either shape: a port is used as-is, a legacy runtime is bridged. */
+export function asRuntimePort(value: RuntimePort | IAgentRuntime): RuntimePort {
+  return "capabilities" in value && "listModels" in value
+    ? (value as RuntimePort)
+    : toRuntimePort(value as IAgentRuntime);
+}
+
 /**
- * Present a {@link RuntimePort} as the legacy `IAgentRuntime` the engine still
- * consumes.
+ * Present a {@link RuntimePort} as the legacy `IAgentRuntime` the CLI surfaces
+ * still consume (model discovery, the argv-level tests).
  *
  * The other direction of the bridge: it lets a native driver (today pi) run on
  * the production path without rewriting `CycleEngine`/`LiveEngine` first. What it

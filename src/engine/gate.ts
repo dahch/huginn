@@ -1,7 +1,5 @@
-import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { ModelRef, Verdict } from "./types";
-import type { IAgentSession } from "./agent/types.js";
-import { prompt } from "../server/client";
+import type { RuntimeSession } from "./agent/port.js";
 import { parseAuditStatus } from "./steps/context";
 
 const MAX_JUDGE_REPORT_LENGTH = 24000;
@@ -214,8 +212,7 @@ export function normalizeJudgeOutput(v: unknown): JudgeOutput | null {
 }
 
 export async function judgePhase(
-  clientOrSession: OpencodeClient | IAgentSession,
-  sessionId: string,
+  session: RuntimeSession,
   model: ModelRef,
   phaseLabel: string,
   report: string,
@@ -243,19 +240,11 @@ Report:
 ${truncated}
 ---`;
 
-  let res: { text: string };
-  if (
-    "prompt" in clientOrSession &&
-    typeof (clientOrSession as IAgentSession).prompt === "function" &&
-    !("session" in (clientOrSession as unknown as Record<string, unknown>))
-  ) {
-    res = await (clientOrSession as IAgentSession).prompt(text, {
-      model: `${model.providerID}/${model.modelID}`,
-      timeoutMs,
-    });
-  } else {
-    res = await prompt(clientOrSession as OpencodeClient, sessionId, { text, model, timeoutMs });
-  }
+  const res = await session.prompt({
+    text,
+    model: `${model.providerID}/${model.modelID}`,
+    timeoutMs,
+  });
   const parsed = normalizeJudgeOutput(extractJson(res.text));
   if (parsed) return parsed;
   // fallback heuristics on the judge's own text

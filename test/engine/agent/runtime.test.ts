@@ -624,7 +624,10 @@ describe("CycleEngine with IAgentRuntime", () => {
         runtime,
       });
 
-      expect(engine.runtime).toBe(runtime);
+      // A legacy runtime is bridged to the port the engine consumes; it is the
+      // same driver, not the same object.
+      expect(engine.runtime.id).toBe(runtime.id);
+      expect(engine.runtime.name).toBe(runtime.name);
 
       // Verify abort forwards to activeSession
       engine.requestAbort();

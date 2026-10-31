@@ -417,7 +417,16 @@ export function getRuntimePort(target: AgentTarget | "generic", options: Runtime
 }
 
 /**
- * The runtime the **cycle** executes.
+ * The port the engines execute. Identical to {@link getRuntimePort}; the name
+ * exists so the engines' dependency reads as "the thing that runs", while
+ * `getAgentRuntime` stays the provisioning/argv view.
+ */
+export function getEnginePort(target: AgentTarget, options: RuntimeOptions = {}): RuntimePort {
+  return getRuntimePort(target, options);
+}
+
+/**
+ * The legacy runtime view the CLI surfaces still consume.
  *
  * Deliberately separate from {@link getAgentRuntime}: that factory still returns
  * the CLI-shaped adapters, which is what provisioning, model discovery and the

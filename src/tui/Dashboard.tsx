@@ -461,7 +461,7 @@ export function Dashboard({
             height={middleHeight}
             report={ui.lastReport?.raw ?? ""}
             runtimeId={engine.runtime.id}
-            streamsOutput={engine.runtime.streamsOutput === true}
+            streamsOutput={engine.runtime.capabilities?.streaming === true}
           />
         </Box>
       </Box>

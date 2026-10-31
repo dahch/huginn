@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
+import type { McpStatusSource } from "../engine/agent/port.js";
 import type { IAgentRuntime, McpStatusReport, McpToolInfo } from "../engine/agent/types.js";
 import {
   MCP_STATUS_POLL_TIMEOUT_MS,
@@ -38,7 +39,7 @@ function clampText(value: string | undefined, max: number): string {
 }
 
 export interface McpInspectorModalProps {
-  runtime: IAgentRuntime;
+  runtime: McpStatusSource;
   onClose: () => void;
   initialReport?: McpStatusReport;
   initialServerId?: string;

@@ -2,8 +2,8 @@ import { existsSync, statSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { formatModel, type Models } from "./modelRouter";
-import { prompt } from "../server/client";
-import type { IAgentSession, PromptResult } from "./agent/types.js";
+import type { PromptResult } from "./agent/types.js";
+import type { RuntimeSession } from "./agent/port.js";
 import { pendingChanges, changedFilesSince, isGitRepo } from "./diff";
 import { commitAllPending, WorktreeError } from "./worktree";
 import { deterministicCommitMessage } from "./steps/commitMessage";
@@ -55,7 +55,7 @@ export interface PhaseOutput extends PromptResult {
 
 export interface PhaseContext extends StepContext {
   client?: OpencodeClient;
-  session?: IAgentSession;
+  session?: RuntimeSession;
   sessionId: string;
   models: Models;
   phaseTimeoutMs: number;
@@ -79,24 +79,25 @@ async function promptWithContext(
   ctx: PhaseContext,
   opts: {
     text: string;
-    agent?: string;
+    agent?: "build";
     model?: { providerID: string; modelID: string };
     timeoutMs?: number;
     directory?: string;
   },
 ): Promise<PromptResult> {
-  if (ctx.session) {
-    return ctx.session.prompt(opts.text, {
-      agent: opts.agent,
-      model: opts.model ? formatModel(opts.model) : undefined,
-      timeoutMs: opts.timeoutMs,
-      directory: opts.directory,
-    });
+  if (!ctx.session) {
+    throw new Error("No agent session available for this step");
   }
-  if (!ctx.client) {
-    throw new Error("No agent session or OpenCode client available for prompt");
-  }
-  return prompt(ctx.client, ctx.sessionId, opts);
+  // One seam, one shape: every step is a port prompt. A driver that owns a
+  // daemon or a subprocess is behind the same call, and the engine never sees
+  // which one it is.
+  return ctx.session.prompt({
+    text: opts.text,
+    agent: opts.agent,
+    model: opts.model ? formatModel(opts.model) : undefined,
+    timeoutMs: opts.timeoutMs,
+    directory: opts.directory,
+  });
 }
 
 export async function specAudit(ctx: PhaseContext): Promise<PromptResult> {

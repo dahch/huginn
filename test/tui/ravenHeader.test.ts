@@ -137,7 +137,7 @@ function createMockLive(): LiveEngine {
 
 function createMockEngine(): CycleEngine {
   return {
-    runtime: { name: "opencode", id: "opencode", streamsOutput: true },
+    runtime: { name: "opencode", id: "opencode", capabilities: { streaming: true } },
     getState: () => ({ currentIteration: 1, currentPhase: "EXECUTE" }),
     pause: vi.fn(),
     resume: vi.fn(),

@@ -13,7 +13,8 @@
  * terminal-injection hole (SEC-001) this helper closes.
  */
 import { sanitizeTerminalText } from "../../util/text.js";
-import type { IAgentRuntime, ModelCatalog } from "./types.js";
+import type { ModelCatalog } from "./types.js";
+import type { ModelCatalogSource } from "./port.js";
 
 /**
  * Sanitize a catalog reason at the boundary. Returns `undefined` for a missing,
@@ -49,12 +50,18 @@ export function catalogReasonFromError(err: unknown): string {
  * sanitized error message (REV-508). The `reason` is sanitized *here*, at the
  * boundary, so every call site is terminal-injection safe by construction.
  */
-export async function discoverModelCatalog(runtime: IAgentRuntime): Promise<ModelCatalog> {
+export async function discoverModelCatalog(source: ModelCatalogSource): Promise<ModelCatalog> {
   try {
-    const catalog: ModelCatalog =
-      typeof runtime.getModelCatalog === "function"
-        ? await runtime.getModelCatalog()
-        : { models: await runtime.getAvailableModels() };
+    let catalog: ModelCatalog;
+    if (typeof source.listModels === "function") {
+      catalog = await source.listModels();
+    } else if (typeof source.getModelCatalog === "function") {
+      catalog = await source.getModelCatalog();
+    } else if (typeof source.getAvailableModels === "function") {
+      catalog = { models: await source.getAvailableModels() };
+    } else {
+      return { models: [], reason: "the runtime exposes no model catalog" };
+    }
     const models = Array.isArray(catalog?.models) ? catalog.models : [];
     const reason = sanitizeCatalogReason(catalog?.reason);
     return reason === undefined ? { models } : { models, reason };

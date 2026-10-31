@@ -8,10 +8,20 @@ import {
   profileSpec,
   type ProfileName,
 } from "./profiles.js";
-import { createClient, prompt, abortSession, probeSession } from "../server/client";
-import type { IAgentRuntime, IAgentSession } from "./agent/types.js";
-import { OpencodeRuntimeAdapter, OpencodeSession } from "./agent/adapters/opencode.js";
-import { getEngineRuntime, subprocessPermissionMessage } from "./agent/registry.js";
+
+import { asRuntimePort } from "./agent/legacy-bridge.js";
+import type { IAgentRuntime } from "./agent/types.js";
+import type {
+  EventSink,
+  QuestionAnswer,
+  QuestionRequest,
+  RuntimePort,
+  RuntimeSession,
+} from "./agent/port.js";
+import { createOpencodePort } from "./agent/drivers/opencode.js";
+import { createRuntimeSink } from "./runtimeEvents";
+import { permissionHandlerFor } from "./permissionPolicy";
+import { getEnginePort, subprocessPermissionMessage } from "./agent/registry.js";
 import type { AgentTarget } from "../agents/integrator.js";
 import { MemoryService } from "@dahch/muninn";
 import { resolveDatabasePath } from "@dahch/muninn";
@@ -193,10 +203,11 @@ export class LiveAbortError extends Error {
 
 export interface LiveEngineOptions {
   cfg: RunConfig;
+  /** Legacy escape hatch: build the opencode port around this client. */
   client?: OpencodeClient;
-  runtime?: IAgentRuntime;
+  runtime?: RuntimePort | IAgentRuntime;
   /** Optional factory used by `switchRuntime` to resolve a runtime for a target (tests inject stubs). */
-  runtimeFactory?: (target: AgentTarget) => IAgentRuntime;
+  runtimeFactory?: (target: AgentTarget) => RuntimePort | IAgentRuntime;
   /** Initial idea. The TUI sends messages one at a time; headless passes the whole idea here. */
   idea?: string;
   /**
@@ -325,9 +336,9 @@ function questionTurn(questions: QuestionItem[], visibleReply: string): string {
 }
 
 export class LiveEngine {
-  readonly client?: OpencodeClient;
-  private _runtime: IAgentRuntime;
-  private session?: IAgentSession;
+  private _runtime: RuntimePort;
+  private session?: RuntimeSession;
+  private sink?: EventSink;
   private cfg: RunConfig;
   private models: Models;
   private decisions = new DecisionBroker();
@@ -338,7 +349,7 @@ export class LiveEngine {
   private stage: LiveStage = "refine";
   private scope?: string;
   private idea?: string;
-  private runtimeFactory?: (target: AgentTarget) => IAgentRuntime;
+  private runtimeFactory?: (target: AgentTarget) => RuntimePort | IAgentRuntime;
   private needsSystemPrompt = false;
   /** True once a stored session was adopted by {@link resumeSession} (REV-4B-002). */
   private resumed = false;
@@ -366,22 +377,14 @@ export class LiveEngine {
   constructor(opts: LiveEngineOptions) {
     this.cfg = opts.cfg;
     this.runtimeFactory = opts.runtimeFactory;
-    if (opts.runtime) {
-      this._runtime = opts.runtime;
-      if (opts.client) {
-        this.client = opts.client;
-      } else if ("client" in opts.runtime && (opts.runtime as unknown as { client?: OpencodeClient }).client) {
-        this.client = (opts.runtime as unknown as { client: OpencodeClient }).client;
-      }
-      // Non-OpenCode runtimes: leave client undefined — all prompts go through session
-    } else {
-      this.client = opts.client ?? createClient(`http://127.0.0.1:${opts.cfg.port}`);
-      this._runtime = new OpencodeRuntimeAdapter({
-        client: this.client,
-        port: opts.cfg.port,
-        projectPath: opts.cfg.projectPath,
-      });
-    }
+    this._runtime = opts.runtime
+      ? asRuntimePort(opts.runtime)
+      : createOpencodePort({
+          client: opts.client,
+          port: opts.cfg.port,
+          serverTimeoutMs: opts.cfg.serverTimeoutMs,
+          projectPath: opts.cfg.projectPath,
+        });
     this.models = resolveModels(opts.cfg.thinker, opts.cfg.executor);
     this.idea = opts.idea;
 
@@ -402,7 +405,7 @@ export class LiveEngine {
   }
 
   /** Public accessor for the active agent runtime (mutable via switchRuntime). */
-  get runtime(): IAgentRuntime {
+  get runtime(): RuntimePort {
     return this._runtime;
   }
 
@@ -644,42 +647,44 @@ export class LiveEngine {
     return { id: candidate, name: spec.name, persisted: scope !== "session" };
   }
 
-  async switchRuntime(agentId: string): Promise<IAgentRuntime> {
+  async switchRuntime(agentId: string): Promise<RuntimePort> {
     const target = agentId as AgentTarget;
+    // Switching to the runtime already in use only reopens a session: reusing
+    // the port keeps its client/daemon (and an injected fake) instead of dialing
+    // a fresh one.
+    const currentTarget = this._runtime.target ?? this._runtime.id;
     const newRuntime = this.runtimeFactory
-      ? this.runtimeFactory(target)
-      : getEngineRuntime(target, {
-          client: target === "opencode" ? this.client : undefined,
-          port: this.cfg.port,
-          projectPath: this.cfg.projectPath,
-          // Phase 2C: a subprocess runtime needs its own auto-approval flag to
-          // avoid stalling on a CLI permission prompt; opencode keeps enforcing
-          // `--permissions` through the engine's event subscriber.
-          permissions: this.cfg.permissions,
-        });
+      ? asRuntimePort(this.runtimeFactory(target))
+      : currentTarget === target
+        ? this._runtime
+        : getEnginePort(target, {
+            port: this.cfg.port,
+            projectPath: this.cfg.projectPath,
+            permissions: this.cfg.permissions,
+          });
 
-    // REV-2C-001: never switch into a subprocess runtime while `--permissions`
-    // is ask/deny — it cannot ask huginn mid-turn, so running it auto-approved
-    // would be more permissive than requested. Refuse and keep the old runtime.
-    if (newRuntime.id !== "opencode" && this.cfg.permissions !== "auto") {
+    // REV-2C-001: never switch into a runtime that cannot ask mid-turn while
+    // `--permissions` is ask/deny. Refuse and keep the old runtime.
+    if (newRuntime.capabilities.permissions === "none" && this.cfg.permissions !== "auto") {
       throw new Error(subprocessPermissionMessage(newRuntime.id, this.cfg.permissions));
     }
 
-    if (!(await newRuntime.isAvailable())) {
+    const availability = await newRuntime.isAvailable();
+    if (!availability.ok) {
       throw new Error(
-        `Agent runtime "${target}" is not available (binary not found or unreachable).`,
+        `Agent runtime "${target}" is not available (${availability.reason ?? "binary not found or unreachable"}).`,
       );
     }
 
     if (this.session) {
       try {
-        await this.session.abort();
+        await this.session.interrupt("switching runtime");
       } catch {
-        // Safe fallback on session abort error
+        // Safe fallback on session interrupt error
       }
-    } else if (this.client && this.sessionId) {
+    } else if (this.sessionId && this._runtime.abortSession) {
       try {
-        await abortSession(this.client, this.sessionId);
+        await this._runtime.abortSession(this.sessionId);
       } catch {
         // Safe fallback on client abort error
       }
@@ -687,6 +692,7 @@ export class LiveEngine {
 
     this._runtime = newRuntime;
     this.session = undefined;
+    this.sink = undefined;
     this.sessionId = undefined;
     // REV-4C-001: the runtime that was reattached to (if any) is not the one being
     // talked to now, and the session about to be opened is empty — so the
@@ -805,8 +811,10 @@ export class LiveEngine {
   requestAbort(): void {
     this.aborted = true;
     this.decisions.resolveAll("abort");
-    if (this.session) void this.session.abort();
-    else if (this.client && this.sessionId) void abortSession(this.client, this.sessionId);
+    if (this.session) void this.session.interrupt("aborted by the user");
+    else if (this.sessionId && this._runtime.abortSession) {
+      void this._runtime.abortSession(this.sessionId);
+    }
     if (this.cycle) this.cycle.requestAbort();
     events.emit("done", { reason: "aborted", error: "live session aborted" });
   }
@@ -848,7 +856,7 @@ export class LiveEngine {
    * is always safe whereas assuming a history that does not exist loses it.
    */
   private keepsSessionHistory(): boolean {
-    return this.runtime.sessionHistory === true;
+    return this._runtime.capabilities.sessionHistory;
   }
 
   /** Memoized architect prompt; invalidated by {@link invalidateSystemPrompt}. */
@@ -1007,37 +1015,41 @@ export class LiveEngine {
    *
    * Returns `true` when the engine is now bound to the stored session.
    */
-  private async reattachOpencodeSession(): Promise<boolean> {
+  private async reattachRuntimeSession(): Promise<boolean> {
     const stored = this.liveSession.opencodeSessionId;
     if (!stored) return false;
-    if (this.runtime.id !== "opencode" || !this.client || !this.keepsSessionHistory()) return false;
+    if (
+      !this._runtime.capabilities.sessionResume ||
+      !this._runtime.probeSession ||
+      !this._runtime.resumeSession ||
+      !this.keepsSessionHistory()
+    ) {
+      return false;
+    }
     const storedId = sanitizeTerminalText(stored);
 
-    const probe = await probeSession(this.client, storedId);
+    const probe = await this._runtime.probeSession(storedId);
     if (probe !== "exists") {
       events.emit("log", {
         level: "warn",
         message:
           probe === "gone"
-            ? `the opencode session ${storedId} of the resumed live session no longer exists ` +
-              `on the server; starting a new agent session`
-            : `could not confirm the opencode session ${storedId} of the resumed live session ` +
-              `(the server did not answer the lookup); starting a new agent session`,
+            ? `the agent session ${storedId} of the resumed live session no longer exists ` +
+              `on the backend; starting a new agent session`
+            : `could not confirm the agent session ${storedId} of the resumed live session ` +
+              `(the backend did not answer the lookup); starting a new agent session`,
       });
       return false;
     }
 
-    // An `IAgentSession` bound to an *existing* server-side id. The runtime
-    // interface only knows how to create one, and only opencode can be attached
-    // to — so the concrete adapter session stands in, over the same client.
     this.sessionId = storedId;
-    this.session = new OpencodeSession(storedId, this.client, this.cfg.projectPath);
+    this.session = await this._runtime.resumeSession(storedId, this.sessionOptions());
     // REV-4C-001: this session already owns the conversation, so the seed on the
     // next prompt must not replay it (see `reattached`).
     this.reattached = true;
     events.emit("log", {
       level: "info",
-      message: `reattached to opencode session ${storedId}`,
+      message: `reattached to ${this._runtime.id} session ${storedId}`,
     });
     return true;
   }
@@ -1046,11 +1058,8 @@ export class LiveEngine {
     if (this.sessionId && this.session) return;
     // Phase 4C: a resumed conversation is reattached to its own server-side
     // session when that session still exists, instead of opening an empty one.
-    if (!(await this.reattachOpencodeSession())) {
-      this.session = await this.runtime.createSession({
-        title: `huginn live: ${this.cfg.projectPath}`,
-        directory: this.cfg.projectPath,
-      });
+    if (!(await this.reattachRuntimeSession())) {
+      this.session = await this._runtime.createSession(this.sessionOptions());
       this.sessionId = this.session.id;
       // A brand-new session is empty, so the conversation has to be replayed into
       // it (4A/REV-008): whatever a *previous* reattach had suppressed no longer
@@ -1231,21 +1240,59 @@ export class LiveEngine {
    * the operation that failed instead of always saying "chat".
    */
   private async sendBody(body: string, context = "chat"): Promise<string> {
-    if (this.session) {
-      const res = await this.session.prompt(body, {
-        model: formatModel(this.models.thinker),
-        timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
-        directory: this.cfg.projectPath,
-      });
-      return res.text;
-    }
-    if (!this.client) throw new Error(`No agent session or OpenCode client available for ${context}`);
-    const res = await prompt(this.client, this.sessionId!, {
+    if (!this.session) throw new Error(`No agent session available for ${context}`);
+    const res = await this.session.prompt({
       text: body,
-      model: this.models.thinker,
+      model: formatModel(this.models.thinker),
       timeoutMs: LIVE_PROMPT_TIMEOUT_MS,
+      directory: this.cfg.projectPath,
     });
     return res.text;
+  }
+
+  /** The session options every live session (fresh or resumed) is created with. */
+  private sessionOptions() {
+    return {
+      title: `huginn live: ${this.cfg.projectPath}`,
+      directory: this.cfg.projectPath,
+      permissions: this.cfg.permissions,
+      sink: this.getSink(),
+      onPermission: permissionHandlerFor(this.cfg.permissions, (request) =>
+        this.requestDecision(request),
+      ),
+      onQuestion: (request: QuestionRequest): Promise<QuestionAnswer> =>
+        this.handleQuestion(request),
+    };
+  }
+
+  private getSink(): EventSink {
+    this.sink ??= createRuntimeSink({
+      streaming: this._runtime.capabilities.streaming,
+      phase: "LIVE",
+    });
+    return this.sink;
+  }
+
+  /** The backend's question channel, routed through the live decision modal. */
+  private async handleQuestion(request: QuestionRequest): Promise<QuestionAnswer> {
+    const summary = request.questions.map((q) => q.question).join("\n\n");
+    const choice = await this.requestDecision({
+      id: request.id,
+      kind: "question",
+      iteration: 0,
+      phase: "LIVE",
+      attempt: 1,
+      message: `Question asked:\n${summary}`,
+      questionId: request.id,
+      questionSessionId: request.sessionId,
+      questionItems: request.questions as QuestionItem[],
+    });
+    if (choice === "deny" || choice === "abort") return "deny";
+    return {
+      answers: request.questions.map((q) =>
+        q.options && q.options.length > 0 ? [q.options[0]!.label] : ["continue"],
+      ),
+    };
   }
 
   private throwIfAborted(): void {
@@ -1534,7 +1581,6 @@ export class LiveEngine {
     const engine = new CycleEngine({
       cfg: this.cfg,
       plan,
-      client: this.client,
       runtime: this.runtime,
       ...(resumable
         ? {

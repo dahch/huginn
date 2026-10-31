@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { LiveEngine } from "../../src/engine/liveMode";
-import { OpencodeRuntimeAdapter } from "../../src/engine/agent/adapters/opencode.js";
+import { createOpencodePort } from "../../src/engine/agent/drivers/opencode.js";
 import { parseArgs, resolveResume } from "../../src/cli.js";
 import { events } from "../../src/engine/engineEvents";
 import { git } from "../../src/engine/diff";
@@ -636,7 +636,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     const dial = dialClient({ known: ["ses_stored"] });
     const resumed = new LiveEngine({
       cfg: makeCfg(),
-      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+      runtime: createOpencodePort({ client: dial.client }),
       resume: { id: liveId },
     });
 
@@ -659,7 +659,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     const dial = dialClient({ known: ["ses_stored"] });
     const resumed = new LiveEngine({
       cfg: makeCfg(),
-      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+      runtime: createOpencodePort({ client: dial.client }),
       resume: { id: liveId },
     });
 
@@ -685,7 +685,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     const dial = dialClient({ known: ["ses_stored"], reply: "after switch" });
     const resumed = new LiveEngine({
       cfg: makeCfg(),
-      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+      runtime: createOpencodePort({ client: dial.client }),
       resume: { id: liveId },
     });
 
@@ -714,7 +714,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     try {
       const resumed = new LiveEngine({
         cfg: makeCfg(),
-        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        runtime: createOpencodePort({ client: dial.client }),
         resume: { id: liveId },
       });
 
@@ -754,7 +754,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     try {
       const resumed = new LiveEngine({
         cfg: makeCfg(),
-        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        runtime: createOpencodePort({ client: dial.client }),
         resume: { id: liveId },
       });
 
@@ -804,7 +804,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
     const dial = dialClient({ known: ["ses_stored"] });
     const engine = new LiveEngine({
       cfg: makeCfg(),
-      runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+      runtime: createOpencodePort({ client: dial.client }),
     });
 
     await engine.start();
@@ -826,7 +826,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
 
       const engine = new LiveEngine({
         cfg: makeCfg(),
-        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        runtime: createOpencodePort({ client: dial.client }),
         ...(resume ? { resume } : {}),
       });
 
@@ -865,7 +865,7 @@ describe("LiveEngine opencode reattach on resume (Phase 4C)", () => {
 
       const resumed = new LiveEngine({
         cfg: makeCfg(),
-        runtime: new OpencodeRuntimeAdapter({ client: dial.client }),
+        runtime: createOpencodePort({ client: dial.client }),
         resume: { id: liveId },
       });
 

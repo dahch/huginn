@@ -29,14 +29,14 @@ import {
 import { CycleEngine } from "./engine/cycle";
 import { gitRepoState, probeGitRepo } from "./engine/diff";
 import { ensureGitRepository } from "./engine/gitRepo";
-import { subscribeToEvents } from "./engine/permissions";
 import { events } from "./engine/engineEvents";
 import { printBanner, type BannerInfo } from "./banner";
 import { runPlanMode } from "./engine/planMode";
 import pkg from "../package.json";
 import { LiveEngine } from "./engine/liveMode";
 import { maybePrintUpdateReminder } from "./update";
-import { resolveAgent, getEngineRuntime, OpencodeRuntimeAdapter, subprocessPermissionMessage } from "./engine/agent/index.js";
+import { resolveAgent, getEnginePort, subprocessPermissionMessage } from "./engine/agent/index.js";
+import type { RuntimePort } from "./engine/agent/port.js";
 import type { AgentTarget } from "./agents/integrator.js";
 import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
@@ -438,6 +438,39 @@ export function assertPermissionModeSupported(runtimeId: string, permissions: Pe
 }
 
 /**
+ * The same gate for a `RuntimePort`: the driver itself declares whether it can
+ * ask mid-turn, so the check no longer needs to know the runtime's name.
+ */
+function assertPortPermissionModeSupported(runtime: RuntimePort, permissions: PermissionMode): void {
+  if (runtime.capabilities.permissions !== "none" || permissions === "auto") return;
+  console.error(subprocessPermissionMessage(runtime.target ?? runtime.id, permissions));
+  process.exit(1);
+}
+
+/**
+ * Port-neutral provider warning (AC-27.6): when the catalog is non-empty and a
+ * configured model's provider is not in it, say so instead of letting the turn
+ * fail later. Best-effort, never blocks.
+ */
+async function warnUnknownProviders(runtime: RuntimePort, cfg: RunConfig): Promise<void> {
+  try {
+    const catalog = await runtime.listModels();
+    const providers = new Set(catalog.models.map((model) => model.provider));
+    if (providers.size === 0) return;
+    for (const [role, model] of [["thinker", cfg.thinker], ["executor", cfg.executor]] as const) {
+      const provider = model.split("/")[0];
+      if (provider && !providers.has(provider)) {
+        console.warn(
+          `[huginn] ${role} model "${model}" uses provider "${provider}", which ${runtime.name} does not report as connected`,
+        );
+      }
+    }
+  } catch {
+    // discovery is advisory
+  }
+}
+
+/**
  * Gate every work command (`run`, `plan`, `live`) on a usable git repository
  * (REQ-5). Membership of a work tree is decided by `git rev-parse
  * --is-inside-work-tree`, so being in a subdirectory, a linked worktree or a
@@ -813,27 +846,24 @@ export async function main(argv: string[]): Promise<void> {
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
-  const runtime = getEngineRuntime(resolvedAgent as AgentTarget, {
+  const runtime = getEnginePort(resolvedAgent as AgentTarget, {
     projectPath,
     port: cfg.port,
     serverTimeoutMs: cfg.serverTimeoutMs,
-    // Phase 2C: subprocess runtimes launch with their own auto-approval flag;
-    // opencode keeps enforcing `--permissions` through the event subscriber
-    // (see `subscribeToEvents` below).
     permissions: cfg.permissions,
   });
-  // REV-2C-001: a subprocess runtime cannot honour ask/deny — refuse to start
-  // the cycle instead of silently running it more permissively than requested.
-  assertPermissionModeSupported(runtime.id, cfg.permissions);
+  // REV-2C-001: a runtime that cannot ask mid-turn cannot honour ask/deny —
+  // refuse to start instead of silently running more permissively than requested.
+  assertPortPermissionModeSupported(runtime, cfg.permissions);
 
   try {
-    await runtime.startDaemon?.();
+    await runtime.start?.();
   } catch (err) {
-    console.error(chalk.red(`[huginn] failed to start ${runtime.name} daemon: ${(err as Error).message}`));
+    console.error(chalk.red(`[huginn] failed to start ${runtime.name}: ${(err as Error).message}`));
     process.exit(1);
   }
 
-  const serverUrl = runtime instanceof OpencodeRuntimeAdapter ? runtime.serverUrl : undefined;
+  const serverUrl = runtime.endpoint?.();
   if (serverUrl) {
     if (!cfg.tui) {
       console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(serverUrl)}`);
@@ -846,16 +876,10 @@ export async function main(argv: string[]): Promise<void> {
   }
 
   const engine = new CycleEngine({ cfg, plan, state, runtime });
-  if (runtime.id === "opencode" && engine.client) {
-    await validateModels(engine.client, cfg);
-  }
-  const sub = runtime.id === "opencode" && engine.client
-    ? subscribeToEvents(engine.client, cfg, (req) => engine.ask(req))
-    : { close: () => {} };
+  await warnUnknownProviders(runtime, cfg);
 
   const cleanup = async (code: number) => {
-    sub.close();
-    await runtime.stopDaemon?.();
+    await runtime.dispose?.();
     process.exit(code);
   };
   process.on("SIGINT", async () => {
@@ -898,8 +922,7 @@ export async function main(argv: string[]): Promise<void> {
   } catch (err) {
     console.error(chalk.red(`[huginn] fatal: ${(err as Error).message}`));
   } finally {
-    sub.close();
-    await runtime.stopDaemon?.();
+    await runtime.dispose?.();
   }
 }
 
@@ -1188,23 +1211,19 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
 
   if (cfg.port === 0) cfg.port = await getFreePort();
 
-  const runtime = getEngineRuntime(resolvedAgent as AgentTarget, {
+  const runtime = getEnginePort(resolvedAgent as AgentTarget, {
     projectPath,
     port: cfg.port,
     serverTimeoutMs: cfg.serverTimeoutMs,
-    // Phase 2C: subprocess runtimes launch with their own auto-approval flag;
-    // opencode keeps enforcing `--permissions` through the event subscriber
-    // (see `subscribeToEvents` below).
     permissions: cfg.permissions,
   });
-  // REV-2C-001: a subprocess runtime cannot honour ask/deny — refuse to start
-  // the cycle instead of silently running it more permissively than requested.
-  assertPermissionModeSupported(runtime.id, cfg.permissions);
+  // REV-2C-001: a runtime that cannot ask mid-turn cannot honour ask/deny.
+  assertPortPermissionModeSupported(runtime, cfg.permissions);
 
   try {
-    await runtime.startDaemon?.();
+    await runtime.start?.();
   } catch (err) {
-    console.error(chalk.red(`[huginn] failed to start ${runtime.name} daemon: ${(err as Error).message}`));
+    console.error(chalk.red(`[huginn] failed to start ${runtime.name}: ${(err as Error).message}`));
     process.exit(1);
   }
 
@@ -1213,7 +1232,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   // set cfg.chooseModel = true for auto-onboarding! (REV-003)
   if (modelSources.thinker.source === "default" || modelSources.executor.source === "default") {
     try {
-      const models = await runtime.getAvailableModels();
+      const models = (await runtime.listModels()).models;
       if (models && models.length > 0) {
         const hasDefaultThinker = models.some((m) => m.id === DEFAULT_THINKER_MODEL);
         const hasDefaultExecutor = models.some((m) => m.id === DEFAULT_EXECUTOR_MODEL);
@@ -1226,7 +1245,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     }
   }
 
-  const serverUrl = runtime instanceof OpencodeRuntimeAdapter ? runtime.serverUrl : undefined;
+  const serverUrl = runtime.endpoint?.();
   if (serverUrl) {
     if (!cfg.tui) {
       console.log(`${chalk.green("✓")} ${chalk.dim("opencode server ready at")} ${chalk.cyan(serverUrl)}`);
@@ -1246,16 +1265,10 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     // stored session; without either flag a brand-new session starts (4B).
     ...(resume ? { resume } : {}),
   });
-  if (runtime.id === "opencode" && live.client) {
-    await validateModels(live.client, cfg);
-  }
-  const sub = runtime.id === "opencode" && live.client
-    ? subscribeToEvents(live.client, cfg, (req) => live.ask(req))
-    : { close: () => {} };
+  await warnUnknownProviders(runtime, cfg);
 
   const cleanup = async (code: number) => {
-    sub.close();
-    await runtime.stopDaemon?.();
+    await runtime.dispose?.();
     process.exit(code);
   };
   process.on("SIGINT", async () => {
@@ -1293,8 +1306,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   } catch (err) {
     console.error(chalk.red(`[huginn] fatal: ${(err as Error).message}`));
   } finally {
-    sub.close();
-    await runtime.stopDaemon?.();
+    await runtime.dispose?.();
   }
 }
 
