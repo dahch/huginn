@@ -2106,16 +2106,19 @@ sequenceDiagram
   truncating the rest of the reply**. `normalizeQuestion` keeps `multiple`/`custom` flags if present.
 - **Wiring.** `LiveEngine.chat()` parses the reply, emits any warning to the system log, strips the
   block, and when questions exist raises a `kind: "question"` `DecisionRequest` through the decision
-  broker; the chosen answer(s) are sent back as a plain follow-up turn (`formatQuestionAnswer`) so it
-  works on every runtime. `askQuestion` bounds the wait (`QUESTION_TIMEOUT_MS = 10 min`, `.unref()`'d)
-  and aborts the turn on expiry rather than hanging. opencode's native `question.asked` /
-  `permission.asked` path is untouched and produces the same `DecisionRequest`.
+  broker **once per question**; `askQuestions` collects one answer per question and the chosen
+  answers are sent back as a plain follow-up turn (`formatQuestionAnswer`) so it works on every
+  runtime. `askQuestion` bounds each wait (`QUESTION_TIMEOUT_MS = 10 min`, `.unref()`'d) and aborts the
+  turn on expiry rather than hanging. opencode's native `question.asked` / `permission.asked` path is
+  untouched and produces the same `DecisionRequest`.
 - **Decision UI.** `DecisionModal` (and `LiveDashboard.resolveDecisionKey`) render one row per option
   with its description, inline (a `<Box>` column, not a `<Box>` inside a `<Text>` — Ink would not draw
-  it). A digit `1`–`9` picks that option verbatim, `Enter` accepts the recommended (first) one, `d`
-  skips and `Esc` aborts; keys are matched explicitly, so the `input === ""` that Ink sends for
-  non-alphanumeric keys (Escape included) can no longer silently answer. Only the **first** question
-  is selectable, and a multi-question block says so.
+  it), and the modal is `flexShrink: 0` so the fixed-height frame gives up conversation rows instead
+  of clipping options. A paged block shows a `(i/n)` counter in the title. A digit `1`–`9` picks that
+  option verbatim, `Enter` accepts the recommended (first) one, `d` skips and `Esc` aborts; keys are
+  matched explicitly, so the `input === ""` that Ink sends for non-alphanumeric keys (Escape included)
+  can no longer silently answer. When a block arrives whole through opencode's native channel, only
+  the first question is selectable — the remaining questions and their options stay visible.
 - **Deliberately de-scoped (AC-37.3).** `multiple` (multi-select) and `custom` (free-text) are parsed
   but honoured nowhere, and there is no arrow-key selection; a future iteration must amend the AC
   before claiming them, rather than assume them.

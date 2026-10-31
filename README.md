@@ -577,12 +577,13 @@ CLI cannot open a prompt of its own. When the agent needs a decision it emits a 
 ```
 
 Huginn parses the JSON `QuestionItem[]` out of the reply, **strips the block from what you see**,
-and opens its decision modal with the real options. Keys: a digit `1`–`9` picks that option verbatim,
-`Enter` accepts the recommended (first) one, `d` skips the question (the turn continues without an
-answer) and `Esc` aborts it. The chosen answer is sent back to the agent as a follow-up turn, so it
-can continue with your decision. Only the **first** question in a block is selectable — a block with
-more says so. An unparseable, unclosed or empty block is surfaced as a warning (sanitized) instead of
-being dropped, and a question left unanswered aborts the turn after a bounded deadline.
+and opens its decision modal with the real options — every option stays on screen, however many the
+agent offered. Keys: a digit `1`–`9` picks that option verbatim, `Enter` accepts the recommended
+(first) one, `d` skips the question (the turn continues without an answer) and `Esc` aborts it. A
+block with several questions is asked one modal at a time (the title shows `(2/3)`), and each chosen
+answer is paired with its own question before the answers are sent back as a follow-up turn. An
+unparseable, unclosed or empty block is surfaced as a warning (sanitized) instead of being dropped,
+and a question left unanswered aborts the turn after a bounded deadline.
 
 To make your own agent ask, the protocol is wired into the refine system prompt and the injected
 Muninn rules block; the instruction is simply:

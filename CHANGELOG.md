@@ -24,6 +24,13 @@
 
 ### Fixed
 
+- **Every question and every option is visible and answerable.** The decision modal was a
+  `flexShrink: 1` child under a hardcoded six-row reservation, so a question with several options was
+  squashed by Yoga and the lower options were silently clipped. The modal now keeps its natural
+  height (the conversation cards give up the space instead). A block carrying several questions is
+  asked **one modal at a time** — with a `(2/3)` counter — and each answer is paired with its own
+  question; previously only the first was shown behind a "+N more question(s)" line and the first
+  answer was silently reused for every later question.
 - **The audit-only QA step no longer rebuilds the workspace for coverage.** `ROLE_QA` and the
   `VALIDATE_STEP` qa task told the auditor to "run coverage report" while `auditOnlyGuardrails()`
   forbade coverage artifacts; the model resolved the contradiction by instrumenting and rebuilding
