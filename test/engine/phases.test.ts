@@ -9,7 +9,6 @@ import {
   indexIterationSourceFiles,
   getIterationFiles,
   computeValidateVerdict,
-  computeSubReportVerdict,
   enforceValidateVerdict,
   type PhaseContext,
 } from "../../src/engine/phases.js";
@@ -17,18 +16,22 @@ import { parseValidateStepVerdict } from "../../src/engine/gate.js";
 import {
   AUDIT_STATUS_BLOCKED,
   AUDIT_STATUS_PASS,
+  AUDIT_STATUS_WARN,
 } from "../../src/engine/steps/context.js";
-import { VALIDATE_STEP_CONSOLIDATION } from "../../src/engine/steps/instructions.js";
 import { git } from "../../src/engine/diff.js";
 import { MemoryService } from "@dahch/muninn";
 
-/** The passing report the synthesized `VALIDATE_STEP` gate is mocked to return. */
-const GATE_PASS_REPORT = "### Overall gate: 🟢\n✅ AUTO-APPROVED — all checks pass";
+/** A passing report for the single `VALIDATE_STEP` increment audit. */
+const PASS_REPORT = [
+  "## Increment Audit Report",
+  "",
+  "### Overall fidelity: 🟢 ALIGNED",
+  "",
+  AUDIT_STATUS_PASS,
+].join("\n");
 
-/** Deterministic sub-reports: qa/security carry the status line, spec the fidelity line. */
-const QA_PASS_REPORT = `QA-AUDIT-RESPONSE\n\n${AUDIT_STATUS_PASS}`;
-const SPEC_PASS_REPORT = "SPEC-AUDITOR-RESPONSE\n\n### Overall fidelity: 🟢 ALIGNED";
-const SECURITY_PASS_REPORT = `SECURITY-RESPONSE\n\n${AUDIT_STATUS_PASS}`;
+/** The gate line/handoff pair huginn imposes on any report (kept for the command stub). */
+const GATE_PASS_REPORT = "### Overall gate: 🟢\n✅ AUTO-APPROVED — all checks pass";
 
 interface MockContextSetup {
   ctx: PhaseContext;
@@ -37,10 +40,8 @@ interface MockContextSetup {
 }
 
 interface MockReplies {
-  qa?: string;
-  spec?: string;
-  security?: string;
-  synthesis?: string;
+  /** The single increment audit's reply. */
+  report?: string;
 }
 
 /** The text of a captured `session.prompt` call. */
@@ -74,13 +75,10 @@ function createMockContext(
       prompt: async (params: { path: { id: string }; body: Record<string, unknown> }) => {
         promptCalls.push(params);
         const text = promptText(params);
-        // Distinct, identifiable sub-prompt outputs so tests can assert the
-        // synthesis receives all three audit reports.
         let reply = "prompt response";
-        if (text.includes("Validation Gate Report")) reply = replies.synthesis ?? GATE_PASS_REPORT;
-        else if (text.includes("AUDIT-ONLY MODE")) reply = replies.qa ?? QA_PASS_REPORT;
-        else if (text.includes("### Overall fidelity:")) reply = replies.spec ?? SPEC_PASS_REPORT;
-        else if (text.includes("Security Audit Report")) reply = replies.security ?? SECURITY_PASS_REPORT;
+        if (text.includes("## Task: audit this iteration's increment")) {
+          reply = replies.report ?? PASS_REPORT;
+        }
         return {
           info: { id: "prompt_msg_id" },
           parts: [{ type: "text", text: reply }],
@@ -171,7 +169,7 @@ export function compute(): number {
       expect(promptCalls).toHaveLength(0);
     });
 
-    it("orchestrates three audit sub-prompts plus a synthesis prompt (REQ-7)", async () => {
+    it("issues ONE increment audit prompt carrying both mandatory contracts (REQ-7/REQ-61)", async () => {
       const validCode = `
 export function add(a: number, b: number): number {
   return a + b;
@@ -185,36 +183,24 @@ export function add(a: number, b: number): number {
 
       const result = await validateStep(ctx);
 
-      // No slash command is used anymore — every step is an injected prompt.
+      // No slash command is used — every step is an injected prompt.
       expect(commandCalls).toHaveLength(0);
-      // qa (audit-only) → spec-auditor → security → synthesis.
-      expect(promptCalls).toHaveLength(4);
+      expect(promptCalls).toHaveLength(1);
 
-      const [qa, spec, security, synthesis] = promptCalls.map(promptText);
-      // 1. qa in AUDIT-ONLY MODE (writes no tests).
-      expect(qa).toContain("AUDIT-ONLY MODE");
-      expect(qa).toContain("vitest run");
-      expect(qa).toContain("node_modules");
-      // 2. spec-auditor carries the fidelity contract.
-      expect(spec).toContain("### Overall fidelity:");
-      expect(spec).toContain("MINOR DRIFT");
-      // 3. security carries the audit report contract.
-      expect(security).toContain("Security Audit Report");
-      // 4. synthesis receives the three reports and the gate contract.
-      expect(synthesis).toContain("Validation Gate Report");
-      expect(synthesis).toContain("### Overall gate:");
-      expect(synthesis).toContain("AUTO-APPROVED — no action required, continuing to next step.");
-      expect(synthesis).toContain("QA-AUDIT-RESPONSE");
-      expect(synthesis).toContain("SPEC-AUDITOR-RESPONSE");
-      expect(synthesis).toContain("SECURITY-RESPONSE");
+      const [audit] = promptCalls.map(promptText);
+      expect(audit).toContain("## Task: audit this iteration's increment");
+      expect(audit).toContain("### Overall fidelity:");
+      expect(audit).toContain("### Audit status:");
+      expect(audit).toContain(ctx.specPath);
+      // qa and security are their own phases, not sub-prompts.
+      expect(audit).not.toContain("AUDIT-ONLY MODE");
 
-      // The returned text is the synthesis output with huginn's computed verdict
-      // lines appended (exactly one gate line + one handoff marker).
+      // The returned text carries exactly one gate line + one handoff marker
+      // imposed by huginn, and the structured verdict is what the engine gates on.
       expect(result.messageId).toBe("prompt_msg_id");
-      expect(result.text).toContain("### Overall gate: 🟢 PASS");
-      expect(result.text).toContain(
-        "✅ AUTO-APPROVED — no action required, continuing to next step."
-      );
+      expect(result.authoritativeVerdict).toBe("pass");
+      expect(result.text.match(/^### Overall gate:/gim) ?? []).toHaveLength(1);
+      expect(result.text.match(/^(?:✅|⚠️|🛑)/gim) ?? []).toHaveLength(1);
       expect(parseValidateStepVerdict(result.text)).toBe("pass");
     });
 
@@ -233,7 +219,7 @@ export function add(a: number, b: number): number {
       const result = await validateStep(ctx);
 
       expect(commandCalls).toHaveLength(0);
-      expect(promptCalls).toHaveLength(4);
+      expect(promptCalls).toHaveLength(1);
       // The spec-auditor sub-prompt embeds the module's spec path context.
       expect(promptCalls.map(promptText).join("\n")).toContain(ctx.specPath);
 
@@ -272,7 +258,7 @@ export const greeting: string = 12345;
       const result = await validateStep(ctx);
 
       expect(commandCalls).toHaveLength(0);
-      expect(promptCalls).toHaveLength(4);
+      expect(promptCalls).toHaveLength(1);
       expect(result.messageId).toBe("prompt_msg_id");
     });
 
@@ -300,7 +286,7 @@ export const greeting: string = 12345;
 
       // Should not fail contracts because deleted file is omitted
       expect(commandCalls).toHaveLength(0);
-      expect(promptCalls).toHaveLength(4);
+      expect(promptCalls).toHaveLength(1);
       expect(result.messageId).toBe("prompt_msg_id");
     });
 
@@ -321,7 +307,7 @@ export const greeting: string = 12345;
         const result = await validateStep(ctx);
         // Outside invalid file must not block validation
         expect(commandCalls).toHaveLength(0);
-        expect(promptCalls).toHaveLength(4);
+        expect(promptCalls).toHaveLength(1);
         expect(result.messageId).toBe("prompt_msg_id");
       } finally {
         fs.rmSync(outsideDir, { recursive: true, force: true });
@@ -363,7 +349,7 @@ export const greeting: string = 12345;
       const result = await validateStep(ctx);
       // Valid file passes and excluded directories are not scanned for errors
       expect(commandCalls).toHaveLength(0);
-      expect(promptCalls).toHaveLength(4);
+      expect(promptCalls).toHaveLength(1);
       expect(result.messageId).toBe("prompt_msg_id");
       expect(parseValidateStepVerdict(result.text)).toBe("pass");
     });
@@ -374,12 +360,13 @@ export const greeting: string = 12345;
       const { ctx } = createMockContext(
         tempDir,
         { modules: ["valid.ts"] },
-        { security: `SECURITY-RESPONSE\n\n${AUDIT_STATUS_BLOCKED}`, synthesis: GATE_PASS_REPORT }
+        {
+          report: `## Increment Audit Report\n\n### Overall fidelity: 🟢 ALIGNED\n\n${AUDIT_STATUS_BLOCKED}`,
+        }
       );
 
       const result = await validateStep(ctx);
 
-      // The model's 🟢 synthesis is overridden: huginn imposes its own verdict.
       expect(result.text).toContain("### Overall gate: 🔴 BLOCKED");
       expect(result.text).toContain("🛑 BLOCKED — do not proceed until issues are resolved");
       expect(result.text).not.toContain("### Overall gate: 🟢");
@@ -393,8 +380,7 @@ export const greeting: string = 12345;
         tempDir,
         { modules: ["valid.ts"] },
         {
-          synthesis:
-            "## Validation Gate Report\n\n### Overall gate: 🟡 PASS WITH WARNINGS\n\n⚠️ REVIEW REQUESTED — address the items above before continuing.",
+          report: `## Increment Audit Report\n\n### Overall fidelity: 🟢 ALIGNED\n\n${AUDIT_STATUS_WARN}`,
         }
       );
 
@@ -405,10 +391,12 @@ export const greeting: string = 12345;
       expect(parseValidateStepVerdict(result.text)).toBe("warning");
     });
 
-    it("fails closed to blocked when a sub-report is empty (REV-003 / M-4)", async () => {
+    it("fails closed to blocked when a mandatory marker is missing (REV-003 / M-4)", async () => {
       fs.writeFileSync(path.join(tempDir, "valid.ts"), "export const ok: number = 1;\n");
 
-      const { ctx } = createMockContext(tempDir, { modules: ["valid.ts"] }, { qa: "" });
+      const { ctx } = createMockContext(tempDir, { modules: ["valid.ts"] }, {
+        report: "## Increment Audit Report\n\n### Overall fidelity: 🟢 ALIGNED",
+      });
 
       const result = await validateStep(ctx);
 
@@ -427,16 +415,25 @@ export const greeting: string = 12345;
       expect(result.text.match(/^(?:✅|⚠️|🛑)/gim) ?? []).toHaveLength(1);
     });
 
-    it("does not block when the synthesis echoes the consolidation template verbatim (REV-101)", async () => {
+    it("does not block when the report echoes a gate/fidelity skeleton (REV-101)", async () => {
       fs.writeFileSync(path.join(tempDir, "valid.ts"), "export const ok: number = 1;\n");
 
-      // The template huginn itself sends contains the `### Overall gate: 🟢 … /
-      // 🟡 … / 🔴 …` skeleton and 🛑/🔴 prose. A model that copies it must not
-      // force a spurious BLOCKED: only the canonical gate line may escalate.
+      // The role instructions carry `🟢 … / 🟡 … / 🔴 …` skeletons. A report that
+      // echoes one must not force a spurious BLOCKED: only the report's own last
+      // canonical lines decide.
       const { ctx } = createMockContext(
         tempDir,
         { modules: ["valid.ts"] },
-        { synthesis: VALIDATE_STEP_CONSOLIDATION }
+        {
+          report: [
+            "## Increment Audit Report",
+            "### Overall gate: 🟢 PASS / 🟡 PASS WITH WARNINGS / 🔴 BLOCKED",
+            "### Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION",
+            "",
+            "### Overall fidelity: 🟢 ALIGNED",
+            AUDIT_STATUS_PASS,
+          ].join("\n"),
+        }
       );
 
       const result = await validateStep(ctx);
@@ -445,22 +442,23 @@ export const greeting: string = 12345;
       expect(result.text).toContain("### Overall gate: 🟢 PASS");
     });
 
-    it("does not block when the spec sub-report echoes the fidelity skeleton (REV-102)", async () => {
+    it("reads the canonical fidelity line, not the skeleton (REV-102)", async () => {
       fs.writeFileSync(path.join(tempDir, "valid.ts"), "export const ok: number = 1;\n");
 
-      const specReport = [
-        "## Spec Audit Report",
+      const report = [
+        "## Increment Audit Report",
         "### Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION",
         "",
         "Findings: none. No 🔴 deviations.",
         "",
         "### Overall fidelity: 🟢 ALIGNED",
+        AUDIT_STATUS_PASS,
       ].join("\n");
 
       const { ctx } = createMockContext(
         tempDir,
         { modules: ["valid.ts"] },
-        { spec: specReport }
+        { report }
       );
 
       const result = await validateStep(ctx);
@@ -474,21 +472,18 @@ export const greeting: string = 12345;
       const pass = await validateStep(createMockContext(tempDir, { modules: ["valid.ts"] }).ctx);
       expect(pass.authoritativeVerdict).toBe("pass");
 
-      // The synthesis may escalate an otherwise-green gate.
       const warned = await validateStep(
         createMockContext(tempDir, { modules: ["valid.ts"] }, {
-          synthesis:
-            "## Validation Gate Report\n\n### Overall gate: 🟡 PASS WITH WARNINGS\n\n⚠️ REVIEW REQUESTED — x.",
+          report: `### Overall fidelity: 🟢 ALIGNED\n\n${AUDIT_STATUS_WARN}`,
         }).ctx
       );
       expect(warned.authoritativeVerdict).toBe("warning");
       // The report stays coherent with the field, for the human reader.
       expect(parseValidateStepVerdict(warned.text)).toBe("warning");
 
-      // A blocked sub-report decides despite a green synthesis.
       const blocked = await validateStep(
         createMockContext(tempDir, { modules: ["valid.ts"] }, {
-          security: `SECURITY-RESPONSE\n\n${AUDIT_STATUS_BLOCKED}`,
+          report: `### Overall fidelity: 🟢 ALIGNED\n\n${AUDIT_STATUS_BLOCKED}`,
         }).ctx
       );
       expect(blocked.authoritativeVerdict).toBe("blocked");
@@ -505,38 +500,32 @@ export const greeting: string = 12345;
   });
 
   describe("deterministic VALIDATE_STEP verdict (REV-003 / M-4)", () => {
-    const greenSpec = "### Overall fidelity: 🟢 ALIGNED";
+    const green = `### Overall fidelity: 🟢 ALIGNED\n\n${AUDIT_STATUS_PASS}`;
 
-    it("merges sub-report severities fail-closed", () => {
+    it("requires both mandatory conclusion lines and merges them fail-closed", () => {
+      expect(computeValidateVerdict(green)).toBe("pass");
       expect(
-        computeValidateVerdict({ qa: AUDIT_STATUS_PASS, spec: greenSpec, security: AUDIT_STATUS_PASS })
-      ).toBe("pass");
-      expect(
-        computeValidateVerdict({
-          qa: AUDIT_STATUS_PASS,
-          spec: "### Overall fidelity: 🟡 MINOR DRIFT",
-          security: AUDIT_STATUS_PASS,
-        })
+        computeValidateVerdict(`### Overall fidelity: 🟡 MINOR DRIFT\n\n${AUDIT_STATUS_PASS}`)
       ).toBe("warning");
       expect(
-        computeValidateVerdict({
-          qa: AUDIT_STATUS_PASS,
-          spec: "### Overall fidelity: 🔴 MAJOR DEVIATION",
-          security: AUDIT_STATUS_PASS,
-        })
-      ).toBe("blocked");
-      // Empty or unreadable (no parseable marker) → blocked.
+        computeValidateVerdict(`### Overall fidelity: 🟢 ALIGNED\n\n${AUDIT_STATUS_WARN}`)
+      ).toBe("warning");
       expect(
-        computeValidateVerdict({ qa: "", spec: greenSpec, security: AUDIT_STATUS_PASS })
+        computeValidateVerdict(`### Overall fidelity: 🔴 MAJOR DEVIATION\n\n${AUDIT_STATUS_PASS}`)
       ).toBe("blocked");
       expect(
-        computeValidateVerdict({ qa: "no marker here", spec: greenSpec, security: AUDIT_STATUS_PASS })
+        computeValidateVerdict(`### Overall fidelity: 🟢 ALIGNED\n\n${AUDIT_STATUS_BLOCKED}`)
       ).toBe("blocked");
+      // Missing either marker (or an empty report) → blocked.
+      expect(computeValidateVerdict("")).toBe("blocked");
+      expect(computeValidateVerdict("### Overall fidelity: 🟢 ALIGNED")).toBe("blocked");
+      expect(computeValidateVerdict(AUDIT_STATUS_PASS)).toBe("blocked");
+      expect(computeValidateVerdict("no markers here")).toBe("blocked");
     });
 
     it("rewrites a contradicting gate/handoff line with the imposed verdict", () => {
-      const synthesis = "## Validation Gate Report\n\n### Overall gate: 🟢 PASS\n✅ AUTO-APPROVED — old";
-      const out = enforceValidateVerdict(synthesis, "blocked");
+      const report = "## Increment Audit Report\n\n### Overall gate: 🟢 PASS\n✅ AUTO-APPROVED — old";
+      const out = enforceValidateVerdict(report, "blocked");
 
       expect(out.match(/^### Overall gate:/gim) ?? []).toHaveLength(1);
       expect(out).toContain("### Overall gate: 🔴 BLOCKED");
@@ -544,66 +533,34 @@ export const greeting: string = 12345;
       expect(parseValidateStepVerdict(out)).toBe("blocked");
     });
 
-    it("escalates only from the canonical gate line, never from a body emoji (REV-101)", () => {
-      const green = { qa: AUDIT_STATUS_PASS, spec: greenSpec, security: AUDIT_STATUS_PASS };
-
-      // Bullets, prose and handoff markers in the body must not escalate.
+    it("reads the canonical conclusion lines, never body emoji (REV-101/REV-102)", () => {
+      // The role's illustrative skeleton (all three emoji) is not a verdict.
       expect(
         computeValidateVerdict(
-          green,
-          "## Validation Gate Report\n\n- 🔴 QA finding\n🛑 BLOCKED — hmm\n\n### Overall gate: 🟢 PASS"
+          `### Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION\n${AUDIT_STATUS_PASS}`
         )
       ).toBe("pass");
-      // The consolidation template's own three-emoji gate line reads 🟢 first.
-      expect(computeValidateVerdict(green, VALIDATE_STEP_CONSOLIDATION)).toBe("pass");
-
-      // The canonical line still escalates — the synthesis may raise, not lower.
-      expect(computeValidateVerdict(green, "### Overall gate: 🟡 PASS WITH WARNINGS")).toBe(
-        "warning"
-      );
-      expect(computeValidateVerdict(green, "### Overall gate: 🔴 BLOCKED")).toBe("blocked");
-      // The last canonical line is the report's conclusion.
-      expect(
-        computeValidateVerdict(green, "### Overall gate: 🟢 PASS\n### Overall gate: 🔴 BLOCKED")
-      ).toBe("blocked");
-      // Never a downgrade.
+      // The report's own last canonical line decides.
       expect(
         computeValidateVerdict(
-          { ...green, security: AUDIT_STATUS_BLOCKED },
-          "### Overall gate: 🟢 PASS"
-        )
-      ).toBe("blocked");
-    });
-
-    it("reads the spec sub-verdict from its canonical fidelity line (REV-102)", () => {
-      const sub = (spec: string) =>
-        computeSubReportVerdict({
-          qa: AUDIT_STATUS_PASS,
-          spec,
-          security: AUDIT_STATUS_PASS,
-        });
-
-      // The role's illustrative skeleton (all three emoji) is not a verdict.
-      expect(sub("### Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION")).toBe(
-        "pass"
-      );
-      // The report's own last line decides.
-      expect(
-        sub(
           [
             "### Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION",
             "### Overall fidelity: 🟡 MINOR DRIFT",
+            AUDIT_STATUS_PASS,
           ].join("\n")
         )
       ).toBe("warning");
-      expect(sub("### Overall fidelity: 🔴 MAJOR DEVIATION")).toBe("blocked");
-      // A 🔴 bullet in the body no longer overrides the canonical line.
-      expect(sub("Notes: one 🔴 finding was dismissed.\n\n### Overall fidelity: 🟢 ALIGNED")).toBe(
-        "pass"
-      );
-      // No canonical line: the whole-body parser is still the fallback.
-      expect(sub("The implementation is SEMANTICALLY ALIGNED.")).toBe("pass");
-      expect(sub("unparseable prose")).toBe("blocked");
+      // A 🔴 bullet or a 🛑 line in the body does not override the canonical pair.
+      expect(
+        computeValidateVerdict(
+          `Notes: one 🔴 finding was dismissed.\n🛑 BLOCKED — hmm\n\n### Overall fidelity: 🟢 ALIGNED\n${AUDIT_STATUS_PASS}`
+        )
+      ).toBe("pass");
+      // No canonical fidelity line: the whole-body parser is the fallback.
+      expect(
+        computeValidateVerdict(`The implementation is SEMANTICALLY ALIGNED.\n${AUDIT_STATUS_PASS}`)
+      ).toBe("pass");
+      expect(computeValidateVerdict("unparseable prose")).toBe("blocked");
     });
   });
 

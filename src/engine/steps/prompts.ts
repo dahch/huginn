@@ -9,18 +9,11 @@ import {
   COMMAND_REVIEW,
   COMMAND_DOC_SYNC,
   COMMAND_COMMIT_ALL,
-  VALIDATE_STEP_QA_TASK,
   VALIDATE_STEP_SPEC_TASK,
-  VALIDATE_STEP_SECURITY_TASK,
-  VALIDATE_STEP_CONSOLIDATION,
-  VALIDATE_STEP_GATE_LOGIC,
-  VALIDATE_STEP_HANDOFF,
 } from "./instructions.js";
 import {
-  auditOnlyGuardrails,
   auditStatusContract,
   boundEmbedded,
-  createNonce,
   diffRange,
   embedFile,
   embedUntrusted,
@@ -346,86 +339,43 @@ export function diagnoseFindingsPrompt(
 }
 
 // ---------------------------------------------------------------------------
-// validateStep — huginn-orchestrated qa → spec-auditor → security → synthesis
+// validateStep — one increment audit
 // ---------------------------------------------------------------------------
 
-/** Sub-prompt 1: the qa agent in audit-only mode (writes no tests). */
-export function validateStepQaPrompt(ctx: StepContext): string {
-  const auditOnly = extractFence(fillValidationTokens(ctx, VALIDATE_STEP_QA_TASK));
-  return joinBlocks(
-    ROLE_QA,
-    auditOnly,
-    auditOnlyGuardrails(),
-    auditStatusContract(),
-    acceptanceAuditBlock(ctx, "audit each one against the implementation and report uncovered criteria"),
-    repositoryState(ctx),
-  );
-}
-
 /**
- * Sub-prompt 2: the spec-auditor agent scoped to this iteration, with the same
- * single-marker contract the qa/security sub-prompts carry (REV-102) — without
- * it the auditor tends to echo the role's `🟢 … / 🟡 … / 🔴 …` skeleton and
- * permanently blocks the gate.
+ * `VALIDATE_STEP` — one increment audit instead of four turns.
+ *
+ * The spec-auditor answers both questions the gate needs in one report: is each
+ * acceptance criterion implemented and observable, and does the increment's diff
+ * deviate from the spec/adr/plan (omissions, additions, substitutions)? QA and
+ * security are not re-run here — `TEST_MODULE` and `SECURE_CHECK` already own
+ * them — and huginn computes the gate from the report's two mandatory markers.
  */
-export function validateStepSpecPrompt(ctx: StepContext): string {
+export function validateStepPrompt(ctx: StepContext): string {
   const task = extractFence(fillValidationTokens(ctx, VALIDATE_STEP_SPEC_TASK));
-  return joinBlocks(ROLE_SPEC_AUDITOR, task, fidelityContract());
-}
-
-/** Sub-prompt 3: the security agent with a scoped diff (test files excluded). */
-export function validateStepSecurityPrompt(ctx: StepContext): string {
-  const task = extractFence(fillValidationTokens(ctx, VALIDATE_STEP_SECURITY_TASK));
-  return joinBlocks(ROLE_SECURITY, task, auditStatusContract());
-}
-
-export interface ValidateStepReports {
-  qa: string;
-  spec: string;
-  security: string;
-}
-
-/** The three sub-prompts validateStep runs before synthesis. */
-export function validateStepSubPrompts(ctx: StepContext): [string, string, string] {
-  return [validateStepQaPrompt(ctx), validateStepSpecPrompt(ctx), validateStepSecurityPrompt(ctx)];
-}
-
-/**
- * Final synthesis prompt: the reviewing role receives the three reports and emits
- * the consolidated Validation Gate Report, ending on the exact gate line and
- * handoff marker the engine's `gate.ts` parses.
- */
-export function validateStepSynthesisPrompt(ctx: StepContext, reports: ValidateStepReports): string {
-  // One nonce for the whole prompt, one delimited block per report: the reports
-  // are model output echoing repository content, so each is bounded, sanitized
-  // and clearly marked as data. Function replacements keep `$&`/`$1` inside an
-  // injected report from being expanded by `String.replace` (SEC-002/REV-105).
-  const nonce = createNonce();
-  const embedReport = (label: string, report: string): string =>
-    embedUntrusted(label, boundEmbedded(report), { nonce });
-  const consolidated = fillValidationTokens(ctx, VALIDATE_STEP_CONSOLIDATION)
-    .replace("<full qa output>", () => embedReport("qa audit report", reports.qa))
-    .replace("<full spec-auditor output>", () =>
-      embedReport("spec audit report", reports.spec),
-    )
-    .replace("<full security output>", () =>
-      embedReport("security audit report", reports.security),
-    );
-
-  const exactOutput = [
-    "## Required output (exact)",
-    "Produce the consolidated **Validation Gate Report** above.",
+  return joinBlocks(
+    ROLE_SPEC_AUDITOR,
+    [
+      "## Task: audit this iteration's increment",
+      "",
+      "Answer two questions in one report:",
+      "1. For each acceptance criterion below, is it implemented, observable and exercised by this increment?",
+      "2. Does the increment's diff deviate from the spec/adr/plan — omissions, additions or substitutions?",
+      "Evaluate fidelity to intent only; do not review code quality, style or performance.",
+    ].join("\n"),
+    task,
+    acceptanceAuditBlock(ctx, "verify each one against the implementation"),
+    "## Spec",
+    embedFile(ctx.specPath, "spec", ctx.projectPath),
     "",
-    "For each phase result row print EXACTLY one status emoji, and then print EXACTLY ONE overall gate line:",
-    "- `### Overall gate: 🟢 PASS`",
-    "- `### Overall gate: 🟡 PASS WITH WARNINGS`",
-    "- `### Overall gate: 🔴 BLOCKED`",
+    "## ADR",
+    embedFile(ctx.adrPath, "adr", ctx.projectPath),
     "",
-    "End the report with EXACTLY ONE of these lines, and nothing after it:",
-    "- `✅ AUTO-APPROVED — no action required, continuing to next step.`",
-    "- `⚠️ REVIEW REQUESTED — address the items above before continuing.`",
-    "- `🛑 BLOCKED — do not proceed until issues are resolved and /validate-step is re-run.`",
-  ].join("\n");
-
-  return joinBlocks(ROLE_REVIEWING, consolidated, VALIDATE_STEP_GATE_LOGIC, exactOutput, VALIDATE_STEP_HANDOFF);
+    "## Diff range",
+    diffRange(ctx),
+    "",
+    "## Current repository state",
+    repositoryState(ctx),
+    joinBlocks(fidelityContract(), auditStatusContract()),
+  );
 }

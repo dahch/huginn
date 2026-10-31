@@ -54,36 +54,18 @@ function makeCfg(overrides: Partial<RunConfig> = {}): RunConfig {
 
 /**
  * A passing report for the huginn-orchestrated `VALIDATE_STEP` gate (REQ-7). The
- * gate is now a plain prompt (three audits + synthesis), so the mock routes on
- * the synthesis prompt's text instead of on a slash-command name.
+ * gate is one increment audit, and huginn imposes the canonical gate line and
+ * handoff marker itself (REQ-60).
  */
 const GATE_PASS_REPORT =
   "## Validation Gate Report\n\n### Overall gate: 🟢 PASS\n\n✅ AUTO-APPROVED — no action required, continuing to next step.";
 
-/**
- * The deterministic `VALIDATE_STEP` sub-reports (REV-003 / M-4): the qa/security
- * steps carry an `### Audit status:` line and the spec step an
- * `### Overall fidelity:` line, so huginn's fail-closed merge sees green.
- */
-const QA_PASS_REPORT = "QA-AUDIT-RESPONSE\n\n### Audit status: 🟢 PASS";
-const SPEC_PASS_REPORT = "SPEC-AUDITOR-RESPONSE\n\n### Overall fidelity: 🟢 ALIGNED";
-const SECURITY_PASS_REPORT = "SECURITY-RESPONSE\n\n### Audit status: 🟢 PASS";
+/** The single increment audit's reply: both mandatory conclusion lines. */
+const VALIDATE_STEP_PASS_REPORT =
+  "VALIDATE-RESPONSE\n\n### Overall fidelity: 🟢 ALIGNED\n\n### Audit status: 🟢 PASS";
 
-function isValidateStepSynthesis(text: string): boolean {
-  return text.includes("Validation Gate Report");
-}
-
-/**
- * The deterministic sub-report reply for a VALIDATE_STEP sub-prompt, or `null`
- * when the prompt is not one of them. Matched on strings unique to each task so
- * the ordinary TEST_MODULE / SECURE_CHECK roles (which mention the same words)
- * are not misrouted.
- */
-function validateStepSubReply(text: string): string | null {
-  if (text.includes("AUDIT-ONLY MODE — do NOT write")) return QA_PASS_REPORT;
-  if (text.includes("scope restriction")) return SECURITY_PASS_REPORT;
-  if (text.includes("Audit semantic alignment between")) return SPEC_PASS_REPORT;
-  return null;
+function isValidateStepPrompt(text: string): boolean {
+  return text.includes("## Task: audit this iteration's increment");
 }
 
 function makeClient(promptImpl: () => Promise<unknown>): OpencodeClient {
@@ -97,12 +79,8 @@ function makeClient(promptImpl: () => Promise<unknown>): OpencodeClient {
       command: async () => ({ info: { id: "msg", error: undefined }, parts: [{ type: "text", text: GATE_PASS_REPORT }] }),
       prompt: async (params: { body?: { parts?: Array<{ text?: string }> } }) => {
         const text = params?.body?.parts?.[0]?.text ?? "";
-        if (isValidateStepSynthesis(text)) {
-          return { info: { id: "msg_gate", error: undefined }, parts: [{ type: "text", text: GATE_PASS_REPORT }] };
-        }
-        const sub = validateStepSubReply(text);
-        if (sub) {
-          return { info: { id: "msg_sub", error: undefined }, parts: [{ type: "text", text: sub }] };
+        if (isValidateStepPrompt(text)) {
+          return { info: { id: "msg_gate", error: undefined }, parts: [{ type: "text", text: VALIDATE_STEP_PASS_REPORT }] };
         }
         return promptImpl();
       },
@@ -147,9 +125,9 @@ function makeCapturingClient(): {
         calls.prompt.push(params);
         const body = params.body as { parts?: Array<{ text?: string }> } | undefined;
         const text = body?.parts?.[0]?.text ?? "";
-        const reply = isValidateStepSynthesis(text)
-          ? GATE_PASS_REPORT
-          : validateStepSubReply(text) ?? '{"status":"pass","summary":"ok","actionItems":[]}';
+        const reply = isValidateStepPrompt(text)
+          ? VALIDATE_STEP_PASS_REPORT
+          : '{"status":"pass","summary":"ok","actionItems":[]}';
         return {
           info: { id: "msg", error: undefined },
           parts: [{ type: "text", text: reply }],
@@ -188,17 +166,8 @@ function makeMockRuntime(onPrompt?: (text: string) => void): MockRuntime {
     async prompt(text: string) {
       prompts.push(text);
       onPrompt?.(text);
-      if (text.includes("Validation Gate Report")) {
-        return { messageId: "gate", text: GATE_PASS_REPORT };
-      }
-      if (text.includes("AUDIT-ONLY MODE — do NOT write")) {
-        return { messageId: "qa", text: `QA-AUDIT-RESPONSE\n\n### Audit status: 🟢 PASS` };
-      }
-      if (text.includes("scope restriction")) {
-        return { messageId: "security", text: `SECURITY-RESPONSE\n\n### Audit status: 🟢 PASS` };
-      }
-      if (text.includes("Audit semantic alignment between")) {
-        return { messageId: "spec", text: "SPEC-AUDITOR-RESPONSE\n\n### Overall fidelity: 🟢 ALIGNED" };
+      if (isValidateStepPrompt(text)) {
+        return { messageId: "gate", text: VALIDATE_STEP_PASS_REPORT };
       }
       return { messageId: "default", text: '{"status":"pass","summary":"ok","actionItems":[]}' };
     },
@@ -371,7 +340,7 @@ describe("CycleEngine run loop", () => {
     expect(exe?.summary).not.toBe("");
   });
 
-  it("runs a full cycle through an IAgentRuntime (ctx.session) and issues all four VALIDATE_STEP prompts", async () => {
+  it("runs a full cycle through an IAgentRuntime (ctx.session) with ONE VALIDATE_STEP prompt", async () => {
     const { runtime, prompts } = makeMockRuntime();
 
     const engine = new CycleEngine({ cfg: makeCfg(), runtime, plan: makePlan() });
@@ -380,27 +349,21 @@ describe("CycleEngine run loop", () => {
     expect(outcome.reason).toBe("completed");
     expect(engine.getState().history.some((h) => h.phase === "VALIDATE_STEP" && h.verdict === "pass")).toBe(true);
 
-    // qa (AUDIT-ONLY) → spec-auditor → security → synthesis, all through the session.
-    const qa = prompts.find((p) => p.includes("AUDIT-ONLY MODE — do NOT write"));
-    const spec = prompts.find((p) => p.includes("Audit semantic alignment between"));
-    const security = prompts.find((p) => p.includes("scope restriction"));
-    const synthesis = prompts.find((p) => p.includes("Validation Gate Report"));
-
-    expect(qa).toBeDefined();
-    expect(qa).toContain("### Audit status:");
-    expect(spec).toBeDefined();
-    expect(spec).toContain("### Overall fidelity:");
-    expect(security).toBeDefined();
-    expect(security).toContain("### Audit status:");
-    expect(synthesis).toBeDefined();
-    expect(synthesis).toContain("### Overall gate:");
+    // One increment audit carries both mandatory contracts; qa and security are
+    // their own phases (TEST_MODULE / SECURE_CHECK), not sub-prompts.
+    const audits = prompts.filter((p) => isValidateStepPrompt(p));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toContain("### Overall fidelity:");
+    expect(audits[0]).toContain("### Audit status:");
+    expect(prompts.some((p) => p.includes("AUDIT-ONLY MODE — do NOT write"))).toBe(false);
+    expect(prompts.some((p) => p.includes("scope restriction"))).toBe(false);
   });
 
   it("blocks a read-only phase that modifies the working tree (REV-001)", async () => {
     // Simulate a misbehaving auditor: the VALIDATE_STEP synthesis prompt writes
     // a repository file. Read-only enforcement must catch it and fail closed.
     const { runtime } = makeMockRuntime((text) => {
-      if (text.includes("Validation Gate Report")) {
+      if (isValidateStepPrompt(text)) {
         writeFileSync(join(dir, "sneaky.ts"), "export const x: number = 1;\n");
       }
     });
@@ -423,7 +386,7 @@ describe("CycleEngine run loop", () => {
     // guard must treat that as a violation ("cannot prove nothing changed"),
     // never as "unchanged".
     const { runtime } = makeMockRuntime((text) => {
-      if (text.includes("Validation Gate Report")) {
+      if (isValidateStepPrompt(text)) {
         rmSync(join(dir, ".git"), { recursive: true, force: true });
       }
     });
@@ -446,7 +409,7 @@ describe("CycleEngine run loop", () => {
     // fail the guard. The phase also reads the repository normally.
     writeFileSync(join(dir, "plan.md"), "# Plan\n\n## Iteration 1 — Scaffold\n\nwork\n");
     const { runtime } = makeMockRuntime((text) => {
-      if (!text.includes("Validation Gate Report")) return;
+      if (!isValidateStepPrompt(text)) return;
       expect(readFileSync(join(dir, "plan.md"), "utf8")).toContain("Iteration 1");
       writeFileSync(join(dir, ".harness", "reports-qa.md"), "report\n");
       mkdirSync(join(dir, "coverage"), { recursive: true });
@@ -472,7 +435,7 @@ describe("CycleEngine run loop", () => {
     writeFileSync(join(dir, "tsconfig.tsbuildinfo"), "{}\n"); // pre-existing: rewrite it
     writeFileSync(join(dir, ".eslintcache"), "[]\n");
     const { runtime } = makeMockRuntime((text) => {
-      if (!text.includes("Validation Gate Report")) return;
+      if (!isValidateStepPrompt(text)) return;
       writeFileSync(join(dir, "tsconfig.tsbuildinfo"), '{"version":1}\n');
       writeFileSync(join(dir, ".eslintcache"), '[{"filePath":"x"}]\n');
       writeFileSync(join(dir, "junit.xml"), "<testsuite/>\n");
@@ -496,7 +459,7 @@ describe("CycleEngine run loop", () => {
   it("does not block a read-only phase for a real repository write it still has to catch (REV-001)", async () => {
     // The artifacts above must not have widened the filter into uselessness.
     const { runtime } = makeMockRuntime((text) => {
-      if (!text.includes("Validation Gate Report")) return;
+      if (!isValidateStepPrompt(text)) return;
       mkdirSync(join(dir, "src"), { recursive: true });
       writeFileSync(join(dir, "src", "hidden.ts"), "export const x: number = 1;\n");
     });
@@ -549,17 +512,8 @@ describe("CycleEngine run loop", () => {
     const session: IAgentSession = {
       id: "ses_hostile",
       async prompt(text: string) {
-        if (text.includes("Validation Gate Report")) {
-          return { messageId: "gate", text: GATE_PASS_REPORT };
-        }
-        if (text.includes("AUDIT-ONLY MODE — do NOT write")) {
-          return { messageId: "qa", text: QA_PASS_REPORT };
-        }
-        if (text.includes("scope restriction")) {
-          return { messageId: "security", text: SECURITY_PASS_REPORT };
-        }
-        if (text.includes("Audit semantic alignment between")) {
-          return { messageId: "spec", text: SPEC_PASS_REPORT };
+        if (isValidateStepPrompt(text)) {
+          return { messageId: "gate", text: VALIDATE_STEP_PASS_REPORT };
         }
         if (text.includes("Execute the following iteration")) {
           return { messageId: "exe", text: hostile };
@@ -753,7 +707,7 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
       body?: { parts?: Array<{ text?: string }> };
     }) => {
       const text = params.body?.parts?.[0]?.text ?? "";
-      if (isValidateStepSynthesis(text)) validatePrompts.push(text);
+      if (isValidateStepPrompt(text)) validatePrompts.push(text);
       return routedPrompt(params);
     };
 
@@ -1120,9 +1074,9 @@ describe("CycleEngine sandbox integration (AC-17.6)", () => {
             parts: [
               {
                 type: "text",
-                text: isValidateStepSynthesis(text)
-                  ? GATE_PASS_REPORT
-                  : validateStepSubReply(text) ?? '{"status":"pass","summary":"ok","actionItems":[]}',
+                text: isValidateStepPrompt(text)
+                  ? VALIDATE_STEP_PASS_REPORT
+                  : '{"status":"pass","summary":"ok","actionItems":[]}',
               },
             ],
           };
@@ -1362,13 +1316,10 @@ describe("judge turn elision", () => {
           const body = params.body as { parts?: Array<{ text?: string }> } | undefined;
           const text = body?.parts?.[0]?.text ?? "";
           let reply = "REPORT\n\n### Audit status: 🟢 PASS";
-          if (isValidateStepSynthesis(text)) {
-            reply = GATE_PASS_REPORT;
+          if (isValidateStepPrompt(text)) {
+            reply = VALIDATE_STEP_PASS_REPORT;
           } else {
-            const sub = validateStepSubReply(text);
-            if (sub) {
-              reply = sub;
-            } else if (text.includes("strict validation judge")) {
+            if (text.includes("strict validation judge")) {
               judgePrompts.push(text);
               reply = '{"status":"pass","summary":"ok","actionItems":[]}';
             }

@@ -23,10 +23,8 @@ import {
   commitAllPrompt,
   diagnoseFindingsPrompt,
   fixFindingsPrompt,
-  validateStepSubPrompts,
-  validateStepSynthesisPrompt,
+  validateStepPrompt,
   parseAuditStatus,
-  type ValidateStepReports,
 } from "./steps/index.js";
 import { parseSpecAuditVerdict } from "./gate";
 import { formatVerificationReport, runVerification } from "./verify.js";
@@ -341,52 +339,41 @@ export function parseCanonicalFidelityVerdict(text: string): GateVerdict | null 
 }
 
 /**
- * Deterministic, fail-closed verdict from the three sub-reports (REV-003 / M-4):
- * an empty or unreadable (no parseable marker) sub-report, or any blocked signal
- * from spec/qa/security, is `blocked`; any warning signal is `warning`; all green
- * is `pass`.
+ * Deterministic, fail-closed verdict for the ONE validate-step report
+ * (REV-003 / M-4): both mandatory conclusion lines are required — an empty
+ * report, or a missing/unreadable `### Overall fidelity:` or `### Audit status:`
+ * marker, is `blocked`; any blocked signal is `blocked`; any warning is
+ * `warning`; only two green lines pass.
  *
- * The spec sub-report is read from its canonical
- * `### Overall fidelity:` line when it has one (REV-102): the spec-auditor role
- * instructions' illustrative skeleton carries all three emoji, and the
- * whole-body parser in gate.ts would read it as a MAJOR DEVIATION. The
- * whole-body parser is kept as the fallback for a report that omits the line.
+ * Each line is read from its canonical conclusion when the report has one
+ * (REV-101/REV-102): the role instructions' illustrative skeletons carry all
+ * three emoji, so the whole-body parsers are only the fallback for a report that
+ * omits the line.
  */
-export function computeSubReportVerdict(reports: ValidateStepReports): GateVerdict {
-  if (reports.qa.trim() === "" || reports.spec.trim() === "" || reports.security.trim() === "") {
-    return "blocked";
-  }
-  const qa = parseAuditStatus(reports.qa);
-  const spec = parseCanonicalFidelityVerdict(reports.spec) ?? parseSpecAuditVerdict(reports.spec);
-  const security = parseAuditStatus(reports.security);
-  // A report with no parseable status marker is unreadable → fail closed.
-  if (qa === null || spec === null || security === null) return "blocked";
-  if (qa === "blocked" || spec === "blocked" || security === "blocked") return "blocked";
-  if (qa === "warning" || spec === "warning" || security === "warning") return "warning";
-  return "pass";
+export function computeValidateVerdict(report: string): GateVerdict {
+  if (report.trim() === "") return "blocked";
+  const fidelity = parseFidelityVerdict(report);
+  const audit = parseAuditStatus(report);
+  if (fidelity === null || audit === null || audit === "skipped") return "blocked";
+  return severest(fidelity, audit);
 }
 
 /**
- * Merged `VALIDATE_STEP` verdict (REV-003 / M-4). The deterministic sub-report
- * verdict (see {@link computeSubReportVerdict}) is authoritative and fail-closed;
- * the synthesis is advisory and may only *escalate* it (e.g. a cross-phase
- * contradiction the reviewer spotted), never downgrade it. So a synthesis that
- * says 🟢 while security reports 🔴 stays blocked, but a 🟡 synthesis raises an
- * otherwise-green result to warning.
+ * The report's fidelity verdict.
  *
- * Only the synthesis' **canonical `### Overall gate:` line** is read (REV-101):
- * the consolidation template huginn itself sends contains the three-emoji gate
- * skeleton and 🔴/🛑 bullets, so escalating on any emoji in the body would turn a
- * model that echoes the template into a spurious BLOCKED.
+ * The whole-body `parseSpecAuditVerdict` escalates on any 🟢/🟡/🔴 glyph, so on
+ * its own it would read the `### Audit status: 🟢 PASS` line as a green fidelity
+ * verdict and let a report that never audited fidelity pass. The fallback is
+ * therefore only consulted when the report actually talks about fidelity.
  */
-export function computeValidateVerdict(
-  reports: ValidateStepReports,
-  synthesis = "",
-): GateVerdict {
-  const subVerdict = computeSubReportVerdict(reports);
-  const synthVerdict = parseCanonicalGateLineVerdict(synthesis);
-  if (synthVerdict === null) return subVerdict;
-  return severest(subVerdict, synthVerdict);
+function parseFidelityVerdict(report: string): GateVerdict | null {
+  const canonical = parseCanonicalFidelityVerdict(report);
+  if (canonical !== null) return canonical;
+  if (/overall fidelity|major deviation|minor drift|\baligned\b/i.test(report)) {
+    const fallback = parseSpecAuditVerdict(report);
+    return fallback === "skipped" ? null : fallback;
+  }
+  return null;
 }
 
 const GATE_LINE_RE = /^[#>\s]*Overall gate:.*$/gim;
@@ -412,62 +399,36 @@ export function enforceValidateVerdict(text: string, verdict: GateVerdict): stri
 /**
  * `VALIDATE_STEP` — huginn-orchestrated gate (REQ-7).
  *
- * Instead of delegating to the installed `/validate-step` slash command (which
- * opencode resolved through the Task tool and subprocess runtimes degraded to
- * literal text), huginn runs the three audits itself and then synthesizes the
- * consolidated report:
- *
- *   1. qa in `AUDIT-ONLY MODE`
- *   2. spec-auditor
- *   3. security
- *   4. a synthesis prompt that receives the three reports and emits the
- *      `### Overall gate:` line plus the trailing handoff marker.
- *
- * The returned text is the synthesis output with huginn's canonical gate line
- * and handoff marker imposed on it (see {@link enforceValidateVerdict}), so the
+ * One increment audit answers the two questions a gate needs — acceptance
+ * coverage and spec fidelity — and ends on the two mandatory markers
+ * (`### Overall fidelity:` and `### Audit status:`). huginn merges them itself
+ * (see {@link computeValidateVerdict}) and imposes the canonical gate line and
+ * handoff marker on the report (see {@link enforceValidateVerdict}), so the
  * model's own verdict wording survives only as prose. The effective verdict
- * travels as the structural `authoritativeVerdict` huginn computed itself
- * (REV-101), and the engine gates on that field — never on the text.
+ * travels as the structural `authoritativeVerdict` (REV-101) and the engine
+ * gates on that field — never on the text.
+ *
+ * QA and security are not re-run here: `TEST_MODULE` and `SECURE_CHECK` own
+ * those phases, and the previous four-turn orchestration only paid for them
+ * twice.
  */
 export async function validateStep(ctx: PhaseContext): Promise<PhaseOutput> {
-  // 1. Contract verification (fail closed — REV-114): a real violation, or a
-  // verifier that could not run, short-circuits the whole sub-gate.
+  // Contract verification (fail closed — REV-114): a real violation, or a
+  // verifier that could not run, short-circuits the whole gate.
   const contractFailure = verifyContractsOrFail(ctx.projectPath, ctx.modules);
   if (contractFailure) return contractFailure;
 
-  // 2. The three audits, then a synthesis that consolidates them.
-  const [qaPrompt, specPrompt, securityPrompt] = validateStepSubPrompts(ctx);
-  const subOpts = {
+  const result = await promptWithContext(ctx, {
+    text: validateStepPrompt(ctx),
     model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
-  };
-  const qa = await promptWithContext(ctx, { text: qaPrompt, ...subOpts });
-  const spec = await promptWithContext(ctx, { text: specPrompt, ...subOpts });
-  const security = await promptWithContext(ctx, { text: securityPrompt, ...subOpts });
-
-  const synthesis = validateStepSynthesisPrompt(ctx, {
-    qa: qa.text,
-    spec: spec.text,
-    security: security.text,
   });
-  const synthesisResult = await promptWithContext(ctx, { text: synthesis, ...subOpts });
 
-  // huginn computes the gate verdict deterministically from the three reports
-  // (REV-003 / M-4) — it is never left to the synthesis model. The synthesis is
-  // advisory: it may escalate but never downgrade the fail-closed result.
-  const verdict = computeValidateVerdict(
-    { qa: qa.text, spec: spec.text, security: security.text },
-    synthesisResult.text,
-  );
-
-  // The synthesis is produced for the human report, but huginn imposes the
-  // result: the returned text carries exactly one coherent `### Overall gate:`
-  // line and one handoff marker, so the engine (not the model) decides. The
-  // effective verdict travels as a structured field (REV-101).
+  const verdict = computeValidateVerdict(result.text);
   return {
-    ...synthesisResult,
-    text: enforceValidateVerdict(synthesisResult.text, verdict),
+    ...result,
+    text: enforceValidateVerdict(result.text, verdict),
     authoritativeVerdict: verdict,
   };
 }

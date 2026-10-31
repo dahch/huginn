@@ -12,8 +12,7 @@ import {
   secureCheckPrompt,
   specAuditPrompt,
   testModulePrompt,
-  validateStepSubPrompts,
-  validateStepSynthesisPrompt,
+  validateStepPrompt,
 } from "./prompts.js";
 import { MAX_EMBEDDED_OUTPUT } from "./context.js";
 import type { StepContext } from "./types.js";
@@ -112,7 +111,7 @@ describe("step prompt builders (REQ-7)", () => {
       startLine: 1,
     };
     expect(testModulePrompt(ctx({ iteration }))).toContain("REQ-1: /health returns 200");
-    expect(validateStepSubPrompts(ctx({ iteration }))[0]).toContain("REQ-1: /health returns 200");
+    expect(validateStepPrompt(ctx({ iteration }))).toContain("REQ-1: /health returns 200");
   });
 
   it("executePrompt neutralises a delimiter forgery hidden in the plan", () => {
@@ -232,74 +231,29 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).not.toContain("Run the verification commands before finishing");
   });
 
-  it("validateStep sub-prompts: qa is AUDIT-ONLY, then spec-auditor, then security", () => {
-    const [qa, spec, security] = validateStepSubPrompts(ctx());
-    expect(qa).toContain("AUDIT-ONLY MODE");
-    expect(qa).toContain("do NOT generate new tests");
-    expect(qa).toContain("src/engine");
-    // The audit must not write artifacts, or the read-only guard false-positives.
-    expect(qa).toContain("Audit-only guardrails");
-    expect(qa).toContain("--ci");
-    expect(qa).toContain("never update snapshots");
-    expect(qa).toContain("--coverage.enabled=false");
-
-    expect(spec).toContain("Audit semantic alignment between");
-    // REV-102: the same single-marker contract qa/security carry.
-    expect(spec).toContain("### Overall fidelity:");
-    expect(spec).toContain("overall fidelity (mandatory)");
-    expect(spec).toContain("never all three");
-    expect(spec).toContain("never the");
-    expect(spec).toContain("`🟢 … / 🟡 … / 🔴 …` skeleton");
-
-    expect(security).toContain("scope restriction");
-    expect(security).toContain("Security Audit Report");
+  it("validateStepPrompt audits the increment and carries both mandatory contracts", () => {
+    const p = validateStepPrompt(ctx());
+    expect(p).toContain("You are a spec-to-implementation contract auditor");
+    expect(p).toContain("## Task: audit this iteration's increment");
+    expect(p).toContain("Audit semantic alignment between");
+    expect(p).toContain("REQ-1: do the thing");
+    expect(p).toContain("## ADR");
+    expect(p).toContain("Diff range");
+    expect(p).toContain("Repository state");
+    // Both conclusion lines are mandatory: computeValidateVerdict fails closed
+    // when either is missing.
+    expect(p).toContain("### Overall fidelity:");
+    expect(p).toContain("### Audit status:");
+    expect(p).toContain("never all three");
+    // The bare skeleton must never be echoed as a verdict.
+    expect(p).toContain("never the");
+    expect(p).toContain("`🟢 … / 🟡 … / 🔴 …` skeleton");
   });
 
-  it("synthesis prompt embeds the three reports and the exact gate + handoff contract", () => {
-    const p = validateStepSynthesisPrompt(ctx(), {
-      qa: "QA-REPORT-TEXT",
-      spec: "SPEC-REPORT-TEXT",
-      security: "SEC-REPORT-TEXT",
-    });
-    expect(p).toContain("## Validation Gate Report");
-    expect(p).toContain("QA-REPORT-TEXT");
-    expect(p).toContain("SPEC-REPORT-TEXT");
-    expect(p).toContain("SEC-REPORT-TEXT");
-    expect(p).toContain("### Overall gate: 🟢 PASS");
-    expect(p).toContain("### Overall gate: 🟡 PASS WITH WARNINGS");
-    expect(p).toContain("### Overall gate: 🔴 BLOCKED");
-    // The exact trailing handoff lines the gate parses.
-    expect(p).toContain("✅ AUTO-APPROVED — no action required, continuing to next step.");
-    expect(p).toContain("⚠️ REVIEW REQUESTED — address the items above before continuing.");
-    expect(p).toContain("🛑 BLOCKED — do not proceed until issues are resolved and /validate-step is re-run.");
-  });
-
-  it("synthesis prompt bounds each sub-report and delimiters them as untrusted data", () => {
-    const huge = "x".repeat(MAX_EMBEDDED_OUTPUT + 100);
-    const p = validateStepSynthesisPrompt(ctx(), { qa: huge, spec: "s", security: "z" });
-
-    expect(p.match(/<<<BEGIN UNTRUSTED-/g) ?? []).toHaveLength(3);
-    expect(p).toContain("...[truncated]");
-    // The whole prompt stays close to the per-report bound, not 3x it.
-    expect(p.length).toBeLessThan(3 * huge.length + 20_000);
-  });
-
-  it("synthesis prompt uses one shared nonce per prompt (a report cannot guess it)", () => {
-    const p = validateStepSynthesisPrompt(ctx(), { qa: "a", spec: "b", security: "c" });
-    const nonces = new Set(
-      [...p.matchAll(/<<<BEGIN UNTRUSTED-([0-9a-f]+)/g)].map((m) => m[1]),
-    );
-    expect(nonces.size).toBe(1);
-  });
-
-  it("synthesis prompt inserts reports literally, without `$&` replacement expansion (REV-105)", () => {
-    const p = validateStepSynthesisPrompt(ctx(), {
-      qa: "cost is $& and $1 and $`",
-      spec: "s",
-      security: "z",
-    });
-    expect(p).toContain("cost is $& and $1 and $`");
-    // A string-pattern `replace` would have expanded `$&` to the placeholder.
-    expect(p).not.toContain("cost is <full qa output>");
+  it("validateStepPrompt does not re-run qa or security (they are their own phases)", () => {
+    const p = validateStepPrompt(ctx());
+    expect(p).not.toContain("AUDIT-ONLY MODE");
+    expect(p).not.toContain("Security Audit Report");
+    expect(p).not.toContain("Consolidation");
   });
 });
