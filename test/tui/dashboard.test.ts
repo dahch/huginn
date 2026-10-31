@@ -214,6 +214,66 @@ describe("Dashboard promotion notice (AC-49.3)", () => {
   });
 });
 
+describe("PipelineCard order (REV-6202)", () => {
+  const ANSI = /\u001B\[[0-9;?]*[A-Za-z]/g;
+
+  async function renderPipeline(profile: string): Promise<string> {
+    const stdout = new PassThrough() as any;
+    stdout.columns = 120;
+    stdout.rows = 40;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const state = {
+      currentIteration: 1,
+      currentPhase: "VERIFY",
+    } as unknown as HarnessState;
+    const engine = {
+      getState: () => state,
+      runtime: {
+        id: "commandcode",
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+      },
+      resolveDecision: () => {},
+      pause: () => {},
+      resume: () => {},
+      requestAbort: () => {},
+    } as unknown as CycleEngine;
+    const cfg = {
+      projectPath: "/tmp/p",
+      thinker: "a/b",
+      executor: "c/d",
+      mode: "auto",
+      profile,
+    } as unknown as RunConfig;
+    const instance = render(React.createElement(Dashboard, { engine, cfg, autoExit: false }), {
+      stdout,
+      stdin: createMockStdin(),
+      patchConsole: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    instance.unmount();
+    return output.replace(ANSI, "");
+  }
+
+  it("follows the Huginn Cycle, which runs VERIFY right after EXECUTE", async () => {
+    const output = await renderPipeline("huginn");
+    const verify = output.indexOf(" VERIFY");
+    const validate = output.indexOf(" VALIDATE_STEP");
+    expect(verify).toBeGreaterThan(-1);
+    expect(validate).toBeGreaterThan(-1);
+    expect(verify).toBeLessThan(validate);
+  });
+
+  it("never lists a phase the active profile does not run", async () => {
+    const output = await renderPipeline("odd");
+    expect(output).toContain("EXECUTE");
+    expect(output).not.toContain("SPEC_AUDIT");
+    expect(output).not.toContain("SECURE_CHECK");
+  });
+});
+
 describe("LiveDashboard input sanitization (REV-004)", () => {
   it("filters out ANSI escape sequences and non-printable control characters", () => {
     const sanitizeInput = (input: string): string => {

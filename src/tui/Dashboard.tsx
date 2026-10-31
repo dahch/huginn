@@ -8,6 +8,7 @@ import { formatDurationSec, formatDurationTerse, formatUsage, verdictIcon, verdi
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import type { PromotionRecord } from "../state/schema";
+import { phasesForProfile, type ProfileName } from "../engine/profiles";
 import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
 import { TWO_RAVENS } from "../brand.js";
@@ -25,18 +26,6 @@ import {
   useRavenHeaderPlan,
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
-
-const BASE_PHASES = [
-  "SPEC_AUDIT",
-  "EXECUTE",
-  "VALIDATE_STEP",
-  "TEST_MODULE",
-  "SECURE_CHECK",
-  "REVIEW",
-  "DOC_SYNC",
-  "VERIFY",
-  "COMMIT_ALL",
-] as const;
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -454,6 +443,7 @@ export function Dashboard({
             phaseElapsed={phaseElapsed}
             spinner={spinner}
             height={middleHeight}
+            profile={cfg.profile}
           />
         </Box>
         <Box width={ui.verbose ? "65%" : "58%"} flexDirection="column">
@@ -654,15 +644,21 @@ function PipelineCard({
   phaseElapsed,
   spinner,
   height,
+  profile,
 }: {
   phases: Record<string, PhaseStatus>;
   currentPhase: string;
   phaseElapsed: number;
   spinner: string;
   height?: number;
+  /** The active methodology profile — it owns the order, not this panel. */
+  profile?: ProfileName;
 }) {
+  // The panel lists the phases the *active profile* runs, in the order it runs
+  // them. The registry order would show `VERIFY` last while the Huginn Cycle
+  // runs it right after `EXECUTE`, so an honest run read as an out-of-order one.
   const displayPhases: string[] = [];
-  for (const base of BASE_PHASES) {
+  for (const base of [...new Set<string>(phasesForProfile(profile))]) {
     displayPhases.push(base);
     for (const key of Object.keys(phases)) {
       if (key.startsWith("FIX") && !displayPhases.includes(key)) {
@@ -679,7 +675,7 @@ function PipelineCard({
       }
     }
   }
-  if (currentPhase.startsWith("FIX") && !displayPhases.includes(currentPhase)) {
+  if (!displayPhases.includes(currentPhase)) {
     displayPhases.push(currentPhase);
   }
 
