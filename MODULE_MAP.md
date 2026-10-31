@@ -18,7 +18,7 @@ canonical `SPEC.md` ones.
 | `src/engine/memory/`, `src/engine/steps/retrieval.ts` | REQ-64…REQ-66 |
 | `src/engine/sandbox.ts`, `src/engine/verify.ts` | REQ-56 |
 | `src/tui/*`, `src/headless.ts` | REQ-21, REQ-29, REQ-31, REQ-51, REQ-52 |
-| `src/engine/permissions.ts`, `src/engine/permissionPolicy.ts` | REQ-37, REQ-42, REQ-67 |
+| `src/engine/permissionPolicy.ts`, `src/engine/runtimeEvents.ts`, `src/engine/agent/drivers/opencode.ts` | REQ-37, REQ-42, REQ-67 |
 | `src/engine/liveMode.ts`, `src/engine/liveRepo.ts` | REQ-44, REQ-54 |
 | `src/state/liveSession.ts` | REQ-44, REQ-53 |
 | `src/engine/gitRepo.ts` | REQ-39 |

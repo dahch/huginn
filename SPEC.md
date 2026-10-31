@@ -305,6 +305,7 @@ The TUI must operate in an isolated Alternate Screen Buffer, scale dynamically t
 
 ### REQ-22: Decoupled Multi-Agent Runtime Architecture (`IAgentRuntime`)
 The execution cycle and live refinement loop must interact with AI coding agents strictly through an agnostic `IAgentRuntime` interface.
+> **Superseded by REQ-67.** The engines now consume `RuntimePort`/`RuntimeSession`. `IAgentRuntime` remains the CLI-shaped adapter contract behind `getAgentRuntime` and the shape `asRuntimePort` bridges; the requirements below record the interface as it was introduced.
 - **AC-22.1 (Runtime Abstraction)**: Defines `IAgentRuntime`:
   - `id: AgentTarget` (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`).
   - `name: string` (display label).
@@ -690,13 +691,13 @@ A subprocess runtime closes stdin after the prompt, so it can never consult hugi
   **kimi no flag at all** (its prompt mode rejects every permission switch and forces its own auto
   mode). Each flag lives next to its adapter and the registry reuses the same array instance, so the
   table and the runtime cannot drift.
-- **AC-42.2 (Fail closed)**: `assertPermissionModeSupported` makes `run`/`live` **exit 1** when
-  `--permissions ask|deny` is requested for any non-opencode runtime, naming the runtime and the
-  supported alternative; `LiveEngine.switchRuntime` refuses the same combination. An invalid
-  `--permissions` value (e.g. `denn`) exits 1 instead of falling back to `auto`.
-- **AC-42.3 (opencode keeps the native path)**: opencode continues to honour `auto`/`ask`/`deny`
-  through the engine's event subscriber (`src/engine/permissions.ts`); it is the only runtime for which
-  the subscriber exists.
+- **AC-42.2 (Fail closed)**: `assertPortPermissionModeSupported` makes `run`/`live` **exit 1** when
+  `--permissions ask|deny` is requested for a runtime whose `capabilities.permissions` is `none`,
+  naming it and the supported alternative; `LiveEngine.switchRuntime` refuses the same combination.
+  An invalid `--permissions` value (e.g. `denn`) exits 1 instead of falling back to `auto`.
+- **AC-42.3 (opencode keeps the native path)**: opencode honours `auto`/`ask`/`deny` through its
+  native `RuntimePort`: the session's `onPermission` (built by `permissionHandlerFor`) answers the
+  backend, and it is the only driver that declares `permissions: "interactive"`.
 
 ### REQ-43: Runtime Lineup — Devin, MiniMax Code, MiMo Code, and the Real CLI Shapes (plan REQ-11)
 - **AC-43.1 (13 targets)**: `AGENT_TARGETS` is `cursor`, `claude`, `opencode`, `devin`, `qwen`,
@@ -1010,12 +1011,13 @@ not about adding another methodology profile.
   (`failure: "failed"`, branch preserved) instead of guessing its index state.
 
 ### REQ-58: The native pi driver reports its own MCP servers
-- **AC-58.1 (Port and bridge)**: `RuntimePort` exposes optional `listMcpServers()` and `mcpStatus()`;
-  `toRuntimePort`/`toLegacyRuntime` forward them, and a driver that cannot see MCP still reports
-  `unverified: true` rather than a fabricated healthy report.
+- **AC-58.1 (Port surface)**: `RuntimePort` exposes optional `listMcpServers()` and `mcpStatus()`;
+  `toRuntimePort` forwards them for the CLI-only targets, and a driver that cannot see MCP (or omits
+  them) still yields `unverified: true` through `fetchMcpStatusWithTimeout`, never a fabricated
+  healthy report.
 - **AC-58.2 (Real listing + fast fallback)**: the pi driver runs `pi mcp list --json` in the project
   directory (bounded), parses `{ servers: [{ name, state, transport, scope, source, tools }] }` and
-  maps `connected`/`disabled`/`error`/`pending` honestly; `getMcpStatus()` reads
+  maps `connected`/`disabled`/`error`/`pending` honestly; `mcpStatus()` reads
   `~/.pi/agent/mcp.json` and `<project>/.pi/mcp.json` as the config fallback.
 - **AC-58.3 (Badge truth)**: `reportFromListings` sums the reported tool counts, so the badge can say
   `MCP: 🟢 2 connected (214 tools) · pi`; config-only discovery says `⚪ n configured`, never `none`

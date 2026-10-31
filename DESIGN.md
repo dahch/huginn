@@ -65,7 +65,7 @@ src/
 │   │   ├── index.ts            barrel export for runtime subsystem
 │   │   ├── genericTargets.ts  GENERIC_TARGET_SPECS: binary, argv, prompt channel, model flag and permission switch for every CLI-only target (M4b)
 │   │   ├── port.ts            RuntimeId/RuntimeCapabilities/RuntimePort: the driver-neutral contract (M4b split)
-│   │   ├── legacy-bridge.ts   toRuntimePort / toLegacyRuntime: adapters ⇄ port without changing behaviour
+│   │   ├── legacy-bridge.ts   toRuntimePort / asRuntimePort: bridge a CLI adapter into the port (no reverse bridge)
 │   │   └── adapters/
 │   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK); connected-provider discovery + `opencode models` fallback; sessionHistory = true
 │   │       ├── claude.ts       ClaudeRuntimeAdapter (Claude Code CLI / stdio)
@@ -93,7 +93,6 @@ src/
 │   ├── receipts.ts         frozen iteration evidence under .huginn/receipts/ + treeHash (used by the read-only guard) for rdd/strict-tdd (REQ-36)
 │   ├── questionBlock.ts    agent-agnostic `<<<HUGINN_QUESTION>>>` block parser + answer formatter (REQ-37)
 │   ├── decisionBroker.ts   FIFO queue of pending human/permission decisions
-│   ├── permissions.ts      opencode event subscription: permission handling + stream forwarding
 │   ├── planMode.ts         `huginn plan`: drafts spec/adr/plan via the thinker; exported prompt
 │   │                       builders + draft-format contract reused by live mode
 │   ├── liveMode.ts         LiveEngine: chat-refine → scope → draft → approve → handoff to CycleEngine; transcript replay, session persistence, resume/reattach, switchRuntime, getDiagnostics
@@ -190,8 +189,8 @@ flowchart TD
     MCP --> SRV["startMcpServer() (stdio)"]
     CHK --> TC["verifyTypeScriptContracts()"]
 
-    RUN --> SEV["subscribeToEvents()"]
-    SEV -- permission / stream events --> CE["CycleEngine"]
+    RUN --> PORT["getEnginePort() → RuntimePort"]
+    PORT -- session sink / onPermission / onQuestion --> CE["CycleEngine"]
     CE -- decision requests --> DB["DecisionBroker FIFO"]
     DB -- head surfaced --> FE{"TUI or headless"}
     FE -- choices --> DB
@@ -330,15 +329,16 @@ Key behaviors:
 Decisions come from multiple producers:
 
 1. The **engine** — `gate-blocked` escalations, `approve-draft`, `scope-extraction`, and `draft-format` decisions (`requestDecision`).
-2. The **event subscription** — `permission` and `question` requests in
-   `--permissions ask` mode (`subscribeToEvents` in `src/engine/permissions.ts`).
+2. The **runtime port** — `permission` and `question` requests in
+   `--permissions ask` mode, through the session's `onPermission`/`onQuestion`
+   (`createOpencodePort` in `src/engine/agent/drivers/opencode.ts`).
 
 Both funnel into one FIFO broker (`src/engine/decisionBroker.ts`):
 
 ```mermaid
 sequenceDiagram
     participant E as CycleEngine
-    participant P as permissions.ts
+    participant P as RuntimePort
     participant B as DecisionBroker
     participant U as TUI / headless
 
@@ -598,13 +598,13 @@ treated like any other gate — fail closed to a human decision
 The engine is single-threaded and awaits everything, but three sources of
 asynchrony interleave:
 
-1. **The opencode event stream** (`subscribeToEvents`) — a long-lived SSE loop
-   that can fire a `permission.updated` request *while* the engine awaits a
-   gate decision → this is exactly why the DecisionBroker exists. It also
-   forwards agent activity to the frontends: text/reasoning deltas and
-   tool-execution status into `phaseStream` (as synthetic marker lines such as
-   `⚡ [tool: …] running` / `✓ … completed` / `✗ … error` and `📝 Edited file:
-   …`), and file-edit / todo-update events into `log`.
+1. **The runtime port's event pump** (`createOpencodePort` + `createRuntimeSink`)
+   — one long-lived SSE loop per driver, which can fire a `permission.updated`
+   request *while* the engine awaits a gate decision → this is exactly why the
+   DecisionBroker exists. It also forwards agent activity to the frontends:
+   text/reasoning deltas and tool-execution status into `phaseStream` (as marker
+   lines `⚡ [tool: …]` / `✓ … completed` / `✗ … error`), and `usage` into the
+   `usage` event.
 2. **The engine's own retry/escalation loop** — driven by the same await chain.
 3. **Frontends** — subscribe to `events` and resolve decisions independently.
    Live mode adds two more subscribers (`LiveDashboard.tsx` in the TUI,
@@ -623,6 +623,7 @@ Communication is via a single **global typed emitter**
 | `phaseEnd` | full PhaseResult + durationMs | report bar |
 | `decision` / `decisionResolved` | request / id+choice | decision box |
 | `verdict` | iteration, phase, verdict, attempt, durationMs | phase checklist |
+| `usage` | iteration?, phase?, inputTokens?, outputTokens?, costUsd?, cumulative total | `state.usage`, `PROGRESS.md`, both footers |
 | `log` | level + message + timestamp | log tail |
 | `stateUpdated` | HarnessState | emitted after every `persist()`; currently no subscriber (reserved for future state UI) |
 | `liveStage` | stage (`refine`/`draft`/`approve`/`execute`) + optional message | LiveDashboard stage header |
@@ -631,9 +632,9 @@ Communication is via a single **global typed emitter**
 
 Listener exceptions are caught and logged per-listener, so a broken subscriber
 can't kill the engine. All frontends subscribe and unsubscribe in `finally`
-blocks. The only cross-cutting wiring done outside the engines is
-`subscribeToEvents`, which is handed the engine's `ask()` as its decision
-callback — one line in `cli.ts` (`(req) => engine.ask(req)` / `(req) => live.ask(req)`).
+blocks. No cross-cutting wiring remains in `cli.ts`: the engines pass their
+`onPermission`/`onQuestion` to `createSession`, and `src/engine/runtimeEvents.ts`
+is the only `RuntimeEvent → bus` mapper.
 
 ## 10. Built-in step prompts (the installer is gone)
 
@@ -646,7 +647,7 @@ flowchart LR
     B --> C["role + task text (engine/steps/instructions.ts)"]
     B --> D["bounded context (engine/steps/context.ts): docs, git, modules"]
     D --> E["embedUntrusted(...) — sanitized, fence-neutralised, nonce-delimited"]
-    C --> F["prompt(text) → IAgentSession"]
+    C --> F["session.prompt(request) → RuntimeSession"]
     E --> F
     G["huginn install"] --> H["handleInstallCommand(): no-op notice, exit 0"]
 ```
@@ -703,7 +704,7 @@ flowchart LR
 18. **Boolean Flag Ingestion Safety**: `BOOLEAN_FLAGS` enforcement in `parseArgs` guarantees that standalone flags (e.g. `--import`, `--yes`, `--force`) never consume subsequent positional tokens or flags.
 19. **A completed iteration is never stranded or silently discarded**: `promoteSandbox` parks (never overwrites) the local paths an integration would have clobbered — untracked files **and** tracked files with staged/unstaged changes — a failure puts them back (including the index state) and keeps the `huginn/task-iter-<N>` branch, and the run reports a **promotion failure** rather than an abort; the next run renames the branch under `huginn/preserved/` before its sweep, which does not match the reclaim pattern. A `git log` failure is reported as a failure, never as "no commits" (§ 19.4, ADR-48).
 20. **One root for Muninn**: the database file and the project row are resolved from the same `--project` root (or the git root of the start directory), and every `.huginn` write — database, JSONL export (both directions), promotion backup — is symlink-screened (§ 13, ADR-49).
-21. **A panel never claims output it cannot receive**: `IAgentRuntime.streamsOutput` decides whether an output surface may present itself as live; every other runtime shows the phase report or an idle state (§ 32.2, ADR-50).
+21. **A panel never claims output it cannot receive**: `RuntimeCapabilities.streaming` decides whether an output surface may present itself as live; every other runtime shows the phase report or an idle state (§ 32.2, ADR-50).
 
 ## 12. Key tradeoffs (summary; full rationale in ADR.md)
 
@@ -729,8 +730,9 @@ contract verifier and the AST indexer — is documented in that repository's `DE
 sections 14–18 of this document moved to (the numbering below is the original, so it skips them).
 
 What stays here: the wrapper surface (`huginn memory`, `huginn check`, `huginn mcp run`), the engine
-integration (`src/engine/phases.ts` indexes after `EXECUTE`, `src/engine/liveMode.ts` reads the counts
-for the panel) and the data location (`<project>/.huginn/muninn.db`).
+integration (`CycleEngine` indexes and curates **after a successful promotion**, `src/engine/liveMode.ts`
+reads the counts for the panel, and `src/engine/steps/retrieval.ts` injects the bounded block) and the
+data location (`<project>/.huginn/muninn.db`).
 
 ## 19. Phase 3 — Live-First Entrypoint, Universal Agent Integrator & Git Worktree Sandboxing
 
@@ -1121,6 +1123,10 @@ High-frequency token streaming from language models can cause rapid React re-ren
 
 ## 21. Decoupled Multi-Agent Runtime Architecture (`IAgentRuntime`)
 
+> **Superseded by §5 / REQ-67.** The engines speak `RuntimePort`; the sections below document the
+> original adapter contract, which now lives behind `getAgentRuntime` for provisioning and the argv
+> tests, and is bridged into the port by `asRuntimePort`.
+
 To eliminate hard lock-in to OpenCode and enable seamless orchestration across diverse developer tool ecosystems (Claude Code, OpenAI Codex, Oh My Pi, Command Code, Qwen Code, and custom stdio agents), Huginn implements an explicit Hexagonal (Ports & Adapters) runtime boundary under `src/engine/agent/`.
 
 ```mermaid
@@ -1167,7 +1173,7 @@ The runtime abstraction defines two foundational ports:
      `codex`, `claude` or `generic`. `RuntimePort.id` is therefore one of those five.
    - `name: string` — human-readable agent name.
    - `readonly sessionHistory?: boolean` — `true` when the backend keeps the conversation server-side (only `opencode`); every subprocess adapter declares `false` and `undefined` is read as "does not keep history" (§ 29.1).
-   - `readonly streamsOutput?: boolean` — whether the runtime can push **incremental** output while a prompt runs: `true` for `opencode` (its server's SSE event stream), `false` on `GenericSubprocessRuntimeAdapter` (and every adapter that inherits it), because a subprocess buffers stdout and resolves once. `undefined` is read as `false`. A surface uses it to decide what the output panel may claim rather than testing a hardcoded id list (§ 32.2).
+   - `RuntimeCapabilities.streaming` — whether the driver can push **incremental** output while a prompt runs: `true` for the native `opencode` port (its server's SSE event stream), `false` on every subprocess adapter and on the legacy bridge, because a subprocess buffers stdout and resolves once. A surface uses it to decide what the output panel may claim rather than testing a hardcoded id list (§ 32.2).
    - `isAvailable(): Promise<boolean>` — non-blocking probe verifying if the agent's executable binary exists on `PATH` or daemon is reachable.
    - `getAvailableModels(): Promise<ModelInfo[]>` — queries the models the runtime can actually use (never a fabricated catalog); returns `[]` when the runtime exposes no listing mechanism.
    - `getModelCatalog?(): Promise<ModelCatalog>` — richer discovery carrying a `reason` when the catalog is empty, so an empty result is never indistinguishable from a failure (REQ-27/AC-27.4).
@@ -1469,7 +1475,7 @@ In `src/engine/agent/mcpStatus.ts`, `fetchMcpStatusWithTimeout` provides fail-sa
 
 ```ts
 export async function fetchMcpStatusWithTimeout(
-  runtime: IAgentRuntime,
+  source: McpStatusSource,
   timeoutMs = 1500,
 ): Promise<McpStatusReport>
 ```
@@ -1579,13 +1585,11 @@ In addition to target agent configuration files (e.g. `~/.config/opencode/openco
 
 ### 23.8 Native driver reporting (`pi`)
 
-The badge originally described the active `IAgentRuntime`. After the native `pi` driver landed, the
-engine runtime is a `RuntimePort` wrapped by `toLegacyRuntime`, whose `getMcpStatus()` used to return
-an empty, unverified report — so the badge said `none` even when pi had servers. The fix moves the
-question into the port:
+The badge originally described the active `IAgentRuntime`. The engine runtime is now a
+`RuntimePort`, and `fetchMcpStatusWithTimeout` takes either shape structurally:
 
-- `RuntimePort` gains optional `listMcpServers()` and `mcpStatus()`; both bridges forward them, and a
-  driver that omits them still yields `unverified: true`, never a healthy report.
+- `RuntimePort` exposes optional `listMcpServers()` and `mcpStatus()`; a driver that omits them still
+  yields `unverified: true` through the helper, never a healthy report.
 - `pi-sdk.ts` implements `listMcpServers()` with `pi mcp list --json` (bounded, `cwd = project`) and
   `mcpStatus()` with `~/.pi/agent/mcp.json` + `<project>/.pi/mcp.json` (`readMcpConfigFile`). The
   listing carries `toolsCount`/`tools`, so `reportFromListings` can total them.
@@ -2284,11 +2288,10 @@ flowchart LR
   built-in `build` (`EXECUTE` and the `FIX_*` phases), so a subprocess runtime receives the same text
   as a plain prompt and opencode's session keeps the build agent's tools. Nothing calls `runCommand`
   any more, which is why the same phases (including the deterministic `VERIFY`) run on every runtime.
-- `validateStep` is huginn-orchestrated: qa (`auditOnlyGuardrails()` → `AUDIT-ONLY MODE`, run the
-  suite once non-interactively, write no artefact), spec-auditor, security, then a synthesis turn
-  that receives the three reports. The sub-prompts demand the deterministic final lines
-  (`### Audit status:` for qa/security, `### Overall fidelity:` for the spec auditor) and the
-  synthesis emits the consolidated report.
+- `validateStep` is one increment audit (`validateStepPrompt`): acceptance coverage plus spec
+  fidelity against the diff, ending on both `### Overall fidelity:` and `### Audit status:`.
+  `computeValidateVerdict(report)` merges them and huginn imposes the final gate line. QA and
+  security are their own phases (`TEST_MODULE`, `SECURE_CHECK`).
 - There is nothing to install: `templates/{agents,commands}/`, `scripts/postinstall.ts`,
   `src/setup/install.ts`, the `postinstall` script and `HUGINN_TEMPLATES_DIR` are gone, and
   `huginn install` is a no-op handler (`src/commands/install.ts`) kept only because `install` is a
@@ -2588,7 +2591,7 @@ there; the pieces that live outside `worktree.ts`:
 `StreamCard` in `src/tui/Dashboard.tsx` picks its body from what the engine actually has, in order:
 
 1. **stream** — incremental `phaseStream` lines, available only when the runtime has an event channel
-   (`src/engine/permissions.ts` forwards opencode's SSE stream);
+   (`createOpencodePort` streams its SSE through `createRuntimeSink`);
 2. **report** — the tail of `ui.lastReport.raw` (the last finished phase's real report), clipped to the
    card's rows, which is all a subprocess runtime ever produces;
 3. **idle** — `TWO_RAVENS` (`src/brand.ts`, the Huginn + Muninn mark) plus a rotating phrase from
@@ -2600,11 +2603,10 @@ view): a buffer that only holds `""` — a phase that emitted nothing — falls 
 idle state instead of hiding it behind a blank row. The live view's collapsed-stream Tab hint is the
 same rule applied to focus: no second card, no `[Tab] Focus` claim.
 
-The capability comes from `IAgentRuntime.streamsOutput` (`src/engine/agent/types.ts`), not from a
-hardcoded target list: `true` on `OpencodeRuntimeAdapter`, `false` on
-`GenericSubprocessRuntimeAdapter` (and therefore on every adapter that inherits it), `undefined` read as
-`false`. Only a streaming runtime keeps the `LIVE AGENT OUTPUT` title and the waiting placeholder; a
-non-streaming one is titled `AGENT OUTPUT` and names itself. A failed promotion gets its own row under
+The capability comes from `RuntimeCapabilities.streaming` (`src/engine/agent/port.ts`), not from a
+hardcoded target list: `true` on the native opencode port, `false` on every subprocess adapter and on
+the legacy bridge. Only a streaming runtime keeps the `LIVE AGENT OUTPUT` title and the waiting
+placeholder; a non-streaming one is titled `AGENT OUTPUT` and names itself. A failed promotion gets its own row under
 the middle cards (`PROMOTION_HEIGHT`, `✕ PROMOTION FAILED — branch … preserved · backups: …`), shown
 only when the run ends with `state.promotion.status` of `conflict`/`failed`, and the row is part of the
 layout budget (`VIEWPORT_RESERVED_ROWS`) so it can never push the frame off-screen.

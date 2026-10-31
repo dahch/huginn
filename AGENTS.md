@@ -119,9 +119,9 @@ and the first one includes the smallest runnable hello-world. The plan format al
 `executePrompt`, `testModulePrompt` and the QA audit receive them. Old plans without the sections
 still run (the `VERIFY` phase passes with a note).
 
-`runCommand` still exists on `IAgentSession` (the opencode and generic adapters implement it) but **no
-step uses it**: a huginn step is always a prompt, so a runtime with no command surface runs the same
-pipeline.
+`runCommand` still exists on the legacy `IAgentSession` (the opencode and generic adapters implement
+it) but **no step uses it**, and `RuntimeSession` has no command surface at all: a huginn step is
+always a prompt, so a runtime with no command support runs the same pipeline.
 
 ## 3. Which model runs what
 
@@ -145,17 +145,17 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 
 `/validate-step` used to work only because the installed `reviewing` agent could delegate to `qa`,
 `spec-auditor` and `security` through opencode's Task tool. That allowlist is gone with the templates:
-**huginn runs the chain itself** (qa → spec-auditor → security → synthesis, one prompt each) and
-decides the outcome:
+**huginn runs ONE increment audit and decides the outcome itself**:
 
-- `computeValidateVerdict` derives the gate from the three sub-reports (each must emit its own
-  `### Audit status:` / `### Overall fidelity:` line): an empty or marker-less report is `blocked`, any
-  blocked → `blocked`, any warning → `warning`, all green → `pass`. The synthesis may only **escalate**
-  it, never downgrade it.
-- `enforceValidateVerdict` strips every pre-existing `### Overall gate:`/handoff line from the
-  synthesis and appends huginn's own, so `parseValidateStepVerdict` reads back exactly what huginn
-  computed. The verdict also travels structurally as `authoritativeVerdict`, which `runPhase` prefers
-  over parsing the report text.
+- `computeValidateVerdict(report)` requires both mandatory conclusion lines (`### Overall fidelity:`
+  and `### Audit status:`): an empty report, or one missing either line, is `blocked`; any blocked →
+  `blocked`; any warning → `warning`; two green lines → `pass`. The whole-body fidelity fallback is
+  only consulted when the report actually talks about fidelity, so the audit-status line cannot
+  masquerade as a green fidelity verdict.
+- `enforceValidateVerdict` strips every pre-existing `### Overall gate:`/handoff line and appends
+  huginn's own, so `parseValidateStepVerdict` reads back exactly what huginn computed. The verdict
+  also travels structurally as `authoritativeVerdict`, which `runPhase` prefers over parsing the
+  report text.
 - The auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`, `REVIEW`) are marked `readOnly`:
   the engine hashes the working tree before and after the step (`treeHash`) and forces `blocked` when
   the signature is **missing or changed** (`readOnlyTreeViolation`) — a phase that wrote to the
@@ -176,8 +176,8 @@ decides the outcome:
   observation. Every write is fail-open: memory can never fail an iteration, and `HUGINN_MEMORY=0`
   disables retrieval.
 - **One clean session per phase.** `CycleEngine.withPhaseSession` opens a fresh, directory-scoped
-  `IAgentSession` for each pipeline step (and for the `DIAGNOSE` / `APPLY_FIX` turns) and closes it
-  when the step ends (`IAgentSession.close`, bridged to `RuntimeSession.close`). A role never inherits
+  `RuntimeSession` for each pipeline step (and for the `DIAGNOSE` / `APPLY_FIX` turns) and closes it
+  when the step ends (`RuntimeSession.close`). A role never inherits
   another role's accumulated tool loop, the prompt cache is not invalidated by an
   `executor`↔`thinker` switch inside one 150k–300k-token session, and the builder no longer grades
   its own work. The diagnosis turn gets the same `treeHash` guard as the auditors: a mutation
@@ -235,9 +235,9 @@ record, `isAvailable()`, `listModels()`, `resolveModel()` and `createSession()` 
 
 M4b split the two concepts. `ProvisioningTarget` (`AgentTarget`) is where `setup`/`doctor`
 register Muninn — 13 values, unchanged. `RuntimeId` is what executes the cycle — five values
-(`pi`, `opencode`, `codex`, `claude`, `generic`), mapped by `runtimeIdForTarget()`. The
-legacy `IAgentRuntime.id` still carries the provisioning-target shape during the transition; the
-port maps it to a `RuntimeId` when it wraps an adapter.
+(`pi`, `opencode`, `codex`, `claude`, `generic`), mapped by `runtimeIdForTarget()`. The engines no
+longer touch `IAgentRuntime`; that interface survives as the CLI-shaped adapter contract behind
+`getAgentRuntime` and as the input `asRuntimePort` bridges.
 
 `getRuntimePort()` returns the native driver for `pi`, `codex`, `claude` and `opencode`, or a
 bridged configured generic adapter for every other target.

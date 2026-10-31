@@ -275,9 +275,10 @@ override the detected locations.
 | `--agent <id>` | resolved from config | AI agent runtime (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`) |
 | `--thinker <m>` | resolved from config (see [Model and Agent configuration](#model-and-agent-configuration)) | model used to **diagnose** a blocked gate (read-only remediation plan) and to draft the documents; it never edits code |
 | `--executor <m>` | resolved from config | model used for everything else (execution, gates, applying fixes, docs, commits) |
-| `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents (without the flag, `SPEC.md`/`ADR.md` are found case-insensitively) |
+| `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents (without the flag, `PLAN.md`/`SPEC.md`/`ADR.md` are found case-insensitively) |
 | `--mode auto\|supervised` | `auto` | `auto`: autonomous with a fix-retry budget, escalating to you only when it is exhausted; `supervised`: pause for your call at every blocked gate |
 | `--profile <id>` | `huginn` | Methodology profile: `huginn` (the **Huginn Cycle**, below) · `sdd` · `odd` · `rdd` · `strict-tdd` (see [Methodology profiles](#methodology-profiles)) |
+| `--commit <mode>` | profile (`deterministic`) | `deterministic`: huginn derives the commit message from the iteration and the changed paths (no model turn) · `agent`: the build agent groups the commits itself |
 | `--permissions auto\|ask\|deny` | `auto` | permission policy. Only a runtime that declares an interactive permission channel (`opencode`) can honour `ask`/`deny`; a **subprocess** runtime (`claude`, `codex`, …) fails closed with exit 1 on `ask`/`deny`, and an invalid value exits 1 |
 | `--max-retries <n>` | `3` | fix attempts per blocked gate before escalating to you |
 | `--from-iteration <n>` | — | start at iteration n |
@@ -417,6 +418,7 @@ desktop freezes. So huginn also contains the processes it spawns:
 
 | Variable | Effect |
 |---|---|
+| `HUGINN_MEMORY` | `0` disables the bounded Muninn retrieval block injected into `EXECUTE`/`SPEC_AUDIT`/`VALIDATE_STEP`; the writers (indexing, ADR decisions, curation) are unaffected. |
 | `HUGINN_MEMORY_MAX` | `off` (or `none`/`0`/`false`) disables the scope entirely; a size (`6G`, `512M`, bytes) overrides the automatic limit. |
 | `HUGINN_MEMORY_SWAP_MAX` | Swap allowed inside the scope (default `4G`; `off` for none). |
 | `HUGINN_TASKS_MAX` | `TasksMax` for the scope (default `1024`). |
@@ -563,7 +565,7 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
 `--choose-model` to open the model selector modal on launch, `--continue`/`-c`, `--session <id>` and
 `--list-sessions`/`-sl` to resume or list persisted sessions,
-plus the run-mode flags `--mode`, `--profile`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,
+plus the run-mode flags `--mode`, `--profile`, `--commit`, `--permissions`, `--max-retries`, `--sandbox`/`--no-sandbox`,
 `--no-verify`, `--no-git-init`, `--port`, `--server-timeout`, `--phase-timeout`, `--tui | --headless`. In headless
 mode the chat refinement is skipped (the CLI idea is used as-is) and approvals are answered on stdin;
 non-interactive stdin aborts with a hint to use the TUI.

@@ -1660,3 +1660,34 @@ avoids. They are ordered by how central the decision is to the design.
   - *Negative*: the role must actually emit its marker (a missing one fails closed through the judge),
     and profiles without `SECURE_CHECK` (`sdd`, `rdd`, `strict-tdd`) no longer get the security
     sub-audit `VALIDATE_STEP` used to run. That is a deliberate de-scope.
+
+## ADR-60: opencode's native RuntimePort owns the event stream
+
+- **Date**: 2026-10-31
+- **Status**: Accepted
+- **Context**: The live channel was an engine-side subscriber (`subscribeToEvents` in
+  `src/engine/permissions.ts`), installed by two `runtime.id === "opencode"` ternaries in `cli.ts`. It
+  was the sole producer of `phaseStream` and of `permission`/`question` decisions, and it could not be
+  reached at all for the other runtimes. Meanwhile the engine consumed `IAgentRuntime` through
+  `toLegacyRuntime`, which dropped every typed event, so `usage` was dead code and a panel could only
+  infer streaming from a boolean on the legacy interface.
+- **Decision**:
+  1. `drivers/opencode.ts` is a native `RuntimePort`: one SSE subscription per driver, fanned out to the
+     registered sessions, with permissions answered through `onPermission` (deny when absent) and
+     questions through `onQuestion`.
+  2. `src/engine/runtimeEvents.ts` is the only `RuntimeEvent → engine bus` mapper; `usage` becomes a
+     bus event and feeds `state.usage`.
+  3. Both engines pass `sink`, `onPermission` and `onQuestion` to `createSession` and speak only the
+     port; the CLI no longer wires a subscriber (a second subscription would duplicate every delta).
+  4. `toLegacyRuntime`/`getEngineRuntime` are removed; `getEnginePort` is the execution factory and
+     `getAgentRuntime` stays the provisioning/argv view. The subscriber module is deleted.
+- **Alternatives rejected**: (a) keeping the subscriber and giving the bridge a real sink — a bridge
+  over `IAgentRuntime` cannot see the server, so the sink would stay fake; (b) two subscriptions
+  (port for streaming, subscriber for questions) — every delta would be emitted twice; (c) leaving the
+  engine on the legacy interface until every driver streams — that keeps the dropped-event and dead
+  `usage` defects for the runtimes that need them most.
+- **Consequences**:
+  - *Positive*: one producer, permissions/questions/usage on the same channel, and a panel only claims
+    streaming when `capabilities.streaming` is true.
+  - *Negative*: the native event implementation exists only for opencode; the other drivers still
+    buffer, and now say so honestly instead of through a legacy flag.
