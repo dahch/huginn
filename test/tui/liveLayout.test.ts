@@ -488,6 +488,35 @@ describe("live frame with the side panel (REQ-12)", () => {
     expect(empty.output()).not.toContain("ctx 0 turns");
   });
 
+  it("wraps a long paragraph one terminal row at a time (REV-6201)", async () => {
+    // Ink's own `wrap` lets a text node claim one row while it paints several,
+    // over the siblings below (and over the card's bottom border). The console
+    // pre-wraps, so the frame has to stay intact with a paragraph longer than
+    // the card is wide.
+    const paragraph =
+      "El correo se guarda unicamente en el navegador de quien se apunta y la lista crece local: " +
+      "un wrapper de almacenamiento centraliza el acceso, valida los datos y maneja los errores, " +
+      "pero no vuelve seguro un almacenamiento que no lo es. La landing explicara esa limitacion.";
+    const transcript = Array.from({ length: 10 }, (_, index) => [
+      { role: "user" as const, text: `pregunta ${index} sobre el alcance de la landing` },
+      { role: "assistant" as const, text: paragraph },
+    ]).flat();
+    const harness = await mountLive(createMockLive({ getTranscript: vi.fn().mockReturnValue(transcript) }), 120, 40);
+    harness.unmount();
+
+    const output = harness.output();
+    expect(output).toContain("La landing explicara esa limitacion.");
+    const lines = output.replace(ANSI, "").split("\n").map((line) => line.replace(/\s+$/, ""));
+    const start = lines.findIndex((line) => line.includes("Conversation"));
+    expect(start).toBeGreaterThanOrEqual(0);
+    const bottom = lines.findIndex((line, index) => index > start && line.trimStart().startsWith("╰"));
+    expect(bottom).toBeGreaterThan(start);
+    // The conversation card's bottom border must be pure border: a wrapped row
+    // painted over it is exactly the corruption this guards against.
+    const trimmed = lines[bottom]!.trimStart();
+    expect(trimmed.slice(0, trimmed.indexOf("╯") + 1)).toMatch(/^╰─+╯$/);
+  }, 30000);
+
   it("keeps the chat, the stream, the panel, the composer and the footer inside the terminal", async () => {
     for (const [columns, rows] of [
       [80, 24],

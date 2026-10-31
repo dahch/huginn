@@ -14,7 +14,7 @@ import { events, type LiveStage } from "../engine/engineEvents";
 import { formatUsage } from "../format";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
-import { MarkdownLine } from "./markdown";
+import { MarkdownLine, markdownSegments, renderSegments, wrapSegments, type MdSegment } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
 import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
@@ -248,6 +248,19 @@ interface FormattedLine {
   id: string;
   type: "system" | "user_header" | "user_body" | "assistant_header" | "assistant_body" | "blank";
   text: string;
+}
+
+/**
+ * One *terminal* row of the conversation. A message line is wrapped by
+ * {@link wrapSegments} before it reaches the card, so `rows.length` is exactly
+ * the number of rows Ink will draw: Ink's own wrapping would make a text node
+ * claim one row while painting several, over the siblings below it.
+ */
+interface ChatRow {
+  id: string;
+  segments: MdSegment[];
+  /** Columns the body indent spends, already subtracted from the wrap width. */
+  paddingLeft: number;
 }
 
 /**
@@ -1451,6 +1464,39 @@ function RefineView({
   /** Columns the cards column keeps beside the panel (all of them without one). */
   const cardsWidth = panelPlan.cardsWidth;
 
+  // The conversation's real width budget. Every message line is wrapped to it
+  // here, once, so one `ChatRow` is exactly one terminal row and the scroll
+  // offset counts the rows the user actually sees.
+  const chatBodyColumns = Math.max(1, cardsWidth - CARD_HORIZONTAL_CHROME);
+  const chatRows = useMemo<ChatRow[]>(() => {
+    const rows: ChatRow[] = [];
+    for (const line of formattedChatLines) {
+      if (line.type === "blank") {
+        rows.push({ id: line.id, segments: [], paddingLeft: 0 });
+        continue;
+      }
+      if (line.type === "user_header") {
+        rows.push({ id: line.id, segments: [{ text: "you »", color: THEME.ok, bold: true }], paddingLeft: 0 });
+        continue;
+      }
+      if (line.type === "assistant_header") {
+        rows.push({
+          id: line.id,
+          segments: [{ text: "thinker »", color: THEME.accentStrong, bold: true }],
+          paddingLeft: 0,
+        });
+        continue;
+      }
+      const paddingLeft = line.type === "system" ? 0 : 2;
+      const color = line.type === "system" ? THEME.system : THEME.text;
+      const width = Math.max(1, chatBodyColumns - paddingLeft);
+      wrapSegments(markdownSegments(line.text, color), width).forEach((segments, index) => {
+        rows.push({ id: `${line.id}-w${index}`, segments, paddingLeft });
+      });
+    }
+    return rows;
+  }, [formattedChatLines, chatBodyColumns]);
+
   // Never leave focus on a card that is not rendered.
   useEffect(() => {
     if (!showStreamPanel && focus === "stream") setFocus("chat");
@@ -1459,7 +1505,7 @@ function RefineView({
   const visibleChatLinesCount = Math.max(1, chatHeight - 3);
   const visibleStreamLinesCount = Math.max(1, streamHeight - 3);
 
-  const maxChatScroll = Math.max(0, formattedChatLines.length - visibleChatLinesCount);
+  const maxChatScroll = Math.max(0, chatRows.length - visibleChatLinesCount);
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
 
   useInput((input, key) => {
@@ -1717,8 +1763,8 @@ function RefineView({
   });
 
   // Slice visible lines for Chat
-  const chatStart = Math.max(0, formattedChatLines.length - visibleChatLinesCount - chatScroll);
-  const visibleChatLines = formattedChatLines.slice(chatStart, chatStart + visibleChatLinesCount);
+  const chatStart = Math.max(0, chatRows.length - visibleChatLinesCount - chatScroll);
+  const visibleChatLines = chatRows.slice(chatStart, chatStart + visibleChatLinesCount);
 
   // Slice visible lines for Stream
   const streamStart = Math.max(0, streamLines.length - visibleStreamLinesCount - streamScroll);
@@ -1799,8 +1845,8 @@ function RefineView({
         <Box flexDirection="row" width={terminalSize.columns - LIVE_VIEW_OUTER_INSET}>
           <Box flexDirection="column" width={cardsWidth}>
             <ScrollableChatCard
-              lines={visibleChatLines}
-              totalLines={formattedChatLines.length}
+              rows={visibleChatLines}
+              totalRows={chatRows.length}
               scrollOffset={chatScroll}
               maxScroll={maxChatScroll}
               isFocused={focus === "chat"}
@@ -2023,8 +2069,8 @@ function LiveHeader({
 }
 
 function ScrollableChatCard({
-  lines,
-  totalLines,
+  rows,
+  totalRows,
   scrollOffset,
   maxScroll,
   isFocused,
@@ -2034,8 +2080,8 @@ function ScrollableChatCard({
   width,
   tip,
 }: {
-  lines: FormattedLine[];
-  totalLines: number;
+  rows: ChatRow[];
+  totalRows: number;
   scrollOffset: number;
   maxScroll: number;
   isFocused: boolean;
@@ -2066,6 +2112,10 @@ function ScrollableChatCard({
       height={height}
       width={width}
       minHeight={CARD_MIN_ROWS}
+      // The rows are pre-wrapped to this card's width, so nothing should ever
+      // overflow; clipping is the last line of defence against a stray glyph
+      // painting over the composer below the card.
+      overflow="hidden"
     >
       {/* The title row is exactly one clipped row: with the side panel beside it
           the card can be much narrower than the terminal, and a wrapped title
@@ -2078,50 +2128,24 @@ function ScrollableChatCard({
           {maxScroll > 0 && (
             <Text color={THEME.muted} wrap="truncate">
               {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
-              ({totalLines} lines){" "}
+              ({totalRows} lines){" "}
             </Text>
           )}
           {busy && <Text color={THEME.warn} wrap="truncate">{spinner} thinking...</Text>}
         </Box>
       </Box>
-      {lines.length === 0 ? (
+      {rows.length === 0 ? (
         <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} />
       ) : (
-        lines.map((l) => {
-          if (l.type === "blank") {
-            return <Text key={l.id}> </Text>;
-          }
-          if (l.type === "system") {
-            return (
-              <Box key={l.id}>
-                <MarkdownLine text={l.text} defaultColor={THEME.system} wrap="wrap" />
-              </Box>
-            );
-          }
-          if (l.type === "user_header") {
-            return (
-              <Text key={l.id} bold color={THEME.ok}>
-                {l.text}
-              </Text>
-            );
-          }
-          if (l.type === "user_body") {
-            return (
-              <Box key={l.id} paddingLeft={2}>
-                <MarkdownLine text={l.text} defaultColor={THEME.text} wrap="wrap" />
-              </Box>
-            );
-          }
-          if (l.type === "assistant_header") {
-            return (
-              <Text key={l.id} bold color={THEME.accentStrong}>
-                {l.text}
-              </Text>
-            );
+        rows.map((row) => {
+          if (row.segments.length === 0) {
+            return <Text key={row.id}> </Text>;
           }
           return (
-            <Box key={l.id} paddingLeft={2}>
-              <MarkdownLine text={l.text} defaultColor={THEME.text} wrap="wrap" />
+            <Box key={row.id} paddingLeft={row.paddingLeft} flexShrink={0}>
+              {/* `truncate`, never `wrap`: each row already fits, and a wrap here
+                  is the bug this model exists to prevent (REV-6201). */}
+              <Text wrap="truncate">{renderSegments(row.segments, row.id)}</Text>
             </Box>
           );
         })
