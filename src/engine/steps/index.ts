@@ -16,6 +16,7 @@ export {
   docSyncPrompt,
   executePrompt,
   fixFindingsPrompt,
+  repairPromotionPrompt,
   reviewPrompt,
   secureCheckPrompt,
   specAuditPrompt,

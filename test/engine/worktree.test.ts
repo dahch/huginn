@@ -764,4 +764,89 @@ describe("promotion recovery primitives (ADR-62)", () => {
     expect(fs.readFileSync(path.join(root, "sandbox.txt"), "utf8")).toBe("iteration\n");
   });
 
+  it("reopens a preserved branch in the canonical worktree and integrates it", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 3);
+    fs.writeFileSync(path.join(sandbox.path, "sandbox.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+    mgr.detachSandbox(sandbox);
+
+    const preserved = mgr.preserveOrphanBranch(sandbox.branch);
+    expect(preserved).toMatch(/^huginn\/preserved\/task-iter-3-/);
+    expect(branchExists(root, sandbox.branch)).toBe(false);
+
+    const reopened = mgr.openSandboxFromBranch(root, preserved!, 3, sandbox.baseCommit);
+    expect(reopened.path).toBe(sandboxPath(root, 3));
+    expect(git(reopened.path, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim()).toBe(preserved);
+
+    const result = mgr.promoteSandbox(reopened);
+    expect(result.promoted).toBe(true);
+    expect(branchExists(root, preserved!)).toBe(false);
+    expect(fs.existsSync(path.join(root, "sandbox.txt"))).toBe(true);
+  });
+
+  it("fails closed when the branch or base is unknown, or the path is taken", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 4);
+    const branch = sandbox.branch;
+
+    expect(() => mgr.openSandboxFromBranch(root, "nope", 5, sandbox.baseCommit)).toThrow(
+      /does not exist/,
+    );
+    expect(() => mgr.openSandboxFromBranch(root, branch, 5, "")).toThrow(/base is unknown/);
+    // The canonical path of a live sandbox is taken.
+    expect(() => mgr.openSandboxFromBranch(root, branch, 4, sandbox.baseCommit)).toThrow(
+      /already exists/,
+    );
+  });
+
+  it("runs the merge, refuses markers, and commits once the conflict is resolved", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 5);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
+    commitAll(root, "primary edit");
+
+    const merge = mgr.mergeRef(sandbox, headCommit(root)!);
+    expect(merge.clean).toBe(false);
+    expect(merge.conflicts).toEqual(["file.txt"]);
+    expect(mgr.mergeInProgress(sandbox)).toBe(true);
+    // The untouched conflicted file still carries markers: never commit that.
+    expect(() => mgr.commitMerge(sandbox, "merge")).toThrow(/conflict markers remain/);
+
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "resolved\n");
+    const commit = mgr.commitMerge(sandbox, "chore: merge");
+    expect(commit.pending).toBe(true);
+    expect(mgr.mergeInProgress(sandbox)).toBe(false);
+    expect(statusClean(sandbox.path)).toBe(true);
+
+    const result = mgr.promoteSandbox(sandbox);
+    expect(result.promoted).toBe(true);
+    expect(result.method).toBe("ff");
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("resolved\n");
+  });
+
+  it("aborts a merge without touching the branch", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 6);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "iteration edit");
+    const tip = headCommit(sandbox.path);
+
+    fs.writeFileSync(path.join(root, "file.txt"), "primary\n");
+    commitAll(root, "primary edit");
+
+    expect(mgr.mergeRef(sandbox, headCommit(root)!).clean).toBe(false);
+    mgr.abortMerge(sandbox);
+
+    expect(mgr.mergeInProgress(sandbox)).toBe(false);
+    expect(headCommit(sandbox.path)).toBe(tip);
+    expect(statusClean(sandbox.path)).toBe(true);
+  });
 });

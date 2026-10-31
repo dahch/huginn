@@ -5,6 +5,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   realpathSync,
   rmSync,
@@ -289,6 +290,14 @@ export class WorktreeError extends Error {
   }
 }
 
+/** The identity every harness-authored commit carries (never the user's, never signed). */
+const HARNESS_IDENTITY = {
+  GIT_AUTHOR_NAME: "huginn",
+  GIT_AUTHOR_EMAIL: "huginn@localhost",
+  GIT_COMMITTER_NAME: "huginn",
+  GIT_COMMITTER_EMAIL: "huginn@localhost",
+};
+
 /**
  * The ONE hardened commit path: stage everything, commit with the harness
  * identity, never sign.
@@ -315,12 +324,7 @@ export function commitAllPending(
     // A missing git identity (or a configured signing key) must not lose a
     // completed increment. This is a harness-authored commit, so it carries the
     // harness identity and never signs.
-    env: {
-      GIT_AUTHOR_NAME: "huginn",
-      GIT_AUTHOR_EMAIL: "huginn@localhost",
-      GIT_COMMITTER_NAME: "huginn",
-      GIT_COMMITTER_EMAIL: "huginn@localhost",
-    },
+    env: HARNESS_IDENTITY,
   });
   if (commit.code !== 0) {
     throw new WorktreeError(`Cannot commit ${repoPath}: ${commit.stderr || commit.stdout}`);
@@ -492,6 +496,192 @@ export class WorktreeManager {
       projectRoot: root,
       baseCommit: integrationBase(root, branch) ?? headCommit(path) ?? "",
     };
+  }
+
+  /**
+   * Open a fresh worktree on an **existing** branch — the recovery counterpart of
+   * {@link createSandbox}, used to re-attempt an integration from the branch a
+   * failed promotion preserved (ADR-62).
+   *
+   * The worktree always takes the canonical sandbox path (so the existing
+   * listing/cleanup rules apply) while the branch may be any name, including
+   * `huginn/preserved/task-iter-<N>-<stamp>`. `baseCommit` is supplied by the
+   * caller: for a preserved branch it is the iteration's base, never the branch
+   * tip. Fails closed without mutating anything.
+   */
+  openSandboxFromBranch(
+    projectRoot: string,
+    branch: string,
+    iteration: number,
+    baseCommit: string,
+  ): Sandbox {
+    const root = projectRoot || this.projectRoot;
+    const path = sandboxPath(root, iteration);
+
+    if (!baseCommit.trim()) {
+      throw new WorktreeError(`Cannot reopen ${branch}: its integration base is unknown`);
+    }
+    if (!this.branchExists(root, branch)) {
+      throw new WorktreeError(`Cannot reopen ${branch}: the branch does not exist`);
+    }
+    if (existsSync(path)) {
+      throw new WorktreeError(
+        `Cannot reopen ${branch}: ${path} already exists (remove it with ` +
+          `\`git worktree remove --force ${path}\` and retry)`,
+      );
+    }
+
+    try {
+      assertDocPath(path, {
+        projectPath: root,
+        label: "the recovery worktree",
+        action: "create",
+      });
+    } catch (err) {
+      throw new WorktreeError(`Cannot reopen ${branch}: ${message(err)}`);
+    }
+
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const res = git(root, ["worktree", "add", path, branch]);
+    if (res.code !== 0) {
+      throw new WorktreeError(
+        `git worktree add failed for ${branch}: ${res.stderr || res.stdout}`,
+      );
+    }
+
+    this.linkSharedDeps(root, path);
+    return { iteration, path, branch, projectRoot: root, baseCommit };
+  }
+
+  /**
+   * Merge `ref` (the primary branch's HEAD) into the sandbox branch **inside the
+   * worktree**, without committing, so the conflicts can be resolved there and
+   * the primary tree is never touched.
+   *
+   * `clean: true` means the merge left staged changes (or nothing to do) and can
+   * be committed with {@link commitMerge}. A non-clean result with an empty
+   * `conflicts` list is a git failure, not a content conflict.
+   */
+  mergeRef(
+    sandbox: Sandbox,
+    ref: string,
+  ): { clean: boolean; conflicts: string[]; detail?: string } {
+    const res = git(sandbox.path, ["merge", "--no-commit", "--no-ff", ref]);
+    const conflicts = this.unmergedPaths(sandbox);
+    if (res.code === 0 && conflicts.length === 0) return { clean: true, conflicts };
+    if (conflicts.length > 0) return { clean: false, conflicts };
+    return {
+      clean: false,
+      conflicts,
+      detail: sanitizeTerminalText((res.stderr || res.stdout || "git merge failed").trim()),
+    };
+  }
+
+  /** Paths with an unmerged index entry inside the sandbox (the live conflict set). */
+  unmergedPaths(sandbox: Sandbox): string[] {
+    const res = git(sandbox.path, ["diff", "--name-only", "--diff-filter=U", "-z"]);
+    return res.code === 0 ? [...pathSet(res)] : [];
+  }
+
+  /** Whether the sandbox has a merge in flight (`MERGE_HEAD` present). */
+  mergeInProgress(sandbox: Sandbox): boolean {
+    const res = git(sandbox.path, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]);
+    return res.code === 0 && res.stdout.trim().length > 0;
+  }
+
+  /** Abort the in-flight merge, restoring the branch exactly as it was. */
+  abortMerge(sandbox: Sandbox): void {
+    git(sandbox.path, ["merge", "--abort"]);
+  }
+
+  /**
+   * Commit the merge the remediation turn resolved. Refuses while any path is
+   * still unmerged — the executor is told to resolve them, and committing
+   * markers would make the conflict look integrated.
+   *
+   * `commitAllPending` is the single commit path; the extra `commit` closes a
+   * merge whose resolution ended up identical to `HEAD` (nothing staged, but
+   * `MERGE_HEAD` still present).
+   */
+  commitMerge(sandbox: Sandbox, message: string): { commit?: string; pending: boolean } {
+    if (!this.mergeInProgress(sandbox)) return { pending: false };
+
+    // A file the executor staged can still carry the markers it never resolved;
+    // `git add` would mark that "resolved" and the next phase would test a tree
+    // with conflict markers in it.
+    const marked = this.conflictMarkerPaths(sandbox);
+    if (marked.length > 0) {
+      throw new WorktreeError(
+        `Cannot commit the merge: conflict markers remain in ${marked.join(", ")}`,
+      );
+    }
+
+    const add = git(sandbox.path, ["add", "-A"]);
+    if (add.code !== 0) {
+      throw new WorktreeError(
+        `Cannot stage the merge in ${sandbox.path}: ${add.stderr || add.stdout}`,
+      );
+    }
+    const unmerged = this.unmergedPaths(sandbox);
+    if (unmerged.length > 0) {
+      throw new WorktreeError(
+        `Cannot commit the merge: unresolved conflict(s) in ${unmerged.join(", ")}`,
+      );
+    }
+
+    const result = commitAllPending(sandbox.path, message);
+    if (!this.mergeInProgress(sandbox)) return result;
+
+    const commit = git(sandbox.path, ["commit", "--no-edit", "--no-gpg-sign"], {
+      env: HARNESS_IDENTITY,
+    });
+    if (commit.code !== 0) {
+      throw new WorktreeError(
+        `Cannot commit the merge in ${sandbox.path}: ${commit.stderr || commit.stdout}`,
+      );
+    }
+    const head = git(sandbox.path, ["rev-parse", "HEAD"]).stdout.trim();
+    return { commit: head || undefined, pending: true };
+  }
+
+  /** Changed or unmerged files under the sandbox that still contain conflict markers. */
+  private conflictMarkerPaths(sandbox: Sandbox): string[] {
+    const listed = new Set([
+      ...this.unmergedPaths(sandbox),
+      ...pathSet(git(sandbox.path, ["diff", "--name-only", "-z", "HEAD"])),
+    ]);
+    const hits: string[] = [];
+    for (const rel of listed) {
+      if (!isParkablePath(rel)) continue;
+      try {
+        const text = readFileSync(join(sandbox.path, rel), "utf8");
+        if (text.includes("<<<<<<< ") && text.includes(">>>>>>> ")) hits.push(rel);
+      } catch {
+        // Deleted or binary: nothing to inspect, and git's own unmerged check
+        // still covers the index.
+      }
+    }
+    return hits;
+  }
+
+  /** Replace the sandbox branch tip in the worktree (verify-failure rollback). */
+  resetTo(sandbox: Sandbox, ref: string): boolean {
+    return git(sandbox.path, ["reset", "--hard", ref]).code === 0;
+  }
+
+  /** The sandbox worktree's current HEAD, for recording a rollback point. */
+  sandboxHead(sandbox: Sandbox): string | undefined {
+    const res = git(sandbox.path, ["rev-parse", "HEAD"]);
+    const sha = res.stdout.trim();
+    return res.code === 0 && sha.length > 0 ? sha : undefined;
+  }
+
+  /**
+   * Remove the worktree but keep its branch — the recovery path's cleanup, where
+   * the branch is the only copy of the iteration's commits.
+   */
+  detachSandbox(sandbox: Sandbox): void {
+    this.removeWorktree(sandbox.projectRoot, sandbox);
   }
 
   /**

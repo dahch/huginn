@@ -16,6 +16,7 @@ import {
   commitAllDeterministic,
   diagnoseFindings,
   fixFindings,
+  repairPromotionFindings,
   indexIterationSourceFiles,
   recordIterationMemory,
   fixSpec,
@@ -31,6 +32,7 @@ import { events } from "./engineEvents";
 import { DecisionBroker } from "./decisionBroker";
 import {
   headCommit,
+  git,
   inferModules,
   isGitRepo,
   hasImplementationCode,
@@ -43,7 +45,11 @@ import {
   computePlanHash,
 } from "../state/store";
 import type { HarnessState, HistoryEntry, PromotionRecord, ResumeCursor } from "../state/schema";
-import { WorktreeManager, sandboxBranch, sandboxPath, type Sandbox } from "./worktree";
+import { WorktreeManager, sandboxBranch, sandboxPath, integrationBase, type Sandbox, type PromoteResult } from "./worktree";
+import {
+  promotionRepairEligibility,
+  type PromotionRetryResult,
+} from "./promotionRepair";
 import { resolveDatabasePath } from "@dahch/muninn";
 import type { RuntimePort, RuntimeSession } from "./agent/port.js";
 import { asRuntimePort } from "./agent/legacy-bridge.js";
@@ -539,6 +545,10 @@ export class CycleEngine {
         ) {
           const kept = this.getWorktrees().preserveOrphanBranch(preserved.branch);
           if (kept) {
+            // The record must keep naming the branch that actually holds the
+            // commits, or `huginn promote` would look for the old name (ADR-62).
+            this.state.promotion = { ...preserved, branch: kept };
+            this.persist();
             events.emit("log", {
               level: "info",
               message: `[sandbox] preserved branch ${preserved.branch} renamed to ${kept} for manual recovery`,
@@ -1102,6 +1112,397 @@ export class CycleEngine {
         this.getWorktrees().discardSandbox(sandbox);
       }
     }
+  }
+
+  // ── Promotion recovery (ADR-62) ─────────────────────────────────────────
+
+  /**
+   * Re-attempt the integration a failed promotion left behind. **No model turn.**
+   *
+   * A promotion failure keeps the branch and removes the worktree, so recovery
+   * means: reopen a worktree on that branch, checkpoint anything dirty, and run
+   * the same deterministic `promoteSandbox` the iteration would have run. This is
+   * the recovery for the cases only a human can clear (a partially staged file, a
+   * staged-new file) once they have cleared them.
+   */
+  async retryPromotion(): Promise<PromotionRetryResult> {
+    const target = this.promotionTarget();
+    if (!target.ok) return target.result;
+
+    const worktrees = this.getWorktrees();
+    let sandbox: Sandbox | undefined;
+    let settled = false;
+    try {
+      sandbox = worktrees.openSandboxFromBranch(
+        this.cfg.projectPath,
+        target.branch,
+        target.iteration.index,
+        target.base,
+      );
+      const checkpoint = worktrees.commitPendingChanges(
+        sandbox,
+        `chore(iter-${target.iteration.index}): checkpoint — ${sanitizeTerminalText(target.iteration.title)}`,
+      );
+      if (checkpoint.commit) {
+        events.emit("log", {
+          level: "info",
+          message: `[promote] iteration ${target.iteration.index}: checkpoint commit ${checkpoint.commit.slice(0, 12)}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      const result = worktrees.promoteSandbox(sandbox);
+      // `promoteSandbox` always removes the worktree; the branch is gone on
+      // success and preserved on failure.
+      settled = true;
+      return this.settlePromotion(target.iteration, target.base, target.branch, result);
+    } catch (err) {
+      // Leave the cleanup to `finally`: a throw before or during integration can
+      // leave the recovery worktree on disk, and it must not block a retry. The
+      // previous record is passed so an infrastructure error cannot downgrade a
+      // `conflict` (which the assisted repair is eligible for) to `failed`.
+      return this.failedPromotion(target, err, this.state.promotion);
+    } finally {
+      if (sandbox && !settled) worktrees.detachSandbox(sandbox);
+    }
+  }
+
+  /**
+   * Diagnose and repair an integration **conflict** (ADR-62), then promote.
+   *
+   * One attempt, and huginn owns every git operation: it merges the primary HEAD
+   * into the preserved branch *without committing*, asks the thinker (read-only)
+   * for a remediation plan, lets the executor resolve the conflicted files, commits
+   * the merge itself, proves the merged tree with the iteration's deterministic
+   * `Verification:` commands, and only then promotes. Any failure keeps the branch
+   * exactly as it was (the merge is aborted or the branch reset) and the primary
+   * tree is never touched.
+   */
+  async repairPromotion(): Promise<PromotionRetryResult> {
+    const record = this.state.promotion;
+    const eligibility = promotionRepairEligibility(record);
+    if (!eligibility.ok) {
+      return {
+        promoted: false,
+        method: "none",
+        commits: [],
+        record: record ?? { status: "none", branch: "" },
+        error: eligibility.reason,
+      };
+    }
+
+    const target = this.promotionTarget();
+    if (!target.ok) return target.result;
+
+    const worktrees = this.getWorktrees();
+    const head = headCommit(this.cfg.projectPath);
+    let sandbox: Sandbox | undefined;
+    let settled = false;
+    try {
+      if (!head) throw new Error("the primary branch has no HEAD commit to merge");
+
+      sandbox = worktrees.openSandboxFromBranch(
+        this.cfg.projectPath,
+        target.branch,
+        target.iteration.index,
+        target.base,
+      );
+      const preMergeTip = worktrees.sandboxHead(sandbox);
+      const ctx = this.promotionContext(sandbox, target.iteration, target.base);
+      const step = this.promotionStep();
+
+      const merge = worktrees.mergeRef(sandbox, head);
+      if (!merge.clean && merge.conflicts.length === 0) {
+        throw new Error(
+          `cannot merge ${head.slice(0, 12)} into ${target.branch}: ${
+            merge.detail ?? "git merge failed"
+          }`,
+        );
+      }
+
+      if (merge.conflicts.length > 0) {
+        const report = this.promotionConflictReport(
+          record!,
+          merge.conflicts,
+          head,
+          target.iteration.index,
+        );
+        const diagnosed = await this.runDiagnosis(
+          step,
+          ctx,
+          target.iteration,
+          1,
+          report,
+          undefined,
+        );
+        const fixRes = await this.withPhaseSession(
+          ctx,
+          target.iteration,
+          "REPAIR_PROMOTION",
+          this.models.executor,
+          (scoped) =>
+            repairPromotionFindings(scoped, {
+              detail: record!.detail ?? "",
+              conflicts: merge.conflicts,
+              head,
+              plan: diagnosed.plan,
+            }),
+        );
+        const key = this.attemptKey(target.iteration.index, "REPAIR_PROMOTION");
+        this.state.phaseAttempts[key] = (this.state.phaseAttempts[key] ?? 0) + 1;
+        this.recordFix(
+          { text: fixRes.text, messageId: fixRes.messageId },
+          target.iteration.index,
+          step,
+          1,
+          formatModel(this.models.executor),
+        );
+        this.persist();
+      }
+
+      worktrees.commitMerge(
+        sandbox,
+        `chore(iter-${target.iteration.index}): merge ${head.slice(0, 12)} into ${target.branch}`,
+      );
+
+      const verification = await verifyIteration({ ...ctx, session: undefined, sessionId: "" });
+      if (verification.crash) {
+        throw new Error(
+          `verification crashed (${verification.crash.command} → ${verification.crash.signal}); ` +
+            `a crash is an environment failure, not something this repair can fix`,
+        );
+      }
+      if (verification.authoritativeVerdict !== "pass") {
+        // The merged tree never reached the primary branch and must not look
+        // verified: restore the branch to the tip the iteration produced.
+        if (preMergeTip) worktrees.resetTo(sandbox, preMergeTip);
+        throw new Error(
+          `the merged tree does not verify: ${sanitizeTerminalText(verification.text)
+            .split("\n")
+            .filter((line) => line.trim().length > 0)
+            .slice(-6)
+            .join(" · ")}`,
+        );
+      }
+
+      const result = worktrees.promoteSandbox(sandbox);
+      settled = true;
+      return this.settlePromotion(target.iteration, target.base, target.branch, result);
+    } catch (err) {
+      // `finally` aborts the in-flight merge (if any) and removes the worktree;
+      // the branch — the only copy of the iteration — is never touched.
+      return this.failedPromotion(target, err, record);
+    } finally {
+      if (sandbox && !settled) {
+        if (worktrees.mergeInProgress(sandbox)) worktrees.abortMerge(sandbox);
+        worktrees.detachSandbox(sandbox);
+      }
+    }
+  }
+
+  /**
+   * The iteration, branch and integration base a failed promotion left behind, or
+   * the explanation of why there is nothing to recover.
+   */
+  private promotionTarget():
+    | { ok: true; iteration: Iteration; branch: string; base: string }
+    | { ok: false; result: PromotionRetryResult } {
+    const record = this.state.promotion;
+    const fail = (error: string): { ok: false; result: PromotionRetryResult } => ({
+      ok: false,
+      result: {
+        promoted: false,
+        method: "none",
+        commits: [],
+        record: record ?? { status: "none", branch: "" },
+        error,
+      },
+    });
+
+    if (!record || (record.status !== "conflict" && record.status !== "failed")) {
+      return fail("there is no failed promotion recorded; nothing to recover");
+    }
+
+    // The failed iteration never advanced `currentIteration`; fall back to the
+    // number in the branch name so a preserved branch still resolves.
+    const fromBranch = /^huginn\/(?:preserved\/)?task-iter-(\d+)/.exec(record.branch)?.[1];
+    const iteration =
+      this.plan.iterations.find((i) => i.index === this.state.currentIteration) ??
+      (fromBranch ? this.plan.iterations.find((i) => i.index === Number(fromBranch)) : undefined);
+    if (!iteration) {
+      return fail(
+        `the plan has no iteration ${this.state.currentIteration}; cannot rebuild the recovery context`,
+      );
+    }
+
+    const base = this.promotionBase(record.branch);
+    if (!base) {
+      return fail(
+        `could not determine the integration base of ${record.branch}; ` +
+          `set it by hand (git merge-base HEAD ${record.branch}) and re-run`,
+      );
+    }
+
+    return { ok: true, iteration, branch: record.branch, base };
+  }
+
+  /**
+   * The commit the preserved branch is integrated from: the base the iteration was
+   * created at when it still exists, otherwise the merge base with the primary
+   * branch. Never the branch tip — that makes the range empty (see
+   * `integrationBase`).
+   */
+  private promotionBase(branch: string): string | undefined {
+    const persisted = this.state.iterationBaseCommit;
+    if (
+      persisted &&
+      git(this.cfg.projectPath, ["merge-base", "--is-ancestor", persisted, branch]).code === 0
+    ) {
+      return persisted;
+    }
+    return integrationBase(this.cfg.projectPath, branch);
+  }
+
+  /** The recovery attempt's phase context: every prompt and command runs in the recovery worktree. */
+  private promotionContext(sandbox: Sandbox, iteration: Iteration, base: string): PhaseContext {
+    return {
+      session: undefined,
+      sessionId: "",
+      models: this.models,
+      projectPath: sandbox.path,
+      directory: sandbox.path,
+      primaryProjectRoot: this.cfg.projectPath,
+      dbPath: resolveDatabasePath(undefined, this.cfg.projectPath),
+      iteration,
+      specPath: this.sandboxDocPath(sandbox, this.cfg.specPath),
+      adrPath: this.sandboxDocPath(sandbox, this.cfg.adrPath),
+      planPath: this.sandboxDocPath(sandbox, this.cfg.planPath),
+      modules: iteration.modules ?? [],
+      baseCommit: base,
+      profilePreamble: profilePreamble(this.cfg.profile),
+      profile: profileSpec(this.cfg.profile).id,
+      totalIterations: this.plan.iterations.length,
+      phaseTimeoutMs: this.cfg.phaseTimeoutMs,
+      verify: this.cfg.verify !== false,
+    };
+  }
+
+  /** The synthetic step the diagnosis/application turns are recorded under. */
+  private promotionStep(): PipelineStep {
+    return {
+      phase: "REPAIR_PROMOTION",
+      fn: async () => ({ text: "", messageId: "" }),
+      gate: "none",
+      fixPhase: "REPAIR_PROMOTION",
+      fixLabel: "promotion integration",
+      blocking: true,
+    };
+  }
+
+  private promotionConflictReport(
+    record: PromotionRecord,
+    conflicts: string[],
+    head: string,
+    iteration: number,
+  ): string {
+    return [
+      `Integration of iteration ${iteration} conflicted while promoting into the primary branch.`,
+      `Promotion status: ${record.status}`,
+      record.detail ? `Detail: ${record.detail}` : "",
+      `A merge of the primary HEAD (${head}) into ${record.branch} is in progress in this worktree.`,
+      "Conflicted paths:",
+      ...conflicts.map((path) => `- ${path}`),
+    ]
+      .filter((line) => line.length > 0)
+      .join("\n");
+  }
+
+  /**
+   * The shared success/failure bookkeeping of a recovery attempt: a promoted
+   * iteration updates the symbol graph and Muninn, advances the run (so the next
+   * `run` continues after it) and clears the resume cursor; a failed one records
+   * the reason and leaves the branch intact.
+   */
+  private settlePromotion(
+    iteration: Iteration,
+    base: string,
+    branch: string,
+    result: PromoteResult,
+  ): PromotionRetryResult {
+    if (result.promoted) {
+      indexIterationSourceFiles({
+        projectPath: this.cfg.projectPath,
+        baseCommit: base,
+        primaryProjectRoot: this.cfg.projectPath,
+      });
+      recordIterationMemory({
+        primaryProjectRoot: this.cfg.projectPath,
+        dbPath: resolveDatabasePath(undefined, this.cfg.projectPath),
+        iteration,
+        baseCommit: base,
+        verdicts: this.state.history
+          .filter((entry) => entry.iteration === iteration.index)
+          .map((entry) => ({ phase: entry.phase, verdict: entry.verdict })),
+        commit: headCommit(this.cfg.projectPath),
+      });
+      this.state.promotion = { status: "promoted", branch };
+      // The increment is now in the primary tree, so the next run must continue
+      // *after* it (exactly what `runLoop` does for a promoted iteration).
+      this.state.currentIteration = iteration.index + 1;
+      this.state.currentPhase = "SPEC_AUDIT";
+      this.state.resume = undefined;
+      this.persist();
+      events.emit("log", {
+        level: "info",
+        message: `[promote] iteration ${iteration.index}: recovered via ${result.method} (${result.commits.length} commit(s))`,
+        timestamp: new Date().toISOString(),
+      });
+      events.emit("iterationEnd", {
+        iteration: iteration.index,
+        title: sanitizeTerminalText(iteration.title),
+      });
+      return { promoted: true, method: result.method, commits: result.commits, record: this.state.promotion };
+    }
+
+    const kind = result.failure ?? "conflict";
+    const record: PromotionRecord = {
+      status: kind,
+      branch,
+      ...(result.backups ? { backups: result.backups } : {}),
+      ...(result.detail ? { detail: result.detail } : {}),
+    };
+    this.state.promotion = record;
+    this.persist();
+    return {
+      promoted: false,
+      method: result.method,
+      commits: result.commits,
+      record,
+      error: result.detail ?? `promotion ${kind}`,
+    };
+  }
+
+  /** Record a recovery attempt that threw, keeping the preserved branch. */
+  private failedPromotion(
+    target: { iteration: Iteration; branch: string; base: string },
+    err: unknown,
+    previous?: PromotionRecord,
+  ): PromotionRetryResult {
+    const reason = sanitizeTerminalText(err instanceof Error ? err.message : String(err));
+    const status = previous?.status === "conflict" ? "conflict" : "failed";
+    const record: PromotionRecord = {
+      status,
+      branch: target.branch,
+      ...(previous?.backups ? { backups: previous.backups } : {}),
+      detail: reason,
+    };
+    this.state.promotion = record;
+    this.persist();
+    events.emit("log", {
+      level: "warn",
+      message: `[promote] recovery of iteration ${target.iteration.index} failed; branch ${target.branch} preserved: ${reason}`,
+      timestamp: new Date().toISOString(),
+    });
+    return { promoted: false, method: "none", commits: [], record, error: reason };
   }
 
   /**

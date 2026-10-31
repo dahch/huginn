@@ -27,6 +27,7 @@ import {
   commitAllPrompt,
   diagnoseFindingsPrompt,
   fixFindingsPrompt,
+  repairPromotionPrompt,
   validateStepPrompt,
   parseAuditStatus,
 } from "./steps/index.js";
@@ -771,6 +772,24 @@ export async function fixFindings(
 ): Promise<PromptResult> {
   return promptWithContext(ctx, {
     text: fixFindingsPrompt(ctx, label, report, extraInstructions, remediation),
+    agent: "build",
+    model: ctx.models.executor,
+    timeoutMs: ctx.phaseTimeoutMs,
+    directory: agentDirectory(ctx),
+  });
+}
+
+/**
+ * `REPAIR_PROMOTION` — the `executor` resolves the conflicts of the merge huginn
+ * started between the primary branch and the iteration's preserved branch
+ * (ADR-62). It edits files only: huginn aborts, commits and promotes.
+ */
+export async function repairPromotionFindings(
+  ctx: PhaseContext,
+  opts: { detail: string; conflicts: string[]; head: string; plan?: string },
+): Promise<PromptResult> {
+  return promptWithContext(ctx, {
+    text: repairPromotionPrompt(ctx, opts),
     agent: "build",
     model: ctx.models.executor,
     timeoutMs: ctx.phaseTimeoutMs,

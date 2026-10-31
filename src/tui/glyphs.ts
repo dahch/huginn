@@ -61,6 +61,7 @@ const PHASE_GLYPHS: Record<string, string> = {
   REVIEW: "@",
   DOC_SYNC: "~",
   COMMIT_ALL: ".",
+  REPAIR_PROMOTION: "&",
 };
 
 /** The glyph for a phase name (any `FIX_*` or unknown phase gets the fix glyph). */

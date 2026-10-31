@@ -146,6 +146,7 @@ const PHASE_LABEL: Record<string, { label: string }> = {
   FIX_REVIEW: { label: "Fix review findings" },
   DOC_SYNC: { label: "Doc sync" },
   COMMIT_ALL: { label: "Commit all" },
+  REPAIR_PROMOTION: { label: "Repair promotion" },
 };
 
 export function renderProgressMarkdown(projectPath: string, state: HarnessState): string {

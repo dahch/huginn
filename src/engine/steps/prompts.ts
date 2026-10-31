@@ -385,6 +385,66 @@ export function diagnoseFindingsPrompt(
 }
 
 // ---------------------------------------------------------------------------
+// promotion recovery — resolve an integration conflict (ADR-62)
+// ---------------------------------------------------------------------------
+
+/**
+ * The executor's correction of a **promotion conflict** (ADR-62).
+ *
+ * Huginn has already merged the primary branch's HEAD into the iteration's
+ * preserved branch *without committing*; the merge is in progress inside the
+ * recovery worktree and the conflicted paths are known. The model resolves files
+ * only — it never runs the merge, the commit, the abort or anything else that
+ * touches history, because huginn owns every git operation on that path.
+ */
+export function repairPromotionPrompt(
+  ctx: StepContext,
+  opts: { detail: string; conflicts: string[]; head: string; plan?: string },
+): string {
+  const conflictList = opts.conflicts.length > 0 ? opts.conflicts.join("\n") : "(none)";
+  const plan = opts.plan?.trim()
+    ? [
+        "## Remediation Plan (from the Architect / Thinker)",
+        "Follow it strictly. Do not improvise outside the conflicted paths; if it is wrong, correct it minimally and say why.",
+        embedUntrusted("remediation plan", boundEmbedded(opts.plan, 24_000)),
+      ].join("\n")
+    : "";
+  const verification =
+    ctx.iteration.verification && ctx.iteration.verification.length > 0
+      ? ctx.iteration.verification.join(" && ")
+      : "(this plan declares no Verification commands)";
+
+  return joinBlocks(
+    "You are resolving a git integration conflict for an iteration that was already verified in its sandbox.",
+    [
+      "Huginn merged the primary branch's HEAD into the iteration's preserved branch WITHOUT committing;",
+      "that merge is in progress in this worktree and its conflicts are listed below.",
+      "Resolve every listed conflict so the merged tree keeps BOTH the iteration's intent and the",
+      "primary branch's changes. The iteration's work is the point of the increment; the primary",
+      "branch's newer changes are the reason it could not fast-forward. Neither side may be silently",
+      "dropped.",
+    ].join(" "),
+    `## Merge in progress\nPrimary HEAD merged in: \`${opts.head}\``,
+    `## Conflicted paths\n${embedUntrusted("conflicted paths", conflictList)}`,
+    "## Promotion failure report",
+    embedUntrusted("promotion failure", boundEmbedded(opts.detail, 12_000)),
+    plan,
+    incrementEvidence(ctx, "iteration acceptance criteria"),
+    `## Changes in this iteration (git diff --stat)\n${embedUntrusted("git diff --stat", diffStat(ctx))}`,
+    `## Current repository status\n${repoStatus(ctx)}`,
+    [
+      "## Rules",
+      "- Edit only the conflicted files (plus whatever they must compile against); keep the diff minimal.",
+      "- Never run `git merge --abort`, `git reset`, `git rebase`, `git commit`, `git checkout --ours/--theirs` on a whole file, or `git push`: huginn completes the merge itself.",
+      "- Never touch `.huginn/promotion-backup/**`, `.harness/**`, or any path outside this worktree.",
+      "- Do not delete either side's behaviour to make the conflict disappear. If two changes truly conflict, keep both behind the smallest possible adaptation and say which one you prioritised.",
+      `- Leave the tree ready to pass the iteration's own verification: ${verification}`,
+      "Finish with a short summary of each resolution and why.",
+    ].join("\n"),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // validateStep — one increment audit
 // ---------------------------------------------------------------------------
 

@@ -19,7 +19,9 @@ export type PhaseName =
   | "REVIEW"
   | "FIX_REVIEW"
   | "DOC_SYNC"
-  | "COMMIT_ALL";
+  | "COMMIT_ALL"
+  /** Recovery only (ADR-62): repair a failed promotion. Never part of a profile. */
+  | "REPAIR_PROMOTION";
 
 /** The pipeline phases run once per iteration (FIX_* phases are excluded). */
 export const MAIN_PHASES: PhaseName[] = [
@@ -59,7 +61,16 @@ export type DecisionKind =
   | "draft-format"
   | "post-cycle-live";
 
-export type DecisionChoice = "retry" | "continue" | "abort" | "allow" | "deny";
+export type DecisionChoice =
+  | "retry"
+  | "continue"
+  | "abort"
+  | "allow"
+  | "deny"
+  /** `post-cycle-live` only: re-attempt a failed integration, deterministically. */
+  | "retry-promotion"
+  /** `post-cycle-live` only: diagnose and repair an integration conflict. */
+  | "repair";
 
 export interface QuestionItem {
   question: string;
@@ -86,4 +97,11 @@ export interface DecisionRequest {
   questionIndex?: number;
   /** How many questions the block carried in total (with `questionIndex`). */
   questionTotal?: number;
+  /**
+   * The answers this request actually offers, when the producer knows better than
+   * the kind's default set — a `post-cycle-live` prompt offers the promotion
+   * recovery only while a failed promotion is recorded (ADR-62). Consumers must
+   * render and accept only these.
+   */
+  choices?: DecisionChoice[];
 }
