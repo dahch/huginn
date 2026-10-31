@@ -84,8 +84,8 @@ export interface RuntimeOptions {
    * Huginn's `--permissions` mode (Phase 2C). A subprocess runtime closes stdin
    * after the prompt, so `ask`/`deny` cannot be honoured: the CLI refuses to
    * start one in those modes (REV-2C-001) rather than running it more
-   * permissively than requested. opencode ignores this option — its permissions
-   * are enforced through the engine's event subscriber (`src/engine/permissions.ts`).
+   * permissively than requested. opencode ignores this option — its native port
+   * answers permissions through the session's `onPermission`.
    */
   permissions?: PermissionMode;
 }

@@ -7,10 +7,15 @@ interface FakeState {
   permissions: Array<{ sessionId: string; permissionId: string; response: string }>;
   prompts: Array<{ sessionId: string; text: string }>;
   aborts: string[];
+  questions: Array<{ url?: string; body?: unknown }>;
 }
 
 function fakeClient(script: unknown[]): { client: OpencodeClient; state: FakeState } {
-  const state: FakeState = { permissions: [], prompts: [], aborts: [] };
+  const state: FakeState = { permissions: [], prompts: [], aborts: [], questions: [] };
+  const post = async (opts: { url?: string; body?: unknown }) => {
+    state.questions.push(opts);
+    return {};
+  };
   const client = {
     session: {
       create: async () => ({ id: "ses_1" }),
@@ -40,6 +45,7 @@ function fakeClient(script: unknown[]): { client: OpencodeClient; state: FakeSta
         response: params.body.response,
       });
     },
+    _client: { post },
     event: {
       subscribe: async () => ({
         stream: (async function* () {
@@ -119,6 +125,47 @@ describe("createOpencodePort", () => {
     const session = await port.createSession({ title: "t" });
     await tick();
     expect(state.permissions[0]?.response).toBe("reject");
+    await session.close();
+  });
+
+  it("routes the backend's questions through onQuestion", async () => {
+    const { client, state } = fakeClient([
+      {
+        type: "question.asked",
+        properties: {
+          id: "q1",
+          sessionID: "ses_1",
+          questions: [{ question: "Pick one", options: [{ label: "A" }, { label: "B" }] }],
+        },
+      },
+    ]);
+    const port = createOpencodePort({ client });
+    const asked: string[] = [];
+    const session = await port.createSession({
+      title: "t",
+      onQuestion: async (request) => {
+        asked.push(request.questions[0]!.question);
+        return { answers: [["B"]] };
+      },
+    });
+    await tick();
+
+    expect(asked).toEqual(["Pick one"]);
+    expect(state.questions[0]?.url).toContain("/question/{requestID}/reply");
+    await session.close();
+  });
+
+  it("rejects a question it cannot ask about", async () => {
+    const { client, state } = fakeClient([
+      {
+        type: "question.asked",
+        properties: { id: "q2", sessionID: "ses_1", questions: [{ question: "Pick" }] },
+      },
+    ]);
+    const port = createOpencodePort({ client });
+    const session = await port.createSession({ title: "t" });
+    await tick();
+    expect(state.questions[0]?.url).toContain("/reject");
     await session.close();
   });
 

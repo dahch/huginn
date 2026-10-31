@@ -353,8 +353,8 @@ describe("Phase 2C · opencode keeps its subscriber-driven permissions", () => {
       const session = await runtime.createSession({ title: "opencode" });
       await session.prompt("hello");
 
-      // opencode's permissions flow through `subscribeToEvents`, not through a
-      // CLI flag: nothing is announced and no argv is built here at all.
+      // opencode's permissions flow through the native port's `onPermission`,
+      // not through a CLI flag: nothing is announced and no argv is built here.
       expect(mockPrompt).toHaveBeenCalled();
       expect(logs.filter((l) => l.message.includes("auto-approved permissions"))).toHaveLength(0);
       expect(logs.filter((l) => l.message.includes("--permissions"))).toHaveLength(0);
