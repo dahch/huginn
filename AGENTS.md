@@ -166,6 +166,15 @@ decides the outcome:
   (`src/util/docPath.ts`), and every `git` call goes through the hardened seam in
   `src/engine/diff.ts` (no pager/fsmonitor/hooks, `--no-ext-diff --no-textconv`, a subcommand
   allowlist and a forbidden-argument screen).
+- **Muninn is read, not just written.** `src/engine/memory/` turns the symbol
+  graph into context: `EXECUTE`, `SPEC_AUDIT` and `VALIDATE_STEP` receive a bounded (~8 KB)
+  untrusted block of recent decisions, prior increments and the symbols under the iteration's
+  modules (`retrieveIncrementContext`). Retrieval requires an explicit `ctx.dbPath` and refuses a
+  missing database, because opening one runs DDL and creates the project row — a write a read-only
+  audit must not perform. `plan`/`live` persist every `## ADR-N` as a `decision` observation
+  (`adr-<n>`, idempotent delete-then-insert), and each promoted increment becomes one `iter-<n>`
+  observation. Every write is fail-open: memory can never fail an iteration, and `HUGINN_MEMORY=0`
+  disables retrieval.
 - **One clean session per phase.** `CycleEngine.withPhaseSession` opens a fresh, directory-scoped
   `IAgentSession` for each pipeline step (and for the `DIAGNOSE` / `APPLY_FIX` turns) and closes it
   when the step ends (`IAgentSession.close`, bridged to `RuntimeSession.close`). A role never inherits
@@ -335,7 +344,9 @@ command runner), `src/plan/parser.test.ts` (increment metadata), `src/engine/ste
 `src/engine/steps/context.test.ts` (composition, bounding, nonce delimitation, the git-interpolation
 allowlist, doc containment), `test/engine/phases.test.ts` (the single-report `VALIDATE_STEP`, the
 deterministic verdict, the imposed gate/handoff line and the deterministic commit),
-`test/engine/phasesContractGuard.test.ts` (a compiler-contract verification that throws fails closed),
+`src/engine/steps/retrieval.test.ts` + `src/engine/memory/adr.test.ts` +
+`src/engine/memory/curation.test.ts` (bounded retrieval, read-only refusal, idempotent ADR/curation
+writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verification that throws fails closed),
 `test/engine/agent/piMcp.test.ts` (the `pi mcp list --json` parser and the native driver's MCP bridge),
 `test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment), and
 `test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
@@ -347,7 +358,8 @@ deterministic verdict, the imposed gate/handoff line and the deterministic commi
 |---|---|
 | `HUGINN_OPENCODE_CONFIG_DIR` | Where opencode's own config lives (default `~/.config/opencode`); also where the update-check cache (`huginn-update-cache.json`) is written. No longer an install destination (`getOpencodeConfigDir`, `src/setup/opencodeConfig.ts`). |
 | `HUGINN_NO_UPDATE_CHECK` | Any non-empty value disables the background npm version check (`src/update.ts`). |
-| `HUGINN_DEBUG` | Print full error stack traces on fatal errors, plus non-fatal notes (e.g. why Muninn indexing or contract verification was skipped). |
+| `HUGINN_DEBUG` | Print full error stack traces on fatal errors, plus non-fatal notes (e.g. why Muninn indexing, curation or contract verification was skipped). |
+| `HUGINN_MEMORY` | `0` disables the bounded Muninn retrieval block injected into `EXECUTE`, `SPEC_AUDIT` and `VALIDATE_STEP` (`src/engine/steps/retrieval.ts`). Writers (indexing, ADR decisions, curation) are unaffected. |
 | `HUGINN_THEME` | `light` \| `dark` \| `auto` (default) — pins the TUI palette (`src/tui/theme.ts`). |
 | `NO_COLOR` | Any non-empty value clears every theme token and `dimColor` (per no-color.org). |
 | `CI` | Every prompt (`promptLine`/`promptYesNo`, `src/util/prompt.ts`) returns its fallback instead of reading stdin; nothing blocks on a human. |

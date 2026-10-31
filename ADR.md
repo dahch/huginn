@@ -1603,3 +1603,60 @@ avoids. They are ordered by how central the decision is to the design.
     failure; `FIX_VERIFY` still receives the trusted hint when the human chooses to retry.
   - *Negative*: a command that deliberately exits `128 + n` is reported as a crash; the shell convention
     makes the two indistinguishable, and the human decision still lets the run continue.
+
+## ADR-58: Muninn becomes the context engine, with a write gate on reads
+
+- **Date**: 2026-10-31
+- **Status**: Accepted
+- **Context**: Huginn only ever wrote to Muninn (AST symbols after each promotion) and never read it.
+  Meanwhile every prompt paid for whole-document embeds — up to 60 000 characters per doc — and
+  `EXECUTE` received no codebase context at all, so a contradicted ADR or a duplicate abstraction
+  could only be caught after the code was written. The installed `@dahch/muninn` exposes
+  `saveObservation`, `search`, `getContext`, `linkSymbol`, `inspectSymbol` and the `db` getter; it has
+  no `recallContext`/`saveDecision` API, and its `observations` table has no unique `topic_key`.
+- **Decision**:
+  1. `src/engine/memory/` owns all reads and writes. Retrieval merges recent decisions, short BM25
+     queries and observations already linked to the iteration's modules, plus the module symbols,
+     and caps the block at ~8 KB inside the untrusted wrapper.
+  2. **Readers never create the database.** `withMemoryService` refuses a missing file unless the
+     caller is a writer (`create: true`), because constructing a `MemoryService` runs the DDL, creates
+     the directory and inserts the project row — a write a `readOnly` phase must not perform.
+     Retrieval therefore requires an explicit `dbPath` and never calls `resolveDatabasePath`.
+  3. ADRs are persisted as `decision` observations (`adr-<n>`) and each promoted increment as one
+     observation (`iter-<n>`), both idempotent through delete-then-insert in one transaction.
+  4. Every write is fail-open; `HUGINN_MEMORY=0` disables retrieval.
+- **Alternatives rejected**: (a) opening SQLite read-only — a WAL database without its `-shm`
+  sidecar refuses a read-only connection, which would silently disable retrieval after a checkpoint;
+  (b) retrieval-only replacement of the documents in the audit gate — BM25 recall is lossy, and a
+  fidelity audit that loses a requirement fails in the wrong direction; (c) exposing Muninn only as
+  MCP tools — the agent does not reliably call them, and `EXECUTE` still starts blind.
+- **Consequences**:
+  - *Positive*: prompts carry relevant history instead of raw volume; decisions outlive the run that
+    made them; and the read-only guarantee stays cryptographic rather than depending on the agent.
+  - *Negative*: prompt text now depends on database state (receipts pin the tree hash, not the
+    prompt), and a project that does not gitignore `.huginn/` could see a WAL sidecar as a write.
+
+## ADR-59: Deterministic gates, on-demand judge and a deterministic commit
+
+- **Date**: 2026-10-31
+- **Status**: Accepted
+- **Context**: A clean `huginn` iteration cost 14 model turns: `VALIDATE_STEP` ran qa, spec-auditor,
+  security and a synthesis; `SPEC_AUDIT`, `TEST_MODULE` and `SECURE_CHECK` duplicated those roles;
+  three judge passes re-derived verdicts the roles had already stated; and `COMMIT_ALL` spent a turn
+  on `git commit`. A second model call to grade prose is the definition of avoidable spend.
+- **Decision**:
+  1. Every audit role ends on its own `### Audit status:` line; the judge runs only when it is
+     warning/blocked (to extract `actionItems`) or missing (fail closed). A structural verdict from
+     huginn still outranks the marker, and the marker never becomes `authoritativeVerdict`.
+  2. `VALIDATE_STEP` is one increment audit (acceptance coverage + spec fidelity); qa and security
+     stay their own phases.
+  3. `SPEC_AUDIT` runs once per cycle, memoized on `computePlanHash([spec, adr, plan])`; a blocked
+     audit is never memoized.
+  4. `COMMIT_ALL` derives its message from the iteration and the changed paths, sharing the hardened
+     `commitAllPending` seam with the pre-promotion checkpoint.
+- **Consequences**:
+  - *Positive*: 7 turns on the first iteration and 6 afterwards; no model grades its own prose; a
+    green report costs one call.
+  - *Negative*: the role must actually emit its marker (a missing one fails closed through the judge),
+    and profiles without `SECURE_CHECK` (`sdd`, `rdd`, `strict-tdd`) no longer get the security
+    sub-audit `VALIDATE_STEP` used to run. That is a deliberate de-scope.

@@ -19,6 +19,15 @@
   switch. `IAgentSession.close()` is bridged to `RuntimeSession.close()`.
 - **`VERIFY` runs right after `EXECUTE`** in the default profile, so a deterministic failure is caught
   before any LLM audit spends tokens, and the profile now freezes a `receipt` by default.
+- **Muninn becomes the context engine.** `EXECUTE`, `SPEC_AUDIT` and `VALIDATE_STEP` receive a bounded
+  (~8 KB) untrusted block with recent decisions, prior increments and the symbols under the iteration's
+  modules (`retrieveIncrementContext`). Retrieval requires an explicit `dbPath` and refuses to open a
+  missing database, so a read-only audit never triggers the DDL/`mkdir` a `MemoryService` performs.
+  `plan`/`live` persist every ADR as a `decision` observation (`adr-<n>`, idempotent), each promoted
+  increment leaves one `iter-<n>` observation, and `huginn memory decisions` backfills an existing
+  `adr.md`. Every write is fail-open; `HUGINN_MEMORY=0` disables retrieval.
+- **`SPEC_AUDIT` bounds the plan embed.** The auditor receives the iteration index plus the current
+  increment (24 KB) instead of the whole document.
 
 ### Changed
 
@@ -64,7 +73,9 @@
 - `AGENTS.md` §1–§4 and §6, `SPEC.md` (AC-40.2…AC-40.4, AC-57.1, the new `REQ-60`…`REQ-63` turn
   budget), `DESIGN.md` (§5 gate model, §5.1 turn table) and the README describe the
   `DIAGNOSE` → `APPLY_FIX` flow, the per-phase sessions, the single-report `VALIDATE_STEP`, the
-  on-demand judge, the `SPEC_AUDIT` cadence and the deterministic commit.
+  on-demand judge, the `SPEC_AUDIT` cadence and the deterministic commit. `ADR.md` gains ADR-58
+  (Muninn as the context engine) and ADR-59 (deterministic gates, on-demand judge); the README
+  documents what the agent is told and `HUGINN_MEMORY`.
 
 ## 2.0.0-rc.4
 

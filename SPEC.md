@@ -1078,3 +1078,35 @@ iteration and 6 afterwards** (down from 14).
 - **AC-63.3 (Opt-in agent commit)**: `ProfileSpec.commit`, `.huginn/config.json` and `--commit agent`
   restore the model-authored semantic grouping; `pendingChanges` passes `-uall` so a new directory
   yields its files.
+
+### REQ-64: Architectural decisions live in memory
+- **AC-64.1 (ADR → decision)**: `plan` and `live` persist every `## ADR-N` section as an
+  observation with `category: "decision"` and `topicKey: "adr-<n>"`, through
+  `src/engine/memory/adr.ts`.
+- **AC-64.2 (Idempotent)**: re-saving the same ADR updates the single row instead of duplicating it
+  (the schema has no unique `topic_key`, so the upsert deletes and re-inserts inside one transaction;
+  the FTS index and entity links follow).
+- **AC-64.3 (Read containment)**: the ADR file is read through `readFileBounded` (symlink and
+  project-escape screened), and only file paths the indexer already knows are linked.
+- **AC-64.4 (Backfill)**: `huginn memory decisions [--adr …] [--dry-run]` seeds an existing ADR file.
+
+### REQ-65: Each promoted increment is curated
+- **AC-65.1 (One observation)**: after a successful promotion (and after in-place indexing) huginn
+  writes one observation keyed `iter-<n>` containing the goal, acceptance criteria, verification
+  commands, changed files, the verdict map and the commit.
+- **AC-65.2 (Category)**: a clean increment is `architecture`; one that needed a warning or a skipped
+  phase is `discovery`.
+- **AC-65.3 (Fail-open)**: a memory failure never fails the iteration or the promotion, and a skipped
+  curation is only reported under `HUGINN_DEBUG`.
+
+### REQ-66: Prompts receive bounded, retrieved context
+- **AC-66.1 (Retrieval)**: `EXECUTE`, `SPEC_AUDIT` and `VALIDATE_STEP` receive
+  `retrieveIncrementContext`: recent decisions, observations matched by short BM25 queries plus the
+  ones linked to the iteration's modules, and the module symbols — capped at ~8 KB and wrapped as
+  untrusted data.
+- **AC-66.2 (Read-only safety)**: retrieval requires an explicit `dbPath` and refuses a missing
+  database; it never calls `resolveDatabasePath` and never creates the file.
+- **AC-66.3 (Plan audit bound)**: `SPEC_AUDIT` embeds the plan's iteration index plus the current
+  increment (≤24 KB), with the bounded whole-file embed as the fallback.
+- **AC-66.4 (Kill switch)**: `HUGINN_MEMORY=0` disables retrieval; writers are unaffected.
+

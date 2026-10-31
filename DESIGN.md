@@ -82,6 +82,11 @@ src/
 │   ├── gate.ts             verdict parsers, JSON judge, fail-closed logic
 │   ├── profiles.ts         PROFILES: the named pipelines (huginn Cycle + sdd/odd/rdd/strict-tdd) over the phase vocabulary (REQ-36), plus the commit mode (REQ-63)
 │   ├── steps/commitMessage.ts  deterministic `feat|fix|docs(<scope>): <subject>` from the iteration (REQ-63)
+│   ├── steps/retrieval.ts  bounded Muninn context block for EXECUTE / SPEC_AUDIT / VALIDATE_STEP (REQ-66)
+│   ├── memory/db.ts        fail-open open + topic-keyed upsert (never creates for a reader)
+│   ├── memory/queries.ts   decisions, observations and module-symbol SQL over Muninn
+│   ├── memory/adr.ts       parse `## ADR-N` and persist decisions (REQ-64)
+│   ├── memory/curation.ts  one observation per promoted increment (REQ-65)
 │   ├── receipts.ts         frozen iteration evidence under .huginn/receipts/ + treeHash (used by the read-only guard) for rdd/strict-tdd (REQ-36)
 │   ├── questionBlock.ts    agent-agnostic `<<<HUGINN_QUESTION>>>` block parser + answer formatter (REQ-37)
 │   ├── decisionBroker.ts   FIFO queue of pending human/permission decisions

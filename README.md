@@ -685,6 +685,16 @@ A clean iteration therefore costs **7 model turns on the first iteration and 6 a
 14). The deterministic `VERIFY` costs none, the judge passes are elided on green, and the spec audit is
 reused while the documents are unchanged.
 
+### What the agent is told
+
+Instead of embedding the whole history, each iteration retrieves a bounded (~8 KB) block from Muninn:
+recent architectural decisions, prior increments and the symbols declared under the iteration's
+modules. ADRs are stored as `decision` observations as `plan`/`live` writes them, and every promoted
+increment leaves one `iter-<n>` observation behind. `EXECUTE` receives the block in addition to its
+own instruction, and `SPEC_AUDIT` audits the plan's iteration index plus the current increment instead
+of the entire document. Memory is advisory — it never decides a gate — and `HUGINN_MEMORY=0` turns
+retrieval off. `huginn memory decisions` backfills an existing `adr.md`.
+
 The auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`, `REVIEW`) are **read-only**: huginn
 hashes the working tree before and after the step and forces BLOCKED if the signature is missing or
 changed, so an audit that wrote to the repository cannot pass a gate.
