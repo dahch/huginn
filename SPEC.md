@@ -1126,3 +1126,10 @@ iteration and 6 afterwards** (down from 14).
   `getRuntimePort`/`getEnginePort` is what executes and `getAgentRuntime` remains the CLI-shaped
   provisioning/argv view. `legacyCapabilities` never claims streaming or structured events.
 
+---
+
+## Appendix — module map
+
+The module → requirement lookup table lives in [MODULE_MAP.md](./MODULE_MAP.md). It replaced
+`SPEC_ORCHESTRATOR.md`, whose second REQ numbering collided with this ledger's.
+

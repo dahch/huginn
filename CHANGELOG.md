@@ -65,6 +65,15 @@
   when the report talks about fidelity, so an audit-status line can no longer pass as a green fidelity
   verdict. The under-report screen matches the exact consolidation vocabulary (`### Overall gate:` and
   the three handoff phrases), never the bare ✅/⚠️/🔴 that every role template ships (REV-102).
+- **The dashboards stop animating at 12 Hz while idle.** The spinner interval runs only while a
+  turn/run is in flight, and the cycle dashboard's elapsed clock ticks once a second instead of
+  every 80 ms.
+- **Esc asks before aborting.** A single stray Esc used to end a paid-for live session; it now arms a
+  two-step confirmation (any other key cancels), like `/quit`. The post-abort message no longer
+  claims the sandbox was discarded: an interrupted iteration is parked for `/resume`.
+- **Every subcommand owns its `--help`.** The global interception answered `huginn <cmd> --help`
+  with the overview, leaving ten per-command help branches unreachable; `install` gained one.
+- **`PLAN.md` is resolved case-insensitively** like `SPEC.md`/`ADR.md`.
 - **`pendingChanges` lists files, not collapsed directories.** `git status --porcelain -uall` gives the
   deterministic commit a real scope for a brand-new folder.
 - **`/draft` no longer truncates destructively**: the architect prompt reads the configured
