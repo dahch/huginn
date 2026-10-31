@@ -332,7 +332,9 @@ export function LiveApp({
           ? ""
           : preservedBranch
             ? "\n\nThe last successfully promoted increment is intact; the iteration's work is on its preserved sandbox branch (see the promotion notice above)."
-            : "\n\nThe last successfully promoted increment is intact; the in-flight iteration's sandbox was discarded.";
+            : outcome.reason === "aborted"
+              ? "\n\nThe last successfully promoted increment is intact; the interrupted iteration's sandbox is kept so `/resume` can continue the step that was in flight."
+              : "\n\nThe last successfully promoted increment is intact; the failed iteration's sandbox was discarded.";
         const parked =
           promotion?.backups && promotion.backups.length > 0
             ? `\n\nYour local changes were parked under ${promotion.backups.join(", ")} (see manifest.json).`
@@ -483,6 +485,7 @@ function RefineView({
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const [usage, setUsage] = useState<string | undefined>(undefined);
+  const [confirmEsc, setConfirmEsc] = useState(false);
   const [logs, setLogs] = useState<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>(() => {
     return events.getRecentLogs().map((e) => ({
       level: e.level,
@@ -557,11 +560,13 @@ function RefineView({
   };
 
   useEffect(() => {
+    // Idle cost: the animation only advances while a turn is in flight.
+    if (!busy) return;
     const timer = setInterval(() => {
       setSpinnerIndex((i) => (i + 1) % SPINNER_FRAMES.length);
     }, 80);
     return () => clearInterval(timer);
-  }, []);
+  }, [busy]);
 
   // Poll MCP status periodically (on mount, and every 15s) strictly bounded by timeout
   useEffect(() => {
@@ -1538,10 +1543,18 @@ function RefineView({
     }
 
     if (key.escape) {
+      // Two-step like /quit: a stray Esc must not end a paid-for session.
+      if (!confirmEsc) {
+        setConfirmEsc(true);
+        emitSystem(warnFeedback("Press Esc again to abort — any other key cancels."));
+        return;
+      }
+      setConfirmEsc(false);
       live.requestAbort();
       failSession(new LiveAbortError());
       return;
     }
+    if (confirmEsc) setConfirmEsc(false);
     if (key.tab) {
       // Tab moves focus and nothing else: composer → conversation → stream →
       // composer (Shift+Tab reverses). A collapsed stream card is skipped, so the

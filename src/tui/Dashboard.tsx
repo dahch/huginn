@@ -149,14 +149,21 @@ export function Dashboard({
 
   const [mcpStatus, setMcpStatus] = useState<McpStatusReport | null>(null);
 
-  // Animation spinner tick
+  // Idle cost: both timers run only while a cycle is executing. The spinner needs
+  // ~12 fps, the elapsed clock only needs whole seconds.
+  const running = engine?.isRunning === true;
   useEffect(() => {
+    if (!running) return;
     const timer = setInterval(() => {
       setSpinnerIndex((i) => (i + 1) % SPINNER_FRAMES.length);
-      setNow(Date.now());
     }, 80);
     return () => clearInterval(timer);
-  }, []);
+  }, [running]);
+  useEffect(() => {
+    if (!running) return;
+    const clock = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(clock);
+  }, [running]);
 
   // Poll MCP status periodically (on mount, and every 15s) strictly bounded by timeout
   useEffect(() => {

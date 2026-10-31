@@ -276,7 +276,10 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
     await type(harness.stdin, "\u001B");
     expect(live.requestAbort).not.toHaveBeenCalled();
 
-    // With the palette closed, Esc aborts again.
+    // With the palette closed, Esc asks for confirmation instead of ending a
+    // paid-for session on one stray key: the first press only arms it.
+    await type(harness.stdin, "\u001B");
+    expect(live.requestAbort).not.toHaveBeenCalled();
     await type(harness.stdin, "\u001B");
     harness.unmount();
     // (assert after unmount: this harness flushes Ink's frame on unmount, so an

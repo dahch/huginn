@@ -299,6 +299,8 @@ export class CycleEngine {
   private models: Models;
   private decisions = new DecisionBroker();
   private paused = false;
+  /** True while {@link run} is executing (the dashboard gates its idle timers on it). */
+  private running = false;
   /** Verdict of the most recently completed phase (for the iteration receipt). */
   private lastVerdict?: Verdict;
   private abortRequested = false;
@@ -498,6 +500,10 @@ export class CycleEngine {
     return this.decisions.request(req);
   }
 
+  get isRunning(): boolean {
+    return this.running;
+  }
+
   async run(): Promise<{ reason: "completed" | "aborted" | "error"; error?: string }> {
     if (!isGitRepo(this.cfg.projectPath)) {
       throw new Error(`"${this.cfg.projectPath}" is not a git repository.`);
@@ -564,6 +570,7 @@ export class CycleEngine {
       });
     }
 
+    this.running = true;
     try {
       await this.runLoop();
     } catch (err) {
@@ -593,6 +600,8 @@ export class CycleEngine {
       this.persist();
       events.emit("done", { reason: "error", error: (err as Error).message });
       return this.outcome;
+    } finally {
+      this.running = false;
     }
 
     if (this.abortRequested) return this.finishAborted();
