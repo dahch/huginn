@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-rc.4
+
+Eleven commits since `2.0.0-rc.3`, 38 files: `src` +1445/−176, `test` +178/−9,
+docs +209/−26 (`ADR.md`, `AGENTS.md`, `DESIGN.md`, `README.md`, `SPEC.md`). Three engine
+features land — memory-capped subprocesses, resumable interrupted iterations, and a
+crash-aware `VERIFY` — alongside the live console's real focus model, a corrected account
+of the step prompts in `AGENTS.md`, and the fix that makes every clarifying question and
+every option visible and answerable.
 
 ### Added
 
