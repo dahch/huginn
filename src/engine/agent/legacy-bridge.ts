@@ -20,19 +20,20 @@ function messageOf(err: unknown): string {
  * - `permissions: "none"` — a legacy adapter has no channel back mid-turn (opencode's
  *   permission handling lives in the engine's event subscriber, not in the port),
  *   so `--permissions ask|deny` must keep failing closed for it.
- * - `structuredOutput`, `usageCost` and `structuredEvents` (beyond streaming) are
- *   false: the port carries no such payload yet.
- * - `streaming` is exactly the adapter's `streamsOutput`.
+ * - `structuredOutput`, `usageCost`, `structuredEvents` and `streaming` are false:
+ *   a legacy adapter resolves once, so the bridge can only emit the final text,
+ *   and claiming "streaming" for a single-event session is exactly the lie the
+ *   conformance suite rejects. A real streaming driver implements the port
+ *   natively.
  *
  * The native drivers added later flip these as they gain the ability, which is
  * what the conformance suite checks they do not fake.
  */
 export function legacyCapabilities(runtime: IAgentRuntime): RuntimeCapabilities {
-  const streaming = runtime.streamsOutput === true;
   return {
     inProcess: false,
-    structuredEvents: streaming,
-    streaming,
+    structuredEvents: false,
+    streaming: false,
     permissions: "none",
     sessionHistory: runtime.sessionHistory === true,
     sessionResume: false,
@@ -209,7 +210,7 @@ export function toLegacyRuntime(port: RuntimePort): IAgentRuntime {
         title: options.title,
         directory: options.directory,
         model: options.model,
-        agent: options.agent,
+        agent: options.agent === "build" ? "build" : undefined,
         permissions: options.permissions,
       });
       const legacy: IAgentSession = {
@@ -218,7 +219,7 @@ export function toLegacyRuntime(port: RuntimePort): IAgentRuntime {
           return session.prompt({
             text,
             model: promptOptions?.model,
-            agent: promptOptions?.agent,
+            agent: promptOptions?.agent === "build" ? "build" : undefined,
             timeoutMs: promptOptions?.timeoutMs,
             directory: promptOptions?.directory,
           });

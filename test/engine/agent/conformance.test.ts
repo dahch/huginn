@@ -79,13 +79,17 @@ describe("runtime port conformance (legacy bridge)", () => {
 });
 
 describe("legacy bridge parity with IAgentRuntime", () => {
-  it("mirrors the adapter's own capability booleans", () => {
+  it("mirrors the adapter's history but never claims events it cannot emit", () => {
     const streaming = toRuntimePort(
       fakeRuntime("opencode", { sessionHistory: true, streamsOutput: true }),
     );
     expect(streaming.capabilities.sessionHistory).toBe(true);
-    expect(streaming.capabilities.streaming).toBe(true);
-    expect(streaming.capabilities.structuredEvents).toBe(true);
+    // A legacy adapter resolves once: the bridge cannot emit incremental text,
+    // so it must not advertise streaming even when the adapter's own
+    // `streamsOutput` (the legacy TUI channel) is true. opencode gets its real
+    // streaming capability from the native port.
+    expect(streaming.capabilities.streaming).toBe(false);
+    expect(streaming.capabilities.structuredEvents).toBe(false);
     expect(streaming.capabilities.inProcess).toBe(false);
     // opencode's permission handling lives in the engine, not in the port.
     expect(streaming.capabilities.permissions).toBe("none");

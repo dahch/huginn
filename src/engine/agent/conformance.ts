@@ -150,6 +150,90 @@ export function conformanceCases(options: ConformanceOptions): ConformanceCase[]
     },
 
     {
+      name: "a streaming driver emits at least one text event before done",
+      async run() {
+        const port = options.makePort();
+        if (!port.capabilities.streaming) return;
+        const { events, sink } = collect();
+        const session = await port.createSession({ title: "conformance", sink });
+        try {
+          await session.prompt({ text: "stream" });
+        } finally {
+          await session.close();
+        }
+        assert(
+          events.some((event) => event.type === "text"),
+          "streaming is true but the driver emitted no text event",
+        );
+        assert(
+          events.at(-1)?.type === "done",
+          "the done event must still be last when the driver streams",
+        );
+      },
+    },
+
+    {
+      name: "a usage-reporting driver emits a usage event",
+      async run() {
+        const port = options.makePort();
+        if (!port.capabilities.usageCost) return;
+        const { events, sink } = collect();
+        const session = await port.createSession({ title: "conformance", sink });
+        try {
+          await session.prompt({ text: "cost" });
+        } finally {
+          await session.close();
+        }
+        assert(
+          events.some((event) => event.type === "usage"),
+          "usageCost is true but the driver emitted no usage event",
+        );
+      },
+    },
+
+    {
+      name: "a non-structured driver only emits text, done or error",
+      async run() {
+        const port = options.makePort();
+        if (port.capabilities.structuredEvents) return;
+        const { events, sink } = collect();
+        const session = await port.createSession({ title: "conformance", sink });
+        try {
+          await session.prompt({ text: "hello" });
+        } finally {
+          await session.close();
+        }
+        assert(
+          events.every(
+            (event) => event.type === "text" || event.type === "done" || event.type === "error",
+          ),
+          "a driver that declares no structured events emitted one",
+        );
+      },
+    },
+
+    {
+      name: "a resumable driver exposes resume and probe",
+      async run() {
+        const port = options.makePort();
+        if (!port.capabilities.sessionResume) return;
+        assert(
+          typeof port.resumeSession === "function",
+          "sessionResume is true without resumeSession()",
+        );
+        assert(
+          typeof port.probeSession === "function",
+          "sessionResume is true without probeSession()",
+        );
+        const probe = await port.probeSession!("does-not-exist");
+        assert(
+          probe === "gone" || probe === "failed" || probe === "exists",
+          "probeSession must resolve a three-valued result",
+        );
+      },
+    },
+
+    {
       name: "reports one done event, last, carrying the returned result",
       async run() {
         const port = options.makePort();

@@ -1,4 +1,4 @@
-import type { RuntimeId } from "../../agents/integrator.js";
+import type { AgentTarget, RuntimeId } from "../../agents/integrator.js";
 import type {
   McpServerListing,
   McpStatusReport,
@@ -87,17 +87,25 @@ export interface RuntimeSessionOptions {
   readonly title: string;
   readonly directory?: string;
   readonly model?: string;
-  readonly agent?: string;
+  /** The opencode built-in agent that must service the turn (the only one the engine sends). */
+  readonly agent?: "build";
   /** The run's `--permissions` mode, for drivers that can wire it to the CLI. */
   readonly permissions?: "auto" | "ask" | "deny";
   /** Where this session reports progress; omit when the caller only wants the result. */
   readonly sink?: EventSink;
+  /**
+   * The one channel that returns a value: a driver that may ask mid-turn asks
+   * here. An omitted handler means the driver must fail closed (deny), never
+   * silently proceed.
+   */
+  readonly onPermission?: PermissionHandler;
 }
 
 export interface RuntimePromptRequest {
   readonly text: string;
   readonly model?: string;
-  readonly agent?: string;
+  /** The opencode built-in agent that services this turn; other drivers ignore it. */
+  readonly agent?: "build";
   readonly timeoutMs?: number;
   readonly directory?: string;
 }
@@ -125,6 +133,8 @@ export type ModelResolution =
 export interface RuntimePort {
   readonly id: RuntimeId;
   readonly name: string;
+  /** The provisioning target this port was configured for, when one was chosen. */
+  readonly target?: AgentTarget;
   readonly capabilities: RuntimeCapabilities;
   /** Whether this driver can run here, and why not when it cannot. */
   isAvailable(): Promise<Availability>;
@@ -136,6 +146,17 @@ export interface RuntimePort {
    */
   resolveModel(reference: string): ModelResolution;
   createSession(options: RuntimeSessionOptions): Promise<RuntimeSession>;
+  /** Start the daemon/process the driver owns. Idempotent; never called from `isAvailable`. */
+  start?(): Promise<void>;
+  /** Where the driver listens, when it listens somewhere (for the startup log line). */
+  endpoint?(): string | undefined;
+  /**
+   * Reopen a stored session by id. Only when `capabilities.sessionResume`;
+   * probing is the caller's job so it can word the failure.
+   */
+  resumeSession?(id: string, options: RuntimeSessionOptions): Promise<RuntimeSession>;
+  /** Three-valued existence probe so "gone" and "lookup failed" stay distinguishable. */
+  probeSession?(id: string): Promise<"exists" | "gone" | "failed">;
   /**
    * The servers this driver's agent has configured, through its own CLI when it
    * has one. `undefined` means the driver has no listing; `[]` means it asked
