@@ -9,6 +9,7 @@ import {
   resolveStructuralVerdict,
   gateDecision,
   mergeAuditVerdict,
+  specAuditNeeded,
 } from "./cycle";
 import { events } from "./engineEvents";
 import { git } from "./diff";
@@ -1337,5 +1338,82 @@ describe("judge turn elision", () => {
     for (const phase of ["TEST_MODULE", "SECURE_CHECK", "REVIEW"] as const) {
       expect(engine.getState().history.some((h) => h.phase === phase && h.verdict === "pass")).toBe(true);
     }
+  });
+});
+
+describe("specAuditNeeded", () => {
+  const base = {
+    force: false,
+    hasImplementationCode: true,
+    docHash: "h1",
+    last: { docHash: "h1" },
+  };
+
+  it("greenfield wins even under --only-phase", () => {
+    expect(specAuditNeeded({ ...base, force: true, hasImplementationCode: false })).toEqual({
+      run: false,
+      reason: "greenfield",
+    });
+  });
+
+  it("forces a real audit for --only-phase", () => {
+    expect(specAuditNeeded({ ...base, force: true })).toEqual({ run: true, reason: "forced" });
+  });
+
+  it("runs on the first iteration", () => {
+    expect(specAuditNeeded({ ...base, last: undefined })).toEqual({ run: true, reason: "first" });
+  });
+
+  it("re-runs when the documents changed", () => {
+    expect(specAuditNeeded({ ...base, docHash: "h2" })).toEqual({ run: true, reason: "changed" });
+  });
+
+  it("reuses an unchanged audit", () => {
+    expect(specAuditNeeded(base)).toEqual({ run: false, reason: "unchanged" });
+  });
+});
+
+describe("SPEC_AUDIT cadence", () => {
+  it("audits the whole spec once per cycle and reuses it on later iterations", async () => {
+    // A non-doc source file makes the repo non-greenfield.
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "impl.ts"), "export const x: number = 1;\n");
+
+    const auditPrompts: string[] = [];
+    const client = {
+      session: {
+        create: async () => ({ id: "ses_test" }),
+        get: async () => ({}),
+        abort: async () => {},
+        prompt: async (params: Record<string, unknown>) => {
+          const body = params.body as { parts?: Array<{ text?: string }> } | undefined;
+          const text = body?.parts?.[0]?.text ?? "";
+          let reply = "REPORT\n\n### Audit status: 🟢 PASS";
+          if (text.includes("## Task: audit this iteration against the spec")) {
+            auditPrompts.push(text);
+            reply = "SPEC-AUDIT\n\n### Overall fidelity: 🟢 ALIGNED";
+          } else if (isValidateStepPrompt(text)) {
+            reply = VALIDATE_STEP_PASS_REPORT;
+          }
+          return { info: { id: "msg", error: undefined }, parts: [{ type: "text", text: reply }] };
+        },
+      },
+    } as unknown as OpencodeClient;
+
+    const plan = {
+      content: "# Plan\n\n## Iteration 1 — A\n\nwork\n\n## Iteration 2 — B\n\nmore\n",
+      iterations: [
+        { index: 1, title: "A", prompt: "work", startLine: 3 },
+        { index: 2, title: "B", prompt: "more", startLine: 6 },
+      ],
+    };
+    const engine = new CycleEngine({ cfg: makeCfg(), client, plan });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    expect(auditPrompts).toHaveLength(1);
+    const audits = engine.getState().history.filter((h) => h.phase === "SPEC_AUDIT");
+    expect(audits.map((h) => h.verdict)).toEqual(["pass", "skipped"]);
+    expect(engine.getState().specAudit?.iteration).toBe(1);
   });
 });

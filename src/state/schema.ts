@@ -45,6 +45,22 @@ export const resumeCursorSchema = z.object({
   sandboxPath: z.string().optional(),
 });
 
+/**
+ * The last whole-document `SPEC_AUDIT` (REQ-62).
+ *
+ * The audit compares the spec/adr/plan against the implementation, so running it
+ * on every iteration pays the same (now bounded) document embed again for an
+ * unchanged contract. The document hash is `computePlanHash([spec, adr, plan])`,
+ * the same "did the documents change" question the resume path already answers.
+ * Only a non-blocking audit is memoized: a blocked one must be re-run.
+ */
+export const specAuditSchema = z.object({
+  docHash: z.string(),
+  auditedAt: z.string(),
+  iteration: z.number(),
+  verdict: z.enum(["pass", "warning"]),
+});
+
 export const stateSchema = z.object({
   version: z.literal(1),
   planHash: z.string(),
@@ -67,6 +83,7 @@ export const stateSchema = z.object({
   aborted: z.boolean().optional(),
   promotion: promotionSchema.optional(),
   resume: resumeCursorSchema.optional(),
+  specAudit: specAuditSchema.optional(),
   history: z.array(historyEntrySchema),
 });
 
@@ -74,3 +91,4 @@ export type HarnessState = z.infer<typeof stateSchema>;
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 export type PromotionRecord = z.infer<typeof promotionSchema>;
 export type ResumeCursor = z.infer<typeof resumeCursorSchema>;
+export type SpecAuditRecord = z.infer<typeof specAuditSchema>;

@@ -170,6 +170,36 @@ export function mergeAuditVerdict(marker: Verdict | null, judged: Verdict): Verd
   return GATE_SEVERITY[judged] >= GATE_SEVERITY[marker] ? judged : marker;
 }
 
+export interface SpecAuditDecisionInput {
+  /** `--only-phase SPEC_AUDIT` forces a real audit. */
+  force: boolean;
+  /** `hasImplementationCode(workPath)` — a greenfield repo has nothing to audit. */
+  hasImplementationCode: boolean;
+  /** `computePlanHash([spec, adr, plan])` at this iteration. */
+  docHash: string;
+  /** The last memoized audit, if any. */
+  last?: { docHash: string };
+}
+
+/**
+ * Whether the whole-document `SPEC_AUDIT` must run this iteration (REQ-62).
+ *
+ * Greenfield always wins, even under `--only-phase`: there is nothing to audit
+ * and spending a turn would only hallucinate findings. Otherwise the audit runs
+ * on the first iteration and whenever the spec/adr/plan content changed; an
+ * unchanged contract reuses the previous result.
+ */
+export function specAuditNeeded(input: SpecAuditDecisionInput): {
+  run: boolean;
+  reason: "forced" | "greenfield" | "first" | "changed" | "unchanged";
+} {
+  if (!input.hasImplementationCode) return { run: false, reason: "greenfield" };
+  if (input.force) return { run: true, reason: "forced" };
+  if (input.last === undefined) return { run: true, reason: "first" };
+  if (input.last.docHash !== input.docHash) return { run: true, reason: "changed" };
+  return { run: false, reason: "unchanged" };
+}
+
 /**
  * The phase implementations, keyed by phase. A methodology profile (REQ-36 /
  * ADR-35) is just an ordered selection of these, so a profile can reorder or
@@ -814,9 +844,35 @@ export class CycleEngine {
           }
         }
 
-        if (step.phase === "SPEC_AUDIT" && !hasImplementationCode(workPath)) {
-          // greenfield: nothing to audit until the iteration produces code
-          this.recordSkippedSpecAudit(iteration);
+        if (step.phase === "SPEC_AUDIT") {
+          const docHash = computePlanHash([ctx.specPath, ctx.adrPath, ctx.planPath]);
+          const decision = specAuditNeeded({
+            force: this.cfg.onlyPhase === "SPEC_AUDIT",
+            hasImplementationCode: hasImplementationCode(workPath),
+            docHash,
+            last: this.state.specAudit,
+          });
+          if (decision.run) {
+            await this.runPhase(step, ctx, sessionId, iteration);
+            // Only a non-blocking audit may be memoized: if the human continued
+            // past a BLOCKED one, the documents were never cleared and the next
+            // iteration must audit them again.
+            if (this.lastVerdict === "pass" || this.lastVerdict === "warning") {
+              this.state.specAudit = {
+                docHash,
+                auditedAt: new Date().toISOString(),
+                iteration: iteration.index,
+                verdict: this.lastVerdict,
+              };
+              this.persist();
+            }
+          } else {
+            this.recordSkippedSpecAudit(
+              iteration,
+              decision.reason === "greenfield" ? "greenfield" : "unchanged",
+              docHash,
+            );
+          }
         } else {
           await this.runPhase(step, ctx, sessionId, iteration);
         }
@@ -1479,19 +1535,30 @@ export class CycleEngine {
     events.emit("verdict", { iteration, phase, verdict, attempt, durationMs });
   }
 
-  private recordSkippedSpecAudit(iteration: Iteration): void {
+  private recordSkippedSpecAudit(
+    iteration: Iteration,
+    reason: "greenfield" | "unchanged",
+    docHash: string,
+  ): void {
     const now = new Date().toISOString();
     const model = formatModel(this.models.executor);
+    const lastIteration = this.state.specAudit?.iteration;
+    const shortHash = docHash.slice(0, 8);
+    const message =
+      reason === "greenfield"
+        ? "[SPEC_AUDIT] skipped — no implementation code to audit (greenfield)"
+        : `[SPEC_AUDIT] skipped — spec/adr/plan unchanged since the audit in iteration ${lastIteration ?? "?"} (doc ${shortHash})`;
+    const summary =
+      reason === "greenfield"
+        ? "Skipped — no implementation code to audit (greenfield)."
+        : `Skipped — spec/adr/plan unchanged since the audit in iteration ${lastIteration ?? "?"} (doc ${shortHash}).`;
     events.emit("phaseStart", {
       iteration: iteration.index,
       phase: "SPEC_AUDIT",
       attempt: 1,
       model,
     });
-    events.emit("log", {
-      level: "info",
-      message: "[SPEC_AUDIT] skipped — no implementation code to audit (greenfield)",
-    });
+    events.emit("log", { level: "info", message });
     const entry: HistoryEntry = {
       iteration: iteration.index,
       phase: "SPEC_AUDIT",
@@ -1500,7 +1567,7 @@ export class CycleEngine {
       model,
       sessionId: "",
       messageId: "",
-      summary: "Skipped — no implementation code to audit (greenfield).",
+      summary,
       startedAt: now,
       finishedAt: now,
     };
