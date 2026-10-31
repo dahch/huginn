@@ -15,13 +15,15 @@
 
 CLI/TUI orchestrator for the agent-driven build cycle:
 
-> **spec-audit → execute → validate-step → test-module → secure-check → review → doc-sync → commit-all**
+> **spec-audit → execute → verify → validate-step → test-module → secure-check → review → doc-sync → commit-all**
 
 Huginn **owns the cycle**: it composes every step's instruction itself (`src/engine/steps/`) and sends
 it to whichever agent runtime you configured (opencode, Claude Code, Codex, …) as a plain prompt, so a
 single-file install behaves exactly like a source checkout and there are no subagents or slash
 commands to install. It saves full execution state so any run can be resumed after an interruption,
-and routes fixes to a "thinker" model while everything else runs on an "executor" model. It can also
+and splits "brain" from "hands": a blocked gate is diagnosed read-only by a "thinker" model that
+emits a remediation plan, which an "executor" model applies — so the expensive model never burns
+tokens on a mechanical edit loop. It can also
 draft the initial `spec.md`, `adr.md` and `plan.md` from a single idea using the thinker model —
 either in one shot (`huginn plan`) or interactively, by chatting with the thinker to refine the idea
 before drafting and then executing the resulting plan in the same session (`huginn live`). A project
@@ -50,8 +52,8 @@ Every phase ends with a verdict, and the verdict is *parsed*, not read: `pass`, 
 
 ### The receipt
 
-`--profile sdd`, `rdd` or `strict-tdd` (the default `huginn` profile writes no receipt) pins each
-iteration to `.huginn/receipts/`: the base commit, the resulting commit, the **tree hash that was
+Every profile except `odd` (`huginn`, `sdd`, `rdd` and `strict-tdd`) pins each iteration to
+`.huginn/receipts/`: the base commit, the resulting commit, the **tree hash that was
 verified** and every phase's verdict. That is the difference between *the agent said the tests
 passed* and *this exact tree, at this hash, was verified with these verdicts*:
 
@@ -117,7 +119,8 @@ The claim is deliberately narrow: the process leaves evidence, and the evidence 
 > Note: the instructions huginn drives are **built in** (`src/engine/steps/instructions.ts`) — there
 > are no opencode subagents or slash commands to install, and `huginn install` is a compatibility
 > no-op. The one agent huginn asks opencode for by name is the built-in `build` agent, used for
-> `EXECUTE` and the `FIX_*` phases.
+> `EXECUTE` and the **application** half of the `FIX_*` phases; the read-only `DIAGNOSE` turn is a
+> plain prompt.
 
 ## Install
 
@@ -268,13 +271,13 @@ override the detected locations.
 |------|---------|---------|
 | `--project <path>` | `cwd` | project being built — any directory inside a git work tree; a directory outside one is bootstrapped. `run` requires `plan.md`, `spec.md`, `adr.md` |
 | `--agent <id>` | resolved from config | AI agent runtime (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`) |
-| `--thinker <m>` | resolved from config (see [Model and Agent configuration](#model-and-agent-configuration)) | model used to **fix** findings (auditor + reviewer + any blocker) |
-| `--executor <m>` | resolved from config | model used for everything else (execution, gates, docs, commits) |
-| `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents |
+| `--thinker <m>` | resolved from config (see [Model and Agent configuration](#model-and-agent-configuration)) | model used to **diagnose** a blocked gate (read-only remediation plan) and to draft the documents; it never edits code |
+| `--executor <m>` | resolved from config | model used for everything else (execution, gates, applying fixes, docs, commits) |
+| `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents (without the flag, `SPEC.md`/`ADR.md` are found case-insensitively) |
 | `--mode auto\|supervised` | `auto` | `auto`: autonomous with a fix-retry budget, escalating to you only when it is exhausted; `supervised`: pause for your call at every blocked gate |
 | `--profile <id>` | `huginn` | Methodology profile: `huginn` (the **Huginn Cycle**, below) · `sdd` · `odd` · `rdd` · `strict-tdd` (see [Methodology profiles](#methodology-profiles)) |
 | `--permissions auto\|ask\|deny` | `auto` | permission policy. Only opencode can honour `ask`/`deny` (through its event subscriber); a **subprocess** runtime (`claude`, `codex`, …) fails closed with exit 1 on `ask`/`deny`, and an invalid value exits 1 |
-| `--max-retries <n>` | `3` | thinker fix attempts per blocked gate before escalating to you |
+| `--max-retries <n>` | `3` | fix attempts per blocked gate before escalating to you |
 | `--from-iteration <n>` | — | start at iteration n |
 | `--only-phase <name>` | — | run a single phase per iteration (debugging) |
 | `--sandbox` / `--no-sandbox` | `--sandbox` | run each iteration in an isolated git worktree under `.huginn/worktrees/` (see [Sandboxing](#sandboxing-git-worktrees)); `--no-sandbox` runs iterations in place |
@@ -644,30 +647,32 @@ Huginn does **not** proxy an agent's resources; the agent's session owns them:
 
 Huginn composes every step's instruction itself (`src/engine/steps/`) and sends it as a **prompt** to
 the configured runtime — no opencode subagents and no slash commands are involved (only `EXECUTE` and
-the `FIX_*` phases name opencode's built-in `build` agent, so the SDK session keeps that agent's
-tools). The verdict of a huginn-run gate is huginn's own:
+the application half of the `FIX_*` phases name opencode's built-in `build` agent; the read-only
+`DIAGNOSE` turn is a plain prompt). Every phase runs in its own clean session. The verdict of a
+huginn-run gate is huginn's own:
 
 1. **SPEC_AUDIT** — the embedded spec-auditor role audits `spec.md` against the implementation and must
-   end on `### Overall fidelity: 🟢/🟡/🔴`. 🔴 deviations → fix with thinker, re-audit. On a repo with
-   no implementation code yet (greenfield), the audit is skipped with a `–` verdict until an iteration
-   has produced code.
+   end on `### Overall fidelity: 🟢/🟡/🔴`. 🔴 deviations → fix with the executor, re-audit. On a repo
+   with no implementation code yet (greenfield), the audit is skipped with a `–` verdict until an
+   iteration has produced code.
 2. **EXECUTE** — sends the iteration's prompt verbatim to the `build` agent (executor).
-3. **VALIDATE_STEP** — huginn runs the gate itself: the qa role in `AUDIT-ONLY MODE`, the spec-auditor
-   role and the security role, then a synthesis turn. The verdict is **computed deterministically** from
-   the three sub-reports (each must emit its own `### Audit status:`/`### Overall fidelity:` line) and
-   the synthesis may only *escalate* it; huginn imposes the final `### Overall gate:` line and handoff
-   marker on the report and gates on the structured verdict, never on the model's prose.
-4. **TEST_MODULE** — the embedded test-module instruction; verdict via a small "judge" pass.
-5. **SECURE_CHECK** — the embedded security-audit instruction; any breach → fix with thinker until clear.
-6. **REVIEW** — the embedded pre-PR review instruction; blockers → fix with thinker and re-review.
-7. **DOC_SYNC** — the embedded doc-sync instruction (informative, never blocks).
-8. **VERIFY** — deterministic proof that the increment works: huginn runs the iteration's
-   `Verification:` commands inside the sandbox and gates on their real exit codes. A failing command
+3. **VERIFY** — deterministic proof that the increment works: huginn runs the iteration's
+   `Verification:` commands inside the sandbox and gates on their real exit codes. It runs **before**
+   the LLM audits, so a mechanical failure is caught without spending audit tokens. A failing command
    blocks the iteration and feeds the `FIX_VERIFY` turn. A command killed by a signal is reported as
    `CRASHED (SIGSEGV)` (not `FAILED (exit 139)`) and **skips the fix rounds**: a crash is an
    environment failure — driver, display, OOM — so no source edit can fix it and huginn escalates to
    you instead of burning the budget (ADR-57). A plan with no `Verification:` section stays
    compatible (the phase passes with a note); `--no-verify` / `"verify": false` disables it.
+4. **VALIDATE_STEP** — huginn runs the gate itself: the qa role in `AUDIT-ONLY MODE`, the spec-auditor
+   role and the security role, then a synthesis turn. The verdict is **computed deterministically** from
+   the three sub-reports (each must emit its own `### Audit status:`/`### Overall fidelity:` line) and
+   the synthesis may only *escalate* it; huginn imposes the final `### Overall gate:` line and handoff
+   marker on the report and gates on the structured verdict, never on the model's prose.
+5. **TEST_MODULE** — the embedded test-module instruction; verdict via a small "judge" pass.
+6. **SECURE_CHECK** — the embedded security-audit instruction; any breach → fix with the executor until clear.
+7. **REVIEW** — the embedded pre-PR review instruction; blockers → fix with the executor and re-review.
+8. **DOC_SYNC** — the embedded doc-sync instruction (informative, never blocks).
 9. **COMMIT_ALL** — the embedded commit instruction produces the semantic commits.
 
 The auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`, `REVIEW`) are **read-only**: huginn
@@ -687,10 +692,16 @@ document path that is a symlink — or that resolves outside the project when it
 it — is refused instead of read or written; and every `git` call runs with the repository's own pager,
 fsmonitor, hooks and diff drivers disabled.
 
-Blocked gates are fixed with the **thinker** model up to `--max-retries` times; if still blocked the
-run pauses for your decision — retry (resets the fix budget), force-continue, or abort — via an
-interactive prompt in the TUI or stdin in headless mode. In `supervised` mode every blocked gate
-surfaces that decision; in `auto` mode the same decision is requested once the fix budget is exhausted.
+Blocked gates are fixed up to `--max-retries` times. The first failure of a mechanical gate
+(`VERIFY`/`TEST_MODULE`) goes straight to the **executor** with the console output and the judge's
+action items (zero thinker tokens); an architectural gate or any repeat failure first runs a
+read-only **`DIAGNOSE`** on the **thinker**, which emits a `Remediation Plan`
+(`.harness/reports/II-FIX_*-N-diagnosis.md`), and the executor then applies it. The diagnosis is
+guarded by the same tree-hash check as the auditors: if it writes anything, its plan is discarded.
+If the gate is still blocked, the run pauses for your decision — retry (resets the fix budget),
+force-continue, or abort — via an interactive prompt in the TUI or stdin in headless mode. In
+`supervised` mode every blocked gate surfaces that decision; in `auto` mode the same decision is
+requested once the fix budget is exhausted.
 
 Gates **fail closed**: a phase report with no parseable verdict marker (empty, truncated or
 hallucinated output) is treated as BLOCKED and logged, never silently passed. Permission
@@ -709,7 +720,7 @@ deterministic `VERIFY` phase before its commit:
 
 | Profile | Name | Pipeline |
 |---|---|---|
-| `huginn` | Huginn Cycle (default) | spec-audit → execute → validate-step → test-module → secure-check → review → doc-sync → **verify** → commit-all |
+| `huginn` | Huginn Cycle (default) | spec-audit → execute → **verify** → validate-step → test-module → secure-check → review → doc-sync → commit-all |
 | `sdd` | Spec-Driven Development | spec-audit → execute → validate-step → test-module → review → doc-sync → **verify** → commit-all, with a spec/design/tasks **preamble** folded into execute and the run committed only after verification |
 | `odd` | Organic-Driven Development | execute → test-module → **verify** → commit-all (lightweight daily changes, no heavy gates) |
 | `rdd` | Receipt-Driven Development | execute → test-module → validate-step → **verify** → commit-all, where verification **freezes a receipt** the commit references |

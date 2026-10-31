@@ -263,7 +263,7 @@ flowchart TD
     I --> J
     J -- pass/warning or non-blocking --> G
     J -- blocked --> K{fix budget left?}
-    K -- yes --> L[FIX_* on thinker model] --> B2
+    K -- yes --> L[DIAGNOSE: thinker read-only → APPLY_FIX: executor] --> B2
     K -- no --> M{supervised?}
     M -- yes --> E
     M -- no --> E
@@ -289,6 +289,13 @@ Key behaviors:
   step boundary (e.g. a reasoning-only turn) while the build agent is still
   working, yielding a report with no output. An empty `EXECUTE` result is
   thrown as a phase failure — retried, then escalated — never counted as a pass.
+- **Fix rounds escalate (Brain vs. Hands)**: a first failure of a tactical gate
+  (`FIX_VERIFY`/`FIX_TEST`) goes straight to the executor with the judge's
+  `actionItems`; an architectural gate (`FIX_SPEC`/`FIX_VALIDATE`/`FIX_SECURITY`/
+  `FIX_REVIEW`) or any repeat failure first runs `DIAGNOSE` on the thinker in
+  read-only mode, and its `Remediation Plan` is persisted to
+  `II-FIX_*-N-diagnosis.md` and applied by the executor. A tree mutation during
+  the diagnosis discards the plan (same `treeHash` guard as the auditors).
 - **Fix phases close their UI row**: `recordFix` emits a `pass` verdict and a
   `phaseEnd` for the `FIX_*` phase (after `runPhase` already emitted its
   `phaseStart`), so the dashboard's fix row terminates with a verdict instead
@@ -459,10 +466,12 @@ stateDiagram-v2
   `runIteration` captures the resume phase once, then skips steps until it is
   reached (`pastResume` flag); `phaseAttempts` carries over so attempt numbers
   stay monotonic.
-- **Session reuse**: `iterationSessionId` is reused when it still exists on the
-  server; otherwise a fresh session `iter N: <title>` is created. `--only-phase`
-  keeps state resumable (no `finishedAt` written), matching `PROGRESS.md`'s
-  RUNNING status.
+- **One clean session per phase**: `withPhaseSession` creates a fresh,
+  directory-scoped session for each pipeline step (and for `DIAGNOSE`/`APPLY_FIX`)
+  and closes it when the step ends, so roles never share an accumulated tool
+  loop and the prompt cache is not invalidated by an `executor`↔`thinker` switch.
+  `--only-phase` keeps state resumable (no `finishedAt` written), matching
+  `PROGRESS.md`'s RUNNING status.
 - **Models on resume**: the saved models/mode are *replaced* by the current
   flags (`state = { ...existing, models, mode }`), so re-running with different
   models is intentional and allowed.
@@ -949,14 +958,14 @@ letting `createSandbox` throw.
   swept: it does not match the reclaim pattern. Each iteration resets `state.promotion` (and the
   engine's in-memory copy) so one iteration's outcome can never be read as the next one's.
 - In `runIteration`, `createSandbox(projectRoot, iteration.index)` is called first (so its path can
-  scope the agent session), then `workPath = sandbox?.path ?? projectPath`. `ensureSession` always
-  creates a **fresh** `iter N: <title>` session under sandboxing — a persisted
-  `iterationSessionId` was bound to a different directory and is never reused.
+  scope the agent session), then `workPath = sandbox?.path ?? projectPath`. Every step then opens its
+  own **fresh** `iter N: <phase>` session through `withPhaseSession`, always bound to `workPath`; a
+  persisted `iterationSessionId` from an older run is never reused.
 - **The agent is bound to the sandbox through the opencode SDK `directory` query parameter, not
   just rewritten paths.** `createSession`, `prompt` and `runCommand` in `src/server/client.ts`
   forward a `directory` to the server (the phase pipeline only uses `prompt` — see § 28.2), and
   `PhaseContext.directory` is set to `workPath`; `agentDirectory(ctx)` (`ctx.directory ??
-  ctx.projectPath`) is passed to every phase prompt, including the `FIX_*` thinker prompts. The
+  ctx.projectPath`) is passed to every phase prompt, including the `DIAGNOSE` and `FIX_*` turns. The
   `PhaseContext` also carries
   `projectPath = workPath`, `baseCommit = headCommit(workPath)`, and the `spec/adr/plan` doc paths
   mapped into the sandbox (`sandboxDocPath`), so harness-side module inference (`inferModules`) and
@@ -2043,7 +2052,7 @@ optional `preamble` folded into the iteration prompt:
 
 | profile | phases | evidence |
 |---|---|---|
-| `huginn` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → VERIFY → SECURE_CHECK → REVIEW → DOC_SYNC → COMMIT_ALL | none |
+| `huginn` | SPEC_AUDIT → EXECUTE → VERIFY → VALIDATE_STEP → TEST_MODULE → SECURE_CHECK → REVIEW → DOC_SYNC → COMMIT_ALL | receipt |
 | `sdd` | SPEC_AUDIT → EXECUTE → VALIDATE_STEP → TEST_MODULE → REVIEW → DOC_SYNC → VERIFY → COMMIT_ALL (+ spec-first preamble) | receipt |
 | `odd` | EXECUTE → TEST_MODULE → VERIFY → COMMIT_ALL | none |
 | `rdd` | EXECUTE → TEST_MODULE → VALIDATE_STEP → VERIFY → COMMIT_ALL | receipt |

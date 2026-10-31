@@ -10,8 +10,9 @@ are composed per step by `src/engine/steps/prompts.ts` over the bounded context 
 > There is **nothing to install**. The old opencode subagents/slash commands, the `templates/` tree,
 > `scripts/postinstall.ts` and `HUGINN_TEMPLATES_DIR` are gone; `huginn install` prints a
 > compatibility notice and exits 0. The only agent huginn ever asks opencode for by name is the
-> built-in `build` agent — used by `EXECUTE` and the `FIX_*` phases so the SDK session keeps that
-> agent's tools. Every other step is a plain prompt, which is what makes a subprocess runtime
+> built-in `build` agent — used by `EXECUTE` and the **application** half of every `FIX_*` phase so
+> the SDK session keeps that agent's tools. The architect's `DIAGNOSE` turn is a plain, read-only
+> prompt. Every other step is a plain prompt, which is what makes a subprocess runtime
 > (Claude Code, Codex, …) behave identically.
 
 ## 1. The five embedded roles
@@ -99,7 +100,15 @@ enforced by huginn (see §4).
 | `REVIEW` | `reviewPrompt` | reviewing role + pre-PR diff | judge pass |
 | `DOC_SYNC` | `docSyncPrompt` | doc-writer role + recent history | informative (never blocks) |
 | `COMMIT_ALL` | `commitAllPrompt` | commit instruction + pending changes | informative (never blocks) |
-| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW` | `fixFindingsPrompt` (+ the speculative/security extras) | the finding report + the extra instructions | re-runs the gate |
+| `DIAGNOSE` (before a `FIX_*`) | `diagnoseFindingsPrompt` | architect role in **READ-ONLY MODE** + goal/AC/verification + the judge's action items + a bounded report and `git diff --stat` | emits a `Remediation Plan` the executor applies; persisted to `II-FIX_*-N-diagnosis.md` |
+| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW` (`APPLY_FIX`) | `fixFindingsPrompt` (+ the speculative/security extras) | the finding report, the architect's plan and the structured action items | re-runs the gate |
+
+**Escalating fix rounds.** A blocked gate is not always diagnosed. Attempt 1 of a *tactical* gate
+(`FIX_VERIFY` / `FIX_TEST`) goes straight to the executor with the console output and the judge's
+`actionItems` — zero thinker tokens. Anything architectural (`FIX_SPEC`, `FIX_VALIDATE`,
+`FIX_SECURITY`, `FIX_REVIEW`), or any repeat failure, first runs `DIAGNOSE` on the thinker (never
+with `agent: "build"`, and guarded by the same `treeHash` read-only check as the auditors), then the
+executor applies that plan.
 
 **Increments, not layers.** `planPrompt` / `remainingPlanPrompt` (`src/engine/planMode.ts`) carry the
 shared `INCREMENT_CONTRACT`: every iteration is a vertical, runnable slice with no forward dependency,
@@ -125,7 +134,8 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 | `VALIDATE_STEP` (qa + spec-auditor + security + synthesis) | **executor** | four `promptWithContext` calls, each with `model: executor` |
 | `VERIFY` (deterministic) | **no model** | `verifyIteration` runs the plan's commands in the sandbox and gates on their exit codes |
 | Judge pass for `TEST_MODULE` / `SECURE_CHECK` / `REVIEW` | **executor** | `judgePhase(..., executor, ...)` |
-| `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW` | **thinker** | `fixFindingsPrompt` → `promptWithContext({ agent: "build", model: thinker })` |
+| `DIAGNOSE` (architectural gate, or any repeat failure) | **thinker** | `diagnoseFindingsPrompt` → `promptWithContext({ model: thinker })` — **no** `agent: "build"`; its `treeHash` guard discards the plan if the tree moved |
+| `APPLY_FIX` (`FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW`) | **executor** | `fixFindingsPrompt` → `promptWithContext({ agent: "build", model: executor })`, fed the architect's plan and/or the judge's `actionItems` |
 | `huginn plan` drafts (spec → adr → plan) | **thinker** | `prompt({ model: thinker })`, 20-min timeout each |
 | `huginn live` chat refinement / scope extraction / doc drafts (`LiveEngine`) | **thinker** | `prompt({ model: thinker })` via `liveMode.ts`, 20-min timeout each; after handoff the resulting `CycleEngine` uses the executor per the rows above |
 
@@ -154,6 +164,13 @@ decides the outcome:
   (`src/util/docPath.ts`), and every `git` call goes through the hardened seam in
   `src/engine/diff.ts` (no pager/fsmonitor/hooks, `--no-ext-diff --no-textconv`, a subcommand
   allowlist and a forbidden-argument screen).
+- **One clean session per phase.** `CycleEngine.withPhaseSession` opens a fresh, directory-scoped
+  `IAgentSession` for each pipeline step (and for the `DIAGNOSE` / `APPLY_FIX` turns) and closes it
+  when the step ends (`IAgentSession.close`, bridged to `RuntimeSession.close`). A role never inherits
+  another role's accumulated tool loop, the prompt cache is not invalidated by an
+  `executor`↔`thinker` switch inside one 150k–300k-token session, and the builder no longer grades
+  its own work. The diagnosis turn gets the same `treeHash` guard as the auditors: a mutation
+  discards its plan and the executor falls back to the report plus the judge's `actionItems`.
 - **Subprocess memory containment.** Every agent prompt (`generic.ts`) and every `Verification:`
   command (`verify.ts`) is launched through `planScopedCommand`/`planScopedShellCommand`
   (`src/engine/sandbox.ts`) inside a transient `systemd-run --user --scope` with `MemoryMax`

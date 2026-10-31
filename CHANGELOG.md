@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Brain vs. Hands fix rounds.** A blocked gate is no longer repaired by the thinker's tool loop.
+  `DIAGNOSE` (`diagnoseFindingsPrompt`, thinker, **read-only**, no `agent: "build"`) root-causes the
+  failure and emits a `Remediation Plan` persisted to `.harness/reports/II-FIX_*-N-diagnosis.md`;
+  `APPLY_FIX` (`fixFindingsPrompt`, executor, `agent: "build"`) applies it. A tree mutation during
+  the diagnosis is caught by the same `treeHash` guard the auditors use and discards the plan.
+- **Escalating fix rounds.** Attempt 1 of a tactical gate (`FIX_VERIFY`/`FIX_TEST`) goes straight to
+  the executor with the console output and the judge's structured `actionItems` (zero thinker
+  tokens); an architectural gate (`FIX_SPEC`/`FIX_VALIDATE`/`FIX_SECURITY`/`FIX_REVIEW`) or any repeat
+  failure runs `DIAGNOSE` first.
+- **One clean session per phase.** `CycleEngine.withPhaseSession` opens and closes a fresh,
+  directory-scoped session per pipeline step (and per `DIAGNOSE`/`APPLY_FIX` turn), so roles never
+  share an accumulated tool loop and the prompt cache is not invalidated by an `executor`↔`thinker`
+  switch. `IAgentSession.close()` is bridged to `RuntimeSession.close()`.
+- **`VERIFY` runs right after `EXECUTE`** in the default profile, so a deterministic failure is caught
+  before any LLM audit spends tokens, and the profile now freezes a `receipt` by default.
+
+### Fixed
+
+- **Codex driver**: the thread is started with the session's `workingDirectory` (the sandbox, not
+  huginn's cwd), a per-prompt model change recreates the thread instead of silently billing the old
+  model, and `timeoutMs` aborts the turn.
+- **Claude driver**: captures the CLI `session_id` and resumes it on later turns, strips the
+  `anthropic/` prefix from the model id, uses a fresh `AbortController` with `timeoutMs` per turn, and
+  passes `permissionMode: "bypassPermissions"` when `--permissions auto` is set.
+- **pi driver**: honours `timeoutMs` by interrupting the in-process turn.
+- **`/draft` no longer truncates destructively**: the architect prompt reads the configured
+  `specPath`/`adrPath`/`planPath` with a bounded read, a spec larger than the embedding bound is
+  updated as a delta appended to the existing file, and ADR/plan prompts keep the document's
+  structure index plus its recent tail instead of cutting the newest entries.
+- **`SPEC.md`/`ADR.md` are resolved case-insensitively** when `--spec`/`--adr` are not passed.
+- **Muninn MCP no longer pins `--project`** in user-global configs (`~/.claude.json`,
+  `~/.codex/config.toml`, `~/.config/opencode/...`, the portable `~/.huginn/mcp.json`); only
+  project-local files carry it.
+- **Muninn indexing runs after a successful promotion**, not inside `COMMIT_ALL`, so a failed
+  promotion cannot leave the durable symbol graph describing files that never reached the main tree.
+
+### Documentation
+
+- `AGENTS.md` §2/§3/§4, `SPEC.md` (AC-40.2, AC-40.9) and `DESIGN.md` describe the
+  `DIAGNOSE` → `APPLY_FIX` flow, the per-phase sessions and the reordered default profile.
+
 ## 2.0.0-rc.4
 
 Seventeen commits since `2.0.0-rc.3`, 40 files: `src` +1513/−176, `test` +178/−9,

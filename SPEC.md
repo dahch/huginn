@@ -638,8 +638,15 @@ No step may depend on an installed opencode slash command or subagent.
   and `src/engine/steps/types.ts` defines `StepContext`.
 - **AC-40.2 (One seam, plain prompts)**: `promptWithContext` (`src/engine/phases.ts`) is the only path
   a step takes: the composed text is sent as a **prompt** through the active `IAgentSession`, with the
-  only `agent` ever named being opencode's built-in `build` (used by `EXECUTE` and the `FIX_*`
-  phases). No `runCommand` carries a huginn step, so a subprocess runtime behaves identically.
+  only `agent` ever named being opencode's built-in `build` (used by `EXECUTE` and the **application**
+  half of every `FIX_*` phase; the architect's `DIAGNOSE` turn is a plain read-only prompt). No
+  `runCommand` carries a huginn step, so a subprocess runtime behaves identically.
+- **AC-40.9 (Brain vs. Hands)**: a blocked gate is never repaired by the thinker's tool loop. Attempt 1
+  of a tactical gate (`FIX_VERIFY`/`FIX_TEST`) is applied directly by the executor from the console
+  output and the judge's `actionItems`; an architectural gate or a repeat failure first runs
+  `DIAGNOSE` on the thinker in read-only mode (same `treeHash` guard as the auditors) and the executor
+  then applies its `Remediation Plan`. Each phase runs in its own clean session (`withPhaseSession`),
+  closed when the step ends.
 - **AC-40.3 (Huginn-orchestrated `VALIDATE_STEP`)**: `validateStep` runs the qa role in
   `AUDIT-ONLY MODE`, then the spec-auditor role, then the security role, then a synthesis turn; the
   sub-prompts demand the deterministic `### Audit status:` / `### Overall fidelity:` final lines and
