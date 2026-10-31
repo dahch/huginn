@@ -14,6 +14,16 @@ export interface EngineEvents {
   stateUpdated: HarnessState;
   log: { level: "info" | "warn" | "error"; message: string; timestamp?: string };
   verdict: { iteration: number; phase: string; verdict: Verdict; attempt: number; durationMs?: number };
+  /** Token/cost telemetry from a driver that reports it (`capabilities.usageCost`). */
+  usage: {
+    iteration?: number;
+    phase?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    costUsd?: number;
+    /** Cumulative total for the emitting scope. */
+    total: { inputTokens: number; outputTokens: number; costUsd: number };
+  };
   liveStage: { stage: LiveStage; message?: string };
   liveChat: { role: "user" | "assistant" | "system"; text: string };
   done: { reason: "completed" | "aborted" | "error"; error?: string };
