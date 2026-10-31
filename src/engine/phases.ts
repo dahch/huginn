@@ -7,6 +7,8 @@ import type { IAgentSession, PromptResult } from "./agent/types.js";
 import { pendingChanges, changedFilesSince, isGitRepo } from "./diff";
 import { commitAllPending, WorktreeError } from "./worktree";
 import { deterministicCommitMessage } from "./steps/commitMessage";
+import { recordAdrsAsDecisions, recordIterationObservation } from "./memory/index";
+import type { Iteration } from "../plan/types";
 import {
   verifyTypeScriptContracts,
   formatDiagnosticsReport,
@@ -56,21 +58,6 @@ export interface PhaseContext extends StepContext {
   session?: IAgentSession;
   sessionId: string;
   models: Models;
-  /**
-   * Explicit SQLite database path for Muninn persistence. When sandboxing,
-   * callers pass the PRIMARY project database so indexed symbols survive
-   * worktree cleanup. When omitted, `resolveDatabasePath` resolves the git root
-   * of {@link primaryProjectRoot} (falling back to `~/.huginn/muninn.db`).
-   */
-  dbPath?: string;
-  /**
-   * Canonical project root Muninn should attribute entities/observations to.
-   * Under sandboxing this is the primary project root while `projectPath` is
-   * the ephemeral worktree, so symbols are linked to the durable project
-   * record rather than a throwaway worktree root. Falls back to
-   * {@link projectPath} when omitted.
-   */
-  primaryProjectRoot?: string;
   phaseTimeoutMs: number;
   /** `false` disables the deterministic `VERIFY` phase (`--no-verify`). */
   verify?: boolean;
@@ -662,6 +649,77 @@ export function indexIterationSourceFiles(opts: {
     if (process.env.HUGINN_DEBUG) {
       console.error(
         "[huginn] Muninn post-promotion indexing failed (non-fatal):",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
+
+/**
+ * Persist every ADR section as a `decision` observation (REQ-64).
+ *
+ * Best-effort exactly like indexing: no file, no database or a query failure is
+ * a no-op, and the reason is only printed under `HUGINN_DEBUG`. Called after the
+ * ADR document is written, from `plan` and `live`.
+ */
+export function saveAdrDecisions(opts: {
+  adrPath: string;
+  primaryProjectRoot: string;
+  dbPath?: string;
+}): { saved: number; updated: number; unchanged: number; skipped: number } {
+  try {
+    const result = recordAdrsAsDecisions({
+      adrPath: opts.adrPath,
+      projectRoot: opts.primaryProjectRoot,
+      dbPath: opts.dbPath ?? resolveDatabasePath(undefined, opts.primaryProjectRoot),
+    });
+    return {
+      saved: result.saved,
+      updated: result.updated,
+      unchanged: result.unchanged,
+      skipped: result.skipped,
+    };
+  } catch (err) {
+    if (process.env.HUGINN_DEBUG) {
+      console.error(
+        "[huginn] Muninn ADR decisions failed (non-fatal):",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return { saved: 0, updated: 0, unchanged: 0, skipped: 0 };
+  }
+}
+
+/**
+ * Curate one observation for a promoted increment (REQ-65).
+ *
+ * Runs after indexing, so the changed files exist as entities and can be linked.
+ * Fail-open: memory can never turn a successful promotion into a failure.
+ */
+export function recordIterationMemory(opts: {
+  primaryProjectRoot: string;
+  dbPath?: string;
+  iteration: Iteration;
+  baseCommit?: string;
+  verdicts: Array<{ phase: string; verdict?: string }>;
+  commit?: string | null;
+}): void {
+  try {
+    const files = opts.baseCommit
+      ? changedFilesSince(opts.primaryProjectRoot, opts.baseCommit)
+      : pendingChanges(opts.primaryProjectRoot);
+    recordIterationObservation({
+      projectRoot: opts.primaryProjectRoot,
+      dbPath: opts.dbPath,
+      iteration: opts.iteration,
+      verdicts: opts.verdicts,
+      filesChanged: files,
+      commit: opts.commit,
+    });
+  } catch (err) {
+    if (process.env.HUGINN_DEBUG) {
+      console.error(
+        "[huginn] Muninn iteration curation failed (non-fatal):",
         err instanceof Error ? err.message : String(err),
       );
     }

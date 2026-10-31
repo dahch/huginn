@@ -17,6 +17,7 @@ import {
   diagnoseFindings,
   fixFindings,
   indexIterationSourceFiles,
+  recordIterationMemory,
   fixSpec,
   fixSecurity,
   type PhaseContext,
@@ -920,6 +921,14 @@ export class CycleEngine {
           baseCommit: ctx.baseCommit,
           primaryProjectRoot: this.cfg.projectPath,
         });
+        recordIterationMemory({
+          primaryProjectRoot: this.cfg.projectPath,
+          dbPath: primaryDbPath,
+          iteration,
+          baseCommit: ctx.baseCommit,
+          verdicts,
+          commit: headCommit(this.cfg.projectPath),
+        });
       }
 
       // Atomic increment: promotion integrates *commits*, so a successful
@@ -1009,6 +1018,14 @@ export class CycleEngine {
             projectPath: this.cfg.projectPath,
             baseCommit: ctx.baseCommit,
             primaryProjectRoot: this.cfg.projectPath,
+          });
+          recordIterationMemory({
+            primaryProjectRoot: this.cfg.projectPath,
+            dbPath: primaryDbPath,
+            iteration,
+            baseCommit: ctx.baseCommit,
+            verdicts,
+            commit: headCommit(this.cfg.projectPath),
           });
           this.state.promotion = {
             status: "promoted",

@@ -26,6 +26,7 @@ import { CycleEngine } from "./cycle";
 import { loadPlan } from "../plan/parser";
 import { commitDocs, readOptional, repoContext, resetHarnessState, stageDocsForReview, unstageDocs, writeDoc } from "./liveRepo";
 import { embedUntrusted, MAX_EMBEDDED_OUTPUT, readFileBounded } from "./steps/context.js";
+import { saveAdrDecisions } from "./phases.js";
 import { git } from "./diff.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { getLiveSession, newLiveSessionId, saveLiveSession, type LiveSession } from "../state/liveSession";
@@ -1407,6 +1408,20 @@ export class LiveEngine {
       this.invalidateSystemPrompt();
     } else {
       events.emit("log", { level: "info", message: "no new ADR entries required; adr.md unchanged" });
+    }
+
+    // ADRs are architectural decisions, not just markdown: persist each section
+    // as a `decision` observation so later iterations can retrieve it (REQ-64).
+    const recorded = saveAdrDecisions({
+      adrPath: this.cfg.adrPath,
+      primaryProjectRoot: this.cfg.projectPath,
+      dbPath: resolveDatabasePath(undefined, this.cfg.projectPath),
+    });
+    if (recorded.saved + recorded.updated > 0) {
+      events.emit("log", {
+        level: "info",
+        message: `recorded ${recorded.saved + recorded.updated} ADR decision(s) in Muninn`,
+      });
     }
 
     const adr = readOptional(this.cfg.adrPath, this.cfg.projectPath);

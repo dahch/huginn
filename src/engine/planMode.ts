@@ -7,6 +7,7 @@ import { resolveModel, formatModel } from "./modelRouter";
 import { parsePlan } from "../plan/parser";
 import { readOptional, writeDoc } from "./liveRepo";
 import { boundEmbedded, embedUntrusted, MAX_EMBEDDED_OUTPUT } from "./steps/context.js";
+import { saveAdrDecisions } from "./phases.js";
 
 const PLAN_PROMPT_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -474,6 +475,17 @@ export async function runPlanMode(opts: PlanModeOptions): Promise<void> {
       const step = steps[i];
       await draftDoc(client, sessionId, thinkerLabel, thinker, i + 1, steps.length, step.label, step.path, step.build(prior), opts.projectPath);
       prior.push(readDoc(step.path, opts.projectPath));
+      if (step.label === "adr") {
+        const saved = saveAdrDecisions({
+          adrPath: opts.adrPath,
+          primaryProjectRoot: opts.projectPath,
+        });
+        if (saved.saved + saved.updated > 0) {
+          console.log(
+            chalk.dim(`  recorded ${saved.saved + saved.updated} ADR decision(s) in Muninn`),
+          );
+        }
+      }
     }
 
     console.log("");
