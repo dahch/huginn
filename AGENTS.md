@@ -30,7 +30,9 @@ enforced by huginn (see §4).
 - **Contract with the engine**: the report must state
   `### Overall fidelity: 🟢 ALIGNED / 🟡 MINOR DRIFT / 🔴 MAJOR DEVIATION`;
   `parseSpecAuditVerdict` in `src/engine/gate.ts` reads it.
-- **Driven by**: `SPEC_AUDIT` (`specAuditPrompt`) and as sub-prompt 2 of `VALIDATE_STEP`
+- **Driven by**: `SPEC_AUDIT` (`specAuditPrompt`, whole-document, once per cycle — memoized on
+  `computePlanHash([spec, adr, plan])`) and `VALIDATE_STEP` (`validateStepPrompt`, the
+  per-increment fidelity audit)
   (`validateStepSpecPrompt`).
 - **Greenfield skip**: on a repo with no implementation code (`hasImplementationCode`,
   `src/engine/diff.ts`) the role is never invoked — the audit is recorded as `skipped`.
@@ -49,19 +51,18 @@ enforced by huginn (see §4).
   reads the coverage the repository already publishes or says "not measured in audit mode". Build
   artifacts never go to `/tmp` (RAM-backed `tmpfs` on Linux): use the project's gitignored target
   directory or `$HOME/.cache/`.
-- **Driven by**: `TEST_MODULE` (full mode, `testModulePrompt`) and sub-prompt 1 of `VALIDATE_STEP`
-  (`validateStepQaPrompt`), where `auditOnlyGuardrails()` (`src/engine/steps/context.ts`) appends the
-  audit-only contract: run the existing suite **once**, non-interactively and read-only; write **no**
-  artefacts (no coverage output, `-u`/`--update` snapshots forbidden, no file-writing reporters); do
-  not create, modify, move or delete anything.
+- **Driven by**: `TEST_MODULE` (full mode, `testModulePrompt`), which appends `auditStatusContract()`
+  so the role verdicts itself. The full-mode task already carries the operational guardrails: run the
+  existing suite **once**, non-interactively; build in the project (never `/tmp`); scope searches to
+  the project tree.
 
 ### `security` (`ROLE_SECURITY`)
 - **Purpose**: Application security audit — hardcoded secrets/credentials, auth & authorization
   flaws, injection, dependency CVEs (`npm audit`, Maven dependency-check), data exposure, insecure
   config, weak crypto. Stack-aware (Java / Node / polyglot). Read-only: never modifies the codebase.
-- **Driven by**: `SECURE_CHECK` (fast pre-push scan, `secureCheckPrompt`) and sub-prompt 3 of
-  `VALIDATE_STEP` (`validateStepSecurityPrompt`), whose task body scopes the diff and **excludes
-  test files** (they contain mock credentials and produce false positives).
+- **Driven by**: `SECURE_CHECK` (fast pre-push scan, `secureCheckPrompt`, ending on its own
+  `### Audit status:` line), whose task body scopes the diff and **excludes test files** (they contain
+  mock credentials and produce false positives).
 
 ### `doc-writer` (`ROLE_DOC_WRITER`)
 - **Purpose**: Senior technical writer. Creates/updates README.md, ADR.md, SPEC.md, DESIGN.md,
@@ -91,15 +92,15 @@ enforced by huginn (see §4).
 
 | Phase | Composer (`src/engine/steps/prompts.ts`) | What it carries | Verdict |
 |---|---|---|---|
-| `SPEC_AUDIT` | `specAuditPrompt` | spec-auditor role + spec/adr/plan + iteration + git status | `### Overall fidelity:` parsed by `parseSpecAuditVerdict` |
+| `SPEC_AUDIT` | `specAuditPrompt` | spec-auditor role + spec/adr/plan + iteration + git status | `### Overall fidelity:` parsed by `parseSpecAuditVerdict`; runs once per cycle (hash-memoized) |
 | `EXECUTE` | `executePrompt` | the iteration's prompt verbatim (+ the profile preamble) | non-blocking, but an empty report still fails closed |
-| `VALIDATE_STEP` | `validateStepSubPrompts` (qa / spec / security) + `validateStepSynthesisPrompt` | three independent audits, then a consolidation turn | huginn computes it (§4) |
-| `TEST_MODULE` | `testModulePrompt` | qa role + module scope + increment criteria/verification | judge pass (`judgePhase`) |
+| `VALIDATE_STEP` | `validateStepPrompt` | one increment audit: acceptance coverage + spec fidelity against the diff | `computeValidateVerdict(report)` merges both mandatory markers (§4) |
+| `TEST_MODULE` | `testModulePrompt` | qa role + module scope + increment criteria/verification | own `### Audit status:`; judge only when non-pass (§4) |
 | `VERIFY` | `verifyIteration` (`src/engine/verify.ts`) | the iteration's `Verification:` commands, run deterministically in the sandbox | `authoritativeVerdict` from the real exit codes (+ `crash` when one died from a signal: no fix round is attempted, the run escalates — ADR-57) |
-| `SECURE_CHECK` | `secureCheckPrompt` | security role + scoped diff | judge pass |
-| `REVIEW` | `reviewPrompt` | reviewing role + pre-PR diff | judge pass |
+| `SECURE_CHECK` | `secureCheckPrompt` | security role + scoped diff | own `### Audit status:`; judge only when non-pass |
+| `REVIEW` | `reviewPrompt` | reviewing role + pre-PR diff | own `### Audit status:`; judge only when non-pass |
 | `DOC_SYNC` | `docSyncPrompt` | doc-writer role + recent history | informative (never blocks) |
-| `COMMIT_ALL` | `commitAllPrompt` | commit instruction + pending changes | informative (never blocks) |
+| `COMMIT_ALL` | `commitAllDeterministic` (default) or `commitAllPrompt` (`commit: "agent"`) | deterministic commit from the iteration; no model turn | informative (never blocks) |
 | `DIAGNOSE` (before a `FIX_*`) | `diagnoseFindingsPrompt` | architect role in **READ-ONLY MODE** + goal/AC/verification + the judge's action items + a bounded report and `git diff --stat` | emits a `Remediation Plan` the executor applies; persisted to `II-FIX_*-N-diagnosis.md` |
 | `FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW` (`APPLY_FIX`) | `fixFindingsPrompt` (+ the speculative/security extras) | the finding report, the architect's plan and the structured action items | re-runs the gate |
 
@@ -129,11 +130,12 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 
 | Work | Model | How |
 |---|---|---|
-| `SPEC_AUDIT` (spec-auditor prompt) | **executor** | `promptWithContext({ text: specAuditPrompt(ctx), model: executor })` — unless the repo has no implementation code yet, in which case the audit is **skipped** (`hasImplementationCode`, `src/engine/diff.ts`) and the role is never invoked |
+| `SPEC_AUDIT` (spec-auditor prompt) | **executor** | `promptWithContext({ text: specAuditPrompt(ctx), model: executor })` — skipped on greenfield (`hasImplementationCode`) and when the spec/adr/plan hash is unchanged since the last non-blocking audit |
 | `EXECUTE` (build agent) | **executor** | `promptWithContext({ text: executePrompt(ctx), agent: "build", model: executor })` |
-| `VALIDATE_STEP` (qa + spec-auditor + security + synthesis) | **executor** | four `promptWithContext` calls, each with `model: executor` |
+| `VALIDATE_STEP` (one increment audit) | **executor** | one `promptWithContext` call with `model: executor` |
 | `VERIFY` (deterministic) | **no model** | `verifyIteration` runs the plan's commands in the sandbox and gates on their exit codes |
-| Judge pass for `TEST_MODULE` / `SECURE_CHECK` / `REVIEW` | **executor** | `judgePhase(..., executor, ...)` |
+| Judge pass for `TEST_MODULE` / `SECURE_CHECK` / `REVIEW` | **executor** | `judgePhase(..., executor, ...)` — only when the role's `### Audit status:` is warning/blocked or missing; zero turns on green |
+| `COMMIT_ALL` | **no model** | `commitAllDeterministic` (or `commitAllPrompt` under `commit: "agent"`) |
 | `DIAGNOSE` (architectural gate, or any repeat failure) | **thinker** | `diagnoseFindingsPrompt` → `promptWithContext({ model: thinker })` — **no** `agent: "build"`; its `treeHash` guard discards the plan if the tree moved |
 | `APPLY_FIX` (`FIX_SPEC` / `FIX_VALIDATE` / `FIX_TEST` / `FIX_VERIFY` / `FIX_SECURITY` / `FIX_REVIEW`) | **executor** | `fixFindingsPrompt` → `promptWithContext({ agent: "build", model: executor })`, fed the architect's plan and/or the judge's `actionItems` |
 | `huginn plan` drafts (spec → adr → plan) | **thinker** | `prompt({ model: thinker })`, 20-min timeout each |
@@ -331,8 +333,8 @@ parsers), `src/engine/cycle.test.ts` (retry/escalation, the read-only guard, str
 the pre-promotion checkpoint), `src/engine/verify.test.ts` (the deterministic `VERIFY` phase and its
 command runner), `src/plan/parser.test.ts` (increment metadata), `src/engine/steps/prompts.test.ts` +
 `src/engine/steps/context.test.ts` (composition, bounding, nonce delimitation, the git-interpolation
-allowlist, doc containment), `test/engine/phases.test.ts` (the orchestrated `VALIDATE_STEP`: three
-sub-prompts plus synthesis, the deterministic verdict and the single imposed gate/handoff line),
+allowlist, doc containment), `test/engine/phases.test.ts` (the single-report `VALIDATE_STEP`, the
+deterministic verdict, the imposed gate/handoff line and the deterministic commit),
 `test/engine/phasesContractGuard.test.ts` (a compiler-contract verification that throws fails closed),
 `test/engine/agent/piMcp.test.ts` (the `pi mcp list --json` parser and the native driver's MCP bridge),
 `test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment), and
@@ -359,7 +361,8 @@ sub-prompts plus synthesis, the deterministic verdict and the single imposed gat
   `src/engine/steps/instructions.ts` / `src/engine/steps/context.ts` (`AUDIT_STATUS_*`,
   `SPEC_FIDELITY_*`, the `VALIDATE_STEP_GATE_LOGIC` and handoff lines), huginn's own enforcement
   (`computeValidateVerdict` / `enforceValidateVerdict` in `src/engine/phases.ts`), and the parsers in
-  `src/engine/gate.ts` (`parseValidateStepVerdict`, `parseSpecAuditVerdict`, `parseAuditStatus`). A
+  `src/engine/gate.ts` (`parseValidateStepVerdict`, `parseSpecAuditVerdict`, `parseAuditStatus`,
+  `parseGateVocabularyVerdict`, `parseAuditGateVerdict`). A
   wording change must update all three plus their tests (`src/engine/gate.test.ts`,
   `test/engine/phases.test.ts`) in the **same commit** — nothing else keeps the embedded literal and
   its parser from drifting, since both now live in this repository.

@@ -516,10 +516,10 @@ The execution cycle must be choosable, with the built-in cycle as the default.
 - **AC-36.2 (config surface)**: `RunConfig.profile` / `UserConfig.profile` (`"huginn" | "sdd" | "odd" | "rdd" | "strict-tdd"`, default `huginn`), a `--profile` CLI flag on both `run` and `live`, persisted via `huginn config set --profile`, and sanitized like `mode`.
 - **AC-36.3 (pipeline as data)**: each profile is a `PipelineStep[]` over the existing phase vocabulary (reusing the current `PIPELINE` table shape), so `runPhase`/`runIteration` are unchanged. `--only-phase` validation, `MAIN_PHASES`-derived progress and `PHASE_LABEL` must reflect the active profile.
 - **AC-36.4 (the four profiles)**:
-  - `huginn` — spec-audit → execute → validate-step → test-module → secure-check → review → doc-sync → commit-all (unchanged default).
+  - `huginn` — spec-audit → execute → verify → validate-step → test-module → secure-check → review → doc-sync → commit-all (the deterministic `VERIFY` runs before any LLM audit; REQ-60…63 set the turn budget).
   - `sdd` — proposal/spec → design → tasks → apply → verify → archive: gates run against the spec artifacts and the run is only committed after verification.
   - `odd` — minimal: execute → test-module → commit-all (no heavy gates; for small daily changes).
-  - `rdd` — receipt-driven: execute → test-module → validate-step producing a frozen *receipt* artifact that the commit references, → commit-all.
+  - `rdd` — receipt-driven: execute → test-module → validate-step producing a frozen *receipt* artifact whose `headCommit` and `treeHash` pin the commit range, → commit-all.
   - `strict-tdd` — tests first: a failing-test step before execute, then execute, then the test/validate gates, with a **frozen worktree snapshot** recorded as evidence so a claim of "tests passed" cannot be hallucinated.
 - **AC-36.5 (announced)**: the active profile is shown in the TUI header/`/status` and in the CLI banner, so the user always knows which methodology is running.
 - **AC-36.6 (no silent degradation)**: a profile that cannot run (missing template/prompt) fails closed with an actionable message rather than silently falling back to `huginn`.
@@ -647,16 +647,17 @@ No step may depend on an installed opencode slash command or subagent.
   `DIAGNOSE` on the thinker in read-only mode (same `treeHash` guard as the auditors) and the executor
   then applies its `Remediation Plan`. Each phase runs in its own clean session (`withPhaseSession`),
   closed when the step ends.
-- **AC-40.3 (Huginn-orchestrated `VALIDATE_STEP`)**: `validateStep` runs the qa role in
-  `AUDIT-ONLY MODE`, then the spec-auditor role, then the security role, then a synthesis turn; the
-  sub-prompts demand the deterministic `### Audit status:` / `### Overall fidelity:` final lines and
-  the audit-only guardrails (run the suite once, non-interactively, writing no artifact).
-- **AC-40.4 (Deterministic, fail-closed verdict)**: `computeValidateVerdict` derives the gate from the
-  three sub-reports (empty or marker-less report → `blocked`; any blocked → `blocked`; any warning →
-  `warning`; all green → `pass`) and the synthesis can only **escalate** it, never downgrade it.
-  `enforceValidateVerdict` rewrites the report's gate/handoff lines so exactly one coherent verdict
-  remains, and the effective verdict travels structurally as `authoritativeVerdict`, which
-  `CycleEngine` prefers over parsing the report text.
+- **AC-40.3 (Single-report `VALIDATE_STEP`)**: `validateStep` runs ONE spec-auditor increment audit
+  answering acceptance coverage and spec fidelity against the diff, ending on both mandatory
+  `### Overall fidelity:` and `### Audit status:` lines. QA and security are not re-run here: they are
+  their own phases (`TEST_MODULE`, `SECURE_CHECK`). The literal composition is `validateStepPrompt`.
+- **AC-40.4 (Deterministic, fail-closed verdict)**: `computeValidateVerdict(report)` requires both
+  conclusion lines (empty report or a missing marker → `blocked`; any blocked → `blocked`; any warning
+  → `warning`; two green lines → `pass`). The whole-body fidelity fallback is only consulted when the
+  report actually talks about fidelity, so an `### Audit status:` line cannot be read as a green
+  fidelity verdict. `enforceValidateVerdict` rewrites the report's gate/handoff lines so exactly one
+  coherent verdict remains, and the effective verdict travels structurally as `authoritativeVerdict`,
+  which `CycleEngine` prefers over parsing the report text.
 - **AC-40.5 (Read-only audit guard)**: the auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`,
   `SECURE_CHECK`, `REVIEW`) are marked `readOnly` in the pipeline; the engine hashes the working tree
   before and after the step (`treeHash`, `src/engine/receipts.ts`) and, when the signature is missing
@@ -985,9 +986,10 @@ not about adding another methodology profile.
   command, its exit code, duration and the bounded stdout/stderr.
 
 ### REQ-57: A successful iteration is an atomic, durable increment
-- **AC-57.1 (Checkpoint before promotion)**: after the phase loop and before promotion,
-  `WorktreeManager.commitPendingChanges` commits anything `COMMIT_ALL` left uncommitted with a
-  deterministic `chore(iter-N): checkpoint — …` message.
+- **AC-57.1 (Checkpoint before promotion)**: `COMMIT_ALL` is deterministic by default (REQ-63) and
+  commits through the same hardened `commitAllPending` seam; after the phase loop and before
+  promotion, `WorktreeManager.commitPendingChanges` still commits anything left uncommitted — the
+  checkpoint is the backstop for `commit: "agent"`, not a second commit path.
 - **AC-57.2 (Never discard uncommitted work)**: a sandbox with uncommitted changes and no commits is
   a failed promotion; the worktree is preserved and named in the error instead of being deleted.
 - **AC-57.3 (Stop means last functional state)**: aborting or stopping mid-iteration discards the
@@ -1028,3 +1030,51 @@ not about adding another methodology profile.
 - **AC-59.2 (Subprocess runtimes)**: the same documentation states that each CLI loads its own
   resources, and that huginn's `.huginn/skills`/`.opencode/skills` are a live-console feature and are
   not injected into the pipeline prompts.
+
+---
+
+## Phase 9 — Turn budget
+
+An iteration must not pay the expensive model, or a second model, for work that a deterministic
+checker or the role itself can settle. The clean `huginn` iteration costs **7 turns on the first
+iteration and 6 afterwards** (down from 14).
+
+### REQ-60: Each audit verdicts itself; the judge runs only when it can act
+- **AC-60.1 (Own status line)**: `TEST_MODULE`, `SECURE_CHECK` and `REVIEW` end on exactly one
+  `### Audit status: 🟢 PASS | 🟡 WARN | 🔴 BLOCKED` line (`auditStatusContract()`), with the role's
+  illustrative skeleton explicitly not a template.
+- **AC-60.2 (On-demand judge)**: `gateDecision` (`src/engine/cycle.ts`) skips `judgePhase` when the
+  marker is `pass`; it runs for `warning`/`blocked` (to extract structured `actionItems`) and for a
+  missing marker (fail closed). A non-blocking test-first run never judges.
+- **AC-60.3 (Under-report screen)**: `parseAuditGateVerdict` escalates the marker only from the exact
+  gate vocabulary (`### Overall gate:` and the three handoff phrases), never from bare emoji that every
+  role template ships (REV-102). A report may never downgrade its own marker.
+- **AC-60.4 (Structural precedence)**: huginn's `forcedVerdict`/`authoritativeVerdict` still outranks
+  the marker, and the `audit-status` gate never writes `authoritativeVerdict`.
+
+### REQ-61: `VALIDATE_STEP` is one increment audit
+- **AC-61.1 (One prompt)**: `validateStep` issues exactly one prompt (`validateStepPrompt`) and
+  `computeValidateVerdict(report)` merges its two mandatory markers.
+- **AC-61.2 (No duplicated phases)**: qa and security are not re-run inside `VALIDATE_STEP`; their
+  phases own them.
+- **AC-61.3 (Debuggable)**: `--only-phase VALIDATE_STEP` runs exactly that one prompt.
+
+### REQ-62: The whole-document spec audit runs once per cycle
+- **AC-62.1 (Hash guard)**: `specAuditNeeded` consults `state.specAudit.docHash`
+  (`computePlanHash([spec, adr, plan])`); greenfield skips, the first iteration audits, a changed
+  contract re-audits, `--only-phase SPEC_AUDIT` forces it.
+- **AC-62.2 (Never launder a failure)**: only a `pass`/`warning` audit is memoized; a blocked audit is
+  always re-run.
+- **AC-62.3 (Honest skip)**: a skip records `verdict: "skipped"` with the reason and short hash in the
+  history and the log, does not touch `phaseAttempts`, and is counted as done by receipts/PROGRESS.
+
+### REQ-63: `COMMIT_ALL` is deterministic by default
+- **AC-63.1 (No model turn)**: `commitAllDeterministic` derives
+  `feat|fix|docs(<scope>): <subject>` and a `Harness iteration N/M (<profile>).` body from the
+  iteration and the changed paths; no plan text enters the permanent history.
+- **AC-63.2 (One hardened seam)**: it and the pre-promotion checkpoint both call `commitAllPending`
+  (harness identity, `--no-gpg-sign`, no `-c`); a git failure is reported in the phase and re-attempted
+  by the checkpoint, which fails closed.
+- **AC-63.3 (Opt-in agent commit)**: `ProfileSpec.commit`, `.huginn/config.json` and `--commit agent`
+  restore the model-authored semantic grouping; `pendingChanges` passes `-uall` so a new directory
+  yields its files.

@@ -41,9 +41,11 @@ Every phase ends with a verdict, and the verdict is *parsed*, not read: `pass`, 
 
 - **No marker, no pass.** A report that does not carry its machine-readable line is `blocked`. An
   agent that forgets to report cannot pass by omission.
-- **The synthesis may escalate, never downgrade.** `VALIDATE_STEP` runs the qa, spec-auditor and
-  security audits independently, derives the gate from the three, and rewrites the report so the
-  verdict it computed is the one that survives.
+- **The gate is huginn's, not the model's.** `VALIDATE_STEP` is one increment audit ending on two
+  mandatory markers (`### Overall fidelity:` and `### Audit status:`); huginn merges them itself and
+  rewrites the report so the verdict it computed is the one that survives. `TEST_MODULE`,
+  `SECURE_CHECK` and `REVIEW` each end on their own `### Audit status:` line, so the judge pass runs
+  only when that line is not green.
 - **Auditors cannot edit.** `SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK` and `REVIEW` are
   read-only: the working tree is hashed before and after, and a phase whose signature changed is
   `blocked` — whatever its report says.
@@ -654,7 +656,8 @@ huginn-run gate is huginn's own:
 1. **SPEC_AUDIT** — the embedded spec-auditor role audits `spec.md` against the implementation and must
    end on `### Overall fidelity: 🟢/🟡/🔴`. 🔴 deviations → fix with the executor, re-audit. On a repo
    with no implementation code yet (greenfield), the audit is skipped with a `–` verdict until an
-   iteration has produced code.
+   iteration has produced code; the whole-document audit also runs **once per cycle**, and is reused
+   while `spec.md`/`adr.md`/`plan.md` are unchanged.
 2. **EXECUTE** — sends the iteration's prompt verbatim to the `build` agent (executor).
 3. **VERIFY** — deterministic proof that the increment works: huginn runs the iteration's
    `Verification:` commands inside the sandbox and gates on their real exit codes. It runs **before**
@@ -664,23 +667,31 @@ huginn-run gate is huginn's own:
    environment failure — driver, display, OOM — so no source edit can fix it and huginn escalates to
    you instead of burning the budget (ADR-57). A plan with no `Verification:` section stays
    compatible (the phase passes with a note); `--no-verify` / `"verify": false` disables it.
-4. **VALIDATE_STEP** — huginn runs the gate itself: the qa role in `AUDIT-ONLY MODE`, the spec-auditor
-   role and the security role, then a synthesis turn. The verdict is **computed deterministically** from
-   the three sub-reports (each must emit its own `### Audit status:`/`### Overall fidelity:` line) and
-   the synthesis may only *escalate* it; huginn imposes the final `### Overall gate:` line and handoff
-   marker on the report and gates on the structured verdict, never on the model's prose.
-5. **TEST_MODULE** — the embedded test-module instruction; verdict via a small "judge" pass.
+4. **VALIDATE_STEP** — one increment audit: the spec-auditor verifies the acceptance criteria and the
+   spec fidelity of the diff, ending on `### Overall fidelity:` and `### Audit status:`. huginn merges
+   both markers (`computeValidateVerdict`), imposes the final `### Overall gate:` line and handoff
+   marker on the report, and gates on the structured verdict, never on the model's prose. QA and
+   security are not re-run here — they are their own phases.
+5. **TEST_MODULE** — the embedded test-module instruction; the role ends on its own
+   `### Audit status:` line, and the extra "judge" pass only runs when that line is not green.
 6. **SECURE_CHECK** — the embedded security-audit instruction; any breach → fix with the executor until clear.
 7. **REVIEW** — the embedded pre-PR review instruction; blockers → fix with the executor and re-review.
 8. **DOC_SYNC** — the embedded doc-sync instruction (informative, never blocks).
-9. **COMMIT_ALL** — the embedded commit instruction produces the semantic commits.
+9. **COMMIT_ALL** — deterministic by default: huginn derives
+   `feat|fix|docs(<scope>): <subject>` from the iteration, with no model turn. `--commit agent`
+   restores the model-authored semantic commits.
+
+A clean iteration therefore costs **7 model turns on the first iteration and 6 afterwards** (it was
+14). The deterministic `VERIFY` costs none, the judge passes are elided on green, and the spec audit is
+reused while the documents are unchanged.
 
 The auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`, `REVIEW`) are **read-only**: huginn
 hashes the working tree before and after the step and forces BLOCKED if the signature is missing or
 changed, so an audit that wrote to the repository cannot pass a gate.
 
-Every iteration is an **atomic increment**: after the pipeline completes, before promotion, huginn
-commits anything `COMMIT_ALL` left uncommitted (`chore(iter-N): checkpoint — …`). Promotion only
+Every iteration is an **atomic increment**: `COMMIT_ALL` commits deterministically, and after the
+pipeline completes, before promotion, huginn commits anything left uncommitted
+(`chore(iter-N): checkpoint — …`). Promotion only
 integrates commits, so a successful increment can never be discarded silently — and stopping the
 process mid-iteration leaves the primary tree at the last increment that was promoted. In-place
 execution (`--no-sandbox`) cannot offer that guarantee and warns at startup.

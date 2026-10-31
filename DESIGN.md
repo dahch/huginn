@@ -76,11 +76,12 @@ src/
 │   │       ├── generic.ts      GenericSubprocessRuntimeAdapter & GenericSubprocessSession (safe stdio, native model flags, auto-approval args, fallback binaries, sessionHistory = false)
 │   │       └── index.ts        re-exports the remaining adapters
 │   ├── cycle.ts            CycleEngine: pipeline-as-data (per profile, `readOnly` flag), retry/fix/escalate loop, structural verdicts, state machine
-│   ├── phases.ts           the 8 phase functions + 3 fix functions; the single prompt seam; huginn-orchestrated VALIDATE_STEP; read-only tree guard
+│   ├── phases.ts           the phase + fix functions; the single prompt seam; single-report VALIDATE_STEP; deterministic COMMIT_ALL; read-only tree guard
 │   ├── steps/              huginn-owned step instructions (REQ-40): instructions.ts (embedded roles/tasks), prompts.ts (per-step composers), context.ts (bounded reads, git capture, untrusted embedding, verdict contracts), types.ts (StepContext)
 │   ├── gitRepo.ts          ensureGitRepository: `git init -b main` + `.gitignore` + identity + bootstrap commit (REQ-39)
 │   ├── gate.ts             verdict parsers, JSON judge, fail-closed logic
-│   ├── profiles.ts         PROFILES: the named pipelines (huginn Cycle + sdd/odd/rdd/strict-tdd) over the phase vocabulary (REQ-36)
+│   ├── profiles.ts         PROFILES: the named pipelines (huginn Cycle + sdd/odd/rdd/strict-tdd) over the phase vocabulary (REQ-36), plus the commit mode (REQ-63)
+│   ├── steps/commitMessage.ts  deterministic `feat|fix|docs(<scope>): <subject>` from the iteration (REQ-63)
 │   ├── receipts.ts         frozen iteration evidence under .huginn/receipts/ + treeHash (used by the read-only guard) for rdd/strict-tdd (REQ-36)
 │   ├── questionBlock.ts    agent-agnostic `<<<HUGINN_QUESTION>>>` block parser + answer formatter (REQ-37)
 │   ├── decisionBroker.ts   FIFO queue of pending human/permission decisions
@@ -351,17 +352,22 @@ Frontend mapping of choices:
 
 ```mermaid
 flowchart LR
-    A[phase report] --> B{gate type}
+    A[phase report] --> S{structural verdict?}
+    S -- yes --> H[record + proceed]
+    S -- no --> B{gate type}
     B -- spec-audit --> C[parseSpecAuditVerdict]
     B -- validate-step --> D[parseValidateStepVerdict]
-    B -- judge --> E[judgePhase]
-    C --> F{Verdict or null}
+    B -- audit-status --> K[parseAuditGateVerdict]
+    B -- none --> P[pass]
+    C --> F{verdict or null}
     D --> F
-    F -- null --> G[gatedVerdict → BLOCKED + warn log]
-    F -- verdict --> H[record + proceed]
-    E --> I{parsed?}
-    I -- yes --> H
-    I -- no --> J[heuristics → else blocked, parsed:false + warn]
+    F -- null --> G[gatedVerdict → BLOCKED + warn]
+    F -- verdict --> H
+    K --> M{marker}
+    M -- pass --> H
+    M -- warning/blocked/missing --> E[judgePhase]
+    E --> N[mergeAuditVerdict — the marker is the floor]
+    N --> H
 ```
 
 - The two parser functions return `Verdict | null`. `null` means "no parseable
@@ -370,11 +376,16 @@ flowchart LR
 - **Structural verdicts win**: when a phase computed the verdict itself it travels as
   `authoritativeVerdict` on the phase result (`resolveStructuralVerdict`), and `runPhase` gates on that
   field instead of re-reading the report text — so a report whose prose contradicts its own gate line
-  cannot change the outcome. `VALIDATE_STEP` is the case that matters: huginn runs the qa/spec-auditor/
-  security sub-prompts itself, computes the verdict from their `### Audit status:` / `### Overall
-  fidelity:` lines (`computeValidateVerdict` — empty or marker-less → `blocked`), lets the synthesis
-  only *escalate* it, and rewrites the report's gate/handoff lines (`enforceValidateVerdict`) so
-  exactly one coherent verdict remains (§ 28.2).
+  cannot change the outcome. `VALIDATE_STEP` is the case that matters: it is ONE increment audit
+  (acceptance coverage + spec fidelity) ending on `### Overall fidelity:` and `### Audit status:`;
+  `computeValidateVerdict(report)` merges those two lines (empty or marker-less → `blocked`) and
+  `enforceValidateVerdict` rewrites the report's gate/handoff lines so exactly one coherent verdict
+  remains (§ 28.2).
+- **The judge is on demand.** `TEST_MODULE` / `SECURE_CHECK` / `REVIEW` carry their own
+  `### Audit status:` line, and `gateDecision` skips `judgePhase` on a green marker. A warning or
+  blocked marker pays for the judge (whose only new output is the structured `actionItems`), and a
+  missing marker fails closed through the judge. `parseGateVocabularyVerdict` reads only the exact
+  consolidation vocabulary — never bare ✅/⚠️/🔴, which every role template ships in its headings.
 - **Read-only guard**: for the auditor phases the engine hashes the work tree
   (`treeHash`) before and after the step; a missing or changed signature forces `blocked`
   (`readOnlyTreeViolation`) and the phase's own verdict is discarded — an audit that wrote to the
@@ -388,7 +399,7 @@ flowchart LR
   misread.
 - `spec-audit` verdicts come from the `Overall fidelity:` line or the bare
   keywords `MAJOR DEVIATION` / `MINOR DRIFT` / `ALIGNED`.
-- `judgePhase` asks the **executor** model to classify a report as strict JSON
+- `judgePhase` asks the **executor** model to classify a **non-pass or unreadable** report as strict JSON
   (`extractJson` does brace-matching extraction; `normalizeJudgeOutput`
   validates the shape). Reports are truncated to 24 000 chars before judging.
   If the judge's own output can't be parsed, keyword heuristics run, and if
@@ -397,10 +408,27 @@ flowchart LR
 - Non-blocking steps (`EXECUTE`, `DOC_SYNC`, `COMMIT_ALL`) record their verdict
   but never stop the pipeline.
 - `skipped` is a fourth `Verdict` value that lives *outside* the gate model: it
-  is never returned by the two parsers or the judge — only by the greenfield
-  `SPEC_AUDIT` skip — and it neither passes nor blocks the pipeline. The
-  progress renderer and both frontends treat it as a pass-equivalent
-  (`STATUS_GLYPHS.skipped`, `–`) for display.
+  is never returned by the parsers or the judge — only by a `SPEC_AUDIT` skip
+  (greenfield, or documents unchanged since the last non-blocking audit) — and it
+  neither passes nor blocks the pipeline. The progress renderer and both
+  frontends treat it as a pass-equivalent (`STATUS_GLYPHS.skipped`, `–`).
+
+### 5.1 Turn budget
+
+| Phase | clean iteration | note |
+|---|---|---|
+| `SPEC_AUDIT` | 1 cold / 0 warm | `specAuditNeeded` + `state.specAudit.docHash` |
+| `EXECUTE` | 1 | |
+| `VERIFY` | 0 | deterministic commands |
+| `VALIDATE_STEP` | 1 | one increment audit |
+| `TEST_MODULE` | 1 | judge only when non-pass |
+| `SECURE_CHECK` | 1 | judge only when non-pass |
+| `REVIEW` | 1 | judge only when non-pass |
+| `DOC_SYNC` | 1 | |
+| `COMMIT_ALL` | 0 | `commitAllDeterministic` |
+
+**7 cold / 6 warm** (was 14). A blocked iteration still pays the judge on the phase that blocks, which
+is exactly where `actionItems` earn their keep.
 
 ## 6. Timeout model
 

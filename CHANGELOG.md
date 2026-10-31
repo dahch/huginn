@@ -20,6 +20,18 @@
 - **`VERIFY` runs right after `EXECUTE`** in the default profile, so a deterministic failure is caught
   before any LLM audit spends tokens, and the profile now freezes a `receipt` by default.
 
+### Changed
+
+- **A clean iteration costs ~6 model turns instead of 14.** Each audit role now ends on its own
+  `### Audit status:` line, and the judge pass (a second model call re-deriving what the role just
+  stated) runs only when that line is warning/blocked or missing — so a green `TEST_MODULE`,
+  `SECURE_CHECK` or `REVIEW` pays zero judge turns. `VALIDATE_STEP` is one increment audit
+  (acceptance coverage + spec fidelity) instead of qa + spec-auditor + security + a synthesis turn;
+  `SPEC_AUDIT` runs once per cycle, memoized on `computePlanHash([spec, adr, plan])`, with a
+  greenfield skip and `--only-phase SPEC_AUDIT` forcing it. `COMMIT_ALL` is deterministic
+  (`feat|fix|docs(<scope>): <subject>` from the iteration) with `--commit agent` as the opt-in; the
+  default profile keeps `evidence: "receipt"`.
+
 ### Fixed
 
 - **Codex driver**: the thread is started with the session's `workingDirectory` (the sandbox, not
@@ -29,6 +41,13 @@
   `anthropic/` prefix from the model id, uses a fresh `AbortController` with `timeoutMs` per turn, and
   passes `permissionMode: "bypassPermissions"` when `--permissions auto` is set.
 - **pi driver**: honours `timeoutMs` by interrupting the in-process turn.
+- **The audit gate reads only its own conclusion lines.** `computeValidateVerdict` requires both
+  `### Overall fidelity:` and `### Audit status:` and consults the whole-body fidelity fallback only
+  when the report talks about fidelity, so an audit-status line can no longer pass as a green fidelity
+  verdict. The under-report screen matches the exact consolidation vocabulary (`### Overall gate:` and
+  the three handoff phrases), never the bare ✅/⚠️/🔴 that every role template ships (REV-102).
+- **`pendingChanges` lists files, not collapsed directories.** `git status --porcelain -uall` gives the
+  deterministic commit a real scope for a brand-new folder.
 - **`/draft` no longer truncates destructively**: the architect prompt reads the configured
   `specPath`/`adrPath`/`planPath` with a bounded read, a spec larger than the embedding bound is
   updated as a delta appended to the existing file, and ADR/plan prompts keep the document's
@@ -42,8 +61,10 @@
 
 ### Documentation
 
-- `AGENTS.md` §2/§3/§4, `SPEC.md` (AC-40.2, AC-40.9) and `DESIGN.md` describe the
-  `DIAGNOSE` → `APPLY_FIX` flow, the per-phase sessions and the reordered default profile.
+- `AGENTS.md` §1–§4 and §6, `SPEC.md` (AC-40.2…AC-40.4, AC-57.1, the new `REQ-60`…`REQ-63` turn
+  budget), `DESIGN.md` (§5 gate model, §5.1 turn table) and the README describe the
+  `DIAGNOSE` → `APPLY_FIX` flow, the per-phase sessions, the single-report `VALIDATE_STEP`, the
+  on-demand judge, the `SPEC_AUDIT` cadence and the deterministic commit.
 
 ## 2.0.0-rc.4
 
