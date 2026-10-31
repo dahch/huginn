@@ -615,7 +615,14 @@ export async function main(argv: string[]): Promise<void> {
     console.log(`huginn ${pkg.version}`);
     return;
   }
-  if (command === "help" || args["--help"] || args["-h"]) {
+  // Each subcommand owns its `--help` (the handlers already implement it); the
+  // global block only answers a bare `--help`, `huginn help`, `init --help` and
+  // an unknown command. Intercepting everything made ten help branches dead.
+  if (
+    command === "help" ||
+    ((args["--help"] || args["-h"]) &&
+      (command === undefined || command === "init" || !KNOWN_COMMANDS.has(command)))
+  ) {
     printBanner({});
     if (command === "init") {
       printInitUsage();
@@ -639,6 +646,11 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   if (command === "install") {
+    if (args["--help"] || args["-h"]) {
+      printBanner({});
+      console.log(usage());
+      return;
+    }
     // Compatibility no-op (exit 0): the opencode agents and step prompts are
     // built in now, so there is nothing to copy into ~/.config/opencode. Because
     // `install` is a known command, this branch is what keeps it out of the
@@ -736,6 +748,12 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (args["--help"] || args["-h"]) {
+    printBanner({});
+    console.log(usage());
+    return;
+  }
+
   const projectPath = canonicalize(
     typeof args["--project"] === "string" ? args["--project"] : process.cwd()
   );
@@ -758,7 +776,7 @@ export async function main(argv: string[]): Promise<void> {
 
   const cfg: RunConfig = {
     projectPath,
-    planPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath),
+    planPath: resolveTrackedDoc(projectPath, args["--plan"], "plan.md", "PLAN.md"),
     specPath: resolveTrackedDoc(projectPath, args["--spec"], "spec.md", "SPEC.md"),
     adrPath: resolveTrackedDoc(projectPath, args["--adr"], "adr.md", "ADR.md"),
     thinker,
@@ -1169,7 +1187,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
 
   const cfg: RunConfig = {
     projectPath,
-    planPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath),
+    planPath: resolveTrackedDoc(projectPath, args["--plan"], "plan.md", "PLAN.md"),
     specPath: resolveTrackedDoc(projectPath, args["--spec"], "spec.md", "SPEC.md"),
     adrPath: resolveTrackedDoc(projectPath, args["--adr"], "adr.md", "ADR.md"),
     thinker,
