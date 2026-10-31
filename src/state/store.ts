@@ -5,6 +5,7 @@ import { stateSchema, type HarnessState, type HistoryEntry } from "./schema";
 import { MAIN_PHASES, type PhaseName } from "../engine/types";
 import { assertDocPath } from "../util/docPath";
 import { sanitizeTerminalText } from "../util/text";
+import { formatUsage } from "../format.js";
 import { STATUS_GLYPHS, phaseGlyph, verdictGlyph } from "../tui/glyphs.js";
 import { writeFileAtomic } from "../util/atomicWrite";
 
@@ -162,6 +163,8 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
   lines.push(`- **Started**: ${state.startedAt}`);
   lines.push(`- **Last update**: ${state.updatedAt}`);
   lines.push(`- **Models**: thinker \`${state.models.thinker}\`, executor \`${state.models.executor}\``);
+  const usage = state.usage ? formatUsage(state.usage) : undefined;
+  if (usage) lines.push(`- **Usage**: ${usage}`);
   lines.push(`- **Mode**: ${state.mode}`);
   // A promotion failure is reported as itself, with the preserved branch and the
   // backup directory — never as an abort (AC-49.3). `🛑 ABORTED` stays reserved

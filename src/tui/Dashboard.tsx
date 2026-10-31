@@ -4,7 +4,7 @@ import type { CycleEngine } from "../engine/cycle";
 import type { RunConfig } from "../config";
 import { events } from "../engine/engineEvents";
 import type { PhaseResult, DecisionRequest, Verdict } from "../engine/types";
-import { formatDurationSec, formatDurationTerse, verdictIcon, verdictToken } from "../format";
+import { formatDurationSec, formatDurationTerse, formatUsage, verdictIcon, verdictToken } from "../format";
 import { MarkdownLine } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import type { PromotionRecord } from "../state/schema";
@@ -484,7 +484,12 @@ export function Dashboard({
 
       {ui.lastReport && !ui.decision && <ReportPill report={ui.lastReport} />}
 
-      <FooterBar paused={ui.paused} verbose={ui.verbose} hasDecision={Boolean(ui.decision)} />
+      <FooterBar
+        paused={ui.paused}
+        verbose={ui.verbose}
+        hasDecision={Boolean(ui.decision)}
+        usage={formatUsage(engine?.getState().usage)}
+      />
     </Box>
   );
 }
@@ -1050,15 +1055,17 @@ function FooterBar({
   paused,
   verbose,
   hasDecision,
+  usage,
 }: {
   paused: boolean;
   verbose: boolean;
   hasDecision: boolean;
+  usage?: string;
 }) {
   return (
     <Box marginTop={0} justifyContent="space-between">
       <Text color={THEME.muted}>
-        [Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color={THEME.ok}>(ON)</Text> : <Text color={THEME.muted}>(OFF)</Text>}   [PageUp/Down, ↑/↓] Scroll
+        {usage ? `${usage}   ` : ""}[Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color={THEME.ok}>(ON)</Text> : <Text color={THEME.muted}>(OFF)</Text>}   [PageUp/Down, ↑/↓] Scroll
       </Text>
       {hasDecision && <Text bold color={THEME.warn}>Interactive decision input active</Text>}
     </Box>

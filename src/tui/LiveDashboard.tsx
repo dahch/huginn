@@ -11,6 +11,7 @@ import { saveUserConfig, saveGlobalUserConfig, getProjectConfigPath, getUserConf
 import { AGENT_TARGETS } from "../agents/integrator";
 import { isAgentTarget } from "../engine/agent/registry";
 import { events, type LiveStage } from "../engine/engineEvents";
+import { formatUsage } from "../format";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
 import { MarkdownLine } from "./markdown";
@@ -481,6 +482,7 @@ function RefineView({
   const [streamScroll, setStreamScroll] = useState(0);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
+  const [usage, setUsage] = useState<string | undefined>(undefined);
   const [logs, setLogs] = useState<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>(() => {
     return events.getRecentLogs().map((e) => ({
       level: e.level,
@@ -652,6 +654,7 @@ function RefineView({
         ];
         setLogs(logBuf.current);
       }),
+      events.on("usage", (e) => setUsage(formatUsage(e.total))),
       events.on("decision", (req) => setDecision(req)),
       events.on("decisionResolved", () => setDecision(undefined)),
       events.on("done", () => {
@@ -1863,7 +1866,9 @@ function RefineView({
               )}
             </Box>
             <Box flexShrink={0}>
-              <Text color={THEME.muted} wrap="truncate">stage: {STAGE_LABEL[stage].label}</Text>
+              <Text color={THEME.muted} wrap="truncate">
+                {usage ? `${usage} · ` : ""}stage: {STAGE_LABEL[stage].label}
+              </Text>
             </Box>
           </Box>
         </>

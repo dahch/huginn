@@ -70,3 +70,39 @@ export function verdictBadge(v: Verdict): string {
       return chalk.bgMagenta.white.bold(` ${v} `);
   }
 }
+
+/** Compact token count, e.g. `987`, `12.3k`, `1.2M`. */
+function compactTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(Math.round(value));
+}
+
+/** A cost, or `undefined` when nothing was measured (never a fake `$0.00`). */
+export function formatCost(usd: number): string | undefined {
+  if (!Number.isFinite(usd) || usd <= 0) return undefined;
+  return usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`;
+}
+
+/**
+ * One line of token/cost telemetry, or `undefined` when the driver reported
+ * nothing. A surface that gets `undefined` renders no usage row at all — it never
+ * shows `0 in / 0 out`, which would look like a measurement.
+ */
+export function formatUsage(total?: {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}): string | undefined {
+  if (!total) return undefined;
+  const input = Math.max(0, total.inputTokens);
+  const output = Math.max(0, total.outputTokens);
+  const cost = formatCost(total.costUsd);
+  if (input === 0 && output === 0 && cost === undefined) return undefined;
+  const parts: string[] = [];
+  if (input > 0 || output > 0) {
+    parts.push(`${compactTokens(input)} in / ${compactTokens(output)} out`);
+  }
+  if (cost) parts.push(cost);
+  return parts.join(" · ");
+}
