@@ -290,6 +290,46 @@ export class WorktreeError extends Error {
 }
 
 /**
+ * The ONE hardened commit path: stage everything, commit with the harness
+ * identity, never sign.
+ *
+ * Both `COMMIT_ALL` (deterministic) and the pre-promotion checkpoint use it, so
+ * the two can never drift apart, and `git()`'s refusal of `-c` makes the
+ * environment the only correct way to supply the identity.
+ */
+export function commitAllPending(
+  repoPath: string,
+  message: string,
+): { commit?: string; pending: boolean } {
+  const status = git(repoPath, ["status", "--porcelain"]);
+  if (status.code !== 0) {
+    throw new WorktreeError(`Cannot inspect ${repoPath}: ${status.stderr || status.stdout}`);
+  }
+  if (status.stdout.trim().length === 0) return { pending: false };
+
+  const add = git(repoPath, ["add", "-A"]);
+  if (add.code !== 0) {
+    throw new WorktreeError(`Cannot stage ${repoPath}: ${add.stderr || add.stdout}`);
+  }
+  const commit = git(repoPath, ["commit", "--no-gpg-sign", "-m", message], {
+    // A missing git identity (or a configured signing key) must not lose a
+    // completed increment. This is a harness-authored commit, so it carries the
+    // harness identity and never signs.
+    env: {
+      GIT_AUTHOR_NAME: "huginn",
+      GIT_AUTHOR_EMAIL: "huginn@localhost",
+      GIT_COMMITTER_NAME: "huginn",
+      GIT_COMMITTER_EMAIL: "huginn@localhost",
+    },
+  });
+  if (commit.code !== 0) {
+    throw new WorktreeError(`Cannot commit ${repoPath}: ${commit.stderr || commit.stdout}`);
+  }
+  const head = git(repoPath, ["rev-parse", "HEAD"]).stdout.trim();
+  return { commit: head || undefined, pending: true };
+}
+
+/**
  * Shared resource entries symlinked from the project root into a sandbox.
  *
  * `node_modules`/`.env` keep the iteration runnable; `.pi`/`.agents` keep the
@@ -440,42 +480,7 @@ export class WorktreeManager {
     sandbox: Sandbox,
     message: string,
   ): { commit?: string; pending: boolean } {
-    const status = git(sandbox.path, ["status", "--porcelain"]);
-    if (status.code !== 0) {
-      throw new WorktreeError(
-        `Cannot inspect the sandbox for ${sandbox.branch}: ${status.stderr || status.stdout}`,
-      );
-    }
-    if (status.stdout.trim().length === 0) return { pending: false };
-
-    const add = git(sandbox.path, ["add", "-A"]);
-    if (add.code !== 0) {
-      throw new WorktreeError(
-        `Cannot stage the sandbox for ${sandbox.branch}: ${add.stderr || add.stdout}`,
-      );
-    }
-    const commit = git(
-      sandbox.path,
-      ["commit", "--no-gpg-sign", "-m", message],
-      {
-        // A missing git identity (or a configured signing key) must not lose a
-        // completed increment. This is a harness-authored checkpoint, so it
-        // carries the harness identity and never signs.
-        env: {
-          GIT_AUTHOR_NAME: "huginn",
-          GIT_AUTHOR_EMAIL: "huginn@localhost",
-          GIT_COMMITTER_NAME: "huginn",
-          GIT_COMMITTER_EMAIL: "huginn@localhost",
-        },
-      },
-    );
-    if (commit.code !== 0) {
-      throw new WorktreeError(
-        `Cannot commit the sandbox for ${sandbox.branch}: ${commit.stderr || commit.stdout}`,
-      );
-    }
-    const head = git(sandbox.path, ["rev-parse", "HEAD"]).stdout.trim();
-    return { commit: head || undefined, pending: true };
+    return commitAllPending(sandbox.path, message);
   }
 
   /**

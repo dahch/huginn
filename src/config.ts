@@ -39,6 +39,8 @@ export interface RunConfig {
   mode: "auto" | "supervised";
   /** Execution methodology (REQ-36 / ADR-35); undefined means the Huginn Cycle. */
   profile?: ProfileName;
+  /** How the increment is committed (REQ-63); undefined means the profile's. */
+  commit?: "agent" | "deterministic";
   permissions: PermissionMode;
   maxRetries: number;
   fromIteration?: number;
@@ -65,6 +67,8 @@ export interface UserConfig {
   agent?: string;
   mode?: "auto" | "supervised";
   profile?: ProfileName;
+  /** `agent` restores the model-authored semantic commit (REQ-63). */
+  commit?: "agent" | "deterministic";
   /** `false` disables running the plan's `Verification:` commands. */
   verify?: boolean;
   [key: string]: unknown;
@@ -238,6 +242,12 @@ function sanitizeConfig(value: unknown, path: string): UserConfig {
       else
         console.warn(
           `[huginn] config ${path}: "profile" must be one of [${PROFILE_NAMES.join(", ")}]; ignoring (using "${DEFAULT_PROFILE}")`,
+        );
+    } else if (key === "commit") {
+      if (raw === "agent" || raw === "deterministic") out.commit = raw;
+      else
+        console.warn(
+          `[huginn] config ${path}: "commit" must be "agent" or "deterministic"; ignoring`,
         );
     } else {
       out[key] = raw;

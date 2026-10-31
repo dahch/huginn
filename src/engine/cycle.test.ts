@@ -1417,3 +1417,26 @@ describe("SPEC_AUDIT cadence", () => {
     expect(engine.getState().specAudit?.iteration).toBe(1);
   });
 });
+
+describe("COMMIT_ALL mode", () => {
+  it("commits deterministically by default: no model turn for the commit", async () => {
+    const { runtime, prompts } = makeMockRuntime();
+    const engine = new CycleEngine({ cfg: makeCfg(), runtime, plan: makePlan() });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    // The agent commit instruction never reached the model.
+    expect(prompts.some((p) => p.includes("Group") && p.includes("atomic commits"))).toBe(false);
+    const commit = engine.getState().history.find((h) => h.phase === "COMMIT_ALL");
+    expect(commit?.messageId).toBe("deterministic-commit");
+  });
+
+  it("keeps the agent commit available with --commit agent", async () => {
+    const { runtime, prompts } = makeMockRuntime();
+    const engine = new CycleEngine({ cfg: makeCfg({ commit: "agent" }), runtime, plan: makePlan() });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    expect(prompts.some((p) => p.includes("atomic commits"))).toBe(true);
+  });
+});

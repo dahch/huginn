@@ -6,6 +6,7 @@ import type { OpencodeClient } from "@opencode-ai/sdk";
 import {
   validateStep,
   commitAll,
+  commitAllDeterministic,
   indexIterationSourceFiles,
   getIterationFiles,
   computeValidateVerdict,
@@ -561,6 +562,74 @@ export const greeting: string = 12345;
         computeValidateVerdict(`The implementation is SEMANTICALLY ALIGNED.\n${AUDIT_STATUS_PASS}`)
       ).toBe("pass");
       expect(computeValidateVerdict("unparseable prose")).toBe("blocked");
+    });
+  });
+
+  describe("commitAllDeterministic", () => {
+    it("commits pending changes with a derived message and no prompt", async () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-det-commit-"));
+      try {
+        git(repo, ["init", "-q"]);
+        git(repo, ["config", "user.email", "t@example.com"]);
+        git(repo, ["config", "user.name", "T"]);
+        fs.writeFileSync(path.join(repo, "a.ts"), "export const a = 1;\n");
+        git(repo, ["add", "."]);
+        git(repo, ["commit", "-m", "init"]);
+
+        fs.mkdirSync(path.join(repo, "src"), { recursive: true });
+        fs.writeFileSync(path.join(repo, "src", "b.ts"), "export const b = 1;\n");
+
+        const { ctx, promptCalls } = createMockContext(repo, {
+          modules: ["src/b.ts"],
+          iteration: { index: 2, title: "Add b", prompt: "work", startLine: 1 },
+          totalIterations: 3,
+          profile: "huginn",
+        });
+
+        const result = await commitAllDeterministic({ ...ctx, directory: repo });
+
+        expect(promptCalls).toHaveLength(0);
+        expect(result.text).toContain("### Commit status: 🟢 committed");
+        expect(git(repo, ["log", "-1", "--pretty=%s"]).stdout.trim()).toBe("feat(b): Add b");
+        expect(git(repo, ["log", "-1", "--pretty=%b"]).stdout.trim()).toBe(
+          "Harness iteration 2/3 (huginn)."
+        );
+        expect(git(repo, ["status", "--porcelain"]).stdout.trim()).toBe("");
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it("reports a clean tree without committing", async () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-det-clean-"));
+      try {
+        git(repo, ["init", "-q"]);
+        git(repo, ["config", "user.email", "t@example.com"]);
+        git(repo, ["config", "user.name", "T"]);
+        fs.writeFileSync(path.join(repo, "a.ts"), "export const a = 1;\n");
+        git(repo, ["add", "."]);
+        git(repo, ["commit", "-m", "init"]);
+
+        const { ctx } = createMockContext(repo, { modules: ["a.ts"] });
+        const result = await commitAllDeterministic({ ...ctx, directory: repo });
+
+        expect(result.text).toContain("nothing to commit");
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it("reports a git failure instead of throwing", async () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-det-fail-"));
+      try {
+        // Not a repository: `git status` fails.
+        fs.writeFileSync(path.join(repo, "a.ts"), "export const a = 1;\n");
+        const { ctx } = createMockContext(repo, { modules: ["a.ts"] });
+        const result = await commitAllDeterministic({ ...ctx, directory: repo });
+        expect(result.text).toContain("### Commit status: 🔴 FAILED");
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
     });
   });
 

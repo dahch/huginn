@@ -205,6 +205,7 @@ Optional:
   --adr <file>          default: <project>/adr.md
   --force               (plan only) overwrite existing spec.md/adr.md/plan.md
   --profile <id>        Methodology: ${PROFILE_NAMES.join(", ")} (default: huginn)
+  --commit <mode>       agent | deterministic (default: deterministic)
   --mode auto|supervised   auto=autonomous with retry budget; supervised=ask at every gate  (default: auto)
   --permissions auto|ask|deny  auto-approve tool permissions  (default: auto)
   --max-retries <n>     fix attempts per blocked gate before escalating  (default: 3)
@@ -732,6 +733,7 @@ export async function main(argv: string[]): Promise<void> {
     agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
     profile: resolveProfile(args["--profile"], layers.project.profile ?? layers.user.profile),
+    commit: resolveCommit(args["--commit"], layers.project.commit ?? layers.user.commit),
     permissions,
     maxRetries: num(args["--max-retries"], 3),
     fromIteration: typeof args["--from-iteration"] === "string" ? num(args["--from-iteration"], 1) : undefined,
@@ -1152,6 +1154,7 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
     agent: resolvedAgent,
     mode: args["--mode"] === "supervised" ? "supervised" : "auto",
     profile: resolveProfile(args["--profile"], layers.project.profile ?? layers.user.profile),
+    commit: resolveCommit(args["--commit"], layers.project.commit ?? layers.user.commit),
     permissions,
     maxRetries: num(args["--max-retries"], 3),
     fromIteration: typeof args["--from-iteration"] === "string" ? num(args["--from-iteration"], 1) : undefined,
@@ -1302,6 +1305,18 @@ function validatePhase(name: string): PhaseName {
     return name as PhaseName;
   }
   console.error(`Invalid --only-phase "${name}". Valid: ${PROFILE_PHASES.join(", ")}`);
+  process.exit(1);
+}
+
+/** Resolve `--commit`, failing closed on an unknown mode (REQ-63). */
+function resolveCommit(
+  flag: unknown,
+  fallback?: string,
+): "agent" | "deterministic" | undefined {
+  const raw = typeof flag === "string" ? flag.trim().toLowerCase() : fallback;
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === "agent" || raw === "deterministic") return raw;
+  console.error(`Invalid --commit "${String(flag)}". Valid: agent, deterministic`);
   process.exit(1);
 }
 

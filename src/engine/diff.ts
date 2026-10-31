@@ -460,7 +460,10 @@ export function headCommit(projectPath: string): string | null {
 
 export function pendingChanges(projectPath: string): string[] {
   const files = new Set<string>();
-  const status = git(projectPath, ["status", "--porcelain"]);
+  // `-uall` lists every untracked file instead of collapsing a whole new
+  // directory into `dir/`, so callers get the paths they need (the deterministic
+  // commit derives its scope from them).
+  const status = git(projectPath, ["status", "--porcelain", "-uall"]);
   for (const line of status.stdout.split("\n")) {
     if (!line.trim()) continue;
     const p = line.slice(3).trim();

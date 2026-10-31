@@ -13,6 +13,7 @@ import {
   review,
   docSync,
   commitAll,
+  commitAllDeterministic,
   diagnoseFindings,
   fixFindings,
   indexIterationSourceFiles,
@@ -219,11 +220,24 @@ const STEP_BY_PHASE: Partial<Record<PhaseName, PipelineStep>> = {
 };
 
 /**
+ * The two commit implementations (REQ-63). The default is deterministic: no
+ * model turn, and `git log` is reproducible from the plan. A profile (or
+ * `--commit agent`) can opt back into the agent's semantic grouping.
+ */
+const COMMIT_STEP: Record<"agent" | "deterministic", PhaseFn> = {
+  agent: commitAll,
+  deterministic: commitAllDeterministic,
+};
+
+/**
  * Resolve a profile into runnable steps, failing closed (AC-36.6) if it names a
  * phase the engine cannot run — a broken profile must never silently degrade to
  * the default.
  */
-function pipelineFor(profile: ProfileName | undefined): PipelineStep[] {
+function pipelineFor(
+  profile: ProfileName | undefined,
+  commit?: "agent" | "deterministic",
+): PipelineStep[] {
   const spec = profileSpec(profile);
   const guard = validateProfilePhases(
     spec.id,
@@ -234,7 +248,11 @@ function pipelineFor(profile: ProfileName | undefined): PipelineStep[] {
       `profile "${spec.id}" needs phase(s) the engine cannot run: ${guard.missing.join(", ")}`,
     );
   }
-  const steps = spec.phases.map((phase) => ({ ...STEP_BY_PHASE[phase]! }));
+  const commitMode = commit ?? spec.commit ?? "deterministic";
+  const steps = spec.phases.map((phase) => ({
+    ...STEP_BY_PHASE[phase]!,
+    ...(phase === "COMMIT_ALL" ? { fn: COMMIT_STEP[commitMode] } : {}),
+  }));
   if (spec.testFirst) {
     // The pre-EXECUTE test run is expected to fail: judge it (so the failing
     // verdict is recorded as evidence) but never block, and never "fix" — that
@@ -764,6 +782,8 @@ export class CycleEngine {
         modules: explicitModules,
         baseCommit,
         profilePreamble: profilePreamble(this.cfg.profile),
+        profile: profileSpec(this.cfg.profile).id,
+        totalIterations: this.plan.iterations.length,
         phaseTimeoutMs: this.cfg.phaseTimeoutMs,
         verify: this.cfg.verify !== false,
       };
@@ -775,7 +795,7 @@ export class CycleEngine {
       // could be reattached; otherwise the earlier phases' changes are gone and
       // the iteration replays from the start. The history scan stays as the
       // fallback for state written before the cursor existed (in-place runs only).
-      const steps = pipelineFor(this.cfg.profile);
+      const steps = pipelineFor(this.cfg.profile, this.cfg.commit);
       let resumeIndex = 0;
       if (!this.cfg.onlyPhase && this.state.currentIteration === iteration.index) {
         if (cursor && (!sandbox || reattached)) {

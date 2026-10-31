@@ -4,7 +4,9 @@ import type { OpencodeClient } from "@opencode-ai/sdk";
 import { formatModel, type Models } from "./modelRouter";
 import { prompt } from "../server/client";
 import type { IAgentSession, PromptResult } from "./agent/types.js";
-import { pendingChanges, changedFilesSince } from "./diff";
+import { pendingChanges, changedFilesSince, isGitRepo } from "./diff";
+import { commitAllPending, WorktreeError } from "./worktree";
+import { deterministicCommitMessage } from "./steps/commitMessage";
 import {
   verifyTypeScriptContracts,
   formatDiagnosticsReport,
@@ -550,6 +552,71 @@ export async function commitAll(ctx: PhaseContext): Promise<PromptResult> {
     timeoutMs: ctx.phaseTimeoutMs,
     directory: agentDirectory(ctx),
   });
+}
+
+/**
+ * `COMMIT_ALL`, deterministic: no model turn (REQ-63).
+ *
+ * The message is derived from the iteration and the changed paths, so the same
+ * increment always produces the same commit and no plan text enters permanent
+ * history. A git failure is reported here but not thrown: the pre-promotion
+ * checkpoint re-attempts the same hardened commit and fails closed there, so the
+ * failure surfaces once, honestly, instead of as a silent "pass".
+ */
+export async function commitAllDeterministic(ctx: PhaseContext): Promise<PromptResult> {
+  const repoPath = agentDirectory(ctx);
+  if (!isGitRepo(repoPath)) {
+    return {
+      messageId: "deterministic-commit",
+      text: [
+        "### Commit status: 🔴 FAILED",
+        "",
+        `${repoPath} is not a git work tree, so the increment cannot be committed.`,
+        "The pre-promotion checkpoint re-attempts it and fails closed.",
+      ].join("\n"),
+    };
+  }
+  const changedPaths = pendingChanges(repoPath);
+  const message = deterministicCommitMessage({
+    iteration: ctx.iteration,
+    totalIterations: ctx.totalIterations ?? ctx.iteration.index,
+    profile: ctx.profile ?? "huginn",
+    changedPaths,
+  });
+
+  if (changedPaths.length === 0) {
+    return {
+      messageId: "deterministic-commit",
+      text: "### Commit status: 🟢 nothing to commit\n\nThe working tree is already clean.",
+    };
+  }
+
+  try {
+    const result = commitAllPending(repoPath, message);
+    const sha = result.commit?.slice(0, 7) ?? "(none)";
+    return {
+      messageId: "deterministic-commit",
+      text: [
+        "### Commit status: 🟢 committed",
+        "",
+        `- commit: ${sha}`,
+        `- subject: ${message.split("\n")[0]}`,
+        `- files: ${changedPaths.length}`,
+      ].join("\n"),
+    };
+  } catch (err) {
+    const detail = err instanceof WorktreeError || err instanceof Error ? err.message : String(err);
+    return {
+      messageId: "deterministic-commit",
+      text: [
+        "### Commit status: 🔴 FAILED",
+        "",
+        `git refused the commit: ${detail}`,
+        "",
+        "The pre-promotion checkpoint re-attempts it and fails closed if git still refuses.",
+      ].join("\n"),
+    };
+  }
 }
 
 /**

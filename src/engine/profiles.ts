@@ -52,6 +52,12 @@ export interface ProfileSpec {
    * code before `EXECUTE` and invert test-first (REV-002).
    */
   testFirst?: boolean;
+  /**
+   * How the increment is committed: huginn's deterministic commit (default) or
+   * the agent's semantic grouping. Deterministic costs no model turn and keeps
+   * `git log` reproducible from the plan alone (REQ-63).
+   */
+  commit?: "agent" | "deterministic";
 }
 
 export const PROFILES: Record<ProfileName, ProfileSpec> = {

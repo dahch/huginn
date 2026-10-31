@@ -1,4 +1,5 @@
 import type { Iteration } from "../../plan/types.js";
+import type { ProfileName } from "../profiles.js";
 
 /**
  * The subset of {@link PhaseContext} the step prompt builders need (REQ-7).
@@ -21,4 +22,8 @@ export interface StepContext {
   baseCommit?: string;
   /** The active profile's methodology instruction for `EXECUTE` (REQ-36). */
   profilePreamble?: string;
+  /** The active profile, for the deterministic commit message (REQ-63). */
+  profile?: ProfileName;
+  /** Number of iterations in the plan, for the deterministic commit body. */
+  totalIterations?: number;
 }
