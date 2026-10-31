@@ -2,12 +2,13 @@
 
 ## 2.0.0-rc.4
 
-Eleven commits since `2.0.0-rc.3`, 38 files: `src` +1445/−176, `test` +178/−9,
-docs +209/−26 (`ADR.md`, `AGENTS.md`, `DESIGN.md`, `README.md`, `SPEC.md`). Three engine
+Thirteen commits since `2.0.0-rc.3`, 40 files: `src` +1445/−176, `test` +178/−9,
+docs +220/−29 (`ADR.md`, `AGENTS.md`, `DESIGN.md`, `README.md`, `SPEC.md`). Three engine
 features land — memory-capped subprocesses, resumable interrupted iterations, and a
 crash-aware `VERIFY` — alongside the live console's real focus model, a corrected account
-of the step prompts in `AGENTS.md`, and the fix that makes every clarifying question and
-every option visible and answerable.
+of the step prompts in `AGENTS.md`, the fix that makes every clarifying question and every
+option visible and answerable, and the packaging fix that installs `@dahch/muninn` from
+npm.
 
 ### Added
 
@@ -31,6 +32,10 @@ every option visible and answerable.
 
 ### Fixed
 
+- **`@dahch/muninn` installs from npm.** The v0.1.0 tarball URL attached to the GitHub
+  release started returning 404 (the asset moved), which broke `bun install --frozen-lockfile`
+  in CI and the publish build. Now that the package ships on the registry, the dependency is
+  `^0.1.0` and the lockfile resolves it from npm.
 - **Every question and every option is visible and answerable.** The decision modal was a
   `flexShrink: 1` child under a hardcoded six-row reservation, so a question with several options was
   squashed by Yoga and the lower options were silently clipped. The modal now keeps its natural
