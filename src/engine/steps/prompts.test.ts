@@ -15,6 +15,7 @@ import {
   validateStepPrompt,
 } from "./prompts.js";
 import { MAX_EMBEDDED_OUTPUT } from "./context.js";
+import { MemoryService } from "@dahch/muninn";
 import type { StepContext } from "./types.js";
 
 let dir: string;
@@ -112,6 +113,32 @@ describe("step prompt builders (REQ-7)", () => {
     };
     expect(testModulePrompt(ctx({ iteration }))).toContain("REQ-1: /health returns 200");
     expect(validateStepPrompt(ctx({ iteration }))).toContain("REQ-1: /health returns 200");
+  });
+
+  it("injects the bounded memory block when a database is available", () => {
+    const dbPath = join(dir, ".huginn", "muninn.db");
+    const service = new MemoryService({ projectRoot: dir, dbPath });
+    try {
+      service.saveObservation({
+        category: "decision",
+        title: "ADR-1: memory decisions",
+        content: "Store ADRs as decision observations.",
+        topicKey: "adr-1",
+      });
+    } finally {
+      service.close();
+    }
+
+    const p = executePrompt(ctx({ dbPath, primaryProjectRoot: dir }));
+    expect(p).toContain("relevant memory");
+    expect(p).toContain("ADR-1: memory decisions");
+    expect(p).toContain("<<<BEGIN UNTRUSTED-");
+    expect(validateStepPrompt(ctx({ dbPath, primaryProjectRoot: dir }))).toContain("relevant memory");
+  });
+
+  it("omits the memory block when the step context has no database", () => {
+    expect(executePrompt(ctx())).not.toContain("relevant memory");
+    expect(specAuditPrompt(ctx())).not.toContain("relevant memory");
   });
 
   it("executePrompt neutralises a delimiter forgery hidden in the plan", () => {
