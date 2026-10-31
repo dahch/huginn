@@ -21,11 +21,11 @@ import { formatQuestionAnswer, parseQuestionBlock } from "./questionBlock.js";
 import { randomUUID } from "node:crypto";
 import type { DecisionChoice, DecisionRequest, QuestionItem } from "./types";
 import { formatModel, resolveModels, type Models } from "./modelRouter";
-import { appendAdrPrompt, remainingPlanPrompt, unwrapFences, updateSpecPrompt, validateDraftFormat, type DraftDocType } from "./planMode";
+import { appendAdrPrompt, remainingPlanPrompt, unwrapFences, updateSpecDeltaPrompt, updateSpecPrompt, validateDraftFormat, type DraftDocType } from "./planMode";
 import { CycleEngine } from "./cycle";
 import { loadPlan } from "../plan/parser";
 import { commitDocs, readOptional, repoContext, resetHarnessState, stageDocsForReview, unstageDocs, writeDoc } from "./liveRepo";
-import { embedUntrusted } from "./steps/context.js";
+import { embedUntrusted, MAX_EMBEDDED_OUTPUT, readFileBounded } from "./steps/context.js";
 import { git } from "./diff.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { getLiveSession, newLiveSessionId, saveLiveSession, type LiveSession } from "../state/liveSession";
@@ -237,10 +237,29 @@ export function extractScopeBlock(text: string): string | null {
  * out of the markdown block and its text read as huginn's own instructions to an
  * **auto-approved** agent.
  */
-function refineSystemPrompt(projectPath: string): string {
-  const existingSpec = readOptional(`${projectPath}/spec.md`, projectPath);
-  const existingAdr = readOptional(`${projectPath}/adr.md`, projectPath);
-  const existingPlan = readOptional(`${projectPath}/plan.md`, projectPath);
+function readDocBounded(path: string, projectPath: string): string {
+  const read = readFileBounded(path, MAX_EMBEDDED_OUTPUT, projectPath);
+  if (read.kind === "ok") return read.content;
+  if (read.kind === "unreadable") {
+    // A refused read (symlink, non-regular file, escape) must never be silent:
+    // the architect prompt then looks like a greenfield project.
+    events.emit("log", {
+      level: "warn",
+      message: sanitizeTerminalText(`${read.reason}; treating it as absent`),
+    });
+  }
+  return "";
+}
+
+function refineSystemPrompt(
+  projectPath: string,
+  docs: { specPath: string; adrPath: string; planPath: string },
+): string {
+  // The configured paths, not hardcoded lower-case names: a project tracking
+  // SPEC.md/ADR.md must still be read into the architect prompt.
+  const existingSpec = readDocBounded(docs.specPath, projectPath);
+  const existingAdr = readDocBounded(docs.adrPath, projectPath);
+  const existingPlan = readDocBounded(docs.planPath, projectPath);
   const planSummary = existingPlan
     ? existingPlan
         .split("\n")
@@ -833,7 +852,11 @@ export class LiveEngine {
 
   /** Memoized architect prompt; invalidated by {@link invalidateSystemPrompt}. */
   private getSystemPrompt(): string {
-    return (this.systemPromptCache ??= refineSystemPrompt(this.cfg.projectPath));
+    return (this.systemPromptCache ??= refineSystemPrompt(this.cfg.projectPath, {
+      specPath: this.cfg.specPath,
+      adrPath: this.cfg.adrPath,
+      planPath: this.cfg.planPath,
+    }));
   }
 
   /**
@@ -1292,7 +1315,17 @@ export class LiveEngine {
    * output contract, retry once with the violation as feedback, then ask the
    * human (retry / accept as-is / abort). Returns validated content.
    */
-  private async draftDocWithFormat(label: string, docType: DraftDocType, buildPrompt: () => string): Promise<string> {
+  private async draftDocWithFormat(
+    label: string,
+    docType: DraftDocType,
+    buildPrompt: () => string,
+    /**
+     * Applied to each drafted reply before validation. The delta mode uses it to
+     * append the model's new sections to the existing (untouched) document, so
+     * a large spec is never replaced from a truncated read.
+     */
+    transform?: (content: string) => string,
+  ): Promise<string> {
     let lastError: string | null = null;
     for (let attempt = 1; ; attempt++) {
       this.throwIfAborted();
@@ -1302,7 +1335,8 @@ export class LiveEngine {
           ? base
           : `${base}\n\nYour previous response violated the OUTPUT FORMAT CONTRACT:\n${lastError}\nRegenerate the document strictly following the contract.`;
       const raw = await this.promptModel(text, `${label} (attempt ${attempt})`);
-      const content = unwrapFences(raw);
+      const drafted = unwrapFences(raw);
+      const content = transform ? transform(drafted) : drafted;
       const error = validateDraftFormat(docType, content);
       if (!error) return content;
       lastError = error;
@@ -1336,8 +1370,23 @@ export class LiveEngine {
     const existingAdr = readOptional(this.cfg.adrPath, this.cfg.projectPath);
 
     events.emit("liveStage", { stage: "draft", message: "Drafting spec.md" });
-    const specContent = await this.draftDocWithFormat("spec.md", "spec", () =>
-      updateSpecPrompt(scope, existingSpec, repoState),
+    // A spec larger than the embedding bound is updated as a DELTA appended to
+    // the existing file: asking for a complete replacement would hand the thinker
+    // a truncated document and let it silently drop requirements.
+    const specTooLarge = existingSpec.length > MAX_EMBEDDED_OUTPUT;
+    const specContent = await this.draftDocWithFormat(
+      "spec.md",
+      "spec",
+      () =>
+        specTooLarge
+          ? updateSpecDeltaPrompt(scope, existingSpec, repoState)
+          : updateSpecPrompt(scope, existingSpec, repoState),
+      specTooLarge
+        ? (delta) =>
+            existingSpec.trim()
+              ? `${existingSpec.trimEnd()}\n\n${delta.trim()}\n`
+              : `${delta.trim()}\n`
+        : undefined,
     );
     writeDoc(this.cfg.specPath, specContent, this.cfg.projectPath);
     events.emit("log", { level: "info", message: `✓ wrote ${this.cfg.specPath}` });

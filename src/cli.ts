@@ -371,6 +371,27 @@ export function canonicalizeDocPath(p: string, projectPath?: string): string {
 }
 
 /**
+ * Resolve a tracked document whose conventional name may be lower- or
+ * upper-case. An explicit flag wins verbatim; otherwise the existing file is
+ * used (`spec.md` first, then `SPEC.md`), and the lower-case path is the
+ * default when neither exists (plan mode then creates it).
+ */
+function resolveTrackedDoc(
+  projectPath: string,
+  explicit: unknown,
+  lowerName: string,
+  upperName: string,
+): string {
+  if (typeof explicit === "string") {
+    return canonicalizeDocPath(resolve(join(projectPath, explicit)), projectPath);
+  }
+  const lower = resolve(join(projectPath, lowerName));
+  const upper = resolve(join(projectPath, upperName));
+  const chosen = existsSync(lower) || !existsSync(upper) ? lower : upper;
+  return canonicalizeDocPath(chosen, projectPath);
+}
+
+/**
  * A boolean flag arrives as `true` when it is written bare, but `--flag=false`
  * (and `=0`) reaches us as the raw string "false". Normalize both so an explicit
  * `--no-git-init=false` never switches on the fail-closed mode.
@@ -704,8 +725,8 @@ export async function main(argv: string[]): Promise<void> {
   const cfg: RunConfig = {
     projectPath,
     planPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath),
-    specPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--spec"] ?? "spec.md"))), projectPath),
-    adrPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--adr"] ?? "adr.md"))), projectPath),
+    specPath: resolveTrackedDoc(projectPath, args["--spec"], "spec.md", "SPEC.md"),
+    adrPath: resolveTrackedDoc(projectPath, args["--adr"], "adr.md", "ADR.md"),
     thinker,
     executor,
     agent: resolvedAgent,
@@ -918,8 +939,8 @@ async function runPlan(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  const specPath = canonicalizeDocPath(resolve(join(projectPath, String(args["--spec"] ?? "spec.md"))), projectPath);
-  const adrPath = canonicalizeDocPath(resolve(join(projectPath, String(args["--adr"] ?? "adr.md"))), projectPath);
+  const specPath = resolveTrackedDoc(projectPath, args["--spec"], "spec.md", "SPEC.md");
+  const adrPath = resolveTrackedDoc(projectPath, args["--adr"], "adr.md", "ADR.md");
   const planPath = canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath);
 
   const force = Boolean(args["--force"]);
@@ -1124,8 +1145,8 @@ async function runLive(args: ParsedArgs, ideaOverride?: string): Promise<void> {
   const cfg: RunConfig = {
     projectPath,
     planPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--plan"] ?? "plan.md"))), projectPath),
-    specPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--spec"] ?? "spec.md"))), projectPath),
-    adrPath: canonicalizeDocPath(resolve(join(projectPath, String(args["--adr"] ?? "adr.md"))), projectPath),
+    specPath: resolveTrackedDoc(projectPath, args["--spec"], "spec.md", "SPEC.md"),
+    adrPath: resolveTrackedDoc(projectPath, args["--adr"], "adr.md", "ADR.md"),
     thinker,
     executor,
     agent: resolvedAgent,
