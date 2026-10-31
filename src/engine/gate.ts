@@ -2,14 +2,16 @@ import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { ModelRef, Verdict } from "./types";
 import type { IAgentSession } from "./agent/types.js";
 import { prompt } from "../server/client";
+import { parseAuditStatus } from "./steps/context";
 
 const MAX_JUDGE_REPORT_LENGTH = 24000;
 const MAX_FALLBACK_SUMMARY_LENGTH = 500;
 
-const VERDICT_SEVERITY: Record<"pass" | "warning" | "blocked", number> = {
+const VERDICT_SEVERITY: Record<Verdict, number> = {
   pass: 1,
   warning: 2,
   blocked: 3,
+  skipped: 0,
 };
 
 // Negators that can precede a verdict phrase. Checked on the last few words of
@@ -112,6 +114,50 @@ export function parseSpecAuditVerdict(text: string): Verdict | null {
   }
 
   return best;
+}
+
+/**
+ * The gate vocabulary that only huginn's own consolidated prompt emits: a
+ * `### Overall gate:` line or one of the three exact handoff phrases.
+ *
+ * Deliberately narrower than {@link parseValidateStepVerdict}: every role
+ * template contains bare ✅ / ⚠️ / 🔴 glyphs (`### Positive Highlights ✅`,
+ * `### Critical Findings 🔴`, `> ⚠️ SKIP …`), so a whole-body emoji scan would
+ * read a clean report as blocked and re-introduce the REV-102 bug. These exact
+ * phrases only exist in the consolidation template, so a role that echoes one
+ * is genuinely contradicting its own status line.
+ */
+export function parseGateVocabularyVerdict(text: string): Verdict | null {
+  let best: "pass" | "warning" | "blocked" | null = null;
+  const merge = (v: "pass" | "warning" | "blocked") => {
+    if (best === null || VERDICT_SEVERITY[v] > VERDICT_SEVERITY[best]) best = v;
+  };
+
+  if (/overall gate:\s*🔴/i.test(text)) merge("blocked");
+  else if (/overall gate:\s*🟡/i.test(text)) merge("warning");
+  else if (/overall gate:\s*🟢/i.test(text)) merge("pass");
+
+  if (/🛑\s*BLOCKED/.test(text)) merge("blocked");
+  if (/⚠️\s*REVIEW REQUESTED/.test(text)) merge("warning");
+  if (/✅\s*AUTO-APPROVED/.test(text)) merge("pass");
+
+  return best;
+}
+
+/**
+ * A durable audit's verdict: its own `### Audit status:` line, escalated by any
+ * gate-vocabulary contradiction it also contains.
+ *
+ * `null` means "no readable verdict at all" and the caller must fail closed.
+ * When the report carries a marker, the marker is the floor: a report cannot
+ * downgrade itself by echoing an AUTO-APPROVED line after a 🔴 status.
+ */
+export function parseAuditGateVerdict(text: string): Verdict | null {
+  const marker = parseAuditStatus(text);
+  const vocabulary = parseGateVocabularyVerdict(text);
+  if (marker === null) return vocabulary;
+  if (vocabulary === null) return marker;
+  return VERDICT_SEVERITY[vocabulary] > VERDICT_SEVERITY[marker] ? vocabulary : marker;
 }
 
 export interface JudgeOutput {

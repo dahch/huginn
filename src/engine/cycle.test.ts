@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { OpencodeClient } from "@opencode-ai/sdk";
-import { CycleEngine, readOnlyTreeViolation, resolveStructuralVerdict } from "./cycle";
+import {
+  CycleEngine,
+  readOnlyTreeViolation,
+  resolveStructuralVerdict,
+  gateDecision,
+  mergeAuditVerdict,
+} from "./cycle";
 import { events } from "./engineEvents";
 import { git } from "./diff";
 import { treeHash } from "./receipts";
@@ -1291,5 +1297,94 @@ describe("escalating FIX_*: thinker diagnosis → executor application", () => {
     expect(diagnosis?.summary).toContain("read-only violation");
     // The diagnosis is still persisted for auditability.
     expect(existsSync(join(dir, ".harness", "reports", "01-FIX_TEST-2-diagnosis.md"))).toBe(true);
+  });
+});
+
+describe("gateDecision", () => {
+  it("never pays for a judge on a green audit status", () => {
+    expect(gateDecision({ gate: "audit-status", blocking: true, auditStatus: "pass" })).toEqual({
+      verdict: "pass",
+      judge: false,
+    });
+  });
+
+  it("judges a warning or blocked marker to extract structured action items", () => {
+    expect(gateDecision({ gate: "audit-status", blocking: true, auditStatus: "warning" }).judge).toBe(true);
+    expect(gateDecision({ gate: "audit-status", blocking: true, auditStatus: "blocked" }).judge).toBe(true);
+  });
+
+  it("fails closed on a missing marker", () => {
+    expect(gateDecision({ gate: "audit-status", blocking: true, auditStatus: null })).toEqual({
+      verdict: "blocked",
+      judge: true,
+    });
+  });
+
+  it("never judges a non-blocking test-first run (its action items are unconsumable)", () => {
+    expect(gateDecision({ gate: "audit-status", blocking: false, auditStatus: "blocked" })).toEqual({
+      verdict: "blocked",
+      judge: false,
+    });
+  });
+
+  it("lets huginn's structural verdict win over both the marker and the judge", () => {
+    expect(
+      gateDecision({ gate: "audit-status", blocking: true, structural: "blocked", auditStatus: "pass" }),
+    ).toEqual({ verdict: "blocked", judge: false });
+  });
+
+  it("keeps the deterministic parsers for the gate's own phases", () => {
+    expect(gateDecision({ gate: "spec-audit", blocking: true, parsed: "warning" })).toEqual({
+      verdict: "warning",
+      judge: false,
+    });
+    expect(gateDecision({ gate: "spec-audit", blocking: true, parsed: null }).verdict).toBe("blocked");
+  });
+});
+
+describe("mergeAuditVerdict", () => {
+  it("may only escalate the role's marker", () => {
+    expect(mergeAuditVerdict("warning", "pass")).toBe("warning");
+    expect(mergeAuditVerdict("pass", "blocked")).toBe("blocked");
+    expect(mergeAuditVerdict(null, "warning")).toBe("warning");
+  });
+});
+
+describe("judge turn elision", () => {
+  it("runs no judge prompt when every audit ends on a green status line", async () => {
+    const judgePrompts: string[] = [];
+    const client = {
+      session: {
+        create: async () => ({ id: "ses_test" }),
+        get: async () => ({}),
+        abort: async () => {},
+        prompt: async (params: Record<string, unknown>) => {
+          const body = params.body as { parts?: Array<{ text?: string }> } | undefined;
+          const text = body?.parts?.[0]?.text ?? "";
+          let reply = "REPORT\n\n### Audit status: 🟢 PASS";
+          if (isValidateStepSynthesis(text)) {
+            reply = GATE_PASS_REPORT;
+          } else {
+            const sub = validateStepSubReply(text);
+            if (sub) {
+              reply = sub;
+            } else if (text.includes("strict validation judge")) {
+              judgePrompts.push(text);
+              reply = '{"status":"pass","summary":"ok","actionItems":[]}';
+            }
+          }
+          return { info: { id: "msg", error: undefined }, parts: [{ type: "text", text: reply }] };
+        },
+      },
+    } as unknown as OpencodeClient;
+
+    const engine = new CycleEngine({ cfg: makeCfg(), client, plan: makePlan() });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    expect(judgePrompts).toHaveLength(0);
+    for (const phase of ["TEST_MODULE", "SECURE_CHECK", "REVIEW"] as const) {
+      expect(engine.getState().history.some((h) => h.phase === phase && h.verdict === "pass")).toBe(true);
+    }
   });
 });

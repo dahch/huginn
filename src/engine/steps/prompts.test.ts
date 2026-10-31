@@ -142,6 +142,9 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).toContain("jest --watchAll=false --ci --runInBand");
     expect(p).toContain("pytest -q");
     expect(p).toContain("node_modules");
+    // The role verdicts itself, so a green report costs no judge turn.
+    expect(p).toContain("### Audit status: 🟢 PASS");
+    expect(p).toContain("never the emoji skeleton");
   });
 
   it("testModulePrompt inserts the module list literally, without `$&` expansion (SEC-008)", () => {
@@ -168,6 +171,8 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).toContain("senior application security engineer");
     expect(p).toContain("hardcoded secrets");
     expect(p).toContain("Security Audit Report");
+    expect(p).toContain("### Audit status: 🟢 PASS");
+    expect(p).toContain("never the emoji skeleton");
   });
 
   it("reviewPrompt carries the reviewing role and the pre-PR task", () => {
@@ -175,6 +180,8 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).toContain("expert code reviewer");
     expect(p).toContain("Code Review Report");
     expect(p).toContain("pull request");
+    expect(p).toContain("### Audit status: 🟢 PASS");
+    expect(p).toContain("never the emoji skeleton");
   });
 
   it("docSyncPrompt carries the doc-writer role and the doc targets", () => {

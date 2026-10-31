@@ -1,5 +1,12 @@
 import { describe, it, expect } from "bun:test";
-import { parseValidateStepVerdict, parseSpecAuditVerdict, extractJson, normalizeJudgeOutput } from "./gate";
+import {
+  parseValidateStepVerdict,
+  parseSpecAuditVerdict,
+  parseGateVocabularyVerdict,
+  parseAuditGateVerdict,
+  extractJson,
+  normalizeJudgeOutput,
+} from "./gate";
 
 describe("parseValidateStepVerdict", () => {
   it("reads the AUTO-APPROVED marker", () => {
@@ -87,6 +94,52 @@ describe("parseSpecAuditVerdict", () => {
   });
   it("returns null for unparseable output (caller fails closed)", () => {
     expect(parseSpecAuditVerdict("lorem ipsum")).toBeNull();
+  });
+});
+
+describe("parseGateVocabularyVerdict", () => {
+  it("reads the exact consolidated-gate phrases", () => {
+    expect(parseGateVocabularyVerdict("### Overall gate: 🟢 PASS")).toBe("pass");
+    expect(parseGateVocabularyVerdict("### Overall gate: 🟡 PASS WITH WARNINGS")).toBe("warning");
+    expect(parseGateVocabularyVerdict("### Overall gate: 🔴 BLOCKED")).toBe("blocked");
+    expect(parseGateVocabularyVerdict("✅ AUTO-APPROVED — continue")).toBe("pass");
+    expect(parseGateVocabularyVerdict("⚠️ REVIEW REQUESTED — fix")).toBe("warning");
+    expect(parseGateVocabularyVerdict("🛑 BLOCKED — stop")).toBe("blocked");
+  });
+
+  it("ignores the bare emoji every role template ships (REV-102)", () => {
+    // ROLE_REVIEWING's `### Positive Highlights ✅`, ROLE_SECURITY's
+    // `### Critical Findings 🔴`, ROLE_QA's `> ⚠️ SKIP …` and ROLE_SPEC_AUDITOR's
+    // `### Authorized gaps ✅` must not be read as a verdict.
+    expect(parseGateVocabularyVerdict("### Positive Highlights ✅\n- good work")).toBeNull();
+    expect(parseGateVocabularyVerdict("### Critical Findings 🔴\n- SEC-001")).toBeNull();
+    expect(parseGateVocabularyVerdict("> ⚠️ SKIP THIS STEP ENTIRELY IN AUDIT MODE.")).toBeNull();
+    expect(parseGateVocabularyVerdict("### Authorized gaps ✅\n- deferred")).toBeNull();
+    expect(parseGateVocabularyVerdict("### Overall fidelity: 🟢 ALIGNED")).toBeNull();
+  });
+
+  it("returns null for prose with no gate vocabulary", () => {
+    expect(parseGateVocabularyVerdict("lorem ipsum")).toBeNull();
+  });
+});
+
+describe("parseAuditGateVerdict", () => {
+  it("reads the role's own status line", () => {
+    expect(parseAuditGateVerdict("report\n\n### Audit status: 🟢 PASS")).toBe("pass");
+    expect(parseAuditGateVerdict("report\n\n### Audit status: 🟡 WARN")).toBe("warning");
+    expect(parseAuditGateVerdict("report\n\n### Audit status: 🔴 BLOCKED")).toBe("blocked");
+  });
+
+  it("escalates a green marker contradicted by the gate vocabulary", () => {
+    expect(parseAuditGateVerdict("### Audit status: 🟢 PASS\n\n🛑 BLOCKED")).toBe("blocked");
+  });
+
+  it("never lets a report downgrade its own marker", () => {
+    expect(parseAuditGateVerdict("### Audit status: 🔴 BLOCKED\n\n✅ AUTO-APPROVED")).toBe("blocked");
+  });
+
+  it("returns null when there is no marker and no gate vocabulary (fail closed)", () => {
+    expect(parseAuditGateVerdict("just prose")).toBeNull();
   });
 });
 

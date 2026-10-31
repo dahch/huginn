@@ -333,7 +333,7 @@ const AUDIT_STATUS_SEVERITY: Record<"pass" | "warning" | "blocked", number> = {
   blocked: 3,
 };
 
-/** The mandatory final-line instruction appended to the qa/security sub-prompts. */
+/** The mandatory final-line instruction appended to the qa/security/review prompts. */
 export function auditStatusContract(): string {
   return [
     "## Required output — audit status (mandatory)",
@@ -341,7 +341,14 @@ export function auditStatusContract(): string {
     `- \`${AUDIT_STATUS_PASS}\``,
     `- \`${AUDIT_STATUS_WARN}\``,
     `- \`${AUDIT_STATUS_BLOCKED}\``,
-    "Print exactly one status line — never all three. Huginn reads this line to decide the gate.",
+    "",
+    "Print exactly one status line — never all three, and never the emoji skeleton",
+    "from your role instructions: that line is illustrative, not a template to",
+    "echo. Use plain-text labels (e.g. `[CRITICAL]`, `[HIGH]`, `[MINOR]`) for",
+    "per-finding severity.",
+    "Do not emit `### Overall gate:` or a ✅/⚠️/🛑 handoff line — that vocabulary",
+    "belongs to huginn's consolidated gate, not to your audit.",
+    "Huginn reads your single status line to decide the gate.",
   ].join("\n");
 }
 

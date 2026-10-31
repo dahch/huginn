@@ -21,7 +21,7 @@ import {
   type PhaseContext,
   type Remediation,
 } from "./phases";
-import { parseValidateStepVerdict, parseSpecAuditVerdict, judgePhase } from "./gate";
+import { parseValidateStepVerdict, parseSpecAuditVerdict, parseAuditGateVerdict, judgePhase } from "./gate";
 import { profilePreamble, profileSpec, validateProfilePhases, type ProfileName } from "./profiles";
 import { buildIterationReceipt, treeHash, writeIterationReceipt } from "./receipts";
 import type { Verdict, PhaseName, PhaseResult, DecisionRequest, DecisionChoice } from "./types";
@@ -78,7 +78,7 @@ type GatedPhaseResult = PhaseResult & {
 interface PipelineStep {
   phase: PhaseName;
   fn: PhaseFn;
-  gate: "spec-audit" | "validate-step" | "judge" | "none";
+  gate: "spec-audit" | "validate-step" | "judge" | "audit-status" | "none";
   fixPhase: PhaseName | null;
   fixLabel: string;
   blocking: boolean;
@@ -124,6 +124,52 @@ export function resolveStructuralVerdict(result: {
   return result.forcedVerdict ?? result.authoritativeVerdict;
 }
 
+const GATE_SEVERITY: Record<Verdict, number> = { pass: 1, warning: 2, blocked: 3, skipped: 0 };
+
+export interface GateInput {
+  gate: PipelineStep["gate"];
+  /** A blocking gate can escalate; a non-blocking one (`strict-tdd`'s test-first run) cannot. */
+  blocking: boolean;
+  /** huginn's own verdict (REV-101) — always wins. */
+  structural?: Verdict;
+  /** `audit-status`: the role's own marker, escalated by gate vocabulary. `null` = unreadable. */
+  auditStatus?: Verdict | null;
+  /** `spec-audit` / `validate-step` / legacy `judge`: the deterministic parser result. */
+  parsed?: Verdict | null;
+}
+
+/**
+ * The single source of truth for a step's gate verdict and whether the judge
+ * turn is worth paying for.
+ *
+ * A model-graded prose report is expensive, and an LLM judge re-deriving what
+ * the role already stated is pure waste on a green report. Each role therefore
+ * ends on its own `### Audit status:` marker; the judge runs only when that
+ * marker is non-pass (to extract structured action items) or missing (fail
+ * closed). A structural verdict from huginn itself always outranks both.
+ */
+export function gateDecision(input: GateInput): { verdict: Verdict; judge: boolean } {
+  if (input.structural) return { verdict: input.structural, judge: false };
+  if (input.gate === "none") return { verdict: "pass", judge: false };
+  if (input.gate === "judge") return { verdict: input.parsed ?? "blocked", judge: true };
+  if (input.gate === "spec-audit" || input.gate === "validate-step") {
+    return { verdict: input.parsed ?? "blocked", judge: false };
+  }
+  // `audit-status`: the role's own line decides when it is green. A non-blocking
+  // test-first run records its marker but never pays for a judge, because its
+  // action items are unconsumable (`fixPhase === null`).
+  const marker = input.auditStatus ?? null;
+  if (!input.blocking) return { verdict: marker ?? "blocked", judge: false };
+  if (marker === "pass") return { verdict: "pass", judge: false };
+  return { verdict: marker ?? "blocked", judge: true };
+}
+
+/** The marker is the floor; the judge may only escalate it (mirrors `computeValidateVerdict`). */
+export function mergeAuditVerdict(marker: Verdict | null, judged: Verdict): Verdict {
+  if (marker === null) return judged;
+  return GATE_SEVERITY[judged] >= GATE_SEVERITY[marker] ? judged : marker;
+}
+
 /**
  * The phase implementations, keyed by phase. A methodology profile (REQ-36 /
  * ADR-35) is just an ordered selection of these, so a profile can reorder or
@@ -134,10 +180,10 @@ const STEP_BY_PHASE: Partial<Record<PhaseName, PipelineStep>> = {
   SPEC_AUDIT: { phase: "SPEC_AUDIT", fn: specAudit, gate: "spec-audit", fixPhase: "FIX_SPEC", fixLabel: "spec audit", blocking: true, readOnly: true },
   EXECUTE: { phase: "EXECUTE", fn: execute, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
   VALIDATE_STEP: { phase: "VALIDATE_STEP", fn: validateStep, gate: "validate-step", fixPhase: "FIX_VALIDATE", fixLabel: "validation gate", blocking: true, readOnly: true },
-  TEST_MODULE: { phase: "TEST_MODULE", fn: testModule, gate: "judge", fixPhase: "FIX_TEST", fixLabel: "test failures", blocking: true },
+  TEST_MODULE: { phase: "TEST_MODULE", fn: testModule, gate: "audit-status", fixPhase: "FIX_TEST", fixLabel: "test failures", blocking: true },
   VERIFY: { phase: "VERIFY", fn: verifyIteration, gate: "none", fixPhase: "FIX_VERIFY", fixLabel: "verification", blocking: true },
-  SECURE_CHECK: { phase: "SECURE_CHECK", fn: secureCheck, gate: "judge", fixPhase: "FIX_SECURITY", fixLabel: "security audit", blocking: true, readOnly: true },
-  REVIEW: { phase: "REVIEW", fn: review, gate: "judge", fixPhase: "FIX_REVIEW", fixLabel: "code review", blocking: true, readOnly: true },
+  SECURE_CHECK: { phase: "SECURE_CHECK", fn: secureCheck, gate: "audit-status", fixPhase: "FIX_SECURITY", fixLabel: "security audit", blocking: true, readOnly: true },
+  REVIEW: { phase: "REVIEW", fn: review, gate: "audit-status", fixPhase: "FIX_REVIEW", fixLabel: "code review", blocking: true, readOnly: true },
   DOC_SYNC: { phase: "DOC_SYNC", fn: docSync, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
   COMMIT_ALL: { phase: "COMMIT_ALL", fn: commitAll, gate: "none", fixPhase: null, fixLabel: "", blocking: false },
 };
@@ -1082,47 +1128,29 @@ export class CycleEngine {
 
       // huginn's own verdicts decide the gate: a read-only violation (REV-001)
       // or a verdict the phase computed structurally (REV-101). Only a phase
-      // without one falls back to reading the report's markers.
+      // without one falls back to reading its own status marker, and the judge
+      // turn is paid for only when that marker is non-pass or unreadable.
       const structural = resolveStructuralVerdict(result);
-      let verdict: Verdict | undefined;
-      if (structural) {
-        verdict = structural;
-      } else if (step.gate === "spec-audit") {
-        verdict = this.gatedVerdict(step.phase, result, parseSpecAuditVerdict(result.raw));
-      } else if (step.gate === "validate-step") {
-        verdict = this.gatedVerdict(step.phase, result, parseValidateStepVerdict(result.raw));
-      } else if (step.gate === "judge") {
-        const sessionOrClient = this.activeSession ?? this.client;
-        if (!sessionOrClient) {
-          throw new Error("No agent session or OpenCode client available for judge phase");
+      const marker = step.gate === "audit-status" ? parseAuditGateVerdict(result.raw) : undefined;
+      let parsed: Verdict | undefined;
+      if (!structural) {
+        if (step.gate === "spec-audit") {
+          parsed = this.gatedVerdict(step.phase, result, parseSpecAuditVerdict(result.raw));
+        } else if (step.gate === "validate-step") {
+          parsed = this.gatedVerdict(step.phase, result, parseValidateStepVerdict(result.raw));
         }
-        const judge = await judgePhase(
-          sessionOrClient,
-          sessionId,
-          this.models.executor,
-          step.phase,
-          result.raw,
-          MAX_JUDGE_ACTION_ITEMS,
-          this.cfg.phaseTimeoutMs,
-        );
-        verdict = judge.status;
-        // Keep the structured items for the remediation turn instead of
-        // discarding them and forcing the fixer to re-read the prose.
-        if (judge.actionItems.length > 0) result.actionItems = judge.actionItems;
-        if (!judge.parsed) {
-          events.emit("log", {
-            level: "warn",
-            message: `[judge ${step.phase}] judge output was unparseable; fail-closed verdict: ${judge.status}`,
-            timestamp: new Date().toISOString(),
-          });
-        }
-        events.emit("log", {
-          level: "info",
-          message: `[judge ${step.phase}] ${judge.summary}`,
-          timestamp: new Date().toISOString(),
-        });
-      } else {
-        verdict = "pass";
+      }
+      const gate = gateDecision({
+        gate: step.gate,
+        blocking: step.blocking,
+        structural,
+        auditStatus: marker,
+        parsed,
+      });
+      let verdict = gate.verdict;
+      if (gate.judge) {
+        const judge = await this.runJudge(step, result, sessionId);
+        verdict = mergeAuditVerdict(marker ?? null, judge.status);
       }
       result.verdict = verdict;
       this.lastVerdict = verdict;
@@ -1269,6 +1297,47 @@ export class CycleEngine {
       }
       attemptRun = -1; // retry, reset loop
     }
+  }
+
+  /**
+   * The judge turn: a structured read of a non-pass report. The role already
+   * stated its verdict, so the only new information is the action items the
+   * remediation turn consumes.
+   */
+  private async runJudge(
+    step: PipelineStep,
+    result: GatedPhaseResult,
+    sessionId: string,
+  ): Promise<Awaited<ReturnType<typeof judgePhase>>> {
+    const sessionOrClient = this.activeSession ?? this.client;
+    if (!sessionOrClient) {
+      throw new Error("No agent session or OpenCode client available for judge phase");
+    }
+    const judge = await judgePhase(
+      sessionOrClient,
+      sessionId,
+      this.models.executor,
+      step.phase,
+      result.raw,
+      MAX_JUDGE_ACTION_ITEMS,
+      this.cfg.phaseTimeoutMs,
+    );
+    // Keep the structured items for the remediation turn instead of discarding
+    // them and forcing the fixer to re-read the prose.
+    if (judge.actionItems.length > 0) result.actionItems = judge.actionItems;
+    if (!judge.parsed) {
+      events.emit("log", {
+        level: "warn",
+        message: `[judge ${step.phase}] judge output was unparseable; fail-closed verdict: ${judge.status}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    events.emit("log", {
+      level: "info",
+      message: `[judge ${step.phase}] ${judge.summary}`,
+      timestamp: new Date().toISOString(),
+    });
+    return judge;
   }
 
   /**

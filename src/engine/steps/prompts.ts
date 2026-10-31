@@ -223,6 +223,7 @@ export function testModulePrompt(ctx: StepContext): string {
     resolveShellInterpolations(ctx, task),
     acceptanceAuditBlock(ctx, "prove each one with a test and run the verification commands"),
     repositoryState(ctx),
+    auditStatusContract(),
   );
 }
 
@@ -232,6 +233,7 @@ export function secureCheckPrompt(ctx: StepContext): string {
     ROLE_SECURITY,
     resolveShellInterpolations(ctx, COMMAND_SECURE_CHECK),
     ["## Diff range", diffRange(ctx)].join("\n"),
+    auditStatusContract(),
   );
 }
 
@@ -241,6 +243,7 @@ export function reviewPrompt(ctx: StepContext): string {
     ROLE_REVIEWING,
     resolveShellInterpolations(ctx, COMMAND_REVIEW),
     ["## Diff range", diffRange(ctx)].join("\n"),
+    auditStatusContract(),
   );
 }
 
