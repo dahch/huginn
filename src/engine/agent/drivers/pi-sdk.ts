@@ -230,6 +230,7 @@ export function createPiSdkPort(
   };
   return {
     id: "pi",
+    target: "pi",
     name: "Pi (in-process)",
     capabilities,
 

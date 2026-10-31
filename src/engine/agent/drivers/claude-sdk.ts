@@ -53,6 +53,7 @@ const CAPABILITIES: RuntimeCapabilities = {
 export function createClaudeSdkPort(adapter: ClaudeSdkAdapter = createDefaultClaudeAdapter()): RuntimePort {
   return {
     id: "claude",
+    target: "claude",
     name: "Claude (SDK)",
     capabilities: CAPABILITIES,
 

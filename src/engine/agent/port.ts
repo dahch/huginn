@@ -65,6 +65,22 @@ export type PermissionDecision = "allow-once" | "allow-always" | "deny";
 /** Answer `request`, never throw: an unanswered permission must deny. */
 export type PermissionHandler = (request: PermissionRequest) => Promise<PermissionDecision>;
 
+/** A question the backend asks before continuing (opencode's native channel). */
+export interface QuestionRequest {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly questions: ReadonlyArray<{
+    readonly question: string;
+    readonly options?: ReadonlyArray<{ readonly label: string; readonly description?: string }>;
+  }>;
+}
+
+/** The answers to send back, or `deny` to reject the question. */
+export type QuestionAnswer = { readonly answers: string[][] } | "deny";
+
+/** Answer a question, never throw: an unanswered question must deny. */
+export type QuestionHandler = (request: QuestionRequest) => Promise<QuestionAnswer>;
+
 /** Everything a driver can report while a turn runs. */
 export type RuntimeEvent =
   | { readonly type: "text"; readonly text: string }
@@ -99,6 +115,8 @@ export interface RuntimeSessionOptions {
    * silently proceed.
    */
   readonly onPermission?: PermissionHandler;
+  /** The backend's own question channel (opencode); other drivers never ask. */
+  readonly onQuestion?: QuestionHandler;
 }
 
 export interface RuntimePromptRequest {

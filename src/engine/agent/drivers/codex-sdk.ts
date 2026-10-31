@@ -57,6 +57,7 @@ const CAPABILITIES: RuntimeCapabilities = {
 export function createCodexSdkPort(adapter: CodexSdkAdapter = createDefaultCodexAdapter()): RuntimePort {
   return {
     id: "codex",
+    target: "codex",
     name: "Codex (SDK)",
     capabilities: CAPABILITIES,
 

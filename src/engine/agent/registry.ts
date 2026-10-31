@@ -13,6 +13,7 @@ import { toLegacyRuntime, toRuntimePort } from "./legacy-bridge.js";
 import { createPiSdkPort } from "./drivers/pi-sdk.js";
 import { createCodexSdkPort } from "./drivers/codex-sdk.js";
 import { createClaudeSdkPort } from "./drivers/claude-sdk.js";
+import { createOpencodePort } from "./drivers/opencode.js";
 import type { RuntimeCapabilities, RuntimePort } from "./port.js";
 import type { PermissionMode } from "../../config.js";
 import {
@@ -401,6 +402,17 @@ export function getRuntimePort(target: AgentTarget | "generic", options: Runtime
   }
   if (target === "codex") return createCodexSdkPort();
   if (target === "claude") return createClaudeSdkPort();
+  if (target === "opencode") {
+    return createOpencodePort({
+      client: options.client,
+      baseUrl: options.baseUrl,
+      projectPath: options.projectPath,
+      port: options.port,
+      serverTimeoutMs: options.serverTimeoutMs,
+      env: options.env,
+      target,
+    });
+  }
   return toRuntimePort(getAgentRuntime(target, options));
 }
 
