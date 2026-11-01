@@ -399,7 +399,10 @@ composer or footer off an 18-/24-row frame, the live layout keys — `z`, `Ctrl+
 with the idle log tail and its advertised hidden count on 100×30 frames, the closed/open header budget
 and the `iter n/m` pipeline rail), `test/tui/smokeMatrix.test.ts` (both surfaces at 80×24, 100×30,
 120×40 and 160×50, with colour on, `NO_COLOR=1` and `HUGINN_THEME=dark`: display-column width, row
-count, no pictograph and no colour SGR),
+count, no pictograph and no colour SGR — plus the inspector's own failure branches, including the
+empty frame, a double-width glyph and terminal-size restoration after a render throws),
+`test/tui/inkRender.test.ts` (the render seam writes to the injected stream, accepts a plain
+`PassThrough` stdin and unmounts idempotently),
 `test/tui/transcriptNavigation.test.ts` + `test/tui/transcriptSearchColors.test.ts` (the transcript
 keys, search/draft restoration, message jump, Esc/search interaction, OSC 52 copy and the warning
 border), `src/tui/search.test.ts` + `src/tui/clipboard.test.ts` (the pure match/label and clipboard
@@ -625,7 +628,7 @@ Ten display conventions a TUI change must follow:
   `test/tui/liveLayout.test.ts` (one `⎇` in the panel, none on the header's models row; the
   conversation counter appears once; a long path is whole at 100×30), `test/tui/infoPanel.test.ts`
   (`stage` is not a row) and `src/tui/footer.test.ts` (the right cell never carries the stage).
-- **A clamped value announces its cut, and the console paints no pictograph.** `headerValue`
+- **A clamped value announces its cut, and the console's measured surfaces paint no pictograph.** `headerValue`
   (`src/tui/RavenHeader.tsx`) sanitizes, collapses whitespace and clamps in **display columns**
   (`stringWidth`), never code units: a fitting value is returned intact, a larger one keeps its head
   plus `TRUNCATION_ELLIPSIS` (`…`) in the last column, a cut in one column is the mark alone, and
@@ -636,7 +639,9 @@ Ten display conventions a TUI change must follow:
   `MCP_STATUS_GLYPHS` (`healthy` ✓, `degraded` !, `unknown` ·) before painting, so the row reads
   `MCP: ✓ 2 connected · pi` in the run dashboard header and in `InfoPanel` (the live header no
   longer carries it, ADR-73). Never change `formatMcpBadge` to
-  fix a TUI width bug, and never add a pictograph to console chrome (REQ-76 / ADR-72).
+  fix a TUI width bug, and never add a pictograph to console chrome (REQ-76 / ADR-72). The modal
+  titles in `HelpModal`, `AgentPickerModal` and `McpInspectorModal` still carry one each; that is
+  recorded debt, not a precedent.
   `SIDE_PANEL_WIDTH` is 36 columns so the value column is 23 columns, and `memoryStat` formats its
   counters with `formatCount`; the 100-column threshold still leaves 44 columns for the
   conversation. Guards: `test/tui/sessionContext.test.ts`, `test/tui/ravenHeader.test.ts`,

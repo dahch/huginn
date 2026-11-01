@@ -9,9 +9,10 @@
  * on the right. The live stage lives in the header badge (ADR-73), so the footer
  * never repeats it.
  *
- * It is pure (no React, no Ink): both dashboards call it, the tests call it, and
- * `columns` lets the caller clamp the result through {@link headerValue} so the
- * footer can never claim a column the terminal does not have.
+ * It is a pure function (no JSX, no hooks): both dashboards call it, the tests
+ * call it, and `columns` lets the caller clamp the result through
+ * {@link headerValue} so the footer can never claim a column the terminal does
+ * not have. Its only import is that shared clamp.
  */
 import { headerValue } from "./RavenHeader.js";
 

@@ -5,13 +5,17 @@
 ### Added
 
 - **The visual pass is now a test matrix.** `test/tui/smokeMatrix.test.ts` mounts the live console
-  (`LiveApp` in refine) and the run dashboard at 80×24, 100×30, 120×40 and 160×50, with colour on,
-  under `NO_COLOR=1` and with `HUGINN_THEME=dark`. Every painted frame is checked in display columns
+  (`LiveApp` in refine) and the run dashboard (initial state) at 80×24, 100×30, 120×40 and 160×50,
+  with colour on,  under `NO_COLOR=1` and with `HUGINN_THEME=dark`. Every painted frame is checked in display columns
   with `string-width`: no row exceeds `columns`, no frame exceeds `rows`, no row carries a
   `\p{Extended_Pictographic}` glyph, and the `NO_COLOR` frames emit no colour SGR. Failures name
   the surface, the size and the offending row; the README's «Validación visual» section records the
   matrix and the single-file command. The matrix found no layout regression, so no production code
-  changed for it.
+  changed for it. The inspector cannot pass vacuously: 13 tests exercise its failure branches
+  (display width, extra rows, empty frame, pictograph, 256-/true-colour SGR) and prove `paint()`
+  restores the terminal size even when rendering throws, and 3 `test/tui/inkRender.test.ts` cases pin
+  the render seam (injected stdout, a plain `PassThrough` stdin, idempotent unmount). Modal frames
+  are not mounted by the matrix yet.
 
 - **Each live-session fact has one home.** The live header is now identity and ephemeral state: row 1
   is `[<spinner> <STAGE>]` plus the project path, row 2 is the two models, and the MCP badge, runtime

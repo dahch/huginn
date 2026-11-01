@@ -1136,7 +1136,11 @@ aparecer un glifo de doble ancho.
 Cada frame se mide con `string-width` (no con `.length`): ninguna línea supera `columns` en columnas
 de display, el número de líneas no supera `rows`, ninguna línea contiene
 `\p{Extended_Pictographic}`, y bajo `NO_COLOR=1` no aparece ningún SGR de color. El mensaje de fallo
-nombra la superficie, el tamaño y la fila infractora.
+nombra la superficie, el tamaño y la fila infractora. El inspector y el seam de render tienen sus
+propios tests —ancho de display, fila de más, frame vacío, pictograma, SGR de 256 colores y
+restauración del tamaño de terminal—, así que una regresión del validador no deja la matriz en verde.
+Las modales no forman parte de la matriz todavía: solo se montan `LiveApp` en `refine` y el
+`Dashboard` inicial.
 
 ```sh
 bun run vitest run test/tui/smokeMatrix.test.ts

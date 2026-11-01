@@ -1232,9 +1232,16 @@ waits one short flush, reads the painted frame and unmounts, so no timer survive
   `string-width`, never `.length`: box drawing, braille, `…` and accented prose all disagree with
   code-unit counts. The row count must also fit `rows`, because one extra row pushes the footer off
   the alternate screen.
-- **Chrome never paints a pictograph.** A `\p{Extended_Pictographic}` match fails the frame; the
-  glyph tables (`src/tui/glyphs.ts`, `src/tui/sessionContext.ts`) are what keep the console on a
-  single-width alphabet.
+- **Every mounted frame is pictograph-free.** A `\p{Extended_Pictographic}` match fails the frame;
+  the glyph tables (`src/tui/glyphs.ts`, `src/tui/sessionContext.ts`) are what keep the console on a
+  single-width alphabet. The matrix mounts only the two base surfaces (`LiveApp` in `refine` and the
+  initial `Dashboard`), so modal frames are not covered by this rule yet.
+- **The inspector is tested, not just trusted.** The frame/colour/environment cases in the same file
+  exercise `frameProblems` (display width, extra rows, empty frame, pictograph) and `colorProblems`
+  (256-colour/true-colour, bold allowed), and prove `paint()` restores the stubbed terminal size even
+  when rendering throws. `test/tui/inkRender.test.ts` pins the render seam: output goes to the
+  injected stream, a plain `PassThrough` works as stdin, and `unmount()` is idempotent. A validator
+  regression therefore fails the suite instead of turning the matrix green.
 - **`NO_COLOR` is proved, not assumed.** Colour is forced at the shell (`FORCE_COLOR=3`), so the
   absence of `\x1b[3x m`/`\x1b[9x m`/`\x1b[38;`/`\x1b[48;` SGR in the frame is the theme's doing,
   not a non-TTY runner dropping colour. Bold (`1`/`22`) is not colour and stays allowed.

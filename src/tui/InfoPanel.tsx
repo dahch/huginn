@@ -18,8 +18,9 @@
  * Three rules shape it:
  *  - **Wide terminals only.** Below {@link SIDE_PANEL_MIN_COLUMNS} columns (or
  *    when the frame has no rows to spare) the panel does not render at all and
- *    the layout is exactly what it was before: the header already carries the
- *    same facts in one line.
+ *    the layout is exactly what it was before; the environment is then only
+ *    reachable through `/status`, because ADR-73 removed those rows from the
+ *    header.
  *  - **It never touches the frame budget.** The panel lives *inside* the region
  *    the conversation and the stream already own, so it can never push the
  *    composer, the palette or the footer off the screen — the very thing the row

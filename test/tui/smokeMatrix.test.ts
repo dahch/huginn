@@ -8,7 +8,7 @@ import type { RunConfig } from "../../src/config";
 import type { HarnessState } from "../../src/state/schema";
 
 /**
- * REQ-74 / ADR-74 — the visual pass is a test, not a screenshot.
+ * REQ-21 / REQ-76 (ADR-72) — the visual pass is a test, not a screenshot.
  *
  * Every terminal surface is a fixed grid: a row wider than `columns` wraps over
  * the row below it (Ink paints one logical line as several rows), one row too
@@ -45,7 +45,7 @@ const COLOR_SGR = /\u001B\[(?:3[0-9]|9[0-9])m|\u001B\[(?:38|48);/g;
 const PICTOGRAPH = /\p{Extended_Pictographic}/u;
 
 interface TuiModules {
-  React: typeof import("react").default;
+  React: typeof import("react");
   render: typeof import("./inkRender").render;
   LiveApp: typeof import("../../src/tui/LiveDashboard").LiveApp;
   Dashboard: typeof import("../../src/tui/Dashboard").Dashboard;
@@ -232,11 +232,14 @@ async function paint(
   stdout.on("data", (chunk: Buffer) => {
     output += chunk.toString();
   });
-  const instance = modules.render(tree, { stdout, stdin, patchConsole: false });
+  let instance: ReturnType<TuiModules["render"]> | undefined;
   try {
+    instance = modules.render(tree, { stdout, stdin, patchConsole: false });
     await new Promise((resolve) => setTimeout(resolve, FLUSH_MS));
   } finally {
-    instance.unmount();
+    // Unmount and restore even when rendering threw: a leaked terminal size
+    // would corrupt every frame the rest of the suite paints.
+    instance?.unmount();
     // Ink flushes the final frame on unmount; one macrotask is enough.
     await new Promise((resolve) => setImmediate(resolve));
     restore();
@@ -334,5 +337,128 @@ describe.each(ENVIRONMENTS)("visual smoke matrix — $name", ({ env, colorSuppre
     }
 
     expect(problems, problems.join("\n")).toEqual([]);
+  });
+});
+
+/**
+ * The matrix is only as good as the checks that inspect a frame: a validator
+ * that silently accepts a wide row or a pictograph would let the whole suite
+ * go green while the console wraps. These exercise the inspector directly,
+ * including every failure branch the matrix depends on.
+ */
+describe("frame inspection", () => {
+  it("strips ANSI colour, OSC links and carriage returns before measuring", () => {
+    const output =
+      "\u001B[31mred\u001B[0m\r\n" +
+      "\u001B]8;;https://example.com\u0007link\u001B]8;;\u0007\n" +
+      "plain\n\n   \n";
+
+    expect(displayLines(output)).toEqual(["red", "link", "plain"]);
+  });
+
+  it("accepts a frame that fits exactly and reports nothing", () => {
+    expect(frameProblems("live console", 10, 2, "1234567890\nshort")).toEqual([]);
+  });
+
+  it("measures display columns, so a wide character needs two columns", () => {
+    // `界` is two display columns but one UTF-16 code unit.
+    expect(frameProblems("live console", 2, 1, "界")).toEqual([]);
+
+    const problems = frameProblems("live console", 1, 1, "界");
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("live console at 1x1");
+    expect(problems[0]).toContain("row 1 is 2 display columns wide (max 1)");
+  });
+
+  it("names the surface, the size, the offending row and what paints there", () => {
+    const problems = frameProblems("run dashboard", 10, 2, "12345678901");
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("run dashboard at 10x2");
+    expect(problems[0]).toContain("row 1");
+    expect(problems[0]).toContain("11 display columns");
+    expect(problems[0]).toContain(JSON.stringify("12345678901"));
+  });
+
+  it("reports a frame with more rows than the terminal owns", () => {
+    const problems = frameProblems("live console", 10, 2, "a\nb\nc");
+
+    expect(problems).toEqual(["live console at 10x2: painted 3 rows, but the terminal only has 2"]);
+  });
+
+  it("reports an empty frame instead of quietly passing", () => {
+    expect(frameProblems("live console", 10, 2, "\n  \n")).toEqual([
+      "live console at 10x2: painted no frame",
+    ]);
+  });
+
+  it("rejects a pictograph even when its width would fit", () => {
+    const problems = frameProblems("run dashboard", 10, 1, "\u{1F7E2} ok");
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("run dashboard at 10x1");
+    expect(problems[0]).toContain("double-width pictograph");
+  });
+});
+
+describe("colour inspection", () => {
+  it("does not mistake bold or reset SGR for colour", () => {
+    expect(colorProblems("live console", 10, 1, "\u001B[1mbold\u001B[22m\u001B[0m")).toEqual([]);
+  });
+
+  it("names the surface, size and the colour runs it found", () => {
+    const problems = colorProblems("run dashboard", 100, 30, "\u001B[31mred\u001B[0m");
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("run dashboard at 100x30");
+    expect(problems[0]).toContain("NO_COLOR still emitted colour SGR");
+    expect(problems[0]).toContain("\\u001b[31m");
+  });
+
+  it("detects 256-colour and true-colour sequences", () => {
+    expect(colorProblems("live console", 10, 1, "\u001B[38;5;196mred\u001B[0m")).toHaveLength(1);
+    expect(colorProblems("live console", 10, 1, "\u001B[48;2;1;2;3mred\u001B[0m")).toHaveLength(1);
+  });
+});
+
+describe("environment and terminal stubs", () => {
+  it("replaces only the variables the matrix owns", () => {
+    setEnvironment({ NO_COLOR: "1" });
+
+    expect(process.env.NO_COLOR).toBe("1");
+    expect(process.env.FORCE_COLOR).toBeUndefined();
+    expect(process.env.HUGINN_THEME).toBeUndefined();
+  });
+
+  it("restores terminal dimensions to the values it replaced", () => {
+    const originalRows = process.stdout.rows;
+    const originalColumns = process.stdout.columns;
+
+    const restore = stubTerminalSize(30, 100);
+    expect(process.stdout.rows).toBe(30);
+    expect(process.stdout.columns).toBe(100);
+
+    restore();
+    expect(process.stdout.rows).toBe(originalRows);
+    expect(process.stdout.columns).toBe(originalColumns);
+  });
+
+  it("restores the terminal size when rendering throws", async () => {
+    const modules = await loadModules();
+    const originalRows = process.stdout.rows;
+    const originalColumns = process.stdout.columns;
+    const exploding: TuiModules = {
+      ...modules,
+      render: (() => {
+        throw new Error("render boom");
+      }) as TuiModules["render"],
+    };
+
+    await expect(
+      paint(exploding, 80, 24, modules.React.createElement("ink-box"), createMockStdin()),
+    ).rejects.toThrow("render boom");
+
+    expect(process.stdout.rows).toBe(originalRows);
+    expect(process.stdout.columns).toBe(originalColumns);
   });
 });
