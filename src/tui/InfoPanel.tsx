@@ -25,6 +25,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { headerValue } from "./RavenHeader.js";
+import { Card, cardChrome } from "./Card.js";
 import { THEME, type ThemeToken } from "./theme.js";
 import {
   contextStat,
@@ -46,10 +47,10 @@ export const SIDE_PANEL_GAP_COLUMNS = 1;
 export const SIDE_PANEL_MIN_CARD_COLUMNS = 44;
 /** Rows the panel needs before it is worth showing (border + a few lines). */
 export const SIDE_PANEL_MIN_ROWS = 8;
-/** Columns the panel's border (2) and its `paddingX={1}` (2) spend. */
-export const SIDE_PANEL_BORDER_COLUMNS = 4;
-/** Rows the panel's rounded border spends (top + bottom). */
-export const SIDE_PANEL_BORDER_ROWS = 2;
+/** Columns the panel's card chrome spends (border + `paddingX={1}`, each side). */
+export const SIDE_PANEL_BORDER_COLUMNS = cardChrome("secondary").columns;
+/** Rows the panel's card border spends (top + bottom). */
+export const SIDE_PANEL_BORDER_ROWS = cardChrome("secondary").borderRows;
 /** Columns a row's label claims, so every value starts at the same one. */
 export const PANEL_LABEL_COLUMNS = 9;
 /** The panel's own title row. */
@@ -261,20 +262,12 @@ export function InfoPanel({
     Math.max(0, plan.height - SIDE_PANEL_BORDER_ROWS),
   );
   return (
-    <Box
-      marginLeft={SIDE_PANEL_GAP_COLUMNS}
-      borderStyle="round"
-      borderColor={THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      width={plan.width}
-      height={plan.height}
-      flexShrink={0}
-      overflow="hidden"
-    >
-      {lines.map((line, index) => (
-        <PanelLineView key={`panel-${index}`} line={line} width={plan.contentWidth} />
-      ))}
+    <Box marginLeft={SIDE_PANEL_GAP_COLUMNS} flexShrink={0}>
+      <Card tone="secondary" width={plan.width} height={plan.height}>
+        {lines.map((line, index) => (
+          <PanelLineView key={`panel-${index}`} line={line} width={plan.contentWidth} />
+        ))}
+      </Card>
     </Box>
   );
 }

@@ -21,6 +21,7 @@ import {
   decisionModalHeight,
 } from "./Dashboard";
 import { MarkdownLine, markdownSegments, renderSegments, wrapSegments, type MdSegment } from "./markdown";
+import { Card, cardChrome } from "./Card.js";
 import { useTerminalSize } from "./useTerminalSize";
 import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
 import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
@@ -110,16 +111,6 @@ const LIVE_HEADER_CONTEXT_ROWS = 2;
 const LIVE_VIEW_OUTER_INSET = 2;
 /** `minHeight` both scrollable cards keep so their title row is never clipped. */
 const CARD_MIN_ROWS = 4;
-/** Rows a card's rounded border spends (top + bottom). */
-const CARD_BORDER_ROWS = 2;
-/** Columns a card's rounded border spends (left + right). */
-const CARD_BORDER_COLUMNS = 2;
-/** Columns a card's `paddingX={1}` spends. */
-const CARD_PADDING_COLUMNS = 2;
-/** Everything a card spends around its body, horizontally. */
-const CARD_HORIZONTAL_CHROME = CARD_BORDER_COLUMNS + CARD_PADDING_COLUMNS;
-/** The card's own title row, above the body. */
-const CARD_TITLE_ROWS = 1;
 /** Rows the composer's `marginTop={1}` spends. */
 const INPUT_MARGIN_ROWS = 1;
 /** Rows the composer's rounded border spends (top + bottom). */
@@ -774,7 +765,8 @@ function RefineView({
   if (decision || suggestionsOpen || showAgentPicker || showProfilePicker) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
-  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+  const logsHeight =
+    visibleLogs.length > 0 ? visibleLogs.length + cardChrome("tertiary").rows : 0;
 
   // The header's own cost with the composer at its floor. Growing the composer
   // only ever *raises* the reserved-rows figure the art has to fit under, so the
@@ -1533,7 +1525,7 @@ function RefineView({
   // The conversation's real width budget. Every message line is wrapped to it
   // here, once, so one `ChatRow` is exactly one terminal row and the scroll
   // offset counts the rows the user actually sees.
-  const chatBodyColumns = Math.max(1, cardsWidth - CARD_HORIZONTAL_CHROME);
+  const chatBodyColumns = Math.max(1, cardsWidth - cardChrome("primary").columns);
   const chatRows = useMemo<ChatRow[]>(() => {
     const rows: ChatRow[] = [];
     for (const line of formattedChatLines) {
@@ -2168,32 +2160,16 @@ function ScrollableChatCard({
   // terminal height on a short terminal (AC-31.3).
   const bodyRows = Math.max(
     0,
-    Math.max(height, CARD_MIN_ROWS) - CARD_BORDER_ROWS - CARD_TITLE_ROWS,
+    Math.max(height, CARD_MIN_ROWS) - cardChrome("primary").rows,
   );
   /** Columns the body really has — the hero's own width budget (REQ-12). */
-  const bodyColumns = Math.max(0, width - CARD_HORIZONTAL_CHROME);
+  const bodyColumns = Math.max(0, width - cardChrome("primary").columns);
   return (
-    <Box
-      borderStyle="round"
-      borderColor={isFocused ? THEME.borderFocus : THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      height={height}
-      width={width}
-      minHeight={CARD_MIN_ROWS}
-      // The rows are pre-wrapped to this card's width, so nothing should ever
-      // overflow; clipping is the last line of defence against a stray glyph
-      // painting over the composer below the card.
-      overflow="hidden"
-    >
-      {/* The title row is exactly one clipped row: with the side panel beside it
-          the card can be much narrower than the terminal, and a wrapped title
-          would cost a body row the layout never reserved (REV-6001). */}
-      <Box justifyContent="space-between" height={CARD_TITLE_ROWS} overflow="hidden">
-        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent} wrap="truncate">
-          Conversation {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
-        </Text>
-        <Box flexShrink={1} overflow="hidden">
+    <Card
+      tone="primary"
+      title={`Conversation ${isFocused ? "● [Focused]" : "○ [Tab to focus]"}`}
+      titleRight={
+        <>
           {maxScroll > 0 && (
             <Text color={THEME.muted} wrap="truncate">
               {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
@@ -2201,8 +2177,13 @@ function ScrollableChatCard({
             </Text>
           )}
           {busy && <Text color={THEME.warn} wrap="truncate">{spinner} thinking...</Text>}
-        </Box>
-      </Box>
+        </>
+      }
+      focused={isFocused}
+      height={height}
+      width={width}
+      minHeight={CARD_MIN_ROWS}
+    >
       {rows.length === 0 ? (
         <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} />
       ) : (
@@ -2219,7 +2200,7 @@ function ScrollableChatCard({
           );
         })
       )}
-    </Box>
+    </Card>
   );
 }
 
@@ -2246,31 +2227,24 @@ function ScrollableStreamCard({
   width: number;
 }) {
   return (
-    <Box
-      borderStyle="round"
-      borderColor={isFocused ? THEME.borderFocus : THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      height={height}
-      width={width}
-      minHeight={CARD_MIN_ROWS}
-    >
-      {/* One clipped title row, exactly like the conversation card: beside the
-          side panel the card is narrower than the terminal and a wrapped title
-          would steal a body row from the stream. */}
-      <Box justifyContent="space-between" height={CARD_TITLE_ROWS} overflow="hidden">
-        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent} wrap="truncate">
-          THINKING & LIVE AGENT STREAM {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
-        </Text>
-        <Box flexShrink={1} overflow="hidden">
+    <Card
+      tone="secondary"
+      title={`THINKING & LIVE AGENT STREAM ${isFocused ? "● [Focused]" : "○ [Tab to focus]"}`}
+      titleRight={
+        <>
           {chars > 0 && (
             <Text color={THEME.muted} wrap="truncate">
               {(chars / 1024).toFixed(1)} KB{" "}
             </Text>
           )}
           {busy && <Text color={THEME.warn} wrap="truncate">{spinner} streaming </Text>}
-        </Box>
-      </Box>
+        </>
+      }
+      focused={isFocused}
+      height={height}
+      width={width}
+      minHeight={CARD_MIN_ROWS}
+    >
       {lines.length === 0 ? (
         <Box justifyContent="center" marginY={0}>
           <Text color={THEME.muted}>Real-time thinking and agent output will stream here while the model runs.</Text>
@@ -2285,7 +2259,7 @@ function ScrollableStreamCard({
           />
         ))
       )}
-    </Box>
+    </Card>
   );
 }
 

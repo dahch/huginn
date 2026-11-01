@@ -14,6 +14,7 @@ import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
 import { TWO_RAVENS } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
 import { STATUS_GLYPHS } from "./glyphs.js";
+import { Card, cardChrome } from "./Card.js";
 import { decisionTitle } from "./decision.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
@@ -36,8 +37,10 @@ const FOOTER_HEIGHT = 1;
 const VIEW_OUTER_INSET = 2;
 /** The pipeline/stream cards' floor, so their title row is never clipped. */
 const MIDDLE_MIN_ROWS = 6;
-/** Tallest log tail the dashboard renders (5 entries + border). */
-const LOGS_MAX_ROWS = 5;
+/** Tallest log tail the dashboard renders, before its tertiary title row. */
+const LOGS_MAX_ENTRIES = 5;
+/** The log tail's full row cost, imported from the one chrome table. */
+const LOGS_MAX_ROWS = LOGS_MAX_ENTRIES + cardChrome("tertiary").rows;
 /** Rows the decision modal's double border spends (top + bottom). */
 const DECISION_BORDER_ROWS = 2;
 /** The modal's title row — never windowed away. */
@@ -355,7 +358,8 @@ export function Dashboard({
   else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
 
   const visibleLogs = ui.logs.slice(-maxLogsAllowed);
-  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+  const logsHeight =
+    visibleLogs.length > 0 ? visibleLogs.length + cardChrome("tertiary").rows : 0;
 
   // The decision modal charges before the middle cards, but it can never charge
   // more than the frame has: this is everything left once the header, the middle
@@ -720,7 +724,7 @@ function PipelineCard({
   }
 
   // Constrain visible phase items to available card height
-  const maxItems = height ? Math.max(2, height - 3) : displayPhases.length;
+  const maxItems = height ? Math.max(2, height - cardChrome("secondary").rows) : displayPhases.length;
   let itemsToRender = displayPhases;
   if (displayPhases.length > maxItems) {
     const curIdx = displayPhases.indexOf(currentPhase);
@@ -729,15 +733,7 @@ function PipelineCard({
   }
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      height={height}
-      minHeight={6}
-    >
-      <Text bold color={THEME.accent}>PIPELINE PHASES</Text>
+    <Card tone="secondary" title="PIPELINE PHASES" height={height} minHeight={6}>
       {itemsToRender.map((name) => {
         const st = phases[name];
         const isCurrent = name === currentPhase;
@@ -781,7 +777,7 @@ function PipelineCard({
           </Box>
         );
       })}
-    </Box>
+    </Card>
   );
 }
 
@@ -827,7 +823,7 @@ export function StreamCard({
   streamsOutput?: boolean;
 }) {
   const displayLines = lines;
-  const bodyBudget = Math.max(1, (height ?? 10) - 3);
+  const bodyBudget = Math.max(1, (height ?? 10) - cardChrome("secondary").rows);
   // A buffer that only holds the empty string (a phase that emitted nothing) is
   // not a stream: treating it as one hid the last phase's report behind a blank
   // row (REQ-51 / AC-51.1). This matches the live view's `hasStreamContent`.
@@ -850,19 +846,15 @@ export function StreamCard({
     : [];
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={verbose ? THEME.accent : THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      height={height}
-      minHeight={6}
-    >
-      <Box justifyContent="space-between">
-        <Text bold color={THEME.accent}>
+    <Card
+      tone="secondary"
+      title={
+        <>
           {spinner} {streamsOutput ? "LIVE AGENT OUTPUT" : "AGENT OUTPUT"}{" "}
           {verbose ? <Text color={THEME.ok}>[VERBOSE]</Text> : null}
-        </Text>
+        </>
+      }
+      titleRight={
         <Box>
           {maxScroll > 0 && (
             <Text color={THEME.muted}>
@@ -872,7 +864,10 @@ export function StreamCard({
           )}
           <Text color={THEME.muted}>{chars > 0 ? `${(chars / 1024).toFixed(1)} KB` : ""}</Text>
         </Box>
-      </Box>
+      }
+      height={height}
+      minHeight={6}
+    >
       {hasStream ? (
         displayLines.map((line, i) => {
           const trimmed = line.trim();
@@ -906,7 +901,7 @@ export function StreamCard({
           ))}
         </Box>
       )}
-    </Box>
+    </Card>
   );
 }
 
@@ -917,15 +912,15 @@ export function LogsCard({
 }) {
   if (logs.length === 0) return null;
   return (
-    <Box borderStyle="round" borderColor={THEME.border} flexDirection="column" paddingX={1} marginTop={0}>
-      <Text bold color={THEME.accent}>SYSTEM LOGS</Text>
+    <Card tone="tertiary" title="SYSTEM LOGS">
       {logs.map((l, i) => {
         const levelColor = l.level === "error" ? THEME.danger : l.level === "warn" ? THEME.warn : THEME.accent;
         return (
           <Box key={i}>
+            <Text color={THEME.border}>│ </Text>
             <Text color={THEME.muted}>[{l.timestamp}] </Text>
             <Text bold color={levelColor}>
-              {l.level.toUpperCase().padEnd(5)} │{" "}
+              {l.level.toUpperCase().padEnd(5)}{" "}
             </Text>
             <Text wrap="truncate" color={THEME.text}>
               {l.message}
@@ -933,7 +928,7 @@ export function LogsCard({
           </Box>
         );
       })}
-    </Box>
+    </Card>
   );
 }
 
