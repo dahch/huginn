@@ -101,6 +101,13 @@ describe("semantic glyph table (REQ-52)", () => {
     }
   });
 
+  it("fails closed on a decision kind the alphabet does not know", () => {
+    // The exhaustive switch throws instead of painting an unmeasured glyph.
+    expect(() => decisionGlyph("bogus" as Parameters<typeof decisionGlyph>[0])).toThrow(
+      /Unhandled decision kind: bogus/,
+    );
+  });
+
   it("keeps every raven mood on a single-column, emoji-free grid (REQ-73)", () => {
     // The raven's mood is part of the display alphabet: a mood glyph that was
     // double-width would shift the whole header by a column.

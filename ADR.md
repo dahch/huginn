@@ -2257,3 +2257,59 @@ avoids. They are ordered by how central the decision is to the design.
     `src/tui/footer.test.ts` are what keep the literals, the README/DESIGN paragraphs and the
     handlers from drifting apart.
 
+
+## ADR-72: Console chrome paints one measured alphabet, and a clamped value announces its cut
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The console still painted two kinds of text it had not measured. The MCP badge
+  reached both headers and the side panel exactly as `formatMcpBadge` produced it, complete with
+  `🟢`/`🟡`/`⚪`; those pictographs are double-width, so the row the layout reserved for one column
+  was painted as two and shifted every following cell. Separately, `headerValue` clamped a dynamic
+  header value with `String.slice` — a **code-unit** cut that could split a surrogate pair or slice
+  a double-width glyph in half, and that gave no cue at all that the text continued. The side panel
+  made both problems visible: at its 34-column width (`SIDE_PANEL_WIDTH`) the value column was 21
+  columns, narrower than real values such as `⎇ upgrade/ui-ux · dirty` and large Muninn counts,
+  so the panel cropped exactly the facts it was built to report. The engine's badge contract is not
+  free to change: its pictographs are asserted by `test/engine/agent/mcpStatus.test.ts`, and the gate
+  markers are a three-way contract with huginn's parsers.
+- **Decision**:
+  1. **Map at the TUI boundary.** `mcpBadgeText(badge)` (`src/tui/sessionContext.ts`) strips every
+     `\p{Extended_Pictographic}` and variation selector, collapses the whitespace that leaves,
+     re-inserts the `MCP: ` label with one mark from `MCP_STATUS_GLYPHS` (`healthy` →
+     `STATUS_GLYPHS.pass` `✓`, `degraded` → `STATUS_GLYPHS.warning` `!`, `unknown` →
+     `STATUS_GLYPHS.pending` `·`) and keeps the engine's wording after it. `formatMcpBadge` still
+     produces the pictographed report for the engine and its own tests; only the TUI maps it. A
+     badge that carried only a mark still names itself, and a badge sent without the label is
+     repaired rather than dropped.
+  2. **Clamp in display columns and say so.** `headerValue(value, maxWidth)` measures with
+     `stringWidth`, returns a fitting value intact, and otherwise keeps the head and spends the
+     last column on `TRUNCATION_ELLIPSIS` (`…`). A value that must be cut in one column is the mark
+     alone; a zero, negative, sub-one fractional or `NaN` budget is `""`; `Infinity` keeps the value
+     whole. A double-width glyph is never split, so the result can never paint wider than its budget.
+     The footer inherits the same contract, so both of its cells announce a cut.
+  3. **Pay for the values.** `SIDE_PANEL_WIDTH` grows from 34 to 36 columns, giving a 23-column
+     value column (`36 − 4 chrome − 9 label`), and `memoryStat` formats both Muninn counters through
+     the existing `formatCount` (`840`, `1.4k`, `12k`) instead of printing raw integers. The width
+     is paid from the same 100-column threshold that already reserved a 44-column conversation, so
+     nothing is starved: `36 + 1 gap + 44 = 81 ≤ 100 − 2` inset.
+- **Alternatives rejected**: (a) change `formatMcpBadge` to emit ASCII — its pictographs are the
+  engine contract the CLI and its tests read, and changing them would move a presentation decision
+  into the engine; (b) use a three-column `...` mark — it costs two extra columns in every clamped
+  header and footer cell for no extra meaning; (c) keep the silent crop — a reader cannot tell a
+  complete value from a truncated one, which is the bug; (d) map the badge only in the headers and
+  leave the panel — the panel would keep the grid break and the divergence; (e) widen the panel
+  without checking the conversation floor — a 36-column panel beside a sliver is worse than no
+  panel; (f) shrink the 9-column label column — labels would no longer line up and value starts
+  would wander between rows.
+- **Consequences**:
+  - *Positive*: every console surface now paints a single-column, measured alphabet, so the
+    monospace grid holds and the frame's column arithmetic is true again; a truncated value is
+    visibly truncated, and the MCP badge reads the same (`MCP: ✓ …`) in the run header, the live
+    header and the side panel.
+  - *Negative*: the TUI carries a second presentation of the badge that must track the engine's
+    three statuses (guarded by `test/tui/sessionContext.test.ts` and the frame-wide scans in
+    `test/tui/ravenHeader.test.ts`); a clamped value loses one of its columns to `…`; the panel now
+    claims two more columns whenever it is visible, so a future narrower threshold must re-check
+    the three-way width sum; and `headerValue`'s degenerate branches (NaN, `Infinity`, one column)
+    are behaviour that must stay covered, because callers depend on them rather than on a throw.

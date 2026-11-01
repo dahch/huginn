@@ -173,8 +173,9 @@ describe("footerHints — clamping is hired only when a width is known", () => {
     const full = footerHints(wide);
     expect(hints.right).toBe("1.2k/8k tokens · stage: EXECUTE");
     // The badge is intact and the left cell is the head of its own hint, not a
-    // string cut in favour of History/Send.
-    expect(hints.left).toBe(full.left.slice(0, hints.left.length));
+    // string cut in favour of History/Send — with the `…` that says it was cut.
+    expect(hints.left.endsWith("…")).toBe(true);
+    expect(full.left.startsWith(hints.left.slice(0, -1))).toBe(true);
     expect(hints.left.length).toBe(40 - hints.right.length - 1);
   });
 
@@ -200,7 +201,9 @@ describe("footerHints — clamping is hired only when a width is known", () => {
 
   it("never returns a negative budget when the right cell fills the terminal", () => {
     const hints = footerHints({ focus: "chat", usage: "x".repeat(80), columns: 12 });
-    expect(hints.right).toBe("x".repeat(12));
+    // The right cell keeps every column it was given, and its cut is announced.
+    expect(hints.right).toBe(`${"x".repeat(11)}…`);
+    expect(hints.right.length).toBe(12);
     expect(hints.left).toBe("");
   });
 

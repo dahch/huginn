@@ -30,6 +30,7 @@ import {
   useRavenHeaderPlan,
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
+import { mcpBadgeText } from "./sessionContext.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -565,6 +566,9 @@ function HeaderCard({
   const isFix = currentPhase.startsWith("FIX");
   const progressStr = renderProgressBar(iteration, Math.max(1, totalIterations));
   const mcpBadge = formatMcpBadge(mcpStatus, agentId);
+  // The engine's badge speaks pictographs; the console paints the measured
+  // alphabet instead (REQ-76), so every surface uses the mapped text.
+  const mcpLabel = mcpBadgeText(mcpBadge);
   // The raven brand is followed by meaningful run context (AC-29.4). Every
   // dynamic value is sanitized and clamped to the columns actually left over,
   // and detail that no longer fits is dropped instead of wrapped, so each row
@@ -580,7 +584,7 @@ function HeaderCard({
   const mcpRoom = rowWidth - usedStatus - elapsedLabel.length - gap - 2;
   // The badge now carries its source agent (`· opencode`), so it gets a wider
   // budget — still clamped to the room actually left on the row (AC-29.3).
-  const mcpText = mcpRoom >= 10 ? headerValue(mcpBadge.text, Math.min(40, mcpRoom)) : "";
+  const mcpText = mcpRoom >= 10 ? headerValue(mcpLabel, Math.min(40, mcpRoom)) : "";
 
   const iterLabel = `Iter ${iteration}/${totalIterations}: `;
   const titleRoom = rowWidth - iterLabel.length - progressStr.length - gap - 2;

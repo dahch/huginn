@@ -31,6 +31,8 @@ import {
   PANEL_LABEL_COLUMNS,
   PANEL_TITLE,
   PANEL_TIP_PREFIX,
+  SIDE_PANEL_GAP_COLUMNS,
+  SIDE_PANEL_MIN_CARD_COLUMNS,
   SIDE_PANEL_MIN_COLUMNS,
   SIDE_PANEL_MIN_ROWS,
   SIDE_PANEL_WIDTH,
@@ -193,6 +195,22 @@ describe("side panel geometry (REQ-12)", () => {
     expect(plan.height).toBe(20);
   });
 
+  it("keeps the panel, its gap and a usable conversation inside the threshold width (REQ-76)", () => {
+    const inset = 2;
+    // The width the panel pays for is the width it must leave behind: at the
+    // narrowest supported terminal the three shares still add up, so widening
+    // the panel can never starve the conversation it sits beside.
+    expect(
+      SIDE_PANEL_WIDTH + SIDE_PANEL_GAP_COLUMNS + SIDE_PANEL_MIN_CARD_COLUMNS,
+    ).toBeLessThanOrEqual(SIDE_PANEL_MIN_COLUMNS - inset);
+    const plan = sidePanelPlan({ columns: SIDE_PANEL_MIN_COLUMNS, availableHeight: 30, inset });
+    expect(plan.visible).toBe(true);
+    expect(plan.width + SIDE_PANEL_GAP_COLUMNS + plan.cardsWidth).toBe(SIDE_PANEL_MIN_COLUMNS - inset);
+    expect(plan.cardsWidth).toBeGreaterThanOrEqual(SIDE_PANEL_MIN_CARD_COLUMNS);
+    // The value column is wide enough for the longest value the panel reports.
+    expect(plan.contentWidth - PANEL_LABEL_COLUMNS).toBe(23);
+  });
+
   it("stands down below the width threshold and leaves the layout untouched", () => {
     for (const columns of [24, 40, 64, 80, 99]) {
       const plan = sidePanelPlan({ columns, availableHeight: 30, inset: 2 });
@@ -228,7 +246,7 @@ const panelData: PanelData = {
   busy: true,
   spinner: "⠋",
   agentName: "opencode",
-  mcpText: "MCP: 🟢 2 connected · opencode",
+  mcpText: "MCP: ✓ 2 connected · opencode",
   mcpToken: "ok",
   git: { branch: "feature/parser", clean: false, sandbox: true },
   memory: { entitiesCount: 42, observationsCount: 137 },
@@ -1065,7 +1083,7 @@ describe("panel lines (REQ-12)", () => {
       {
         ...panelData,
         git: { branch: "feature/".repeat(20), clean: true, sandbox: false },
-        mcpText: "MCP: 🟡 error — " + "x".repeat(80) + " · opencode",
+        mcpText: "MCP: ! error — " + "x".repeat(80) + " · opencode",
         tip: "t".repeat(90),
       },
       contentWidth,
@@ -1370,6 +1388,31 @@ describe("live frame with the side panel (REQ-12)", () => {
     expect(output).toContain("137 obs");
     // The tip has a home in the panel on a terminal this size.
     expect(output).toContain("TIP");
+  });
+
+  it("paints the mapped healthy badge, not the engine's pictographs (REQ-76)", async () => {
+    const live = createMockLive({
+      runtime: {
+        name: "pi",
+        id: "pi",
+        capabilities: { streaming: false, systemPrompts: true, tools: true },
+        getMcpStatus: async () => ({
+          servers: [
+            { id: "pi:pi", name: "pi", status: "connected", transport: "stdio", toolsCount: 3 },
+            { id: "pi:muninn", name: "muninn", status: "connected", transport: "stdio", toolsCount: 0 },
+          ],
+          totalTools: 0,
+          healthy: true,
+        }),
+      } as unknown as LiveEngine["runtime"],
+    });
+    const harness = await mountLive(live, SIDE_PANEL_MIN_COLUMNS, 30);
+    harness.unmount();
+
+    const output = harness.output();
+    // The exact wording REQ-76 promises for a healthy report, in both surfaces.
+    expect(output).toContain("MCP: ✓ 2 connected · pi");
+    expect(output).not.toMatch(/\p{Extended_Pictographic}/u);
   });
 
   it("hides the panel below the threshold and keeps the old layout", async () => {

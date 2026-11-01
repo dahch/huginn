@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Console chrome speaks one measured alphabet.** The MCP badge no longer reaches the console as
+  the engine's double-width pictographs: `mcpBadgeText` (`src/tui/sessionContext.ts`) strips them and
+  re-inserts one mark from `MCP_STATUS_GLYPHS` (`healthy` ✓, `degraded` !, `unknown` ·, all from
+  `STATUS_GLYPHS`), so both headers and `InfoPanel` paint `MCP: ✓ 2 connected · pi` while
+  `formatMcpBadge` and its engine test stay untouched. `headerValue` now clamps in display columns
+  and spends the last one on `…`, so a truncated header, panel or footer value announces the cut
+  instead of cropping silently (and a double-width glyph is never split). The side panel widens to
+  36 columns, giving its value column 23 columns for the values it really reports, and `memoryStat`
+  formats both Muninn counters through `formatCount` (`2.3k entities · 76 obs`). REQ-76 / ADR-72.
+
 - **A decision alphabet that matches the rest of the TUI.** `src/tui/glyphs.ts` gains
   `DECISION_GLYPHS` (`approve` `+`, `question` `?`, `warn` `!`, `done` `*`) and `decisionGlyph(kind)`,
   and `DecisionModal` now composes its title with the pure exported `decisionTitle(req)` in

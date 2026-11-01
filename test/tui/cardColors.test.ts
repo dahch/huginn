@@ -18,6 +18,11 @@ import type { CardTone } from "../../src/tui/Card";
  * `FORCE_COLOR` must be seen by chalk *before* Ink is first imported, which is
  * why every module here is imported dynamically after `vi.resetModules()` — a
  * static `import "ink"` would freeze chalk's colour level for the whole file.
+ *
+ * The level is `3` (truecolor), not `1`: `border` is `#5b6572`, and at level 1
+ * chalk degrades it to ANSI black, which the assertions below would never find.
+ * Pinning the level the palette is authored against keeps the suite green on a
+ * terminal that does not advertise truecolor support.
  */
 describe("card border colour by tone and focus (REQ-70)", () => {
   afterEach(() => {
@@ -35,7 +40,7 @@ describe("card border colour by tone and focus (REQ-70)", () => {
     accentToken?: "accent" | "warn" | "ok";
   }): Promise<string> {
     vi.resetModules();
-    process.env.FORCE_COLOR = "1";
+    process.env.FORCE_COLOR = "3";
     process.env.HUGINN_THEME = "dark";
     delete process.env.NO_COLOR;
 

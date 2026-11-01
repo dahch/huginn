@@ -162,9 +162,9 @@ src/
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
     ├── feedback.ts         the one feedback voice: ✓/!/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
-    ├── sessionContext.ts   shared status summaries for the header and the side panel (no fabricated values) (REQ-47)
-    ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header: a four-rung size plan (full → wordmark → compact → text) and the raven's mood (REQ-29 / ADR-29, REQ-73 / ADR-69)
-    ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only (REQ-47)
+    ├── sessionContext.ts   shared status summaries for the header and the side panel (no fabricated values), plus the TUI's `mcpBadgeText` mapping and `formatCount` compact counters (REQ-47, REQ-76 / ADR-72)
+    ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header: a four-rung size plan (full → wordmark → compact → text), the raven's mood, and `headerValue`'s display-column clamp with `…` (REQ-29 / ADR-29, REQ-73 / ADR-69, REQ-76 / ADR-72)
+    ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only, 36 columns with a 23-column value budget (REQ-47, REQ-76)
     ├── LiveHero.tsx        empty-conversation hero (brand + first-run guidance), same four-rung plan and mood as the header (REQ-47, REQ-73)
     ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
     ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette, composer, side panel)
@@ -1198,7 +1198,9 @@ fixed sentence no matter where focus was; it advertised History and Send while a
 the single pure policy both dashboards call: the left cell carries the keys of the **focused surface**
 (composer, conversation, agent stream, or the run dashboard's own keys), the right cell keeps the
 token usage and the stage badge, and `columns` clamps both through `headerValue` — the right cell is
-clamped first so the stage badge survives, and the left gets whatever remains. It imports nothing but
+clamped first so the stage badge survives, and the left gets whatever remains. A clamped cell ends
+in `…`: `headerValue` clamps in display columns and announces the cut instead of cropping silently
+(REQ-76 / ADR-72). It imports nothing but
 that helper, so it is testable without Ink and a footer can never claim a column the terminal does
 not have.
 
@@ -1599,6 +1601,14 @@ export async function fetchMcpStatusWithTimeout(
 - **Timeout (Yellow)**: `MCP: 🟡 timeout · <agent>` when the failure *is* the deadline (`MCP status timed out after <ms>ms`)
 - **Configured / unverified (Gray)**: `MCP: ⚪ <n> configured · <agent>` — servers the agent's own CLI enumerated as configured (`enabled`/`disabled`/`pending`/`unknown`), i.e. known but never probed; only `connected` is ever described as live
 - **Empty / Inactive (Gray)**: `MCP: ⚪ none · <agent>` — nothing registered, or nothing reported
+
+The engine's badge text is **not** what the console paints. `mcpBadgeText(badge)`
+(`src/tui/sessionContext.ts`, REQ-76 / ADR-72) maps the same report onto the TUI's measured
+alphabet: it strips every pictograph and variation selector, re-inserts the `MCP: ` label with
+`MCP_STATUS_GLYPHS` (`healthy` ✓, `degraded` !, `unknown` ·, all from `STATUS_GLYPHS`) and keeps
+the engine's wording, so `MCP: 🟢 2 connected · pi` is displayed as `MCP: ✓ 2 connected · pi` in
+both headers and in `InfoPanel`. A mark-only badge still names itself (`MCP: ✓`), and an unknown
+status falls back to `·` rather than losing the mark. `formatMcpBadge` and its tests are untouched.
 
 ### 23.4 Interactive Two-Pane Inspector Modal (`McpInspectorModal.tsx`)
 
@@ -2060,7 +2070,11 @@ columns/rows, a `reservedRows` viewport floor and the caller's context rows: mar
 tall rungs also drop when the terminal is too short to afford them). The header additionally carries
 the live stage, the MCP badge, the runtime, the project path and the models, with every dynamic value
 sanitized and width-clamped (`headerValue`) so a header row can never wrap into an unbudgeted extra
-line. The CLI and the TUI therefore share one visual identity without sharing a rendering path.
+line. The clamp is measured in display columns and announces a cut with `…`
+(`TRUNCATION_ELLIPSIS`, REQ-76 / ADR-72): a value that fits is untouched, a value that does not keeps
+its head plus the mark, a value cut in one column is the mark alone, and a double-width glyph is never
+split — so the returned string cannot paint wider than the budget the layout reserved. The CLI and
+the TUI therefore share one visual identity without sharing a rendering path.
 
 ### 26.4 Honest MCP/Muninn liveness & hardened stdio lifecycle (REQ-30)
 
@@ -2142,6 +2156,7 @@ flowchart TD
     G --> R
     R --> B["formatMcpBadge(report, runtime.id)"]
     B --> H["MCP: 🟢 n connected · agent / ⚪ n configured · agent / ⚪ none · agent"]
+    H --> T["mcpBadgeText (TUI): MCP: ✓ n connected · agent / · n configured / · none"]
 ```
 
 - **Honest mapping (`mapListingToServerState`).** Only `connected` maps to `connected`; `disabled` →
@@ -2644,8 +2659,12 @@ forbid the washed-out colour families by name.
 
 - **`InfoPanel.tsx` — the LIVE CONTEXT column.** Rendered only when the terminal is wide enough:
   `SIDE_PANEL_MIN_COLUMNS` = 100, `SIDE_PANEL_MIN_ROWS` = 8 spare rows, and enough width left for the
-  cards (`SIDE_PANEL_MIN_CARD_COLUMNS` = 44) after `SIDE_PANEL_WIDTH` = 34 columns plus a 1-column
-  gap. Its rows are grouped into `SESSION` (stage, agent, MCP badge, conversation size), `REPO`
+  cards (`SIDE_PANEL_MIN_CARD_COLUMNS` = 44) after `SIDE_PANEL_WIDTH` = 36 columns plus a 1-column
+  gap. The width is spent on real values: the panel's value column is
+  `36 − cardChrome("secondary").columns (4) − PANEL_LABEL_COLUMNS (9) = 23` columns, enough for
+  `⎇ upgrade/ui-ux · dirty` and `2.3k entities · 76 obs` to paint whole; the three shares still add
+  up at the threshold (`36 + 1 + 44 = 81 ≤ 100 − 2`). Its rows are grouped into `SESSION` (stage,
+  agent, MCP badge, conversation size), `REPO`
   (git branch/tree state and worktree sandbox) and `MEMORY` (Muninn counts); a section with no data is
   not drawn at all, so no heading is left over an empty group. The stage-appropriate tip
   (`PANEL_TIP_PREFIX`) is anchored to the bottom of the box by a spacer instead of floating under the
@@ -2669,9 +2688,12 @@ forbid the washed-out colour families by name.
   derive their strings from pure functions, so they cannot disagree. Two rules: a counter with
   nothing to count renders `""` (never `0`), an unreadable Muninn database reports its sanitized
   error instead of looking empty, and the summaries carry no colour — the TUI picks the token, which
-  is what keeps `NO_COLOR` a presentation concern.
+  is what keeps `NO_COLOR` a presentation concern. The module also owns the TUI's measured
+  presentation of the MCP badge (`mcpBadgeText`/`MCP_STATUS_GLYPHS`) and `formatCount`, which keeps
+  a large Muninn database inside the panel's value column (`2.3k entities · 76 obs`) instead of
+  printing raw integers (REQ-76 / ADR-72).
 
-## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-75)
+## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-76)
 
 This sub-phase opened by answering four things a real run exposed: a finished iteration whose sandbox
 could not be merged was *stranded* and reported as an abort; a Muninn command whose `--project`
@@ -2681,7 +2703,8 @@ runtime; and the phase grid was drawn with double-width emoji that broke the mon
 increments in the same sub-phase added sessions, profiles, the shared single-width decision alphabet,
 the card chrome hierarchy, the live layout keys, transcript navigation, and (REQ-73) the raven's moods
 with a frame that only pays for visible chrome, and (REQ-74) markdown rules, links and tables that
-respect the card they are drawn in. The implementation lives in
+respect the card they are drawn in. The last increment (REQ-76) makes the console's own chrome speak
+the same measured alphabet and announces every clamped value. The implementation lives in
 `src/engine/worktree.ts`, `src/engine/cycle.ts`, `src/state/schema.ts`, `src/state/store.ts`,
 `@dahch/muninn`'s db client and memory service, `src/commands/doctor.ts`,
 `src/tui/glyphs.ts` (new), `src/tui/Card.tsx` (new), `src/tui/search.ts` (new),
@@ -3075,9 +3098,44 @@ grammar, and the footer is policy instead of a sentence:
   keeps usage + stage in the right cell. The palette, transcript search, a busy turn, a maximized card
   and a collapsed log tail each replace or prefix the left cell; the run page uses the right cell for
   its decision notice. With `columns`, the right cell is clamped first through `headerValue` and the
-  left gets the remainder. `footerHints.ts` is a re-export, not a second policy.
+  left gets the remainder; either cell that had to be clamped ends in `…` (REQ-76 / ADR-72).
+  `footerHints.ts` is a re-export, not a second policy.
 - **Guards.** `test/tui/modalContract.test.ts` renders the six modals and proves the `Esc`/`q`/`Enter`
   grammar from outside, plus the one-title/one-footer rows, the no-`borderStyle` rule and the
   README/DESIGN wording. `src/tui/footer.test.ts` covers the focus-specific hints, search, hidden-log
   count, run keys, the 100-column clamp and purity. Both dashboards import `footerHints` and inline
   none of its literals.
+
+### 32.14 The console's chrome speaks one measured alphabet (REQ-76 / ADR-72)
+
+The last two unmeasured surfaces were the MCP badge and every clamped string. The engine's badge
+ships `🟢`/`🟡`/`⚪`, which are double-width, and `headerValue` cropped with `String.slice` in code
+units with no cue; the panel was two columns too narrow for the values it reports.
+
+- **The badge is mapped, not rewritten.** `mcpBadgeText(badge)` (`src/tui/sessionContext.ts`) strips
+  every `\p{Extended_Pictographic}` and variation selector, collapses the whitespace, and re-inserts
+  `MCP: ` plus one mark from `MCP_STATUS_GLYPHS` — `healthy` → `STATUS_GLYPHS.pass` (`✓`), `degraded`
+  → `warning` (`!`), `unknown` → `pending` (`·`). The engine's wording after the label is kept, so
+  `MCP: 🟢 2 connected · pi` paints as `MCP: ✓ 2 connected · pi` in the run header, the live header and
+  `InfoPanel`. `formatMcpBadge` stays the engine contract and its own test still asserts the
+  pictographs. A badge carrying only a mark still names itself, a missing label is repaired, and an
+  unrecognized status falls back to `·` instead of dropping the mark.
+- **A clamp announces itself.** `headerValue(value, maxWidth)` (`src/tui/RavenHeader.tsx`) measures
+  with `stringWidth`, not code units: a fitting value is returned intact; a larger one keeps its head
+  and spends its last column on `TRUNCATION_ELLIPSIS` (`…`); a value cut in one column is the mark
+  alone; zero, negative, sub-one fractional and `NaN` budgets return `""`; and `Infinity` keeps the
+  value whole. A double-width glyph is never split, so the result cannot paint wider than its
+  budget. The footer inherits this, so a clamped left or right cell ends in `…` (tested in
+  `src/tui/footer.test.ts`).
+- **The panel pays for what it reports.** `SIDE_PANEL_WIDTH` grows from 34 to 36 columns, making the
+  value column `36 − cardChrome("secondary").columns (4) − PANEL_LABEL_COLUMNS (9) = 23` columns —
+  enough for `⎇ upgrade/ui-ux · dirty` and `2.3k entities · 76 obs`. `memoryStat` sends both Muninn
+  counters through the existing `formatCount` (`840`, `1.4k`, `12k`) rather than printing raw
+  integers. The conversation floor is unchanged: `36 + 1 gap + 44 = 81 ≤ 100 − 2` inset, so the
+  panel can never starve the column beside it.
+- **Guards.** `test/tui/sessionContext.test.ts` covers `mcpBadgeText` (all three severities, a
+  mark-only badge, a missing label) and `formatCount`; `test/tui/ravenHeader.test.ts` covers the
+  truncation branches, wide glyphs, the footer's `…` and a scan of both rendered frames that fails
+  on a pictograph or a double-width row; `test/tui/infoPanel.test.ts` and `test/tui/liveLayout.test.ts`
+  pin `SIDE_PANEL_WIDTH` and the 23-column value budget, including the exact `2.3k entities · 76 obs`
+  and `MCP: ✓ 2 connected · pi` rows.

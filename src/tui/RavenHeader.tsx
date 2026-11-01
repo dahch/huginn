@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { Box, Text } from "ink";
+import stringWidth from "string-width";
 import { HUGINN_WORDMARK, RAVEN_MARK, artWidth, ravenMark, type RavenMood } from "../brand.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { useTerminalSize, type TerminalSize } from "./useTerminalSize.js";
@@ -197,14 +198,41 @@ export function useRavenHeaderPlan(
   );
 }
 
+/** The one-column mark that says a value was cut, never a silent crop (REQ-76). */
+export const TRUNCATION_ELLIPSIS = "…";
+
 /**
  * Sanitize and width-clamp a dynamic header value (runtime name, project path,
  * model ids…) so it can never widen a header row past the terminal (AC-29.3).
  * Also normalizes tabs/newlines, which would otherwise forge extra rows.
+ *
+ * A value that does not fit is never cut silently: it loses its last columns to
+ * {@link TRUNCATION_ELLIPSIS}, so the row still measures exactly `maxWidth`
+ * columns and a reader can tell the text continues (REQ-76). The budget is in
+ * **display columns**, not code units, so a wide glyph can never push the row
+ * past the width the caller laid out.
  */
 export function headerValue(value: string | null | undefined, maxWidth: number): string {
   const clean = sanitizeTerminalText(value ?? "").replace(/\s+/g, " ").trim();
-  return clean.slice(0, Math.max(0, Math.floor(maxWidth)));
+  // `NaN` cannot be compared with a width, so it clamps to nothing; `Infinity`
+  // means "no clamp" and keeps the value whole, exactly as before.
+  if (Number.isNaN(maxWidth)) return "";
+  const budget = Math.max(0, Math.floor(maxWidth));
+  if (budget === 0) return "";
+  if (stringWidth(clean) <= budget) return clean;
+  // Explicit branches: one column can only hold the mark itself, never a
+  // negative `slice` that would take the value from the end.
+  if (budget === 1) return TRUNCATION_ELLIPSIS;
+  const keep = budget - stringWidth(TRUNCATION_ELLIPSIS);
+  let head = "";
+  let used = 0;
+  for (const char of clean) {
+    const width = stringWidth(char);
+    if (used + width > keep) break;
+    head += char;
+    used += width;
+  }
+  return `${head.trimEnd()}${TRUNCATION_ELLIPSIS}`;
 }
 
 export interface RavenHeaderProps {

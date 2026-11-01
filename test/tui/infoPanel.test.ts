@@ -13,6 +13,7 @@ import React from "react";
 import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
+import stringWidth from "string-width";
 import { render } from "./inkRender";
 import { cardChrome } from "../../src/tui/Card.js";
 import {
@@ -34,6 +35,7 @@ import {
   type PanelLine,
   type SidePanelPlan,
 } from "../../src/tui/InfoPanel.js";
+import { gitStat, memoryStat } from "../../src/tui/sessionContext.js";
 
 const ANSI = /\u001B\[[0-9;?]*[A-Za-z]/g;
 const CONTENT_WIDTH = SIDE_PANEL_WIDTH - SIDE_PANEL_BORDER_COLUMNS;
@@ -116,6 +118,25 @@ describe("side panel geometry (REQ-12)", () => {
       expect(plan.columns).toBe(columns);
       expect(plan.availableHeight).toBe(availableHeight);
     }
+  });
+
+  it("pays for the value column its longest real value needs (REQ-76)", () => {
+    const plan = tallPlan(SIDE_PANEL_MIN_COLUMNS, 30);
+    const valueWidth = plan.contentWidth - PANEL_LABEL_COLUMNS;
+    // 36 columns of panel − 4 of card chrome − 9 of label = 23 columns of value.
+    expect(valueWidth).toBe(23);
+    const git = gitStat({ branch: "upgrade/ui-ux", clean: false, sandbox: false });
+    const memory = memoryStat({ entitiesCount: 2_314, observationsCount: 76 });
+    expect(git).toBe("⎇ upgrade/ui-ux · dirty");
+    expect(memory).toBe("2.3k entities · 76 obs");
+    for (const value of [git, memory]) expect(stringWidth(value)).toBeLessThanOrEqual(valueWidth);
+    // And the rows really paint them whole, not cut at the last column.
+    const lines = panelLines(
+      { ...fullData, git: { branch: "upgrade/ui-ux", clean: false, sandbox: false }, memory: { entitiesCount: 2_314, observationsCount: 76 } },
+      plan.contentWidth,
+    );
+    expect(lines.find((line) => line.kind === "row" && line.label === "git")).toMatchObject({ value: git });
+    expect(lines.find((line) => line.kind === "row" && line.label === "muninn")).toMatchObject({ value: memory });
   });
 
   it("keeps the conversation a usable column, never a sliver", () => {
@@ -271,6 +292,10 @@ describe("panel sections (REQ-12 / NFR-10)", () => {
     for (const line of lines) {
       expect(lineText(line).length, lineText(line)).toBeLessThanOrEqual(CONTENT_WIDTH);
     }
+    // A cut value says so: the last column is `…`, never a silent crop.
+    const git = lines.find((line) => line.kind === "row" && line.label === "git");
+    expect(git).toMatchObject({ kind: "row" });
+    expect(git && "value" in git ? git.value.endsWith("…") : false).toBe(true);
   });
 
   it("survives a zero-width or non-finite box without throwing", () => {

@@ -67,7 +67,7 @@ function separatorColumn(row: readonly MdSegment[]): number {
   return -1;
 }
 
-const TABLE: readonly TableRowInput[] = [
+const TABLE: readonly string[] = [
   "| Fase | Resultado |",
   "| --- | --- |",
   "| EXECUTE | ok |",

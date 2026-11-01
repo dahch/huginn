@@ -382,7 +382,9 @@ writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verifica
 `test/tui/glyphs.test.ts` + `test/tui/decisionModal.test.ts` (the glyph tables, the decision
 title drift guard and the modal's row contract, including the ASCII/one-column rule),
 `test/tui/ravenHeader.test.ts` + `src/brand.test.ts` (the four-rung header plan, the raven moods
-and their shared grid), `test/tui/liveStageAccent.test.ts` (the busy stage accent),
+and their shared grid, the display-column truncation with `…`, and a scan of both frames for a
+pictograph or a double-width row), `test/tui/sessionContext.test.ts` (the `mcpBadgeText` mapping and
+`formatCount`, REQ-76 / ADR-72), `test/tui/liveStageAccent.test.ts` (the busy stage accent),
 `test/tui/card.test.ts` + `test/tui/cardColors.test.ts` (the `CARD_CHROME` cost table, the painted
 height per tone, the borderless log tail and the emitted border colours),
 `test/tui/markdown.test.ts` + `test/tui/markdownTable.test.ts` + `test/tui/liveMarkdownTable.test.ts`
@@ -515,7 +517,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Eight display conventions a TUI change must follow:
+Nine display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -605,6 +607,21 @@ Eight display conventions a TUI change must follow:
   modal while it is open. While a turn is in flight the conversation's `primary` border uses the
   stage's `STAGE_LABEL` token (`accent`/`warn`/`thinker`/`executor`); a focused card still wins with
   `borderFocus` (REQ-73 / ADR-69).
+- **A clamped value announces its cut, and the console paints no pictograph.** `headerValue`
+  (`src/tui/RavenHeader.tsx`) sanitizes, collapses whitespace and clamps in **display columns**
+  (`stringWidth`), never code units: a fitting value is returned intact, a larger one keeps its head
+  plus `TRUNCATION_ELLIPSIS` (`…`) in the last column, a cut in one column is the mark alone, and
+  zero/negative/sub-one/`NaN` budgets are `""` (`Infinity` keeps the value whole). A double-width
+  glyph is never split, so the result cannot paint wider than the budget the caller laid out; the footer
+  inherits the same contract, so a clamped footer cell ends in `…`. The engine's MCP badge still
+  ships `🟢`/`🟡`/`⚪`; the console maps it through `mcpBadgeText` (`src/tui/sessionContext.ts`) and
+  `MCP_STATUS_GLYPHS` (`healthy` ✓, `degraded` !, `unknown` ·) before painting, so the row reads
+  `MCP: ✓ 2 connected · pi` in both headers and in `InfoPanel`. Never change `formatMcpBadge` to
+  fix a TUI width bug, and never add a pictograph to console chrome (REQ-76 / ADR-72).
+  `SIDE_PANEL_WIDTH` is 36 columns so the value column is 23 columns, and `memoryStat` formats its
+  counters with `formatCount`; the 100-column threshold still leaves 44 columns for the
+  conversation. Guards: `test/tui/sessionContext.test.ts`, `test/tui/ravenHeader.test.ts`,
+  `test/tui/infoPanel.test.ts`, `test/tui/liveLayout.test.ts` and `src/tui/footer.test.ts`.
 
 **Project skills** (`src/engine/skills/loader.ts`): `loadSkills()` discovers `*.md` skills in
 `<project>/.huginn/skills/` then `<project>/.opencode/skills/` (`.huginn` wins on id collision),

@@ -44,7 +44,7 @@ import {
 /** Columns from which the panel is shown — narrower terminals keep the old layout. */
 export const SIDE_PANEL_MIN_COLUMNS = 100;
 /** Columns the panel occupies, border included. */
-export const SIDE_PANEL_WIDTH = 34;
+export const SIDE_PANEL_WIDTH = 36;
 /** Blank columns between the cards column and the panel. */
 export const SIDE_PANEL_GAP_COLUMNS = 1;
 /** Columns the conversation must keep beside the panel, or the panel stands down. */
@@ -74,7 +74,7 @@ export interface PanelData {
   spinner: string;
   /** Active agent/runtime name. */
   agentName: string;
-  /** The attributed MCP badge text (`formatMcpBadge`). */
+  /** The attributed MCP badge text (`mcpBadgeText(formatMcpBadge(...))`). */
   mcpText: string;
   /** The badge's severity token (`mcpStatusToken`). */
   mcpToken: ThemeToken;

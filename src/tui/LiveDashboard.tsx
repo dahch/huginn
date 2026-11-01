@@ -98,6 +98,7 @@ import { InfoPanel, sidePanelPlan, type PanelData } from "./InfoPanel.js";
 import { footerHints } from "./footer.js";
 import { LiveHero } from "./LiveHero.js";
 import {
+  mcpBadgeText,
   sessionStat,
   stageTip,
   type ContextStat,
@@ -1698,7 +1699,7 @@ function RefineView({
     busy,
     spinner,
     agentName: currentRuntimeName,
-    mcpText: mcpBadge.text,
+    mcpText: mcpBadgeText(mcpBadge),
     mcpToken: mcpStatusToken(mcpBadge.status),
     git: gitSummary,
     memory: diagnostics?.memoryStats ?? null,
@@ -2443,7 +2444,7 @@ function LiveHeader({
   // badge attributes its source agent, so it gets a wider budget, clamped to the
   // columns the right cell actually has (AC-29.3) before the rest is laid out.
   const rightBudget = Math.max(0, rowWidth - stageBadge.length - gap - 2);
-  const mcpText = headerValue(mcpBadge.text, Math.max(0, Math.min(40, rightBudget)));
+  const mcpText = headerValue(mcpBadgeText(mcpBadge), Math.max(0, Math.min(40, rightBudget)));
   const runtimeLabel = `${sep}runtime: `;
   const runtimeBudget = Math.max(6, Math.min(24, Math.floor(rightBudget * 0.25)));
   const runtimeValue =

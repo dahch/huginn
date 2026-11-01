@@ -1,5 +1,7 @@
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DiagnosticsInfo, LiveEngine } from "../../src/engine/liveMode";
+import type { RunConfig } from "../../src/config";
 
 /**
  * REQ-72 / AC-72.4 — the search mode is advertised by the composer's border, not
@@ -39,9 +41,9 @@ const mockCfg = {
   thinker: "anthropic/claude-3-7-sonnet",
   executor: "opencode/gpt-5.1-codex",
   cwd: "/mock/project",
-};
+} as unknown as RunConfig;
 
-const diagnostics = {
+const diagnostics: DiagnosticsInfo = {
   gitBranch: "feature/transcript-search",
   gitClean: true,
   worktreeSandbox: false,
@@ -51,7 +53,7 @@ const diagnostics = {
   memoryStats: { entitiesCount: 0, observationsCount: 0 },
 };
 
-function mockLive(): Record<string, unknown> {
+function mockLive(): LiveEngine {
   return {
     cfg: mockCfg,
     runtime: {
@@ -78,7 +80,7 @@ function mockLive(): Record<string, unknown> {
     updateModels: () => undefined,
     switchRuntime: () => undefined,
     getDiagnostics: async () => diagnostics,
-  };
+  } as unknown as LiveEngine;
 }
 
 interface ColoredHarness {

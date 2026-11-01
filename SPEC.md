@@ -363,11 +363,12 @@ Huginn must monitor and display the status of all connected Model Context Protoc
   - `MCP: 🟡 degraded` when any server reports error or degraded status.
   - `MCP: 🟡 timeout` when polling exceeds deadline.
   - `MCP: ⚪ 0 active` when no servers are registered or report is null.
+  - *(Superseded by AC-32.4 / AC-76.1: the current badge says `<n> connected`, `<n> configured` or `none` and attributes the agent; the console paints `✓` / `!` / `·` instead of the pictographs.)*
   - Periodic polling (15s intervals) in `Dashboard` and `LiveDashboard` is bounded by a strict 1500 ms non-blocking timeout via `Promise.race` in `fetchMcpStatusWithTimeout`, protecting the Ink render loop from slow, hanging, or disconnected MCP servers.
 - **AC-24.2 (Interactive `/mcp` Inspector Modal (`McpInspectorModal`))**: In Live mode, typing `/mcp` opens an interactive two-pane inspector modal:
   - *Left Pane (Servers)*: Lists connected MCP servers with connection status (`[connected]`, `[error]`, `[disconnected]`), transport (`[stdio]`, `[sse]`, `[file]`), and roundtrip latency in ms.
   - *Right Pane (Tools Detail)*: Lists exposed tools for the selected server with tool names and descriptions. Implements paginated windowing (10 visible tools with `▲ ... more above` and `▼ ... more below` scroll markers) to prevent modal height overflow.
-  - *Keyboard Navigation & State Bridge*: `[↑/↓]` or `[k/j]` navigates items, `[Tab]` or `[Enter]` toggles focus between servers and tools panes, and `[Esc]` closes the modal. Uses `stateRef` bridge pattern to guarantee fresh state references in `useInput` under React 19 / Ink.
+  - *Keyboard Navigation & State Bridge*: `[↑/↓]` or `[k/j]` navigates items, `[Tab]` or `[Enter]` toggles focus between servers and tools panes, and `[Esc]` closes the modal. *(Amended by AC-75.2: `Enter` is a selector-only key and no longer moves this inspector's focus; `Tab` remains its pane switch.)* Uses `stateRef` bridge pattern to guarantee fresh state references in `useInput` under React 19 / Ink.
   - *Terminal Sanitization (`SEC-001`)*: Sanitizes all server names, tool descriptions, and error strings via `sanitizeTerminalText` to strip ANSI escape sequences and non-printable control characters, mitigating terminal injection and cursor hijacking.
 - **AC-24.3 (Project-Level MCP Declaration & Safe Auto-Discovery)**: Huginn automatically discovers and loads `<project>/.huginn/mcp.json` alongside target agent configuration paths:
   - Supports `mcpServers`, `mcp`, and `servers` configuration sections.
@@ -455,7 +456,7 @@ The interface must read as Huginn the raven, with real brand presence.
 
 ### REQ-30: Honest MCP/Muninn Liveness & Recovery
 MCP status must reflect reality and survive transient failure.
-- **AC-30.1 (no fabricated status)**: `GenericSubprocessRuntimeAdapter.getMcpStatus()` must stop reporting `status: "connected"` for servers it merely found in a config file. Discovered-but-unprobed servers are reported as `unknown` (rendered distinctly as `MCP: ⚪ n unverified`, and the report is `healthy: false` / `unverified: true`), and a real probe is used where the runtime offers one (opencode).
+- **AC-30.1 (no fabricated status)**: `GenericSubprocessRuntimeAdapter.getMcpStatus()` must stop reporting `status: "connected"` for servers it merely found in a config file. Discovered-but-unprobed servers are reported as `unknown` (rendered distinctly as `MCP: ⚪ n configured` by `formatMcpBadge`, and the report is `healthy: false` / `unverified: true`), and a real probe is used where the runtime offers one (opencode).
 - **AC-30.2 (error propagation)**: when `runtime.getMcpStatus()` throws, the report must carry `degraded: true` and the error message (sanitized) so `formatMcpBadge` renders `MCP: 🟡 error`, not an ambiguous `⚪ 0 active`.
 - **AC-30.3 (stdio lifecycle hardening)**: `huginn mcp run` must (i) install a `process.stdout` `'error'` handler so an EPIPE from a closed parent pipe cannot crash the server, (ii) bridge stdin `'end'`/`'close'` to `transport.onclose` so the process exits when the parent goes away, (iii) assign `server.onerror` to log protocol failures instead of discarding them, and (iv) bound `send()` so a broken pipe fails a pending request instead of hanging forever.
 - **AC-30.4 (daemon supervision)**: `startServer` (opencode) must supervise the child after the initial health check — if it exits mid-session, the failure is logged and the runtime reports a recoverable error; where feasible a restart is attempted, and the TUI is notified.
@@ -506,7 +507,7 @@ The MCP surface must name the active agent's servers, attribute them to it, and 
 - **AC-32.1 (CLI enumeration)**: `IAgentRuntime` gains `listMcpServers(): Promise<McpServerListing[]>` where `McpServerListing = { name: string; transport?: string; status: "connected" | "enabled" | "disabled" | "pending" | "unknown"; detail?: string }`. Runtimes with a listing command use it — `opencode mcp list`, `claude mcp list`, `qwen mcp list`, `agy mcp list`, `commandcode mcp list`, `codex mcp list --json`, `devin mcp list`, `mimo mcp list` (verified formats; parsers exported and fixture-tested). Runtimes without one (`omp`, `kimi`, `pi`, `cursor`, `mcode`) fall back to config-file discovery with `status: "unknown"`.
 - **AC-32.2 (honest status mapping)**: a status reported by the CLI maps to its true meaning — `connected`/`Connected`/`✔` → `connected` (probed); `enabled`/`configured`/`➜` → `enabled` (configured, **not** probed); `disabled` → `disabled`; `pending approval` → `pending`; anything unrecognised → `unknown`. `connected` is the only status that may be described as live.
 - **AC-32.3 (attribution & expectation management)**: the `/mcp` panel must state which agent the list came from and that Huginn only observes it ("servers come from **&lt;agent&gt;** — add or change them with the agent's own config/CLI"). It must name Muninn explicitly when present, and when absent show the exact command that registers it (`huginn setup --agent <id>`).
-- **AC-32.4 (no bare numbers, no `undefined`)**: the header badge must always be self-describing and attribute its source (e.g. `MCP: 🟢 3 connected · opencode`, `MCP: ⚪ 5 configured · agy`, `MCP: ⚪ none · claude`). Every numeric field is nullish-coalesced; the literal string `undefined`/`NaN` must be impossible in any MCP surface (guarded by a test).
+- **AC-32.4 (no bare numbers, no `undefined`)**: the header badge must always be self-describing and attribute its source (e.g. `MCP: 🟢 3 connected · opencode`, `MCP: ⚪ 5 configured · agy`, `MCP: ⚪ none · claude`; the TUI paints those marks through `mcpBadgeText` as `✓`/`!`/`·`, REQ-76). Every numeric field is nullish-coalesced; the literal string `undefined`/`NaN` must be impossible in any MCP surface (guarded by a test).
 - **AC-32.5 (deeper truth where possible)**: where a CLI exposes per-server detail (`commandcode mcp list` shows scope/auth; `claude`/`qwen` health-check), that detail is shown; where it cannot be known, the UI says so explicitly ("status not reported by &lt;agent&gt;") rather than implying health.
 
 ### REQ-33: Interactive Runtime Picker
@@ -1434,6 +1435,41 @@ iteration and 6 afterwards** (down from 14).
   modal-owned `borderStyle`, the one-title/one-footer row contract, and the README/DESIGN
   paragraphs that name the same grammar. `src/tui/footer.test.ts` covers the focus-specific keys,
   search, hidden-log count, run keys, clamping and purity.
+
+### REQ-76: Console chrome speaks one measured alphabet, and a clamped value says so
+The console must never paint a double-width pictograph or silently crop a value it could not fit.
+- **AC-76.1 (MCP badge mapping)**: `mcpBadgeText(badge)` (`src/tui/sessionContext.ts`) is the TUI's
+  presentation of the engine's `formatMcpBadge` output. It strips pictographs and variation
+  selectors, collapses the whitespace they leave behind, and re-inserts one measured status mark
+  right after `MCP: ` through `MCP_STATUS_GLYPHS` (`healthy` → `STATUS_GLYPHS.pass` `✓`, `degraded`
+  → `STATUS_GLYPHS.warning` `!`, `unknown` → `STATUS_GLYPHS.pending` `·`), so the engine's
+  `MCP: 🟢 2 connected · pi` is painted as `MCP: ✓ 2 connected · pi`. `formatMcpBadge` and its
+  engine contract are untouched; the run header, the live header and `InfoPanel` all pass the
+  mapped text.
+- **AC-76.2 (a badge always names itself)**: a badge carrying only a mark still renders its label
+  (`MCP: 🟢` → `MCP: ✓`; an empty report → `MCP: ·`), a badge the engine sent without the label is
+  repaired to `MCP: <mark> …`, and an unknown status falls back to `pending` rather than dropping
+  the mark.
+- **AC-76.3 (truncation is announced and measured)**: `headerValue(value, maxWidth)`
+  (`src/tui/RavenHeader.tsx`) sanitizes and collapses whitespace, then clamps in **display
+  columns** (`stringWidth`), never code units. A value that fits is returned intact; a value that
+  does not keeps its head and spends its last column on `TRUNCATION_ELLIPSIS` (`…`); a value cut
+  in a one-column budget is the mark alone; a zero, negative, fractional-below-one or `NaN` budget
+  returns `""`; and `Infinity` keeps the value whole. A double-width glyph is never split, so the
+  result never paints wider than the budget it was given. The footer inherits the contract, so a
+  clamped left or right cell ends in `…` instead of a silent crop.
+- **AC-76.4 (the side panel pays for its values)**: `SIDE_PANEL_WIDTH` = 36 columns
+  (`src/tui/InfoPanel.tsx`), so at the 100-column threshold the panel's value column is
+  `36 − cardChrome("secondary").columns (4) − PANEL_LABEL_COLUMNS (9) = 23` columns — wide enough
+  for the longest real values (`⎇ upgrade/ui-ux · dirty`, `2.3k entities · 76 obs`) to paint whole.
+  `memoryStat` formats both Muninn counters through `formatCount` (`840`, `1.4k`, `12k`). The
+  threshold still leaves the conversation its floor: `36 + 1 gap + 44 = 81 ≤ 100 − 2` inset.
+- **AC-76.5 (drift guards)**: `test/tui/sessionContext.test.ts` covers the badge mapping and
+  `formatCount`; `test/tui/ravenHeader.test.ts` covers intact values, the ellipsis, the degenerate
+  budgets, `Infinity`, double-width glyphs and a frame scan of both dashboards that fails on a
+  pictograph or a double-width row;
+  `test/tui/infoPanel.test.ts` and `test/tui/liveLayout.test.ts` pin the panel width and the
+  23-column value budget; `src/tui/footer.test.ts` proves a clamped footer cell ends in `…`.
 
 ---
 

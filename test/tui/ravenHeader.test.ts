@@ -4,6 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Text } from "ink";
+import stringWidth from "string-width";
 import { render } from "./inkRender";
 import type { CycleEngine } from "../../src/engine/cycle";
 import type { RunConfig } from "../../src/config";
@@ -28,6 +29,7 @@ import {
 } from "../../src/tui/RavenHeader.js";
 import { LiveApp, VIEWPORT_RESERVED_ROWS_CLOSED } from "../../src/tui/LiveDashboard";
 import { Dashboard } from "../../src/tui/Dashboard";
+import { PANEL_TITLE } from "../../src/tui/InfoPanel.js";
 
 /** The eagle code point, written as an escape so the glyph is nowhere in the tree (AC-29.1). */
 const EAGLE = /\u{1f985}/u;
@@ -216,15 +218,46 @@ describe("RavenHeader ASCII assets (REQ-29)", () => {
   });
 
   it("clamps dynamic values, collapsing newlines so they cannot forge rows", () => {
-    expect(headerValue("opencode", 4)).toBe("open");
+    expect(headerValue("opencode", 4)).toBe("ope…");
     expect(headerValue("\u001b[31mred\u001b[0m", 20)).toBe("red");
     expect(headerValue("a\nb\tc", 20)).toBe("a b c");
     expect(headerValue(undefined, 10)).toBe("");
     expect(headerValue(null, 10)).toBe("");
     expect(headerValue("long", 0)).toBe("");
     // Fractional budgets floor instead of slicing mid-column; negative ones clamp.
-    expect(headerValue("abcdef", 3.9)).toBe("abc");
+    expect(headerValue("abcdef", 3.9)).toBe("ab…");
     expect(headerValue("abcdef", -2)).toBe("");
+  });
+
+  it("cuts a value with a one-column ellipsis instead of cropping it silently (REQ-76)", () => {
+    // A value that fits is left byte-for-byte intact, ellipsis and all.
+    expect(headerValue("main", 4)).toBe("main");
+    expect(headerValue("main", 40)).toBe("main");
+    // A value that does not fit keeps its head and spends the last column on `…`.
+    expect(headerValue("abcdef", 4)).toBe("abc…");
+    expect(headerValue("abcdef", 2)).toBe("a…");
+    // The degenerate budgets have their own branches: nothing, then the mark only.
+    for (const budget of [0, -1, 0.9, Number.NaN]) {
+      expect(headerValue("abcdef", budget), String(budget)).toBe("");
+    }
+    // Infinity means "no clamp" (the old contract); it never eats the value.
+    expect(headerValue("abcdef", Number.POSITIVE_INFINITY)).toBe("abcdef");
+    expect(headerValue("abcdef", Number.NEGATIVE_INFINITY)).toBe("");
+    expect(headerValue("abcdef", 1)).toBe("…");
+    expect(headerValue("abcdef", 1.9)).toBe("…");
+    // The budget is in display columns, so a wide glyph is never split and the
+    // result can never paint wider than the columns the layout reserved.
+    expect(headerValue("日本語abc", 4)).toBe("日…");
+    expect(headerValue("日本語abc", 5)).toBe("日本…");
+    for (const [value, budget] of [
+      ["abcdef", 4],
+      ["日本語abc", 4],
+      ["日本語abc", 5],
+      ["日本語abc", 2],
+      ["abc", 1],
+    ] as const) {
+      expect(stringWidth(headerValue(value, budget)), `${value}/${budget}`).toBeLessThanOrEqual(budget);
+    }
   });
 
   it("carries the raven's mood into the composed rows without changing the grid", () => {
@@ -650,6 +683,86 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
       const cycle = await capture(React.createElement(Dashboard, { engine: createMockEngine(), cfg: mockCfg, autoExit: false }), columns, rows);
       expect(EAGLE.test(live), `live ${columns}x${rows}`).toBe(false);
       expect(EAGLE.test(cycle), `cycle ${columns}x${rows}`).toBe(false);
+    }
+  });
+});
+
+describe("console chrome speaks one measured alphabet (REQ-76)", () => {
+  const PICTOGRAPH = /\p{Extended_Pictographic}/u;
+
+  /** The engine's healthy badge source: two live servers, no tool count. */
+  const healthyMcp = () => ({
+    servers: [
+      { id: "pi:pi", name: "pi", status: "connected" as const, transport: "stdio" as const, toolsCount: 3 },
+      { id: "pi:muninn", name: "muninn", status: "connected" as const, transport: "stdio" as const, toolsCount: 0 },
+    ],
+    totalTools: 0,
+    healthy: true,
+  });
+
+  it("paints the mapped healthy badge on the live console and the cycle dashboard", async () => {
+    const live = createMockLive() as unknown as { runtime: unknown };
+    live.runtime = {
+      name: "pi",
+      id: "pi",
+      capabilities: { streaming: false, systemPrompts: true, tools: true },
+      getMcpStatus: async () => healthyMcp(),
+    };
+    const liveOut = await capture(
+      React.createElement(LiveApp, { live: live as unknown as LiveEngine, cfg: mockCfg, initialShowModelPicker: false }),
+      100,
+      30,
+    );
+    const engine = createMockEngine() as unknown as { runtime: unknown };
+    engine.runtime = {
+      name: "pi",
+      id: "pi",
+      capabilities: { streaming: false },
+      getMcpStatus: async () => healthyMcp(),
+    };
+    const cycleOut = await capture(
+      React.createElement(Dashboard, { engine: engine as unknown as CycleEngine, cfg: mockCfg, autoExit: false }),
+      120,
+      32,
+    );
+
+    // The exact wording both dashboards promise for a healthy report.
+    expect(liveOut).toContain("MCP: ✓ 2 connected · pi");
+    expect(cycleOut).toContain("MCP: ✓ 2 connected · pi");
+    for (const [where, output] of [
+      ["live", liveOut],
+      ["cycle", cycleOut],
+    ] as const) {
+      expect(output, where).not.toMatch(PICTOGRAPH);
+    }
+  });
+
+  it("paints no pictograph and no wide glyph in the live header or the side panel", async () => {
+    const live = await capture(
+      React.createElement(LiveApp, { live: createMockLive(), cfg: mockCfg, initialShowModelPicker: false }),
+      100,
+      30,
+    );
+    // The panel really is on screen: otherwise the guardian would pass by not looking.
+    expect(live).toContain(PANEL_TITLE);
+    const cycle = await capture(
+      React.createElement(Dashboard, { engine: createMockEngine(), cfg: mockCfg, autoExit: false }),
+      120,
+      32,
+    );
+    for (const [where, output] of [
+      ["live", live],
+      ["cycle", cycle],
+    ] as const) {
+      const lines = visibleLines(output);
+      expect(lines.length, where).toBeGreaterThan(0);
+      for (const line of lines) {
+        const detail = `${where}: ${JSON.stringify(line)}`;
+        // A double-width glyph breaks the monospace grid the frame measured:
+        // Ink lays out one column and the terminal paints two.
+        expect(PICTOGRAPH.test(line), detail).toBe(false);
+        expect(stringWidth(line), detail).toBe(line.length);
+      }
     }
   });
 });
