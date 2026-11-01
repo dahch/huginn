@@ -3,6 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../agents/integrator.js";
 import { detectAvailableAgents } from "../engine/agent/registry.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { Modal } from "./Modal.js";
 import { THEME } from "./theme.js";
 
 /** Rows the list window may occupy before it scrolls (REQ-33 / AC-33.1). */
@@ -131,14 +132,10 @@ export function AgentPickerModal({
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={THEME.accent} paddingX={1} width="100%">
-      <Box justifyContent="space-between" marginBottom={1}>
-        <Text bold color={THEME.accent}>
-          🐦 SELECT AGENT RUNTIME
-        </Text>
-        <Text color={THEME.muted}>↑/↓ move · Enter switch · Esc cancel</Text>
-      </Box>
-
+    <Modal
+      title="🐦 SELECT AGENT RUNTIME"
+      hint="↑/↓ or k/j move · Enter switch · Esc cancel"
+    >
       {loading ? (
         <Text color={THEME.warn}>Detecting installed agent CLIs…</Text>
       ) : (
@@ -183,6 +180,6 @@ export function AgentPickerModal({
           Switching changes which agent runs your prompts; Muninn memory is project-scoped and unaffected.
         </Text>
       </Box>
-    </Box>
+    </Modal>
   );
 }

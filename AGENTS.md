@@ -388,6 +388,9 @@ height per tone, the borderless log tail and the emitted border colours),
 `test/tui/markdown.test.ts` + `test/tui/markdownTable.test.ts` + `test/tui/liveMarkdownTable.test.ts`
 (width-aware rules and links, one aligned row per table row, truncation, the real dashboard frame and
 the live chat's painted table),
+`test/tui/modalContract.test.ts` + `src/tui/footer.test.ts` (the six-modals-plus-decision frame
+contract, the `Esc`/`q`/`Enter`/`Tab`/`k`/`j` grammar, the one-title/one-footer rows, the focused-
+surface footer hints, the 100-column clamp and the no-inline-literals guard),
 `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
 composer or footer off an 18-/24-row frame, the live layout keys — `z`, `Ctrl+↑`/`Ctrl+↓`, `L` —
 with the idle log tail and its advertised hidden count on 100×30 frames, the closed/open header budget
@@ -512,7 +515,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Seven display conventions a TUI change must follow:
+Eight display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -571,8 +574,23 @@ Seven display conventions a TUI change must follow:
   `test/tui/card.test.ts` guards the table, painted heights, log cost and surface→tone map;
   `test/tui/cardColors.test.ts` guards the emitted border colours. Both dashboards now also derive
   their card scroll windows from `cardChrome(...).rows`, so no `- 3` chrome literal remains. The
-  decision modal, composer, palette and header keep their own labelled border constants, so never
-  describe `CARD_CHROME` as the cost source for the whole TUI.
+  composer, palette and header keep their own labelled border constants, and the decision modal's
+  double border is the shared frame's `alert` tone — never describe `CARD_CHROME` as the cost source
+  for the whole TUI.
+- **Every console modal shares one frame and one key grammar; the footer names the focused surface.**
+  `src/tui/Modal.tsx` is the only frame: `tone="alert"` is the single double/warn box (the decision
+  surface), everything else is round/accent; it owns one clipped bold title row, an optional muted
+  subtitle, one muted key footer (or the decision surface's `ReactNode` row specs), and the fixed
+  `paddingX={1}`/`flexShrink={0}`/`overflow="hidden"`. It never calls `useInput`; each surface keeps
+  its keys. `MODAL_KEY_CONTRACT` states the grammar every handler follows: `Esc` closes all six,
+  `q` only `HelpModal`/`SkillsModal`, `Enter` only the three selectors (Skills' own execute action
+  excepted), `Tab` only the Skills/MCP panes, `p`/`g` only the profile picker, and `k`/`j` only where
+  they already were. The footer is the pure `footerHints` (`src/tui/footer.ts`; `footerHints.ts` is a
+  re-export): the left cell is the **focused** surface's keys, the right keeps usage + stage, and the
+  palette/search/busy/maximized/hidden-log states replace the left where they own the keyboard. With
+  `columns`, the right cell is clamped first through `headerValue`, so the footer never exceeds the
+  terminal; neither dashboard may re-inline those literals. `test/tui/modalContract.test.ts` and
+  `src/tui/footer.test.ts` are the drift guards (REQ-75 / ADR-71).
 - **An output panel only claims what the runtime can deliver**: the run dashboard's `StreamCard` shows
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
   title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`

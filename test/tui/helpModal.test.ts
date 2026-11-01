@@ -87,7 +87,7 @@ describe("HelpModal Component", () => {
     expect(output).toContain("HUGINN LIVE CHEAT SHEET");
   });
 
-  it("calls onClose when escape, q, or enter is pressed", async () => {
+  it("calls onClose on Esc and on q, but not on Enter", async () => {
     const stdin1 = createMockStdin();
     const onClose1 = vi.fn();
     const instance1 = render(
@@ -124,6 +124,8 @@ describe("HelpModal Component", () => {
     instance2.unmount();
     expect(onClose2).toHaveBeenCalledTimes(1);
 
+    // Enter is a selector-only key (`Modal`'s grammar): the cheat sheet is a
+    // browser, so the row it is reading must not vanish on Enter.
     const stdin3 = createMockStdin();
     const onClose3 = vi.fn();
     const instance3 = render(
@@ -140,7 +142,7 @@ describe("HelpModal Component", () => {
     stdin3.write("\r");
     await new Promise((r) => setTimeout(r, 30));
     instance3.unmount();
-    expect(onClose3).toHaveBeenCalledTimes(1);
+    expect(onClose3).not.toHaveBeenCalled();
   });
 });
 

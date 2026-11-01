@@ -95,6 +95,7 @@ import {
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
 import { InfoPanel, sidePanelPlan, type PanelData } from "./InfoPanel.js";
+import { footerHints } from "./footer.js";
 import { LiveHero } from "./LiveHero.js";
 import {
   sessionStat,
@@ -2212,6 +2213,22 @@ function RefineView({
   const streamStart = Math.max(0, streamLines.length - visibleStreamLinesCount - streamScroll);
   const visibleStreamLines = streamLines.slice(streamStart, streamStart + visibleStreamLinesCount);
 
+  // One footer policy for both dashboards (H-13): the left cell belongs to the
+  // focused surface, the right cell keeps usage and the stage badge.
+  const footer = footerHints({
+    focus,
+    paletteOpen: suggestionsOpen,
+    busy,
+    maximized,
+    usage,
+    stage: STAGE_LABEL[stage].label,
+    hiddenLogs,
+    search: search !== null,
+    searchMatches: searchMatches.length,
+    searchMatchText,
+    columns: terminalSize.columns - LIVE_VIEW_OUTER_INSET,
+  });
+
   return (
     <Box
       flexDirection="column"
@@ -2363,32 +2380,18 @@ function RefineView({
               maxRows={suggestionRowCap}
             />
           )}
-          {/* Single-line footer (AC-28.4): the hint must never wrap, or it costs
-              a row the layout budget did not reserve and pushes the frame off
-              screen. The stage label never shrinks; the hint truncates. */}
+          {/* Single-line footer (AC-28.4 / H-13): `footerHints` already clamped
+              both cells to the frame width through `headerValue`, so the hint
+              never wraps into a row the layout budget did not reserve. */}
           <Box justifyContent="space-between" height={FOOTER_HEIGHT} overflow="hidden" flexDirection="row">
-            <Box flexShrink={1} overflow="hidden">
-              {search ? (
-                <Text color={THEME.warn} wrap="truncate">
-                  {`find ❯ [↑/↓] ${searchMatches.length} match${
-                    searchMatches.length === 1 ? "" : "es"
-                  } · [Enter] Jump${searchMatchText ? ` ${searchMatchText}` : ""} · [Esc] Cancel`}
-                </Text>
-              ) : suggestionsOpen ? (
-                <Text color={THEME.muted} wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
-              ) : (
-                <Text color={THEME.muted} wrap="truncate">
-                  {`${hiddenLogs > 0 ? `[L] logs · ${hiddenLogs} (card focus) · ` : ""}[Tab] Focus: ${
-                    focus === "composer" ? "input" : focus
-                  } · [↑/↓] ${focus === "composer" ? "History" : "Scroll"} · [PgUp/Dn] Scroll · [Enter] Send · / commands`}
-                </Text>
-              )}
-            </Box>
-            <Box flexShrink={0}>
+            <Text color={search ? THEME.warn : THEME.muted} wrap="truncate">
+              {footer.left}
+            </Text>
+            {footer.right ? (
               <Text color={THEME.muted} wrap="truncate">
-                {usage ? `${usage} · ` : ""}stage: {STAGE_LABEL[stage].label}
+                {footer.right}
               </Text>
-            </Box>
+            ) : null}
           </Box>
         </>
       )}

@@ -15,6 +15,7 @@ import { TWO_RAVENS } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
 import { STATUS_GLYPHS } from "./glyphs.js";
 import { Card, cardChrome } from "./Card.js";
+import { footerHints } from "./footer.js";
 import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
 import { DecisionModal } from "./DecisionModal.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
@@ -525,6 +526,7 @@ export function Dashboard({
         verbose={ui.verbose}
         hasDecision={Boolean(ui.decision)}
         usage={formatUsage(engine?.getState().usage)}
+        columns={contentColumns}
       />
     </Box>
   );
@@ -974,18 +976,35 @@ function FooterBar({
   verbose,
   hasDecision,
   usage,
+  columns,
 }: {
   paused: boolean;
   verbose: boolean;
   hasDecision: boolean;
   usage?: string;
+  columns: number;
 }) {
+  // The run dashboard has no focusable cards: its "surface" is the run itself,
+  // so it asks the same pure policy for the run keys. The right cell keeps the
+  // usage figure and says when a decision owns the keyboard (H-13).
+  const hints = footerHints({
+    focus: "run",
+    paused,
+    verbose,
+    hasDecision,
+    usage,
+    columns,
+  });
   return (
-    <Box marginTop={0} justifyContent="space-between">
-      <Text color={THEME.muted}>
-        {usage ? `${usage}   ` : ""}[Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color={THEME.ok}>(ON)</Text> : <Text color={THEME.muted}>(OFF)</Text>}   [PageUp/Down, ↑/↓] Scroll
+    <Box marginTop={0} justifyContent="space-between" height={FOOTER_HEIGHT} overflow="hidden">
+      <Text color={THEME.muted} wrap="truncate">
+        {hints.left}
       </Text>
-      {hasDecision && <Text bold color={THEME.warn}>Interactive decision input active</Text>}
+      {hints.right ? (
+        <Text bold={hasDecision} color={hasDecision ? THEME.warn : THEME.muted} wrap="truncate">
+          {hints.right}
+        </Text>
+      ) : null}
     </Box>
   );
 }

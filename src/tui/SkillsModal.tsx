@@ -1,6 +1,7 @@
 import React, { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { Skill } from "../engine/skills/types.js";
+import { Modal } from "./Modal.js";
 import { THEME } from "./theme.js";
 
 export interface SkillsModalProps {
@@ -113,38 +114,19 @@ export const SkillsModal = React.memo(function SkillsModal({
   );
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={THEME.executor}
-      paddingX={1}
-      paddingY={0}
-      width="100%"
+    <Modal
+      title="PROJECT SKILLS BROWSER"
+      subtitle={
+        <>
+          Focus: <Text bold color={THEME.text}>{focusPane.toUpperCase()}</Text> (Tab to switch)
+        </>
+      }
+      hint="↑/↓ or k/j: navigate · Tab: switch pane · Enter: execute skill · Esc/q: cancel"
     >
-      {/* Header */}
-      <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={THEME.executor}>
-          PROJECT SKILLS BROWSER
-        </Text>
-        <Text color={THEME.muted}>
-          Focus: <Text bold color={THEME.text}>{focusPane.toUpperCase()}</Text> (Tab to switch · Esc to cancel)
-        </Text>
-      </Box>
-
       {/* Main Two-Pane Body */}
       <Box flexDirection="row" width="100%" marginY={0}>
         {/* Left Pane: Skills List */}
-        <Box
-          flexDirection="column"
-          width="42%"
-          borderStyle="single"
-          borderRight={true}
-          borderLeft={false}
-          borderTop={false}
-          borderBottom={false}
-          borderColor={focusPane === "list" ? THEME.executor : THEME.border}
-          paddingRight={1}
-        >
+        <Box flexDirection="column" width="42%" paddingRight={1}>
           <Box marginBottom={0}>
             <Text bold color={focusPane === "list" ? THEME.executor : THEME.muted}>
               Available Skills ({skills.length})
@@ -222,14 +204,7 @@ export const SkillsModal = React.memo(function SkillsModal({
                 </Text>
               </Box>
 
-              <Box
-                flexDirection="column"
-                borderStyle="single"
-                borderColor={focusPane === "preview" ? THEME.executor : THEME.border}
-                paddingX={1}
-                paddingY={0}
-                marginTop={0}
-              >
+              <Box flexDirection="column" paddingY={0} marginTop={0}>
                 <Box justifyContent="space-between">
                   <Text bold color={focusPane === "preview" ? THEME.executor : THEME.muted}>
                     Prompt Body:
@@ -253,27 +228,11 @@ export const SkillsModal = React.memo(function SkillsModal({
         </Box>
       </Box>
 
-      {/* Footer */}
-      <Box
-        borderStyle="single"
-        borderTop={true}
-        borderBottom={false}
-        borderLeft={false}
-        borderRight={false}
-        borderColor={THEME.border}
-        paddingTop={0}
-        marginTop={0}
-        justifyContent="space-between"
-      >
-        <Text color={THEME.muted}>
-          ↑/↓: navigate · Tab: switch pane · Enter: execute skill · Esc/q: cancel
+      {currentSkill && (
+        <Text color={THEME.muted} wrap="truncate">
+          Selected: <Text color={THEME.executor}>{currentSkill.name}</Text>
         </Text>
-        {currentSkill && (
-          <Text color={THEME.muted}>
-            Selected: <Text color={THEME.executor}>{currentSkill.name}</Text>
-          </Text>
-        )}
-      </Box>
-    </Box>
+      )}
+    </Modal>
   );
 });

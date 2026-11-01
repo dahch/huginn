@@ -115,7 +115,7 @@ describe("LiveDashboard Slash Commands", () => {
     // incremental frames, so the modal's *border/title* row can be overwritten by
     // neighbouring frames while its body rows survive intact.
     expect(output).toContain("Show this command cheat sheet");
-    expect(output).toContain("Press Esc, q, or Enter to close cheat sheet");
+    expect(output).toContain("HUGINN LIVE CHEAT SHEET");
   });
 
   it("opens SkillsModal when /skills or bare /skill is entered", async () => {

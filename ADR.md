@@ -2189,3 +2189,71 @@ avoids. They are ordered by how central the decision is to the design.
     that as a `todo`). Widening a table therefore truncates rather than reflows, and a caller that
     forgets to pass `width` gets the documented 80-column fallback, which is exactly the old defect at
     a different number.
+
+## ADR-71: The six console modals share one presentational frame, and the footer names the focused surface
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: Each of the six console modals (`HelpModal`, `SkillsModal`, `AgentPickerModal`,
+  `ProfilePickerModal`, `ModelPickerModal`, `McpInspectorModal`) repeated its own `borderStyle`,
+  padding and footer arithmetic, and each implemented its own key grammar. The copies had already
+  diverged: the MCP inspector moved panes on both `Tab` and `Enter`, while the selectors used
+  `Enter` to confirm and the browsers used it for their own action; `q` closed some modals and did
+  nothing in others. The decision surface also owned a private double border just outside the new
+  `CARD_CHROME` hierarchy. The live console's footer was a single fixed sentence: while a card owned
+  the keyboard it still advertised History and Send, and the surface-specific keys were truncated
+  first. The run dashboard had its own copy of the same chain. Two frames and two footers guarantee
+  drift, and a row a modal or footer spends without being paid for is a row the fixed-height Ink
+  frame never gets back.
+- **Decision**:
+  1. **One presentational frame.** `src/tui/Modal.tsx` is the only console modal frame. `tone="alert"`
+     draws a `double` border with `THEME.warn`; every other tone is a `round` box with
+     `THEME.accent`, overridable through `borderColor`. The frame owns one clipped bold title row, an
+     optional muted subtitle row and the `hint` key footer (one muted clipped row for the console
+     modals, a `ReactNode` for the decision surface's own row specs), fixes `paddingX={1}`,
+     `flexShrink={0}` and `overflow="hidden"`, and leaves `height`, `width`, `minHeight`, `paddingY`
+     and the children to the caller. It never calls `useInput`: input belongs to the surface that
+     knows what a key means.
+  2. **One key grammar, exported as a literal.** `MODAL_KEY_CONTRACT`
+     (`close: "Esc"`, `quickClose: ["HelpModal", "SkillsModal"]`,
+     `confirm: ["AgentPickerModal", "ProfilePickerModal", "ModelPickerModal"]`, `move: "↑/↓"`,
+     `vimMove: "k/j"`) is the single statement of the grammar. `Esc` closes every console modal;
+     `q` closes only the two read-only browsers; `Enter` confirms only in the three selectors and
+     never closes a modal (`SkillsModal` keeps `Enter` for its own execute action, which is not a
+     generic confirm); `Tab` switches panes only in `SkillsModal`/`McpInspectorModal`; `p`/`g`
+     persist only in `ProfilePickerModal`; `k`/`j` move only where they already did. The decision
+     surface shares the frame and its `alert` tone but keeps its own answer keys and windowing.
+  3. **The footer is pure policy.** `footerHints(input)` in `src/tui/footer.ts` returns
+     `{ left, right }`: the left cell carries the keys of the **focused** surface (`composer`,
+     `chat`, `stream` or the run dashboard), the right cell keeps token usage and the stage badge,
+     and the palette/search/busy/maximized/hidden-log states replace the left cell where they own
+     the keyboard. It is pure (no React, no Ink), so both dashboards and the tests call the same
+     policy; `src/tui/footerHints.ts` is a compatibility re-export, not a second implementation.
+  4. **The width is the terminal's.** With `columns`, the right cell is clamped first through
+     `headerValue` (the stage badge must survive), one separator column is spent only when the right
+     cell is non-empty, and the left cell receives the remainder. A negative or fractional hit count
+     and a fractional width are floored rather than sliced.
+- **Alternatives rejected**: (a) keep each modal's frame and only align the footers — the border,
+  padding and title-row arithmetic is exactly what drifted; (b) put `useInput` inside `Modal` — the
+  frame would have to know every modal's key semantics and the decision surface's answer keys would
+  leak into the selectors; (c) leave the decision surface on its private double border — it would be
+  a second border implementation the chrome hierarchy cannot account for; (d) keep the live footer's
+  fixed sentence and simply abbreviate it — a footer that advertises keys the focused surface does
+  not accept is worse than a shorter list, and the run dashboard's copy would still drift; (e) make
+  `footerHints` read React state — that would make it untestable without Ink and couple the footer to
+  both pages.
+- **Consequences**:
+  - *Positive*: six modals plus the decision surface now spend the same frame and the same row
+    contract; the keyboard grammar is one exported literal and one guard test instead of six
+    independent `if` chains; the footer shows what the focused surface actually accepts, cannot
+    exceed the terminal width, and keeps the stage badge even when the card keys are clipped. The
+    shared frame also removes the last private double-border implementation, so `CARD_CHROME` stays
+    the only card-cost table while the `alert` tone owns the one alarm surface.
+  - *Negative*: `Modal` fixes horizontal chrome, so a future modal that needs different padding or a
+    second footer row must extend the frame rather than reach for `Box`; the footer's strings live
+    in a pure module and must be changed there (both dashboards and the tests read the same source);
+    and `SkillsModal`'s `Enter` is an intentional exception to the selectors' confirm rule, so the
+    grammar is uniform by surface role, not by key alone. `test/tui/modalContract.test.ts` and
+    `src/tui/footer.test.ts` are what keep the literals, the README/DESIGN paragraphs and the
+    handlers from drifting apart.
+

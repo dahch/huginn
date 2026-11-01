@@ -7,6 +7,7 @@ import {
   describeCommand,
 } from "./commandRegistry.js";
 import { THEME } from "./theme.js";
+import { Modal } from "./Modal.js";
 
 export interface CommandCheatSheet {
   command: string;
@@ -105,40 +106,20 @@ export const HelpModal = React.memo(function HelpModal({
 
   useInput((input, key) => {
     const cur = stateRef.current;
-    if (key.escape || input === "q" || key.return) {
+    // Esc always closes; `q` is this browser's own quick-close. Enter is not a
+    // confirm key outside the three selectors (see `Modal`'s key grammar).
+    if (key.escape || input === "q") {
       cur.onClose();
     }
   });
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={THEME.accent}
-      paddingX={1}
-      paddingY={0}
-      width="100%"
+    <Modal
+      title="📖 HUGINN LIVE CHEAT SHEET"
+      hint="Press Esc or q to close cheat sheet"
     >
-      {/* Banner */}
-      <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={THEME.accent}>
-          📖 HUGINN LIVE CHEAT SHEET
-        </Text>
-        <Text color={THEME.muted}>Esc or q to close</Text>
-      </Box>
-
       {/* Active Config Banner */}
-      <Box
-        borderStyle="single"
-        borderTop={true}
-        borderBottom={true}
-        borderLeft={false}
-        borderRight={false}
-        borderColor={THEME.border}
-        paddingY={0}
-        marginY={0}
-        flexDirection="column"
-      >
+      <Box paddingY={0} marginY={0} flexDirection="column">
         <Box justifyContent="space-between">
           <Text>
             <Text bold color={THEME.muted}>Agent: </Text>
@@ -189,23 +170,6 @@ export const HelpModal = React.memo(function HelpModal({
           </Box>
         ))}
       </Box>
-
-      {/* Footer */}
-      <Box
-        borderStyle="single"
-        borderTop={true}
-        borderBottom={false}
-        borderLeft={false}
-        borderRight={false}
-        borderColor={THEME.border}
-        paddingTop={0}
-        marginTop={1}
-        justifyContent="space-between"
-      >
-        <Text color={THEME.muted}>
-          Press Esc, q, or Enter to close cheat sheet
-        </Text>
-      </Box>
-    </Box>
+    </Modal>
   );
 });

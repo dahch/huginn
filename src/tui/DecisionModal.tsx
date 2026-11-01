@@ -7,8 +7,9 @@
  * narrow module instead of on each other's whole engine graph.
  */
 import { useEffect, useState, type ReactNode } from "react";
-import { Box, Text, useInput } from "ink";
+import { Text, useInput } from "ink";
 import type { DecisionRequest } from "../engine/types";
+import { Modal } from "./Modal.js";
 import { THEME } from "./theme.js";
 import {
   decisionBodyRowSpecs,
@@ -85,8 +86,8 @@ export function decisionKeyRows(req: DecisionRequest): ReactNode[] {
  * can never charge more than the frame has. `maxRows` caps the whole box
  * (double border included), the body is windowed with `↑/↓` when it does not
  * fit, and the title and key footer are paid before any body row. It keeps
- * `borderStyle="double"` and `THEME.warn` on purpose: this is the only surface
- * with a double border, so the alert is unmistakable. Below `DECISION_MIN_ROWS`
+ * `tone="alert"` and `THEME.warn` on purpose: the shared `Modal` draws the only
+ * double border in the console, so the alert is unmistakable. Below `DECISION_MIN_ROWS`
  * it draws nothing rather than a title without its key footer.
  */
 export function DecisionModal({ req, maxRows }: { req: DecisionRequest; maxRows?: number }) {
@@ -115,27 +116,19 @@ export function DecisionModal({ req, maxRows }: { req: DecisionRequest; maxRows?
   const visibleBody = body.slice(plan.bodyStart, plan.bodyStart + plan.bodyCount);
   const visibleKeys = keys.slice(0, plan.keyCount);
   return (
-    <Box
-      marginTop={0}
-      borderStyle="double"
+    <Modal
+      tone="alert"
+      title={decisionTitle(req)}
+      hint={visibleKeys}
       borderColor={THEME.warn}
-      paddingX={1}
-      flexDirection="column"
-      flexShrink={0}
       height={plan.height}
     >
-      {plan.titleRows > 0 && (
-        <Text bold color={THEME.warn} wrap="truncate">
-          {decisionTitle(req)}
-        </Text>
-      )}
       {visibleBody}
       {plan.showIndicator && (
         <Text color={THEME.muted} wrap="truncate">
           {`… +${plan.hiddenBody} · ↑/↓`}
         </Text>
       )}
-      {visibleKeys}
-    </Box>
+    </Modal>
   );
 }

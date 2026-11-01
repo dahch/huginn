@@ -152,6 +152,9 @@ src/
     ├── glyphs.ts           the one display glyph table: phase/status marks plus the decision alphabet, shared by the TUI and PROGRESS.md (REQ-52 / REQ-68 / ADR-51 / ADR-63)
     ├── decision.ts         decision modal's pure policy: exhaustive title, row specs, planner and `decisionModalHeight` (REQ-68 / REQ-69 / ADR-63 / ADR-64)
     ├── DecisionModal.tsx    decision modal's React row builders, windowed body and Ink component
+    ├── Modal.tsx           the one presentational frame every console modal uses (the six browsers/selectors plus the alert decision surface): tone-driven border, one bold title row, one muted key footer, fixed padding/flexShrink/overflow, and the documented key grammar (REQ-75 / ADR-71)
+    ├── footer.ts           the footer's pure hint policy (`footerHints`): the focused surface's keys on the left, usage + stage on the right, clamped by `headerValue`
+    ├── footerHints.ts      compatibility re-export of `footer.ts` (one implementation, two import paths)
     ├── Card.tsx           the one chrome-cost table (`CARD_CHROME`/`cardChrome`) and the `Card` primitive that draws exactly that chrome (REQ-70 / ADR-65)
     ├── search.ts          transcript search policy: `findMatches`/`matchLabel` (REQ-72 / ADR-68)
     ├── clipboard.ts       OSC 52 clipboard: sanitized, byte-capped sequence and a caller-owned sink (REQ-72 / ADR-68)
@@ -1145,11 +1148,59 @@ The `useTerminalSize()` hook dynamically measures and adapts to terminal dimensi
   borderless log tail (one title row plus a `│ ` rule per entry). A card asks for a tone instead of
   repeating "two border rows plus two padding columns", and a dashboard imports the same cost into
   its row budget — the log tail is `visibleLogs.length + cardChrome("tertiary").rows`, not a literal.
-  The table covers the card surfaces only; the decision modal's double border and the composer,
-  palette and header borders keep their own labelled constants.
+  The table covers the card surfaces only; the decision modal's double border is now the shared
+  modal frame's `alert` tone (`Modal.tsx`, REQ-75 / ADR-71), while the composer, palette and header
+  borders keep their own labelled constants.
 - Layout cards (`ScrollableChatCard`, `ScrollableStreamCard`, `PipelineCard`, `LogsCard`) dynamically calculate their height from available viewport `rows`:
   - `HeaderCard` (the raven header) and `InputBar` / `FooterBar` occupy fixed overhead. The header's row cost is no longer a constant: `useRavenHeaderPlan` / `ravenHeaderPlan` (`src/tui/RavenHeader.tsx`) derives it from the measured columns/rows, the viewport floor and the caller's context rows, resolving mark + wordmark → wordmark-only → the one-row `<(o  HUGINN` → plain text, so the header never spends rows the budget did not reserve (REQ-29 / AC-29.3, REQ-73). The live view reserves the palette's rows only while the palette is actually open (`VIEWPORT_RESERVED_ROWS_CLOSED` / `_OPEN`, plus the modal reserve), so the art it can afford follows the surfaces that are really on screen (AC-73.3).
   - Middle cards scale to occupy 100% of remaining vertical height without vertical overflow.
+
+### 20.3a The shared modal frame and the uniform key grammar (`Modal.tsx`, `footer.ts`)
+
+Six console modals (`HelpModal`, `SkillsModal`, `AgentPickerModal`, `ProfilePickerModal`,
+`ModelPickerModal`, `McpInspectorModal`) and the decision surface used to repeat their own
+`borderStyle`, padding and footer arithmetic. Two copies of a frame drift, and a footer that is not
+paid for is a row the terminal never gets back, so `src/tui/Modal.tsx` is the only place that spends
+it:
+
+- `tone="alert"` draws a `double` border; every other tone is a `round` box. The colour defaults to
+  `warn` for alert and `accent` otherwise, and a caller may override it (`borderColor`).
+- The title is **one** bold, clipped row; `subtitle` is one muted, clipped row.
+- `hint` is the key footer: one muted, clipped row for every console modal (a `ReactNode` hint — the
+  decision modal's row specs — keeps its own colours and row count).
+- `paddingX={1}`, `flexShrink={0}` and `overflow="hidden"` are fixed, so the frame never guesses the
+  caller's layout budget; vertical padding, height/width/minHeight stay caller-owned.
+- `Modal` never calls `useInput`. Input belongs to the surface that knows what a key means, which is
+  why `test/tui/modalContract.test.ts` can prove the contract from outside the component.
+
+**Key grammar (uniform, documented, and enforced per modal):**
+
+| Key | Where | Meaning |
+|---|---|---|
+| `Esc` | all six | close / cancel — no exception |
+| `q` | `HelpModal`, `SkillsModal` only | quick-close the two read-only browsers |
+| `Enter` | `AgentPickerModal`, `ProfilePickerModal`, `ModelPickerModal` only | confirm / select |
+| `↑`/`↓` | everywhere they already were | move the highlight or scroll the pane |
+| `Tab` | `SkillsModal`, `McpInspectorModal` | switch pane |
+| `p` / `g` | `ProfilePickerModal` | persist to project / global |
+| `k`/`j` | only where already accepted | vim movement; `ModelPickerModal`'s filter step keeps them as filter text |
+
+`MODAL_KEY_CONTRACT` exports those literals so the docs and the guard test name the same strings.
+`SkillsModal` still uses `Enter` for its own action (executing the highlighted skill) — a browser's
+action is not the selectors' generic “confirm”, and the distinction is what keeps one key from meaning
+two things. The decision surface (`DecisionModal.tsx`) uses the same frame with `tone="alert"`,
+which is why the frame's `hint` accepts a `ReactNode`: its key rows are specs with their own colours
+and count, and it keeps its own answer keys and body windowing rather than the selectors' grammar.
+
+**The footer speaks for the focused surface (`footerHints`).** The live console used to paint one
+fixed sentence no matter where focus was; it advertised History and Send while a card owned the keys.
+`footerHints({ focus, paletteOpen, busy, maximized, usage, stage, … })` in `src/tui/footer.ts` is now
+the single pure policy both dashboards call: the left cell carries the keys of the **focused surface**
+(composer, conversation, agent stream, or the run dashboard's own keys), the right cell keeps the
+token usage and the stage badge, and `columns` clamps both through `headerValue` — the right cell is
+clamped first so the stage badge survives, and the left gets whatever remains. It imports nothing but
+that helper, so it is testable without Ink and a footer can never claim a column the terminal does
+not have.
 
 ### 20.3 Zero Stdout Pollution & Hot Console Interception (`patchConsole`)
 
@@ -1571,7 +1622,7 @@ Mounted via the `/mcp` slash command in `LiveDashboard`, `McpInspectorModal` ren
 - **Left Pane (Servers)**: Displays each server as `name · transport · status · detail` — `[connected]` only for a verified probe, `[unknown]` for a server the agent's CLI reports as merely configured (`enabled`/`disabled`/`pending`), and whatever detail the CLI exposed (command, scope, auth) clamped to one column. Round-trip latency is shown only when a probe actually measured it. The pane header marks unverified servers as `n/total unverified` rather than counting them as active (AC-30.1).
 - **Attribution & Muninn (AC-32.3 / AC-38.4)**: a header line names the source runtime (*"Servers come from **&lt;agent&gt;** — add or change them with the agent's own config or CLI; Huginn only observes them"*), and a second line states whether Muninn is registered for that agent (`✓ Muninn (the memory brain) is registered for <agent> … one project-scoped brain, shared by every agent`) or, when absent, the exact fix command `huginn setup --agent <id>`. An unknown server status reads "Status not reported by &lt;agent&gt; — configured, not probed" (AC-32.5).
 - **Right Pane (Tools)**: Displays tools exposed by the currently highlighted server, with tool names and descriptions.
-- **Focus Toggle**: `[Tab]` or `[Enter]` toggles `focusView` between `"servers"` and `"tools"`.
+- **Focus Toggle**: `[Tab]` toggles `focusView` between `"servers"` and `"tools"`. `[Enter]` deliberately does nothing here: it is the selectors' confirm key only (see §20.3a *The shared modal frame*), and an inspector that moved focus on it would make one key mean two things in the same console.
 - **Directional Navigation**: `[↑]`/`[↓]` and `[k]`/`[j]` navigate the active pane. When navigating the server list, the tool list automatically resets selection to the first tool.
 - **Dismissal**: `[Esc]` closes the modal, restoring live dashboard chat and input without loss of context.
 - **React 19 Ref Bridge (`stateRef`)**: Uses `stateRef` synchronization to prevent stale closures in Ink's `useInput` hook during navigation.
@@ -2620,7 +2671,7 @@ forbid the washed-out colour families by name.
   error instead of looking empty, and the summaries carry no colour — the TUI picks the token, which
   is what keeps `NO_COLOR` a presentation concern.
 
-## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-74)
+## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-75)
 
 This sub-phase opened by answering four things a real run exposed: a finished iteration whose sandbox
 could not be merged was *stranded* and reported as an abort; a Muninn command whose `--project`
@@ -2842,9 +2893,9 @@ one table:
   tertiary card, the log-tail cost and the surface→tone mapping; `test/tui/cardColors.test.ts`
   forces colour on and asserts the ANSI border Ink actually emits. `test/tui/liveLayout.test.ts`
   holds the 30-row log-tail budget at three entries.
-- **Still outside the table.** The decision modal's double border, the composer, the palette and the
-  header keep their own labelled constants; unifying them needs an `alert`/`double` tone and is a
-  separate change.
+- **Still outside the table.** The composer, palette and header borders keep their own labelled
+  constants. The decision modal's double border is the shared modal frame's `alert` tone (§20.3a,
+  REQ-75 / ADR-71), so it is no longer a second border implementation.
 
 ### 32.9 Layout controls belong to a focused card, and the shared modal is a module (REQ-71 / ADR-66 / ADR-67)
 
@@ -3001,3 +3052,32 @@ invariant (ADR-61):
   frame at 100 columns; `test/tui/liveMarkdownTable.test.ts` mounts `LiveApp` and asserts the live
   chat paints one aligned row per table row with no `|---|`/`[label](url)` left in the frame and no
   row wider than the conversation card.
+
+### 32.13 One modal frame, one key grammar and a footer that names the focused surface (REQ-75 / ADR-71)
+
+The six console modals and the decision surface now share one presentational frame and one stated key
+grammar, and the footer is policy instead of a sentence:
+
+- **`Modal.tsx` owns the chrome.** `tone="alert"` is the single double/warn box (the decision
+  surface); every other modal is round/accent. The frame spends one bold clipped title row, an
+  optional muted subtitle row and the `hint` footer (one clipped muted row for the console modals, a
+  `ReactNode` for the decision surface's row specs), fixes `paddingX={1}`/`flexShrink={0}`/
+  `overflow="hidden"` and leaves height/width/minHeight/paddingY to the caller. It never calls
+  `useInput`, so each surface still owns its keys.
+- **`MODAL_KEY_CONTRACT` states the grammar.** `Esc` closes all six; `q` closes only `HelpModal` and
+  `SkillsModal`; `Enter` confirms only in `AgentPickerModal`, `ProfilePickerModal` and
+  `ModelPickerModal`; `Tab` switches panes only in `SkillsModal`/`McpInspectorModal`; `p`/`g` persist
+  only in `ProfilePickerModal`; `k`/`j` move only where they already did. `SkillsModal` keeps `Enter`
+  for its own execute action, and the MCP inspector deliberately does not move focus on `Enter`.
+- **`footerHints` is the single footer policy.** The pure function in `src/tui/footer.ts` puts the
+  focused surface's keys in the left cell (composer history/send, conversation and stream
+  scroll/search/jump, conversation-only copy, or the run dashboard's pause/abort/verbose keys) and
+  keeps usage + stage in the right cell. The palette, transcript search, a busy turn, a maximized card
+  and a collapsed log tail each replace or prefix the left cell; the run page uses the right cell for
+  its decision notice. With `columns`, the right cell is clamped first through `headerValue` and the
+  left gets the remainder. `footerHints.ts` is a re-export, not a second policy.
+- **Guards.** `test/tui/modalContract.test.ts` renders the six modals and proves the `Esc`/`q`/`Enter`
+  grammar from outside, plus the one-title/one-footer rows, the no-`borderStyle` rule and the
+  README/DESIGN wording. `src/tui/footer.test.ts` covers the focus-specific hints, search, hidden-log
+  count, run keys, the 100-column clamp and purity. Both dashboards import `footerHints` and inline
+  none of its literals.

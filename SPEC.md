@@ -1222,7 +1222,8 @@ iteration and 6 afterwards** (down from 14).
   rule, with no box at all. `rows` includes the title row, so a card that renders no title
   (`InfoPanel`) reserves `borderRows`, not `rows` — the declared cost is exact only when the card
   draws the title it paid for. The table is scoped to the card surfaces: the decision modal's
-  double border and the composer, palette and header borders keep their own labelled constants.
+  double border now comes from the shared modal frame's `alert` tone (`Modal.tsx`), while the
+  composer, palette and header borders keep their own labelled constants.
 - **AC-70.2 (Card draws chrome only)**: `<Card tone title titleRight focused height width minHeight
   accentToken>` renders the border style its tone declares (`round`, `single` or none), exactly one
   clipped title row (both cells `wrap="truncate"`, `overflow="hidden"`) and a clipped body. It
@@ -1390,6 +1391,49 @@ iteration and 6 afterwards** (down from 14).
   double-width glyphs, ragged rows, and the real `Dashboard` frame) and
   `test/tui/liveMarkdownTable.test.ts` (the live chat paints aligned rows with no raw pipes, inside
   the conversation card) hold the contract.
+
+### REQ-75: The console modals share one frame and one key grammar, and the footer names the focused surface
+- **AC-75.1 (One frame)**: `src/tui/Modal.tsx` is the only console modal frame. Every
+  `*Modal.tsx` renders through `<Modal>` and none of them owns a `borderStyle`. `tone="alert"`
+  draws the single `double` border with `THEME.warn`; every other tone draws a `round` box with
+  `THEME.accent` unless the caller overrides `borderColor`. The frame owns exactly one clipped
+  bold title row, an optional muted subtitle row and a `hint` key footer (one muted clipped row
+  for the console modals; a `ReactNode` hint keeps the decision surface's own row specs and
+  colours), fixes `paddingX={1}`, `flexShrink={0}` and `overflow="hidden"`, and leaves `height`,
+  `width`, `minHeight`, `paddingY` and the children to the caller. It never calls `useInput`.
+- **AC-75.2 (One key grammar)**: `MODAL_KEY_CONTRACT` exports the literals the handlers use:
+  `close: "Esc"`, `quickClose: ["HelpModal", "SkillsModal"]`,
+  `confirm: ["AgentPickerModal", "ProfilePickerModal", "ModelPickerModal"]`, `move: "↑/↓"` and
+  `vimMove: "k/j"`. `Esc` closes all six console modals without exception; `q` closes only
+  `HelpModal` and `SkillsModal`; `Enter` confirms/selects only in the three selectors and never
+  closes a modal (`SkillsModal` may use it for its own execute action, which is not a generic
+  confirm); `Tab` switches panes only in `SkillsModal` and `McpInspectorModal` (`Enter`
+  deliberately does not move the inspector's focus); `p`/`g` persist only in
+  `ProfilePickerModal`; `k`/`j` move only where they already did, and `ModelPickerModal` keeps
+  them as filter text on its search steps. The decision surface shares the frame and its `alert`
+  tone but keeps its own answer keys and body windowing.
+- **AC-75.3 (The footer speaks for the focused surface)**: `footerHints(input)` in
+  `src/tui/footer.ts` is pure and returns `{ left, right }`; `src/tui/footerHints.ts` re-exports
+  the same implementation. `left` carries the keys of the **focused** surface (`FooterFocus` =
+  `composer`, `chat`, `stream` or `run`): composer history/send, conversation and stream
+  scroll/search/jump, conversation-only `[y] Copy`, and the run dashboard's `[Space]` pause/resume,
+  `[q/Esc]` abort, `[v]` verbose and page/arrow scrolling. The palette replaces the left cell;
+  transcript search replaces it with the find prompt, match count and Enter/Esc keys; a busy turn
+  appends `[Esc] Abort`; a maximized card flips Maximize/Restore; a collapsed log tail prefixes
+  `[L] logs · N (card focus)`. `right` keeps token usage and the stage badge, or the run
+  dashboard's decision notice. Neither dashboard may re-inline these literals.
+- **AC-75.4 (The footer never exceeds the terminal)**: when `columns` is finite and positive,
+  `footerHints` clamps the right cell first through `headerValue` (so the stage badge survives),
+  spends one column for the separator only when the right cell is non-empty, and gives the left
+  cell the remaining budget. A negative/fractional hit count is floored to zero, a fractional
+  width is floored rather than sliced, and a right cell that fills the terminal leaves the left
+  with no negative budget. `src/tui/footer.test.ts` asserts the 100-column case.
+- **AC-75.5 (Drift guards)**: `test/tui/modalContract.test.ts` mounts all six console modals and
+  proves the `Esc` footer and close, the `q` quick-close set, the `Enter` selector set, the
+  inspector's Tab-only pane switch, `k`/`j` only where they were accepted, the absence of a
+  modal-owned `borderStyle`, the one-title/one-footer row contract, and the README/DESIGN
+  paragraphs that name the same grammar. `src/tui/footer.test.ts` covers the focus-specific keys,
+  search, hidden-log count, run keys, clamping and purity.
 
 ---
 

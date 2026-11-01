@@ -299,7 +299,7 @@ describe("McpInspectorModal Component (AC-24.2, ADR-24)", () => {
     expect(output).not.toContain("2/2 active");
   });
 
-  it("switches focus between servers and tools using Tab / Enter", async () => {
+  it("switches focus between servers and tools on Tab (Enter is selector-only)", async () => {
     const stdout = createMockStdout();
     let output = "";
     stdout.on("data", (chunk) => {
@@ -704,7 +704,7 @@ describe("McpInspectorModal Component (AC-24.2, ADR-24)", () => {
     expect(output).toContain("Tools for offline-server");
   });
 
-  it("cycles focus between servers and tools using Tab / Enter, and closes on Escape in tools view", async () => {
+  it("cycles focus between servers and tools using Tab only, and closes on Escape in tools view", async () => {
     const stdout = createMockStdout();
     let output = "";
     stdout.on("data", (chunk) => {
@@ -730,15 +730,18 @@ describe("McpInspectorModal Component (AC-24.2, ADR-24)", () => {
     stdin.write("\t");
     await new Promise((r) => setTimeout(r, 40));
 
+    // Enter is selector-only (`Modal`'s grammar): it must not toggle the pane.
+    // If it did, the two following Tabs would land on servers, not tools.
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 40));
+
     // Press Tab again -> focus switches back to servers
     stdin.write("\t");
     await new Promise((r) => setTimeout(r, 40));
 
-    // Press Enter (\r) -> focus switches to tools
-    stdin.write("\r");
+    // Press Tab once more, then Escape while in tools focus -> closes modal
+    stdin.write("\t");
     await new Promise((r) => setTimeout(r, 40));
-
-    // Press Escape while in tools focus -> closes modal
     stdin.write("\u001B");
     await new Promise((r) => setTimeout(r, 40));
     instance.unmount();

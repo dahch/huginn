@@ -5,6 +5,7 @@ import type { ModelCatalogSource } from "../engine/agent/port.js";
 import { discoverModelCatalog } from "../engine/agent/modelCatalog.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { FEEDBACK_WARN } from "./feedback.js";
+import { Modal } from "./Modal.js";
 import { THEME } from "./theme.js";
 
 export interface ModelPickerResult {
@@ -335,24 +336,23 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     ) : null;
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={THEME.accent}
-      paddingX={1}
-      paddingY={0}
-      width="100%"
+    <Modal
+      title={
+        step === "thinker"
+          ? "MODEL SELECTOR · Step 1/3: Choose Thinker (Architect & Fixes)"
+          : step === "executor"
+            ? "MODEL SELECTOR · Step 2/3: Choose Executor (Coder & Gates)"
+            : "MODEL SELECTOR · Step 3/3: Save Model Preferences"
+      }
+      subtitle={`Runtime: ${safeRuntimeName} · Current: T: ${
+        sanitizeTerminalText(selectedThinker) || "—"
+      } · E: ${sanitizeTerminalText(selectedExecutor) || "—"}`}
+      hint={
+        step === "saveScope"
+          ? "↑/↓ or k/j: navigate · 1/2/3: direct pick · Enter: confirm · Esc: cancel"
+          : "↑/↓: navigate · Enter: select · Type: filter/custom · Esc: cancel"
+      }
     >
-      <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={THEME.accent}>
-          {step === "thinker"
-            ? "MODEL SELECTOR · Step 1/3: Choose Thinker (Architect & Fixes)"
-            : step === "executor"
-              ? "MODEL SELECTOR · Step 2/3: Choose Executor (Coder & Gates)"
-              : "MODEL SELECTOR · Step 3/3: Save Model Preferences"}
-        </Text>
-        <Text color={THEME.muted}>Runtime: {safeRuntimeName} (Esc to cancel)</Text>
-      </Box>
 
       {step !== "saveScope" && (
         <Box marginY={0}>
@@ -477,27 +477,6 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
           )}
         </Box>
       )}
-
-      <Box
-        borderStyle="single"
-        borderTop={true}
-        borderBottom={false}
-        borderLeft={false}
-        borderRight={false}
-        borderColor={THEME.border}
-        paddingTop={0}
-        marginTop={0}
-        justifyContent="space-between"
-      >
-        <Text color={THEME.muted}>
-          {step === "saveScope"
-            ? "↑/↓: navigate · 1/2/3: direct pick · Enter: confirm · Esc: cancel"
-            : "↑/↓: navigate · Enter: select · Type: filter/custom · Esc: cancel"}
-        </Text>
-        <Text color={THEME.muted}>
-          Current: T: {sanitizeTerminalText(selectedThinker) || "—"} · E: {sanitizeTerminalText(selectedExecutor) || "—"}
-        </Text>
-      </Box>
-    </Box>
+    </Modal>
   );
 });
