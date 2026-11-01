@@ -9,7 +9,7 @@ import {
 } from "../engine/agent/mcpStatus.js";
 import { events } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text.js";
-import { NEXT_STEP, warnFeedback } from "./feedback.js";
+import { FEEDBACK_WARN, NEXT_STEP, warnFeedback } from "./feedback.js";
 import { THEME } from "./theme.js";
 
 const MAX_VISIBLE_TOOLS = 10;
@@ -256,7 +256,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         <Text color={muninn ? THEME.ok : THEME.warn} wrap="truncate">
           {muninn
             ? `✓ Muninn (the memory brain) is registered for ${agentLabel} as "${sanitizeTerminalText(muninn.name)}" — one project-scoped brain, shared by every agent.`
-            : `! Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
+            : `${FEEDBACK_WARN} Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
         </Text>
       </Box>
 

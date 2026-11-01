@@ -71,7 +71,7 @@ avoids. They are ordered by how central the decision is to the design.
 - **Date**: 2026-08-07 (inferred)
 - **Status**: Accepted
 - **Context**: Gate verdicts must be extracted from free-form LLM report text
-  (`✅/!/🛑` markers, `Overall fidelity:` lines, or a judge's JSON). LLM output
+  (`✅/⚠️/🛑` markers, `Overall fidelity:` lines, or a judge's JSON). LLM output
   can be empty, truncated, or hallucinated. The dangerous failure mode is
   silently treating an unreadable report as a pass and letting a broken
   iteration reach `commit-all`.
@@ -1794,30 +1794,41 @@ avoids. They are ordered by how central the decision is to the design.
   that spoke a different alphabet from the dashboard beside it. The gate/fidelity literals and the
   runtime's stream markers are contracts, not chrome, so they stay where they are.
 - **Decision**:
-  1. `src/tui/glyphs.ts` gains `DECISION_GLYPHS` — `approve` `>`, `question` `?`, `warn` `!`, `done`
-     `✓` — and `decisionGlyph(kind)` maps every `DecisionKind` onto it. The table lives next to
+  1. `src/tui/glyphs.ts` gains `DECISION_GLYPHS` — `approve` `+`, `question` `?`, `warn` `!`, `done`
+     `*` — and `decisionGlyph(kind)` maps every `DecisionKind` onto it. The table lives next to
      `STATUS_GLYPHS` because both answer the same question: which single-column mark names this
-     state?
-  2. `DecisionModal` composes its title through the exported pure `decisionTitle(req)`, so the six
-     title kinds are testable without mounting Ink and can never drift back to an emoji.
-  3. `feedback.ts` becomes `✓` / `!` / `…` (`FEEDBACK_OK` / `FEEDBACK_WARN` / `FEEDBACK_BUSY`). The
-     gate's warning handoff line becomes `! REVIEW REQUESTED`, updated in the same commit across
-     `instructions.ts`, `phases.ts`, `gate.ts` and their tests, because those three are one contract.
-  4. A render test mounts the modal for all six title kinds and fails on any
+     state? Every entry is ASCII as well as one column wide, because a non-ASCII single-width mark
+     (`✓`, `·`, `–`) still mints a new code point for no gain, and the guardian test enforces both
+     properties. The marks are non-letters on purpose: the modal's own hints use `[a]`/`[d]`, so an
+     `A`/`D` title would read like another key to press.
+  2. `DecisionModal` composes its title through the pure `decisionTitle(req)` in
+     `src/tui/decision.ts`, so every title kind is testable without mounting Ink and can never
+     drift back to an emoji. The formatter is an exhaustive `switch` with an `assertNever`
+     fallback: a new `DecisionKind` fails to compile until it gets its own title, and `permission`
+     and `spec-deviation` no longer borrow the gate wording.
+  3. `feedback.ts` becomes `✓` / `!` / `…` (`FEEDBACK_OK` / `FEEDBACK_WARN` / `FEEDBACK_BUSY`). This
+     is a TUI-only change: the feedback channel is the console's voice, not the engine's.
+  4. A render test mounts the modal for every title kind and fails on any
      `\p{Extended_Pictographic}` code point or when `stringWidth(line) !== line.length`; the glyph
-     guardian also asserts the decision table's entries are one column wide.
-  5. Out of scope, deliberately: `### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …` and the
-     producer markers (`⚡ ✓ ✗ 💭`) are untouched.
+     guardian also asserts the decision table's entries are ASCII and one column wide.
+  5. Out of scope, deliberately: `### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`, the
+     producer markers (`⚡ ✓ ✗ 💭`) **and every engine/CLI warning output**. The gate's warning
+     handoff line, `HANDOFF_LINE_RE`, `VALIDATE_STEP_HANDOFF`, the role texts, both verdict parsers
+     and their fail-closed warning fallback stay exactly as they were:
+     they are a three-way contract (instructions ↔ enforcement ↔ parsers), not display chrome, and
+     rewriting them would silently change gate semantics.
 - **Alternatives rejected**: (a) keeping the modal's pictographs and widening its frame — the grid
   breaks again at the first narrow terminal, and the reserved row budget cannot know a glyph's
-  width; (b) drawing the title from the phase-kind table — a decision is not a phase, and reusing
-  `>` for both `EXECUTE` and "approve" would overload one mark with two meanings; (c) changing only
-  `FEEDBACK_WARN` and leaving the modal — that is the drift this record exists to close.
+  width; (b) drawing the title from the phase-kind table — a decision is not a phase, and borrowing
+  a phase mark for a decision would overload one mark with two meanings; (c) changing only
+  `FEEDBACK_WARN` and leaving the modal — that is the drift this record exists to close; (d)
+  reusing `>` for "approve" or `✓` for "done" — both are already spoken for (`>` is `EXECUTE`’s
+  phase mark, `✓` is the STATUS/feedback pass mark), so the decision table uses its own discrete
+  non-letter marks instead.
 - **Consequences**:
   - *Positive*: the modal, the conversation and the dashboard share one measured alphabet; every
-    title kind is unit-testable; the warning feedback mark is finally the same `!` the status column
-    already uses.
-  - *Negative*: the warning handoff literal moves from a pictograph to `! REVIEW REQUESTED`, so a
-    report produced by an older prompt still reads as a warning only through its prose fallback; and
-    a future decision kind must be added to `decisionGlyph` and the guardian test or it fails to
-    compile/guard.
+    title kind is unit-testable; the warning feedback mark is the same `!` the status column already
+    uses; the engine gate contract is provably untouched.
+  - *Negative*: the decision alphabet spends `+`/`*` where a pictograph would be more
+    self-explanatory, and a future decision kind must be added to both `decisionGlyph` and the
+    exhaustive `decisionTitle` switch or it fails to compile/guard.

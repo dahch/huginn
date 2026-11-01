@@ -13,7 +13,8 @@ import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
 import { TWO_RAVENS } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
-import { STATUS_GLYPHS, decisionGlyph } from "./glyphs.js";
+import { STATUS_GLYPHS } from "./glyphs.js";
+import { decisionTitle } from "./decision.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
   MCP_STATUS_POLL_TIMEOUT_MS,
@@ -919,34 +920,10 @@ function ReportPill({ report }: { report: PhaseResult }) {
 }
 
 /**
- * The modal's title line, composed from the shared decision alphabet (REQ-68 /
- * ADR-63). Pure and exported so the drift guard can assert every kind is
- * single-width and emoji-free without mounting Ink.
+ * The decision modal renders its title through the pure formatter in
+ * `src/tui/decision.ts` (REQ-68 / ADR-63), so the drift guard can measure every
+ * kind without importing this dashboard.
  */
-export function decisionTitle(req: DecisionRequest): string {
-  const glyph = decisionGlyph(req.kind);
-  if (req.kind === "approve-draft") {
-    return `${glyph} DECISION · Approve drafted docs`;
-  }
-  if (req.kind === "scope-extraction") {
-    return `${glyph} DECISION · Scope extraction failed`;
-  }
-  if (req.kind === "draft-format") {
-    return `${glyph} DECISION · Draft format violated`;
-  }
-  if (req.kind === "post-cycle-live") {
-    return `${glyph} CYCLE FINISHED · Next action`;
-  }
-  if (req.kind === "question") {
-    const position =
-      req.questionTotal && req.questionTotal > 1
-        ? ` (${(req.questionIndex ?? 0) + 1}/${req.questionTotal})`
-        : "";
-    return `${glyph} QUESTION FROM AGENT · Input required${position}`;
-  }
-  return `${glyph} DECISION · Gate ${req.phase} · iteration ${req.iteration}`;
-}
-
 export function DecisionModal({ req }: { req: DecisionRequest }) {
   const isPerm = req.kind === "permission";
   const isQuestion = req.kind === "question";

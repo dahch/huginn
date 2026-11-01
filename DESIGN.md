@@ -404,7 +404,7 @@ flowchart LR
   `### Audit status:` line, and `gateDecision` skips `judgePhase` on a green marker. A warning or
   blocked marker pays for the judge (whose only new output is the structured `actionItems`), and a
   missing marker fails closed through the judge. `parseGateVocabularyVerdict` reads only the exact
-  consolidation vocabulary — never bare ✅/!/🔴, which every role template ships in its headings.
+  consolidation vocabulary — never bare ✅/⚠️/🔴, which every role template ships in its headings.
 - **Read-only guard**: for the auditor phases the engine hashes the work tree
   (`treeHash`) before and after the step; a missing or changed signature forces `blocked`
   (`readOnlyTreeViolation`) and the phase's own verdict is discarded — an audit that wrote to the
@@ -920,7 +920,7 @@ interface DoctorReport { checks: DoctorCheck[]; ok: boolean; }
 c.status === "ok")`). The integration check iterates `listRegistry()` + `resolveMcpPaths()`
 (read-only) and reports `N/total` registered. The Muninn check defaults its DB path to
 `<projectPath>/.huginn/muninn.db` (never dependent on the process CWD) and always `close()`s the
-service. `handleDoctorCommand` prints one colorized line per check (`✔`/`!`/`✖`) and sets
+service. `handleDoctorCommand` prints one colorized line per check (`✔`/`⚠`/`✖`) and sets
 `process.exitCode = report.ok ? 0 : 1`.
 
 ### 19.4 Git worktree sandbox lifecycle
@@ -2686,20 +2686,24 @@ The profile used to be fixed before the run and merely *displayed*. Now:
 pictographs (`📋`, `❓`, a double-width warning sign), while every other surface read the glyph table.
 Now:
 
-- **`DECISION_GLYPHS`** (`src/tui/glyphs.ts`) defines `approve` `>`, `question` `?`, `warn` `!` and
-  `done` `✓`, and `decisionGlyph(kind)` maps every `DecisionKind` onto one of them (permission,
+- **`DECISION_GLYPHS`** (`src/tui/glyphs.ts`) defines `approve` `+`, `question` `?`, `warn` `!` and
+  `done` `*`, and `decisionGlyph(kind)` maps every `DecisionKind` onto one of them (permission,
   `gate-blocked`, `spec-deviation`, `scope-extraction` and `draft-format` share `warn`). Every entry
-  is one printable, single-column code point, and the guardian test covers the table alongside
-  `STATUS_GLYPHS`.
-- **`decisionTitle(req)`** is a pure exported function, and `DecisionModal` renders exactly its
-  result: `> DECISION · Approve drafted docs`, `! DECISION · Scope extraction failed`,
-  `! DECISION · Draft format violated`, `✓ CYCLE FINISHED · Next action`,
-  `? QUESTION FROM AGENT · Input required` (with `(i/n)` when a block carries several questions) and
-  `! DECISION · Gate <PHASE> · iteration <n>`.
+  is one printable, single-column, **ASCII** code point, and the guardian test covers the table
+  alongside `STATUS_GLYPHS`. The marks are non-letters so they cannot be mistaken for the modal's
+  `[a]`/`[d]` key hints.
+- **`decisionTitle(req)`** is a pure exported function in `src/tui/decision.ts` (not in the Ink
+  dashboard module), and `DecisionModal` renders exactly its result: `+ DECISION · Approve drafted
+  docs`, `! DECISION · Scope extraction failed`, `! DECISION · Draft format violated`, `* CYCLE
+  FINISHED · Next action`, `? QUESTION FROM AGENT · Input required` (with `(i/n)` when a block
+  carries several questions), `! PERMISSION REQUESTED · <PHASE> · iteration <n>`, `! SPEC
+  DEVIATION · <PHASE> · iteration <n>` and `! DECISION · Gate <PHASE> · iteration <n>`. The mapping
+  is an exhaustive `switch` with an `assertNever` fallback.
 - **`feedback.ts`** speaks the same alphabet: `FEEDBACK_OK` `✓`, `FEEDBACK_WARN` `!`,
-  `FEEDBACK_BUSY` `…`. The gate's warning handoff line is `! REVIEW REQUESTED`, updated together with
-  its parser and tests (the three-way contract from AGENTS.md §6). The gate/fidelity literals and the
-  runtime's producer markers (`⚡ ✓ ✗ 💭`) stay untouched.
-- **Drift guard**: `test/tui/decisionModal.test.ts` renders all six title kinds and fails on any
+  `FEEDBACK_BUSY` `…`. This is TUI-only. The gate's warning handoff line, its parser,
+  `HANDOFF_LINE_RE` and the fail-closed warning fallback are untouched (the three-way contract
+  from AGENTS.md §6): the engine contract is not display chrome. The gate/fidelity literals and the runtime's producer markers (`⚡ ✓ ✗ 💭`) stay
+  untouched too.
+- **Drift guard**: `test/tui/decisionModal.test.ts` renders every title kind and fails on any
   `\p{Extended_Pictographic}` code point or on `stringWidth(line) !== line.length`; no surface may
   reintroduce a double-width decision glyph without failing the suite.

@@ -1,9 +1,11 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { Box, render } from "ink";
+import { Box } from "ink";
+import { render } from "./inkRender";
 import stringWidth from "string-width";
-import { DecisionModal, decisionTitle } from "../../src/tui/Dashboard";
+import { DecisionModal } from "../../src/tui/Dashboard";
+import { decisionTitle } from "../../src/tui/decision";
 import type { DecisionRequest } from "../../src/engine/types";
 
 type MockStdin = PassThrough & { isTTY: boolean; setRawMode: () => MockStdin; ref: () => MockStdin; unref: () => MockStdin };
@@ -90,7 +92,7 @@ describe("DecisionModal — decision alphabet (REQ-68)", () => {
     [
       "approve-draft",
       { ...baseRequest, kind: "approve-draft", phase: "LIVE", iteration: 0 },
-      "> DECISION · Approve drafted docs",
+      "+ DECISION · Approve drafted docs",
     ],
     [
       "scope-extraction",
@@ -105,7 +107,7 @@ describe("DecisionModal — decision alphabet (REQ-68)", () => {
     [
       "post-cycle-live",
       { ...baseRequest, kind: "post-cycle-live", phase: "LIVE", iteration: 1 },
-      "✓ CYCLE FINISHED · Next action",
+      "* CYCLE FINISHED · Next action",
     ],
     [
       "question",
@@ -119,10 +121,20 @@ describe("DecisionModal — decision alphabet (REQ-68)", () => {
       },
       "? QUESTION FROM AGENT · Input required (2/3)",
     ],
+    [
+      "permission",
+      { ...baseRequest, kind: "permission", phase: "EXECUTE", iteration: 3 },
+      "! PERMISSION REQUESTED · EXECUTE · iteration 3",
+    ],
+    [
+      "spec-deviation",
+      { ...baseRequest, kind: "spec-deviation", phase: "VALIDATE_STEP", iteration: 2 },
+      "! SPEC DEVIATION · VALIDATE_STEP · iteration 2",
+    ],
     ["gate-blocked", baseRequest, "! DECISION · Gate EXECUTE · iteration 3"],
   ];
 
-  it("renders six single-width, emoji-free titles", async () => {
+  it("renders every title kind as a single-width, emoji-free line", async () => {
     for (const [kind, req, expected] of cases) {
       expect(decisionTitle(req), kind).toBe(expected);
       const output = await renderModal(req);
@@ -150,6 +162,20 @@ describe("DecisionModal — decision alphabet (REQ-68)", () => {
       expect(title).not.toMatch(EMOJI);
       expect(stringWidth(title)).toBe(title.length);
     }
+  });
+
+  it("renders the permission branch with its allow/deny keys and the shared warn mark", async () => {
+    // The permission prompt is the one decision that can run arbitrary work, so
+    // its keys must stay visible and its title must use the same measured mark.
+    const req: DecisionRequest = { ...baseRequest, kind: "permission", message: "Run `rm -rf build`?" };
+    const title = decisionTitle(req);
+    const output = await renderModal(req);
+
+    expect(title).toBe("! PERMISSION REQUESTED · EXECUTE · iteration 3");
+    expect(titleRow(output, title)).toBeDefined();
+    expect(output).toContain("Allow Always");
+    expect(output).toContain("Allow Once");
+    expect(output).toContain("Deny");
   });
 });
 

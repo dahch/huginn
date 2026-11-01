@@ -5,20 +5,23 @@
 ### Added
 
 - **A decision alphabet that matches the rest of the TUI.** `src/tui/glyphs.ts` gains
-  `DECISION_GLYPHS` (`approve` `>`, `question` `?`, `warn` `!`, `done` `✓`) and `decisionGlyph(kind)`,
-  and `DecisionModal` now composes its title with the pure exported `decisionTitle(req)` instead of
-  inline pictographs. The decision modal, the feedback channel and the dashboard share one printable,
-  single-column alphabet (REQ-68 / ADR-63).
-- **A drift guard for the decision surface.** `test/tui/decisionModal.test.ts` renders all six title
-  kinds and fails on any `\p{Extended_Pictographic}` code point or a display width that disagrees
-  with the string length; `test/tui/glyphs.test.ts` covers the new table.
+  `DECISION_GLYPHS` (`approve` `+`, `question` `?`, `warn` `!`, `done` `*`) and `decisionGlyph(kind)`,
+  and `DecisionModal` now composes its title with the pure exported `decisionTitle(req)` in
+  `src/tui/decision.ts` instead of inline pictographs. The mapping is exhaustive, and `permission`
+  and `spec-deviation` get their own titles rather than borrowing the gate wording. The decision
+  modal, the feedback channel and the dashboard share one printable, single-column, ASCII alphabet
+  (REQ-68 / ADR-63).
+- **A drift guard for the decision surface.** `test/tui/decisionModal.test.ts` renders every title
+  kind and fails on any `\p{Extended_Pictographic}` code point or a display width that disagrees
+  with the string length; `test/tui/glyphs.test.ts` covers the new table, including its ASCII
+  requirement.
 
 ### Changed
 
-- **Feedback speaks `!`:** `FEEDBACK_WARN` is `!` (alongside `✓` and `…`), and the gate's warning
-  handoff line is `! REVIEW REQUESTED` across the instructions, enforcement and parsers. The gate
-  literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`) and the producer markers
-  (`⚡ ✓ ✗ 💭`) are unchanged.
+- **Feedback speaks `!`:** `FEEDBACK_WARN` is `!` (alongside `✓` and `…`). This is TUI-only: the
+  gate literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`), the producer markers
+  (`⚡ ✓ ✗ 💭`) and every engine/CLI warning output (the `⚠️ REVIEW REQUESTED` handoff line, its
+  parsers and the fail-closed judge fallback) are unchanged.
 
 ## 2.0.0-rc.5
 

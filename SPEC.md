@@ -247,7 +247,7 @@ The verification contracts and AST symbol indexer must integrate seamlessly into
 ### REQ-16: Diagnostic Command (`huginn doctor`)
 `huginn doctor` must verify the environment Huginn depends on.
 - **AC-16.1 (Checks)**: reports on — git binary + current directory is a git repository; Bun runtime; Node runtime; `opencode` CLI on `PATH`; agent integration state (which of `.cursor/mcp.json`, `.claude.json`, `opencode.json`, `mcp_config.json` already register Muninn); and Muninn database health (open via `MemoryService` and read stats).
-- **AC-16.2 (Reporting)**: prints one colorized line per check with a `✔` / `✖` / `!` marker and a short detail. Exit code is `0` when all critical checks pass (git repo, runtime, Muninn DB) and `1` otherwise; missing optional integrations are warnings, not failures.
+- **AC-16.2 (Reporting)**: prints one colorized line per check with a `✔` / `✖` / `⚠` marker and a short detail. Exit code is `0` when all critical checks pass (git repo, runtime, Muninn DB) and `1` otherwise; missing optional integrations are warnings, not failures.
 - **AC-16.3 (Testability)**: `runDoctorChecks(options)` returns a structured `DoctorReport` (`{ checks: Array<{ id, label, status: "ok" | "warn" | "fail", detail }> }`) independent of console output, so it can be asserted in tests with injected `homeDir` / `projectPath`.
 
 ### REQ-17: Git Worktree Sandbox Isolation
@@ -1146,21 +1146,25 @@ iteration and 6 afterwards** (down from 14).
   provisioning/argv view. `legacyCapabilities` never claims streaming or structured events.
 
 ### REQ-68: The decision modal and feedback channel share the single-width alphabet
-- **AC-68.1 (One decision table)**: `DECISION_GLYPHS` (`approve` `>`, `question` `?`, `warn` `!`,
-  `done` `✓`) lives in `src/tui/glyphs.ts`, and `decisionGlyph(kind)` resolves every `DecisionKind`
-  to one of its marks. Each entry is a single printable, single-column code point and is covered by
-  the same guardian test as `STATUS_GLYPHS`.
+- **AC-68.1 (One decision table)**: `DECISION_GLYPHS` (`approve` `+`, `question` `?`, `warn` `!`,
+  `done` `*`) lives in `src/tui/glyphs.ts`, and `decisionGlyph(kind)` resolves every `DecisionKind`
+  to one of its marks. Each entry is a single printable, single-column, **ASCII** code point
+  (code point ≤ `0x7f`) and is covered by the same guardian test as `STATUS_GLYPHS`. The marks are
+  deliberately non-letter characters, so they cannot collide with the modal's `[a]`/`[d]` hints.
 - **AC-68.2 (Pure title)**: `DecisionModal` composes its title with the exported pure function
-  `decisionTitle(req: DecisionRequest): string`; all six title kinds (approve, scope failure, draft
-  format, cycle finished, question, gate) render without an emoji code point.
+  `decisionTitle(req: DecisionRequest): string` in `src/tui/decision.ts`; every `DecisionKind`
+  (approve, scope failure, draft format, cycle finished, question, permission, spec deviation,
+  gate) has an explicit title in an exhaustive `switch`, so a new kind cannot inherit the gate
+  wording. All title kinds render without an emoji code point.
 - **AC-68.3 (One feedback voice)**: `FEEDBACK_WARN` is `!`, `FEEDBACK_OK` is `✓` and `FEEDBACK_BUSY`
-  is `…`; the feedback channel no longer uses a double-width warning sign anywhere in `src/`,
-  `test/`, `README.md`, `DESIGN.md` or `ADR.md`.
-- **AC-68.4 (Drift guard)**: a render test mounts `DecisionModal` for the six title kinds and fails if
+  is `…`; the feedback channel no longer uses a double-width warning sign anywhere in `src/tui/`,
+  `test/tui/`, or the TUI interface sections of `README.md` and `DESIGN.md`.
+- **AC-68.4 (Drift guard)**: a render test mounts `DecisionModal` for every title kind and fails if
   the title line contains `\p{Extended_Pictographic}` or if `stringWidth(line) !== line.length`.
-- **AC-68.5 (Contracts untouched)**: the `### Overall gate:`/`### Overall fidelity:` literals and the
-  producer stream markers (`⚡ ✓ ✗ 💭`) are unchanged; only huginn's own display and feedback glyphs
-  move.
+- **AC-68.5 (Contracts untouched)**: the `### Overall gate:`/`### Overall fidelity:` literals, the
+  producer stream markers (`⚡ ✓ ✗ 💭`), the engine/CLI warning outputs (including the
+  `⚠️ REVIEW REQUESTED` handoff line, `HANDOFF_LINE_RE`, both verdict parsers and their fail-closed
+  fallback) are all unchanged. Only huginn's own TUI display and feedback glyphs move.
 
 ---
 

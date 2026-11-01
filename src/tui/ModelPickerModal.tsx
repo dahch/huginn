@@ -4,6 +4,7 @@ import type { ModelInfo } from "../engine/agent/types.js";
 import type { ModelCatalogSource } from "../engine/agent/port.js";
 import { discoverModelCatalog } from "../engine/agent/modelCatalog.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { FEEDBACK_WARN } from "./feedback.js";
 import { THEME } from "./theme.js";
 
 export interface ModelPickerResult {
@@ -371,7 +372,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
       {errorMsg ? (
         <Box marginY={0}>
           <Text bold color={THEME.danger}>
-            ! {sanitizeTerminalText(errorMsg)}
+            {FEEDBACK_WARN} {sanitizeTerminalText(errorMsg)}
           </Text>
         </Box>
       ) : null}
@@ -407,7 +408,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
       ) : discoveryError ? (
         <Box flexDirection="column" paddingY={1}>
           <Text bold color={THEME.danger}>
-            ! Model discovery from {safeRuntimeName} failed: {discoveryError}
+            {FEEDBACK_WARN} Model discovery from {safeRuntimeName} failed: {discoveryError}
           </Text>
           <Text color={THEME.muted}>Type a provider/model id and press Enter to continue.</Text>
           {/* AC-31.2: free-text entry *or* the `/model <id>` shortcut, never a bare cause. */}

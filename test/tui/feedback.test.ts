@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { events } from "../../src/engine/engineEvents";
 import type { LiveEngine } from "../../src/engine/liveMode";
 import type { RunConfig } from "../../src/config";
@@ -31,6 +31,10 @@ const ESC = "\u001b";
 
 describe("feedback copy (REQ-31 / AC-31.1, AC-31.2)", () => {
   it("prefixes every acknowledgement with one of the three feedback marks", () => {
+    // AC-68.3: the feedback voice is exactly these three single-width marks.
+    expect(FEEDBACK_OK).toBe("✓");
+    expect(FEEDBACK_WARN).toBe("!");
+    expect(FEEDBACK_BUSY).toBe("…");
     expect(okFeedback("Saved.")).toBe("✓ Saved.");
     expect(warnFeedback("Careful.")).toBe("! Careful.");
     expect(busyFeedback("Working…")).toBe("… Working…");

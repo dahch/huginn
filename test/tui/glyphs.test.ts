@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import stringWidth from "string-width";
 import {
   DECISION_GLYPHS,
@@ -15,6 +16,37 @@ import { freshState, renderProgressMarkdown } from "../../src/state/store.js";
 
 /** Every code point that renders as an emoji (double-width, multi-toned). */
 const EMOJI = /\p{Extended_Pictographic}/u;
+
+/** U+26A0, built from its code point so this file never contains the literal. */
+const WARNING_SIGN = String.fromCodePoint(0x26a0);
+/** U+26A0 U+FE0F, the emoji-presentation warning sign the engine contract uses. */
+const WARNING_SIGN_EMOJI = `${WARNING_SIGN}\uFE0F`;
+
+/** Repo root resolved from this file, not the test runner's cwd. */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
+
+/** Every `.ts`/`.tsx` file under `dir`, with its source, for bounded source scans. */
+function readSourceTree(dir: string): Array<{ path: string; source: string }> {
+  const files: Array<{ path: string; source: string }> = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...readSourceTree(full));
+      continue;
+    }
+    if (!entry.isFile() || !/\.(ts|tsx)$/.test(entry.name)) continue;
+    files.push({ path: full, source: readFileSync(full, "utf8") });
+  }
+  return files;
+}
+
+/** The slice of `source` from `start` to the next `end` marker after it. */
+function section(source: string, start: string, end: string): string {
+  const from = source.indexOf(start);
+  expect(from, `missing section marker: ${start}`).toBeGreaterThan(-1);
+  const to = source.indexOf(end, from + start.length);
+  return source.slice(from, to === -1 ? undefined : to);
+}
 
 /**
  * REQ-52 / ADR-51 — one single-width glyph table for the phase/status surfaces.
@@ -41,11 +73,14 @@ describe("semantic glyph table (REQ-52)", () => {
     }
   });
 
-  it("defines the decision alphabet as single-width, emoji-free marks (REQ-68)", () => {
+  it("defines the decision alphabet as single-width, ASCII, emoji-free marks (REQ-68)", () => {
     const decisions = [...Object.values(DECISION_GLYPHS), decisionGlyph("question"), decisionGlyph("post-cycle-live")];
     for (const glyph of decisions) {
       expect(glyph).not.toMatch(EMOJI);
       expect([...glyph]).toHaveLength(1);
+      // AC-68.1: every decision mark is ASCII as well as one column wide, so the
+      // table cannot quietly drift to a non-ASCII single-width code point.
+      expect(glyph.codePointAt(0)).toBeLessThan(0x80);
       expect(stringWidth(glyph)).toBe(1);
     }
     // Every DecisionKind resolves to one of the four table entries.
@@ -108,7 +143,7 @@ describe("semantic glyph table (REQ-52)", () => {
   });
 
   it("leaves the gate marker literals untouched (AC-52.3)", () => {
-    const repo = process.cwd();
+    const repo = REPO_ROOT;
     const phases = readFileSync(join(repo, "src/engine/phases.ts"), "utf8");
     const instructions = readFileSync(join(repo, "src/engine/steps/instructions.ts"), "utf8");
 
@@ -117,5 +152,63 @@ describe("semantic glyph table (REQ-52)", () => {
     expect(phases).toContain("### Overall gate: 🟡 PASS WITH WARNINGS");
     expect(phases).toContain("### Overall gate: 🔴 BLOCKED");
     expect(instructions).toContain("### Overall fidelity:");
+  });
+
+  it("keeps the double-width warning sign out of every TUI source and test (AC-68.3)", () => {
+    const repo = REPO_ROOT;
+    const offenders = [
+      ...readSourceTree(join(repo, "src/tui")),
+      ...readSourceTree(join(repo, "test/tui")),
+    ]
+      .filter((file) => file.source.includes(WARNING_SIGN))
+      .map((file) => file.path);
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("leaves the engine's warning contract untouched (AC-68.5)", () => {
+    const repo = REPO_ROOT;
+    const phases = readFileSync(join(repo, "src/engine/phases.ts"), "utf8");
+    const gate = readFileSync(join(repo, "src/engine/gate.ts"), "utf8");
+    const context = readFileSync(join(repo, "src/engine/steps/context.ts"), "utf8");
+    const instructions = readFileSync(join(repo, "src/engine/steps/instructions.ts"), "utf8");
+
+    // The warning handoff line is a three-way contract: the role instruction,
+    // huginn's enforcement text and the parsers all keep the double-width mark.
+    expect(instructions).toContain(`${WARNING_SIGN_EMOJI} REVIEW REQUESTED`);
+    expect(phases).toContain(`${WARNING_SIGN_EMOJI} REVIEW REQUESTED`);
+    expect(phases).toContain("HANDOFF_LINE_RE");
+    expect(gate).toContain(WARNING_SIGN_EMOJI);
+    expect(context).toContain(WARNING_SIGN_EMOJI);
+  });
+
+  it("documents the decision alphabet without reintroducing the warning sign (REQ-68 / ADR-63)", () => {
+    const repo = REPO_ROOT;
+    const read = (file: string): string => readFileSync(join(repo, file), "utf8");
+
+    // The spec is the auditor's yardstick for this iteration.
+    const spec = read("SPEC.md");
+    expect(spec).toContain("### REQ-68");
+    expect(spec).toContain("DECISION_GLYPHS");
+    expect(read("ADR.md")).toContain("## ADR-63");
+
+    // Only the interface descriptions are in scope: the engine sections may
+    // legitimately keep their contract markers.
+    const readme = read("README.md");
+    const design = read("DESIGN.md");
+    const adr = read("ADR.md");
+    const interfaceSections = [
+      // README's glyph-language bullet, up to the next list item.
+      section(readme, "**One Glyph Language", "\n- **"),
+      // DESIGN's REQ-68 section, up to the next heading.
+      section(design, "### 32.6", "\n### "),
+      // ADR-63, up to the next record.
+      section(adr, "## ADR-63", "\n## ADR-"),
+    ];
+
+    for (const text of interfaceSections) {
+      expect(text).toContain("DECISION_GLYPHS");
+      expect(text).not.toContain(WARNING_SIGN);
+    }
   });
 });
