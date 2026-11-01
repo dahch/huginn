@@ -214,7 +214,14 @@ live-first default described above.
 `huginn --help` (also `huginn help` or `huginn -h`) prints a concise, grouped overview: the Core
 commands (`live`, `run`, `init`, `setup`, `doctor`), copy-pasteable examples and the flags you need
 first. `huginn --help --all` (or `huginn help --all`) prints the full reference — every command, flag
-and default — while `huginn init --help` prints the wizard's own usage.
+and default.
+
+Every subcommand answers its own `--help`: `init` prints the wizard's flags and steps, `setup`,
+`doctor`, `memory`, `mcp`, `runtime`, `config` and `check` print their tailored usage, `promote`
+prints its recovery flags, and `run`, `live`, `plan` and `install` print the full `usage()`
+reference. Only a bare `--help`, `huginn help`, `huginn init --help` and an unknown command go
+through the global block, because intercepting every `--help` returned before dispatch and left each
+subcommand's help branch dead code.
 
 ### Commands
 
@@ -232,7 +239,7 @@ and default — while `huginn init --help` prints the wizard's own usage.
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
 | `runtime` | `huginn runtime list [--check]` | Show the five runtimes that can execute the cycle (`pi`, `codex`, `claude`, `opencode`, `generic`), with the capabilities each one declares (`--check` probes availability) |
 | `install` | `huginn install` | Compatibility no-op: the step prompts are built into huginn |
-| `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`) |
+| `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`, `decisions`) |
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |
 
 `huginn setup` targets: `cursor`, `claude`, `opencode`, `devin`, `qwen`, `codex`, `agy`,
@@ -533,7 +540,7 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
 - **Adaptive Agent-Output Panel & Scrolling**: the live stream card appears only once the runtime emits real content. `PgUp`/`PgDn` scroll the focused card; when the stream card is collapsed, Tab explains that it appears with stream content and the footer drops the `[Tab] Focus` hint (the conversation scrolls with `PgUp`/`PgDn`). In the run dashboard, a non-streaming runtime's `AGENT OUTPUT` shows the last finished phase's report — including when the stream buffer holds only a blank row.
 - **Live Context Panel & Empty-State Hero (`InfoPanel` / `LiveHero`)**: on wide terminals (≥100 columns, with a minimum spare column/row budget) a compact **LIVE CONTEXT** panel sits beside the conversation with the stage, agent and models, the per-agent MCP enumeration, the git branch and tree state, the worktree sandbox, Muninn's counts and the size of the conversation, plus a stage-appropriate tip; below that width it is not rendered at all and the header alone carries the facts, so it can never push the composer or footer off the frame. An empty conversation renders a raven-branded hero with the first-run guidance instead of a blank card, sliced to the card's real rows.
 - **Honest Panels**: the old `REFINEMENT CONVERSATION` card is simply **`Conversation`**, and the agent-output (stream) panel **collapses automatically** while the agent has emitted no reasoning/stream content for the session — its rows return to the conversation and it is never shown as an empty bordered box; it expands on the first content. The `run` dashboard's output panel follows the same rule: with no stream content it shows the tail of the last finished phase's **real report**, and before anything has finished an **idle raven state** (the two-ravens mark, Huginn and Muninn, beside a rotating raven-voiced line). Only a runtime that can actually push incremental output (`RuntimeCapabilities.streaming`, i.e. opencode) still reads `LIVE AGENT OUTPUT` and shows the waiting placeholder; every other runtime names itself and states that each phase's report appears when it ends.
-- **One Glyph Language, Single Width**: every phase/status glyph comes from one table (`src/tui/glyphs.ts`), shared by the dashboard and `.harness/PROGRESS.md` — `·` pending, the braille spinner while running, `✓` pass, `!` warning, `✕` blocked, `–` skipped, and the `PROGRESS.md` phase kinds `?` `>` `=` `%` `#` `@` `~` `.` (a `FIX_*` row keeps its `└─` indent). The decision modal draws its title from the same alphabet (`DECISION_GLYPHS`: `+` approve, `?` question, `!` warning, `*` finished — non-letter marks, so they never read as modal key hints) through the pure `decisionTitle(req)` in `src/tui/decision.ts`, and the feedback voice is `✓` / `!` / `…`, so the surface asking for your attention cannot break the grid either. Printable and single-width, so the monospace grid and `NO_COLOR` behaviour hold; the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) are untouched.
+- **One Glyph Language, Single Width**: every phase/status glyph comes from one table (`src/tui/glyphs.ts`), shared by the dashboard and `.harness/PROGRESS.md` — `·` pending, the braille spinner while running, `✓` pass, `!` warning, `✕` blocked, `–` skipped, and the `PROGRESS.md` phase kinds `?` (SPEC_AUDIT) `>` (EXECUTE) `=` (VALIDATE_STEP) `%` (TEST_MODULE) `V` (VERIFY) `#` (SECURE_CHECK) `@` (REVIEW) `~` (DOC_SYNC) `.` (COMMIT_ALL) `&` (REPAIR_PROMOTION), `+` for any other phase (a `FIX_*` row keeps its `└─` indent). The decision modal draws its title from the same alphabet (`DECISION_GLYPHS`: `+` approve, `?` question, `!` warning, `*` finished — non-letter marks, so they never read as modal key hints) through the pure `decisionTitle(req)` in `src/tui/decision.ts`, and the feedback voice is `✓` / `!` / `…`, so the surface asking for your attention cannot break the grid either. Printable and single-width, so the monospace grid and `NO_COLOR` behaviour hold; the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) are untouched.
 - **Selectable Runtime Picker (`AgentPickerModal`)**: bare `/agent` opens a modal over every registered target, each with an availability marker (`✔` / `— not installed`), the active runtime marked, and the highlighted entry's resolved binary path. `↑`/`↓` (or `j`/`k`) navigate, `Enter` switches, `Esc` cancels; a failed switch keeps the picker open so another runtime can be chosen immediately. `/agent <id>` still works for power users.
 - **Agent-Agnostic Questions**: any runtime can ask you a clarifying question through a marked output block; the decision modal renders the real option rows — a digit picks that option verbatim, `Enter` accepts the recommended one, `d` skips and `Esc` aborts (see [Clarifying questions](#clarifying-questions-agent-agnostic)).
 - **Interactive Model & Provider Selector (`ModelPickerModal`)**:
@@ -839,7 +846,7 @@ If a run is interrupted, just re-run the same command and it auto-resumes from t
 
 Huginn embeds the **Muninn memory engine**, a persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5.
 
-> Muninn is no longer part of this repository: it lives at [dahch/muninn](https://github.com/dahch/muninn) and is consumed as the `@dahch/muninn` package, pinned to the `v0.1.0` tarball on its GitHub release while the package is not yet on npm. Its own CLI is `muninn memory | check | mcp run`; `huginn memory`, `huginn check` and `huginn mcp run` are thin wrappers over the same library, so existing scripts keep working.
+> Muninn is no longer part of this repository: it lives at [dahch/muninn](https://github.com/dahch/muninn) and is consumed as the `@dahch/muninn` package (published on npm as `0.1.0`; huginn depends on `^0.1.0`). Its own CLI is `muninn memory | check | mcp run`; `huginn memory`, `huginn check` and `huginn mcp run` are thin wrappers over the same library, so existing scripts keep working.
 
 - **Path Resolution**:
   - Resolves to `<project>/.huginn/muninn.db` inside a git repository, falling back to
@@ -864,9 +871,9 @@ Huginn embeds the **Muninn memory engine**, a persistent memory layer for AI age
   - Exported memory files (`.huginn/memories.jsonl`) are written with restrictive owner-only permissions (`0o600`).
   - Every `.huginn` path huginn writes is **symlink-screened** before use (the shared `assertDocPath`): a symlinked final component is always refused, and a project-relative path must resolve inside the project. That covers the database file, the JSONL export — both read and write — and the sandbox promotion backup, so a cloned repository shipping `.huginn/...` as a link can neither redirect huginn's state outside the project nor pull foreign content into the memory the MCP tools serve.
 
-### MemoryService API (`src/muninn/service/`)
+### MemoryService API (`@dahch/muninn`)
 
-The application core exposes `MemoryService` (`src/muninn/service/memory-service.ts`) for high-level memory operations:
+The application core exposes `MemoryService` (the package's `service/memory-service.ts`) for high-level memory operations:
 
 - **`saveObservation(input)`**:
   - Transactionally creates an observation and links any provided symbols in a single atomic transaction.
@@ -901,12 +908,12 @@ The application core exposes `MemoryService` (`src/muninn/service/memory-service
   - Validates record structure, falling back to current project if a foreign `projectId` is missing, and defaulting invalid categories to `'decision'`.
   - Re-links and indexes all entities; imported observations are automatically indexed into FTS5 by database triggers.
 
-### Model Context Protocol (MCP) Server (`src/muninn/mcp/`)
+### Model Context Protocol (MCP) Server (`@dahch/muninn`)
 
 Muninn exposes its memory engine directly to AI coding agents (Claude Code, Cursor, OpenCode, Devin) through a standard Model Context Protocol (MCP) server:
 
 - **Transport**: JSON-RPC 2.0 communication over standard input/output (`stdio`), using a bounded `StdioServerTransport` from `@modelcontextprotocol/sdk` (a 5 s write deadline plus output-stream error rejection, so a broken pipe fails the pending request instead of hanging on `'drain'`).
-- **Architecture**: Decoupled via the `IMemoryService` port interface (`src/muninn/service/index.ts`). The server accepts any compliant memory service instance or options to initialize its own.
+- **Architecture**: Decoupled via the `IMemoryService` port interface (the package's service barrel). The server accepts any compliant memory service instance or options to initialize its own.
 - **Declarative Tool Registry**: Defined via `TOOL_REGISTRY`, mapping tool names to strict Zod schemas and typed handlers.
 
 #### Available Tools
@@ -994,6 +1001,12 @@ huginn memory sync [--file <path>] [--project <path>]
 
 # Import observations from JSON Lines format
 huginn memory sync --import [--file <path>] [--project <path>]
+
+# Index AST symbols and dependencies for the given files into the symbol graph
+huginn memory index [files...] [--project <path>] [--db <path>]
+
+# Persist every `## ADR-N` section of adr.md (or ADR.md) as a decision observation; --dry-run previews
+huginn memory decisions [--adr <path>] [--project <path>] [--db <path>] [--dry-run]
 ```
 
 | Subcommand | Flag / Option | Description |
@@ -1005,6 +1018,10 @@ huginn memory sync --import [--file <path>] [--project <path>]
 | | `--limit <n>` | Max search results to display (default: `10`). |
 | `sync` | `--import` | Import from disk into SQLite database instead of exporting. |
 | | `--file <path>` | Path to `.jsonl` file (defaults to `<project_root>/.huginn/memories.jsonl`). |
+| `index` | `[files...]` | Files to index; with none, it scans the project's source files (`findSourceFiles`) and prints the indexed file/symbol/dependency counts. |
+| | `--project <path>`, `--db <path>` | Workspace root and database override. |
+| `decisions` | `--adr <path>` | ADR file (defaults to `adr.md`, else `ADR.md`, under the project root). |
+| | `--dry-run` | Print how many decision sections would be saved and write nothing; the run itself is idempotent (saved/updated/unchanged counts). |
 
 ### Stdio MCP Server Runner (`huginn mcp run`)
 
@@ -1040,6 +1057,11 @@ All optional:
 | `HUGINN_DEBUG` | string | unset | Print full error stack traces on fatal errors, plus non-fatal notes (e.g. why Muninn indexing was skipped). |
 | `CI` | string | unset | Every prompt (`promptLine`/`promptYesNo`, `src/util/prompt.ts`) returns its fallback instead of reading stdin — `huginn init` and any non-interactive run never block on a human. |
 
+Four more variables control the memory cap around agent and `Verification:` subprocesses —
+`HUGINN_MEMORY` (retrieval kill switch), `HUGINN_MEMORY_MAX`, `HUGINN_MEMORY_SWAP_MAX` and
+`HUGINN_TASKS_MAX`. They are documented in
+[Resource limits (memory cap)](#resource-limits-memory-cap).
+
 ### Background update check
 
 Every `huginn run` / `plan` / `live` fires a **non-blocking** check against the npm registry
@@ -1052,9 +1074,9 @@ fallback when the registry is unreachable. Set `HUGINN_NO_UPDATE_CHECK=1` to dis
 ## Development
 
 ```sh
-npm test              # full test suite (bun test unit tests + vitest muninn suite)
-bun test              # run core unit tests via bun test
-vitest run            # run muninn database, service, mcp, and command tests
+npm test              # full test suite (`bun test src` unit tests + `vitest run` integration tests)
+bun test src          # unit tests next to the code, under src/**/*.test.ts (bun:test)
+vitest run            # integration suite under test/**/*.test.ts (engine, tui, commands, state)
 bun run typecheck     # tsc --noEmit
 bun run dev -- ...    # run from source
 bun run build         # bundle to dist/ for the global bin

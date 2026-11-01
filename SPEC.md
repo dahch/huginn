@@ -1,5 +1,14 @@
 # Spec: Muninn Engine — Persistent Semantic and Symbol Memory
 
+> **Scope note (Muninn extraction).** REQ-1…REQ-13 describe the memory engine, its MCP server,
+the AST indexer and the compiler-contract verifier. Those now ship in the
+[`@dahch/muninn`](https://github.com/dahch/muninn) package (published on npm as `0.1.0`, consumed as
+`^0.1.0`): the paths `src/muninn/**`, `src/contracts/**`, `test/muninn/**` and `test/contracts/**`
+below name **that package's** tree, not this repository. `huginn memory`, `huginn check` and
+`huginn mcp run` remain thin wrappers over the same library, so the CLI surface and the
+`.huginn/muninn.db` location are unchanged. Every other requirement in this file is implemented
+here, and its paths are current.
+
 ## 1. Executive Summary
 
 Muninn is the persistent semantic and code-symbol memory subsystem for Huginn and modern AI coding agents (Claude Code, Cursor, Devin, OpenCode). While Huginn represents thought and orchestration, Muninn represents memory. Muninn records developer decisions, conventions, discoveries, bug fixes, and architectural notes in an embedded SQLite database enhanced with full-text search (FTS5) and code entity graph linkage. It exposes a native Model Context Protocol (MCP) server over stdio, providing agents with deterministic, topological context retrieval without relying on remote embedding APIs or external servers.
@@ -174,7 +183,7 @@ The subsystem must have full unit and integration test coverage under `test/muni
 - **AC-10.2**: Unit tests verify `saveObservation`, BM25 `search`, `getContext`, `linkSymbol`, `getStats`, and JSONL sync/import in `test/muninn/service.test.ts`.
 - **AC-10.3**: Integration tests verify MCP tool handlers, schema validation, argument normalization, and JSON-RPC dispatch in `test/muninn/mcp.test.ts`.
 - **AC-10.4**: Integration and CLI unit tests verify argument parsing, multi-positional extraction, subcommand routing, search formatting, sync import/export, error exit codes, and signal teardown in `test/muninn/commands.test.ts`.
-- **AC-10.5**: All test suites pass cleanly via `npm test` (`bun test && vitest run`), enforced during package publishing via `prepublishOnly` (`bun run build && npm run test && bun run typecheck`).
+- **AC-10.5**: All test suites pass cleanly via `npm test` (`bun test src && vitest run`), enforced during package publishing via `prepublishOnly` (`bun run build && npm run test && bun run typecheck`).
 
 ### REQ-11: Verified Execution Contracts via TypeScript Compiler API
 The system must provide static typecheck and compiler diagnostic verification for affected files during the execution cycle and on demand.
@@ -387,6 +396,12 @@ The CLI must offer clear, structured commands and a frictionless initialization 
   - Prompts developer to choose default agent and preferred models.
   - Registers Muninn MCP (`huginn setup`) and creates initial `.huginn/config.json`.
 - **AC-26.2 (Streamlined Help)**: `huginn --help` presents a concise, visually grouped summary (Core commands: `live`, `run`, `init`, `setup`, `doctor`). Advanced technical options are cleanly categorized or surfaced via `huginn --help --all`.
+- **AC-26.3 (Every subcommand owns its help)**: `huginn <cmd> --help` answers with that
+  subcommand's usage instead of the global overview — `init` prints the wizard's flags and steps,
+  `setup`, `doctor`, `memory`, `mcp`, `runtime`, `config` and `check` print their own usage,
+  `promote` prints its recovery flags, and `run`, `live`, `plan` and `install` print the full
+  `usage()` reference. The global interception answers only a bare `--help`/`-h`, `huginn help`,
+  `huginn init --help` and an unknown command; every help surface prints the banner and exits 0.
 
 ---
 

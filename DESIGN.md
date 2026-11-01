@@ -45,7 +45,7 @@ src/
 │   ├── doctor.ts           CLI commands: runDoctorChecks, handleDoctorCommand (environment/Muninn diagnostics)
 │   ├── init.ts             CLI commands: handleInitCommand (onboarding wizard incl. the runtime model picker), printInitUsage
 │   ├── install.ts          CLI commands: handleInstallCommand (compatibility no-op — prompts are built in)
-│   ├── memory.ts           CLI commands: handleMemoryCommand (init, search, sync, index), handleMcpCommand (run), usage formatters
+│   ├── memory.ts           CLI commands: handleMemoryCommand (init, search, sync, index, decisions), handleMcpCommand (run), usage formatters
 │   └── setup.ts            CLI commands: handleSetupCommand (run the universal agent integrator)
 ├── config.ts               RunConfig; UserConfig schema, model resolution + source attribution, atomic symlink-safe config persistence
 ├── contracts/
@@ -65,6 +65,9 @@ src/
 │   │   ├── index.ts            barrel export for runtime subsystem
 │   │   ├── genericTargets.ts  GENERIC_TARGET_SPECS: binary, argv, prompt channel, model flag and permission switch for every CLI-only target (M4b)
 │   │   ├── port.ts            RuntimeId/RuntimeCapabilities/RuntimePort: the driver-neutral contract (M4b split)
+│   │   ├── conformance.ts     the capability contract every driver must honour (fails a driver that claims more than it delivers)
+│   │   ├── mcpConfig.ts       project MCP config discovery + parsing (`loadProjectMcpConfig`, `readMcpConfigFile`), reserved-key screening, sanitized server entries
+│   │   ├── binaryUtils.ts     isExecutableBinary: the PATH/binary probe the registry resolves with
 │   │   ├── legacy-bridge.ts   toRuntimePort / asRuntimePort: bridge a CLI adapter into the port (no reverse bridge)
 │   │   └── adapters/
 │   │       ├── opencode.ts     OpencodeRuntimeAdapter (wraps opencode serve daemon + SDK); connected-provider discovery + `opencode models` fallback; sessionHistory = true
@@ -77,6 +80,8 @@ src/
 │   │       └── index.ts        re-exports the remaining adapters
 │   ├── cycle.ts            CycleEngine: pipeline-as-data (per profile, `readOnly` flag), retry/fix/escalate loop, structural verdicts, state machine
 │   ├── phases.ts           the phase + fix functions; the single prompt seam; single-report VALIDATE_STEP; deterministic COMMIT_ALL; read-only tree guard
+│   ├── verify.ts           the deterministic VERIFY phase: runs the iteration's `Verification:` commands in the sandbox, verdict from the real exit codes (a signal death is `crash`, ADR-57)
+│   ├── sandbox.ts          planScopedCommand/planScopedShellCommand: the transient systemd --user scope (MemoryMax/MemorySwapMax/TasksMax), liveness-probed userScopeAvailable, `$` escaping
 │   ├── steps/              huginn-owned step instructions (REQ-40): instructions.ts (embedded roles/tasks), prompts.ts (per-step composers), context.ts (bounded reads, git capture, untrusted embedding, verdict contracts), types.ts (StepContext)
 │   ├── gitRepo.ts          ensureGitRepository: `git init -b main` + `.gitignore` + identity + bootstrap commit (REQ-39)
 │   ├── gate.ts             verdict parsers, JSON judge, fail-closed logic
@@ -86,6 +91,9 @@ src/
 │   ├── runtimeEvents.ts    the one RuntimeEvent → engine bus mapper (deltas, tools, usage)
 │   ├── permissionPolicy.ts the one --permissions → PermissionHandler mapping
 │   ├── agent/drivers/opencode.ts  native opencode port: one SSE fan-out, permissions, questions, resume
+│   ├── agent/drivers/pi-sdk.ts    native pi port: in-process createAgentSession(), model switching, `pi mcp list --json` bridge
+│   ├── agent/drivers/codex-sdk.ts native codex port: a persisted `Thread` from @openai/codex-sdk (no abort, no streaming)
+│   ├── agent/drivers/claude-sdk.ts native claude port: optional non-OSS SDK, real interrupt via AbortController
 │   ├── memory/db.ts        fail-open open + topic-keyed upsert (never creates for a reader)
 │   ├── memory/queries.ts   decisions, observations and module-symbol SQL over Muninn
 │   ├── memory/adr.ts       parse `## ADR-N` and persist decisions (REQ-64)
@@ -105,6 +113,7 @@ src/
 │   │   └── index.ts        barrel export for the skills subsystem
 │   ├── engineEvents.ts     global typed event emitter
 │   ├── worktree.ts         git worktree sandbox manager (create/promote/discard/list/cleanup, untracked/tracked-collision parking + branch preservation)
+│   ├── promotionRepair.ts  mergeRef, repairPromotionFindings and promotionRepairEligibility: the conflict-only repair path for a failed promotion (ADR-62)
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
 ├── muninn/
 │   ├── db/
@@ -141,6 +150,7 @@ src/
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
     ├── commandRegistry.ts  single slash-command registry (id, aliases, argHint, description) driving dispatch, the palette and /help (REQ-28 / ADR-28)
     ├── glyphs.ts           the one display glyph table: phase/status marks plus the decision alphabet, shared by the TUI and PROGRESS.md (REQ-52 / REQ-68 / ADR-51 / ADR-63)
+    ├── decision.ts         the decision modal's pure exhaustive title formatter, `decisionTitle(req)` (REQ-68 / ADR-63)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
     ├── feedback.ts         the one feedback voice: ✓/!/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
@@ -751,9 +761,11 @@ directly. The implementation lives in `src/config.ts`, `src/commands/config.ts`,
 
 `main()` (`src/cli.ts`) routes on `args._command`. Help is a two-tier hierarchy (Iteration 24,
 § 25.5): `help`/`--help`/`-h` print the banner plus the concise `usageCore()`, `--help --all`
-(or `help --all`) print the full `usage()` reference instead, and `huginn init --help` prints the
-wizard's own `printInitUsage()`. The subcommands in `KNOWN_COMMANDS` (`run`, `plan`, `live`, `init`,
-`install`, `memory`, `mcp`, `check`, `setup`, `doctor`, `config`) route to their handlers.
+(or `help --all`) print the full `usage()` reference instead, and each subcommand handler answers
+its own `--help` (`printInitUsage`, `printSetupUsage`, `printDoctorUsage`, `printMemoryUsage`,
+`printMcpUsage`, `printRuntimeUsage`, `printConfigUsage`, `printCheckUsage`, `promote`'s inline
+block); `run`, `live`, `plan` and `install` print `usage()`. The subcommands in `KNOWN_COMMANDS` (`run`, `plan`, `live`, `init`,
+`install`, `memory`, `mcp`, `check`, `runtime`, `setup`, `doctor`, `config`, `promote`) route to their handlers.
 **Anything else — no command at all, or a bare free-text token such as `huginn "crear módulo de
 pagos"` — enters `runLive(args, command)`, and the stray token is passed through as the initial idea
 (REQ-14.4)** — with one exception: a *bare* invocation in a repository that has never run huginn
@@ -1762,7 +1774,7 @@ prompt seam, moved here when the template installer was removed) and
    orchestrator*: it adds only `existsSync` probes and sectioned output and delegates the rest. It
    owns no I/O, so it cannot drift from `setup`/`config` semantics.
 2. **A scannable help surface**: the concise default must fit on one screen without abandoning the
-   full reference, which other tools and `test/muninn/commands.test.ts` assert on — hence two
+   full reference, which other tools and `test/commands/init.test.ts` assert on — hence two
    functions rather than one aliased string.
 3. **Greenfield safety on a live-first dispatcher**: because an unknown or absent subcommand is
    *already* meaningful input (a free-text idea, REQ-14.4), onboarding cannot hijack the no-argument
@@ -1857,8 +1869,12 @@ Three exports add the routing rule without touching the live-first default:
 | `usageCore()` | `huginn --help`, `huginn help`, `huginn -h` | usage line, the five Core commands (`live`, `run`, `init`, `setup`, `doctor`), four copy-pasteable examples, the common flags, and a single "run `huginn --help --all`" pointer |
 | `usage()` | `huginn --help --all`, `huginn help --all` | the full reference: every subcommand, every flag and default, and the model-resolution precedence order |
 | `printInitUsage()` | `huginn init --help` | the wizard's own flags, steps and non-interactive note |
+| each subcommand handler | `huginn <cmd> --help` | its own usage: `setup`, `doctor`, `memory`, `mcp`, `runtime`, `config`, `check` and `promote`; `run`, `live`, `plan` and `install` print `usage()` |
 
-- `usage()` is kept byte-stable: `test/muninn/commands.test.ts` asserts on it (e.g. the
+- Only a bare `--help`/`-h`, `huginn help`, `huginn init --help` and an unknown command reach the
+  global interception in `main()`; intercepting every `--help` returned before dispatch and left the
+  ten subcommand help branches dead.
+- `usage()` is kept byte-stable: `test/commands/init.test.ts` asserts on it (e.g. the
   `huginn memory init …` line) and it remains the long-form reference; `usageCore()` is a strict
   subset of it. All help surfaces print the banner first (`printBanner({})`) and exit 0.
 - `--all` (and the wizard's `--skip-setup`) were added to `BOOLEAN_FLAGS` so `parseArgs` never
@@ -2637,7 +2653,7 @@ layout budget (`VIEWPORT_RESERVED_ROWS`) so it can never push the frame off-scre
 |---|---|
 | `STATUS_GLYPHS` | `pending` `·` · `running` the existing braille spinner (`⠋`) · `pass` `✓` · `warning` `!` · `blocked` `✕` · `skipped` `–` |
 | `verdictGlyph(v)` | the status glyph for a `Verdict` (replaces `verdictIcon`'s emoji) |
-| `phaseGlyph(phase)` | `SPEC_AUDIT` `?` · `EXECUTE` `>` · `VALIDATE_STEP` `=` · `TEST_MODULE` `%` · `VERIFY` `V` · `SECURE_CHECK` `#` · `REVIEW` `@` · `DOC_SYNC` `~` · `COMMIT_ALL` `.` · any `FIX_*`/unknown `+` |
+| `phaseGlyph(phase)` | `SPEC_AUDIT` `?` · `EXECUTE` `>` · `VALIDATE_STEP` `=` · `TEST_MODULE` `%` · `VERIFY` `V` · `SECURE_CHECK` `#` · `REVIEW` `@` · `DOC_SYNC` `~` · `COMMIT_ALL` `.` · `REPAIR_PROMOTION` `&` · any `FIX_*`/unknown `+` |
 
 - `verdictIcon` (`src/format.ts`) now delegates to `verdictGlyph`, so a colour token is still resolved
   by the TUI while the character comes from the table (AC-52.4).

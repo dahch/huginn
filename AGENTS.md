@@ -327,8 +327,8 @@ the conformance suite (`conformance.ts`, run for every target in
 ```sh
 bun install            # dependencies only — there is no postinstall hook any more
 bun link               # exposes the global `huginn` bin → dist/cli.js
-bun test               # unit tests under src/**/*.test.ts (bun:test)
-vitest run             # integration suite under test/**/*.test.ts
+bun test src           # unit tests under src/**/*.test.ts (bun:test) — plain `bun test` also picks up test/**
+vitest run             # integration suite under test/**/*.test.ts (engine, tui, commands, state)
 bun run typecheck      # tsc --noEmit (strict)
 bun run dev -- ...     # run from source, e.g.
                        #   bun run dev -- run --project ../repo --thinker a/b --executor c/d
@@ -371,14 +371,16 @@ command runner), `src/plan/parser.test.ts` (increment metadata), `src/engine/ste
 `src/engine/steps/context.test.ts` (composition, bounding, nonce delimitation, the git-interpolation
 allowlist, doc containment), `test/engine/phases.test.ts` (the single-report `VALIDATE_STEP`, the
 deterministic verdict, the imposed gate/handoff line and the deterministic commit),
-`test/engine/agent/opencodePort.test.ts` (the native driver's SSE fan-out, permissions and
+`src/engine/agent/drivers/opencode.test.ts` (the native driver's SSE fan-out, permissions and
 resume), `src/engine/runtimeEvents.test.ts` + `src/engine/permissionPolicy.test.ts` (the event
 mapper and the `--permissions` mapping), `src/engine/steps/retrieval.test.ts` +
 `src/engine/memory/adr.test.ts` +
 `src/engine/memory/curation.test.ts` (bounded retrieval, read-only refusal, idempotent ADR/curation
 writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verification that throws fails closed),
 `test/engine/agent/piMcp.test.ts` (the `pi mcp list --json` parser and the native driver's MCP bridge),
-`test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment), and
+`test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment),
+`test/tui/glyphs.test.ts` + `test/tui/decisionModal.test.ts` (the glyph tables and the decision
+title drift guard, including the ASCII/one-column rule), and
 `test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
 `test/commands/liveSessions.test.ts` (the persisted live store, resume flags and reattach).
 
@@ -476,12 +478,20 @@ Two display conventions a TUI change must follow:
   counts it, and splitting happens between segments so a styled span is never cut mid-markup.
   The run dashboard's `PipelineCard` likewise lists `phasesForProfile(cfg.profile)`: the profile owns
   the order, so `VERIFY` sits right after `EXECUTE` in the Huginn Cycle.
-- **Display glyphs come from `src/tui/glyphs.ts`** — one table of single-width ASCII shared by the
-  dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass, `!`
-  warning, `✕` blocked, `–` skipped; phase kinds `?` `>` `=` `%` `#` `@` `~` `.`, `+` for any other).
+- **Display glyphs come from `src/tui/glyphs.ts`** — single-width status/phase marks shared by
+  the dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass,
+  `!` warning, `✕` blocked, `–` skipped; phase kinds `?` SPEC_AUDIT, `>` EXECUTE, `=` VALIDATE_STEP,
+  `%` TEST_MODULE, `V` VERIFY, `#` SECURE_CHECK, `@` REVIEW, `~` DOC_SYNC, `.` COMMIT_ALL, `&`
+  REPAIR_PROMOTION, `+` for any other). The same module owns the decision alphabet
+  (`DECISION_GLYPHS`: `+` approve, `?` question, `!` warning, `*` finished): every mark is ASCII, one
+  column wide and a non-letter, so it can never read as one of the modal's `[a]`/`[d]` key hints, and
+  the title text is composed by the pure `decisionTitle(req)` in `src/tui/decision.ts` (an exhaustive
+  `switch`, so a new `DecisionKind` fails to compile until it gets a title). The feedback voice is
+  `✓` / `!` / `…`.
   Never add an emoji display glyph. The gate marker literals (`### Overall gate: 🟢/🟡/🔴`,
-  `### Overall fidelity: …`) and the runtime stream prefixes (`⚡ ✓ ✗ 💭`) are excluded: the first are a
-  three-way contract, the second are producer output.
+  `### Overall fidelity: …`), the engine's `⚠️ REVIEW REQUESTED` handoff line and the runtime stream
+  prefixes (`⚡ ✓ ✗ 💭`) are excluded: the first are a three-way contract, the last are producer
+  output. Changing the decision alphabet is a TUI change; changing the gate/handoff literals is not.
 - **An output panel only claims what the runtime can deliver**: the run dashboard's `StreamCard` shows
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
   title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`
