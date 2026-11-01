@@ -1882,3 +1882,50 @@ avoids. They are ordered by how central the decision is to the design.
     revisited whenever the modal gains a new kind of row. `decisionKeyRows` falls back to the gate
     keys for an unknown kind (unlike the exhaustive `decisionTitle` switch), so a new `DecisionKind`
     compiles even if its body or footer rows were never counted — the guard test is what catches it.
+
+## ADR-65: Cards declare a chrome hierarchy instead of repeating border arithmetic
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: Every framed TUI surface used to repeat the same arithmetic in two places: the
+  component drew a border and a title, and the dashboard that laid it out guessed the row and column
+  cost ("two border rows, two padding columns", "the log card's three rows"). The copies drifted.
+  The log tail was the clearest failure: `LogsCard` still drew a full box and its callers carried a
+  literal row cost for it, so every entry spent two extra border rows while the conversation, the
+  stream, the pipeline and the side panel all competed with the same outline. A budget one row short
+  pushes the composer off the frame (ADR-64), so this is a layout-correctness problem, not only a
+  visual one.
+- **Decision**:
+  1. `src/tui/Card.tsx` owns `CARD_CHROME` and the pure `cardChrome(tone)`: `primary` (`round`, two
+     border rows, one title row, four columns), `secondary` (`single`, the same cost) and `tertiary`
+     (no border, one title row, two columns for the `│ ` rule). `rows` folds in the title row; a
+     titleless card reserves `borderRows` instead.
+  2. `Card` draws only chrome — the declared border, one clipped title row and `overflow="hidden"`.
+     It does not scroll, measure children or choose a height: the caller already computed the
+     height and paid for the chrome through `cardChrome`.
+  3. The hierarchy is applied as a promise: the conversation is `primary`, the stream, `InfoPanel`,
+     `PipelineCard` and `StreamCard` are `secondary`, and the log tail is `tertiary`. An unfocused
+     `primary` keeps its accent token, a focused card always uses `borderFocus`, an unfocused
+     `secondary` steps back to the quiet border, and `tertiary` has no box.
+  4. Both dashboards import the log tail's cost from the table, so `LogsCard` costs
+     `visibleLogs.length + 1` instead of `+ 3`. The tail itself spends two fewer rows; existing
+     five-row expectations intentionally become three.
+- **Alternatives rejected**: (a) keep each component's constants and only align their values — the
+  copies drift again on the next change, which is exactly how this happened; (b) use one border style
+  everywhere — it removes the hierarchy the screen needs and still leaves the title/padding cost
+  duplicated; (c) let `Card` own the height and scroll its children — it would fight Ink's layout and
+  duplicate the row planners that already exist; (d) fold the decision modal, composer, palette and
+  header into the same table now — the modal is a different weight (double border, windowed body)
+  and needs an `alert`/`double` tone, so those surfaces keep their own labelled constants for this
+  change.
+- **Consequences**:
+  - *Positive*: one table answers "what does this surface cost in rows and columns?"; the log tail
+    spends two fewer rows and no longer pretends to be a box; the visual hierarchy is explicit
+    (conversation → stream/panel → logs) and focus/colour follow it; the table, painted heights, log
+    cost, surface mapping and emitted border colours are guarded by `test/tui/card.test.ts` and
+    `test/tui/cardColors.test.ts`.
+  - *Negative*: `rows` includes the title row, so a titleless `secondary` must use `borderRows` or it
+    over-reserves one row; the decision modal, composer, palette and header still carry their own
+    border constants; and not every scroll-budget adjustment has been migrated to the table — a few
+    `- 3` literals remain, and they must be derived from `cardChrome` before the "one source" claim
+    can be made for the whole TUI.

@@ -313,6 +313,22 @@ describe("panel lines (REQ-12)", () => {
     expect(slicePanelLines(lines, 99)).toEqual(lines);
   });
 
+  it("defaults the caller's inset to two columns when it is omitted", () => {
+    const plan = sidePanelPlan({ columns: 120, availableHeight: 20 });
+    // The default inset is the shared outer `paddingX={1}` on both sides.
+    expect(plan.cardsWidth).toBe(120 - 2 - SIDE_PANEL_WIDTH - 1);
+    expect(plan.contentWidth).toBe(SIDE_PANEL_WIDTH - 4);
+  });
+
+  it("drops the agent and MCP rows when the session has neither", () => {
+    const lines = panelLines({ ...panelData, agentName: "", mcpText: "" }, contentWidth);
+    const labels = lines.filter((line) => line.kind === "row").map((line) => line.label);
+    expect(labels).not.toContain("agent");
+    expect(lines.some((line) => line.kind === "badge")).toBe(false);
+    // The stage is always known, so that row never disappears.
+    expect(labels).toContain("stage");
+  });
+
   it("renders nothing at all when the plan says the panel is hidden", () => {
     const plan = sidePanelPlan({ columns: 80, availableHeight: 30, inset: 2 });
     expect(InfoPanel({ plan, data: panelData })).toBeNull();
@@ -518,6 +534,25 @@ describe("live frame with the side panel (REQ-12)", () => {
     const trimmed = lines[bottom]!.trimStart();
     expect(trimmed.slice(0, trimmed.indexOf("╯") + 1)).toMatch(/^╰─+╯$/);
   }, 30000);
+
+  it("keeps only the log tail a 30-row frame can pay for (REQ-70)", async () => {
+    const harness = await mountLive(createMockLive(), 80, 30);
+    for (let index = 0; index < 5; index += 1) {
+      events.emit("log", { level: "info", message: `log-entry-${index}` });
+    }
+    await tick(120);
+    harness.unmount();
+
+    const output = harness.output();
+    const logRows = visibleLines(output).filter((line) => line.includes("log-entry-"));
+    // 30 rows allow three entries; the tertiary card spends one title row, not
+    // the old two-border rows, so the tail is exactly title + 3.
+    expect(logRows).toHaveLength(3);
+    expect(output).toContain("SYSTEM LOGS");
+    expect(output).toContain("log-entry-4");
+    expect(output).not.toContain("log-entry-0");
+    expect(output).not.toContain("log-entry-1");
+  });
 
   it("keeps the chat, the stream, the panel, the composer and the footer inside the terminal", async () => {
     for (const [columns, rows] of [

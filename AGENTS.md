@@ -381,6 +381,8 @@ writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verifica
 `test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment),
 `test/tui/glyphs.test.ts` + `test/tui/decisionModal.test.ts` (the glyph tables, the decision
 title drift guard and the modal's row contract, including the ASCII/one-column rule),
+`test/tui/card.test.ts` + `test/tui/cardColors.test.ts` (the `CARD_CHROME` cost table, the painted
+height per tone, the borderless log tail and the emitted border colours),
 `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
 composer or footer off an 18-/24-row frame), and
 `test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
@@ -470,7 +472,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Four display conventions a TUI change must follow:
+Five display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -502,6 +504,19 @@ Four display conventions a TUI change must follow:
   their own chrome leaves and pass it in — never a height literal. `test/tui/decisionModal.test.ts`
   asserts the height equals the rows Ink paints, and `test/tui/liveLayout.test.ts` +
   `test/tui/dashboard.test.ts` hold 18- and 24-row frames.
+- **A card declares its chrome; it never guesses its height.** `src/tui/Card.tsx` owns the one
+  `CARD_CHROME`/`cardChrome(tone)` table: `primary` (round, two border rows, one title row, four
+  columns), `secondary` (single, the same cost) and `tertiary` (no border, one title row, two columns
+  for the `│ ` rule). The conversation is `primary`; the stream, `InfoPanel`, `PipelineCard` and
+  `StreamCard` are `secondary`; `LogsCard` is `tertiary`. `rows` includes the title row, so a
+  titleless card (`InfoPanel`) reserves `borderRows` instead. Both dashboards compute the log tail
+  as `visibleLogs.length + cardChrome("tertiary").rows` — the old `+ 3` literal and its five-row
+  expectations are gone, and a five-entry tail now costs six rows. `Card` draws only chrome (border,
+  one clipped title row, clipped body); it never scrolls, measures children or computes a height.
+  `test/tui/card.test.ts` guards the table, painted heights, log cost and surface→tone map;
+  `test/tui/cardColors.test.ts` guards the emitted border colours. The decision modal, composer,
+  palette and header keep their own labelled border constants — and a few scroll budgets still use a
+  `- 3` literal — so never describe `CARD_CHROME` as the cost source for the whole TUI.
 - **An output panel only claims what the runtime can deliver**: the run dashboard's `StreamCard` shows
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
   title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`

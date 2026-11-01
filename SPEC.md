@@ -1205,6 +1205,35 @@ iteration and 6 afterwards** (down from 14).
   the rows Ink actually paints for every decision kind — a request that fits, one that must window,
   and budgets below the two border rows — so a height literal can never drift from the real cost.
 
+### REQ-70: Cards declare one chrome hierarchy and its exact cost
+- **AC-70.1 (One cost table)**: `CARD_CHROME` and `cardChrome(tone)` live in `src/tui/Card.tsx`.
+  `primary` and `secondary` each spend two border rows, one title row and four columns (a border
+  plus `paddingX={1}` on each side); `tertiary` spends one title row and two columns for its `│ `
+  rule, with no box at all. `rows` includes the title row, so a card that renders no title
+  (`InfoPanel`) reserves `borderRows`, not `rows` — the declared cost is exact only when the card
+  draws the title it paid for. The table is scoped to the card surfaces: the decision modal's
+  double border and the composer, palette and header borders keep their own labelled constants.
+- **AC-70.2 (Card draws chrome only)**: `<Card tone title titleRight focused height width minHeight
+  accentToken>` renders the border style its tone declares (`round`, `single` or none), exactly one
+  clipped title row (both cells `wrap="truncate"`, `overflow="hidden"`) and a clipped body. It
+  never scrolls, measures children or computes a height; the caller has already paid through
+  `cardChrome(tone)`.
+- **AC-70.3 (Tone map)**: the conversation is `primary`; the live stream, `InfoPanel`,
+  `PipelineCard` and `StreamCard` are `secondary`; the log tail (`LogsCard`) is `tertiary`.
+  `test/tui/card.test.ts` asserts each surface's declared tone.
+- **AC-70.4 (Log tail is cheap)**: `LogsCard` costs `visibleLogs.length + 1` rows (title plus one
+  line per entry) instead of `+ 3`, and both dashboards derive that budget from
+  `cardChrome("tertiary").rows`, never a literal. The old five-row expectations move to three
+  because the box is gone; the commit records that as an improvement, not a relaxed assertion.
+- **AC-70.5 (Colour follows the hierarchy)**: an unfocused `primary` border uses `THEME.accent`
+  (or the stage's `accentToken`); a focused card uses `THEME.borderFocus` whatever its tone; an
+  unfocused `secondary` uses `THEME.border`; `tertiary` paints no border. Focus is also signalled in
+  the title, so colour is never the only cue.
+- **AC-70.6 (Drift guards)**: `test/tui/card.test.ts` pins the table, the exact painted height per
+  tone, the borderless tertiary card, `LogsCard`'s row cost and the six surface→tone mappings;
+  `test/tui/cardColors.test.ts` renders with colour forced on and asserts the border escape Ink
+  actually emits for the accent, `borderFocus`, quiet-border and borderless cases.
+
 ---
 
 ## Appendix — module map

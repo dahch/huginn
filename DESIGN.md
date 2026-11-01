@@ -151,6 +151,7 @@ src/
     ├── commandRegistry.ts  single slash-command registry (id, aliases, argHint, description) driving dispatch, the palette and /help (REQ-28 / ADR-28)
     ├── glyphs.ts           the one display glyph table: phase/status marks plus the decision alphabet, shared by the TUI and PROGRESS.md (REQ-52 / REQ-68 / ADR-51 / ADR-63)
     ├── decision.ts         the decision modal's pure exhaustive title formatter, `decisionTitle(req)` (REQ-68 / ADR-63)
+    ├── Card.tsx           the one chrome-cost table (`CARD_CHROME`/`cardChrome`) and the `Card` primitive that draws exactly that chrome (REQ-70 / ADR-65)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
     ├── feedback.ts         the one feedback voice: ✓/!/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
@@ -1133,6 +1134,14 @@ Card heights were previously fixed (`VISIBLE_CHAT_LINES = 12`, `VISIBLE_STREAM_L
 The `useTerminalSize()` hook dynamically measures and adapts to terminal dimensions:
 - Reads `process.stdout.rows` and `process.stdout.columns` with safe fallbacks (`DEFAULT_ROWS = 24`, `DEFAULT_COLUMNS = 80`) when non-TTY or dimensions are undefined.
 - Listens to `process.stdout.on("resize")` and triggers React state updates on dimension changes.
+- Every framed card declares one of three tones and reserves its cost from the single `CARD_CHROME`
+  table (`cardChrome(tone)`, REQ-70 / ADR-65): `primary` is the round conversation box, `secondary`
+  is the quieter single box used by the stream, pipeline and side panel, and `tertiary` is the
+  borderless log tail (one title row plus a `│ ` rule per entry). A card asks for a tone instead of
+  repeating "two border rows plus two padding columns", and a dashboard imports the same cost into
+  its row budget — the log tail is `visibleLogs.length + cardChrome("tertiary").rows`, not a literal.
+  The table covers the card surfaces only; the decision modal's double border and the composer,
+  palette and header borders keep their own labelled constants.
 - Layout cards (`ScrollableChatCard`, `ScrollableStreamCard`, `PipelineCard`, `LogsCard`) dynamically calculate their height from available viewport `rows`:
   - `HeaderCard` (the raven header) and `InputBar` / `FooterBar` occupy fixed overhead. The header's row cost is no longer a constant: `useRavenHeaderPlan` / `ravenHeaderPlan` (`src/tui/RavenHeader.tsx`) derives it from the measured columns/rows, the viewport floor and the caller's context rows, resolving mark + wordmark → wordmark-only → plain text, so the header never spends rows the budget did not reserve (REQ-29 / AC-29.3).
   - Middle cards scale to occupy 100% of remaining vertical height without vertical overflow.
@@ -1142,7 +1151,7 @@ The `useTerminalSize()` hook dynamically measures and adapts to terminal dimensi
 To prevent visual tearing and corrupted frames in the alternate screen buffer, stdout emissions are completely eliminated during TUI operation:
 - **`patchConsole()` / `unpatchConsole()`**: Intercepts `console.log`, `console.warn`, and `console.error` methods.
 - Intercepted messages are formatted using `node:util.format` and dispatched to `events.emit("log", { level, message, timestamp })`.
-- **Pre-Mount Log Buffering (`Emitter.logBuffer`)**: `Emitter` maintains a ring buffer of the last 50 log events (`MAX_LOG_BUFFER = 50`) accessible via `events.getRecentLogs()`. Early initialization logs (server startup, provider checks, template warnings) are preserved and displayed in `LogsCard` without leaking raw text to stdout before Ink mounts.
+- **Pre-Mount Log Buffering (`Emitter.logBuffer`)**: `Emitter` maintains a ring buffer of the last 50 log events (`MAX_LOG_BUFFER = 50`) accessible via `events.getRecentLogs()`. Early initialization logs (server startup, provider checks, template warnings) are preserved and displayed in the borderless `SYSTEM LOGS` tail (`LogsCard`, a `tertiary` card) without leaking raw text to stdout before Ink mounts.
 - CLI banner and update checks are conditionally suppressed or routed through `events.emit("log", ...)` when `cfg.tui` is active.
 
 ### 20.4 Stream Batching & Scroll Containment
@@ -2762,3 +2771,43 @@ terminal. Now:
   paints for every kind (fitting, windowed and below-border budgets); `test/tui/liveLayout.test.ts`
   and `test/tui/dashboard.test.ts` hold the whole frame at 18 and 24 rows and assert the title, the
   `… +N` indicator and the key footer survive.
+
+### 32.8 One chrome hierarchy, one cost table (REQ-70 / ADR-65)
+
+Every framed surface used to repeat the same border/padding/title arithmetic in the component that
+painted it and in the dashboard that reserved its rows. `src/tui/Card.tsx` replaces those copies with
+one table:
+
+- **The table.** `CARD_CHROME` / `cardChrome(tone)` declares, per tone, the Ink border style, the
+  border rows, the title rows, the total rows and the columns spent outside the body:
+
+  | tone | border | border rows | title rows | `rows` | `columns` |
+  |---|---|---|---|---|---|
+  | `primary` | `round` | 2 | 1 | 3 | 4 |
+  | `secondary` | `single` | 2 | 1 | 3 | 4 |
+  | `tertiary` | none | 0 | 1 | 1 | 2 (`│ `) |
+
+  `rows` includes the title row. A card that renders no title (`InfoPanel`) reserves
+  `cardChrome(tone).borderRows`, not `rows`, so the declared cost equals the painted cost only for
+  the titled case.
+- **`Card` draws chrome only.** It renders the declared border, exactly one clipped title row (both
+  cells `wrap="truncate"`, `overflow="hidden"`) and a clipped body. It never scrolls, measures its
+  children or computes a height: the caller already paid for the chrome and passes the height in.
+- **The hierarchy is the promise.** The conversation is `primary` (round, accent, the loudest
+  surface); the live stream, `InfoPanel`, `PipelineCard` and `StreamCard` are `secondary` (single,
+  quiet border); `LogsCard` is `tertiary` (no box, `SYSTEM LOGS` title and a `│ ` rule per entry).
+  A focused card uses `THEME.borderFocus`; an unfocused `secondary` uses `THEME.border`; `tertiary`
+  paints no border. Focus is also visible in the title, so colour is never the only cue.
+- **The budget imports the table.** Both dashboards compute the log tail as
+  `visibleLogs.length + cardChrome("tertiary").rows`, so the old `+ 3` literal (and the five-row
+  expectations that encoded it) disappear. The log tail itself now spends `entries + 1` rows (two
+  fewer than before), and the same table supplies `SIDE_PANEL_BORDER_ROWS`/`SIDE_PANEL_BORDER_COLUMNS`
+  and the scrollable cards' body budgets.
+- **Guards.** `test/tui/card.test.ts` pins the table, the painted height per tone, the borderless
+  tertiary card, the log-tail cost and the surface→tone mapping; `test/tui/cardColors.test.ts`
+  forces colour on and asserts the ANSI border Ink actually emits. `test/tui/liveLayout.test.ts`
+  holds the 30-row log-tail budget at three entries.
+- **Still outside the table.** The decision modal's double border, the composer, the palette and the
+  header keep their own labelled constants; unifying them needs an `alert`/`double` tone and is a
+  separate change. A few scroll-budget adjustments still use a `- 3` literal and must be migrated
+  before the "one source of truth" claim holds for the whole TUI.

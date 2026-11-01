@@ -20,9 +20,23 @@
   computes the exact height. Both dashboards pass the rows their own chrome leaves as `maxRows`, so
   a tall question windows its body behind a `… +N · ↑/↓` indicator (scrolled with `↑`/`↓`) instead
   of pushing the composer and footer off an 18- or 24-row terminal (REQ-69 / ADR-64).
+- **One chrome-cost table for the TUI's cards.** `src/tui/Card.tsx` exports `CARD_CHROME`,
+  `cardChrome(tone)` and the `Card` primitive. `primary` is the round conversation box,
+  `secondary` is the quieter single box used by the stream, pipeline and side panel, and
+  `tertiary` is a borderless title-plus-`│ ` list for the logs. `LogsCard` costs
+  `visibleLogs.length + 1` instead of `+ 3`, and both dashboards import that cost from
+  `cardChrome("tertiary")` instead of a literal. The tail itself now spends two fewer rows (a
+  five-entry tail costs six instead of eight). The table, the painted heights, the surface→tone
+  mapping and the emitted border colours are guarded by `test/tui/card.test.ts` and
+  `test/tui/cardColors.test.ts` (REQ-70 / ADR-65).
 
 ### Changed
 
+- **The TUI's framed surfaces now read as a hierarchy.** The conversation keeps the round accent
+  box, the stream and pipeline step back to a quiet `single` border, and the log tail loses its box
+  and its mid-line `│` in favour of a leading `│ ` rule. This also removes `StreamCard`'s
+  verbose-only accent border; the `[VERBOSE]` marker still carries that state, and focus is still
+  signalled by `borderFocus` and the card title (REQ-70 / ADR-65).
 - **Feedback speaks `!`:** `FEEDBACK_WARN` is `!` (alongside `✓` and `…`). This is TUI-only: the
   gate literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`), the producer markers
   (`⚡ ✓ ✗ 💭`) and every engine/CLI warning output (the `⚠️ REVIEW REQUESTED` handoff line, its
