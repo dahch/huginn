@@ -853,7 +853,7 @@ agent. Everything agent-specific lives in the declarative `AGENT_REGISTRY`
 | `agy` | Antigravity CLI (agy) | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` | `AGENTS.md` |
 | `kimi` | Kimi Code CLI | `<home>/.kimi-code/mcp.json`, `<project>/.kimi/mcp.json` | `mcpServers` | `AGENTS.md` |
 | `pi` | Pi coding agent | `<home>/.pi/agent/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` | `AGENTS.md` |
-| `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.commandcode/mcp.json` | `mcpServers` | `AGENTS.md` |
+| `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.mcp.json` | `mcpServers` | `AGENTS.md` |
 | `omp` | Oh My Pi | `<home>/.omp/mcp.json`, `<project>/.omp/mcp.json` | `mcpServers` | `AGENTS.md` |
 | `mcode` | MiniMax Code | `<project>/.mcp.json` | `mcpServers` | `AGENTS.md` |
 | `mimo` | MiMo Code | `<home>/.config/mimocode/mimocode.json` | `opencode` (`mcp` key) | `AGENTS.md` |

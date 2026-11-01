@@ -67,6 +67,12 @@
 
 ### Fixed
 
+- **Command Code found Muninn again.** `AGENT_REGISTRY.commandcode` wrote the project scope to
+  `<project>/.commandcode/mcp.json`, but Command Code 1.88 loads the project `mcpServers` from the
+  repository root `.mcp.json` (the user scope is `~/.commandcode/mcp.json`), so `cmd mcp list` never
+  showed the server. The project path now reuses mcode's `.mcp.json`; the writer still merges into
+  the existing `mcpServers` map, preserving other servers such as `codegraph` byte-for-byte, and
+  `huginn doctor` detects the entry in the file the CLI actually reads.
 - **An adopted sandbox promotes from its merge base, not from its own tip.** `attachSandbox` reported
   the worktree's HEAD as `baseCommit`, which is the branch tip; `promoteSandbox` computes the range
   `base..branch`, so adopting a sandbox (a resume after a checkpoint, or any recovery) produced an

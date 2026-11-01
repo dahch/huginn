@@ -24,6 +24,7 @@ import {
   writePortableMcpConfig,
 } from "../../src/agents/integrator.js";
 import { handleSetupCommand } from "../../src/commands/setup.js";
+import { configRegistersMuninn } from "../../src/commands/doctor.js";
 
 const roots: string[] = [];
 
@@ -93,6 +94,12 @@ describe("AGENT_REGISTRY", () => {
     expect(AGENT_REGISTRY.opencode.format).toBe("opencode");
     expect(AGENT_REGISTRY.cursor.mcpPaths).toHaveLength(2);
     expect(AGENT_REGISTRY.claude.mcpPaths).toHaveLength(3);
+    // Command Code 1.88 reads `<project>/.mcp.json` for the project scope;
+    // `.commandcode/mcp.json` inside the project is invisible to `cmd mcp list`.
+    expect(AGENT_REGISTRY.commandcode.mcpPaths).toEqual([
+      "{home}/.commandcode/mcp.json",
+      "{project}/.mcp.json",
+    ]);
   });
 
   it("registers the Phase 3B targets where their CLI really reads them", () => {
@@ -131,6 +138,12 @@ describe("resolveMcpPaths", () => {
     expect(resolveMcpPaths("mcode", baseOpts(env))).toEqual([join(env.project, ".mcp.json")]);
     expect(resolveMcpPaths("mimo", baseOpts(env))).toEqual([
       join(env.home, ".config", "mimocode", "mimocode.json"),
+    ]);
+    // Command Code: user scope is `~/.commandcode/mcp.json`; the project scope is
+    // the root `.mcp.json` (reusing mcode's location, not a duplicate rule).
+    expect(resolveMcpPaths("commandcode", baseOpts(env))).toEqual([
+      join(env.home, ".commandcode", "mcp.json"),
+      join(env.project, ".mcp.json"),
     ]);
   });
 
@@ -317,6 +330,36 @@ describe("registerMcpForTarget", () => {
     const regs = registerMcpForTarget("devin", baseOpts(env));
     expect(regs.length).toBeGreaterThan(0);
     expect(statSync(regs[0].path).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("Command Code project scope (1.88)", () => {
+  it("merges muninn into the project .mcp.json without touching other servers", () => {
+    const env = makeEnv();
+    const path = join(env.project, ".mcp.json");
+    const codegraph = { command: "codegraph", args: ["serve"], env: { A: "1" } };
+    writeFileEnsured(path, JSON.stringify({ mcpServers: { codegraph } }));
+
+    const report = setup({ agent: "commandcode", ...baseOpts(env) });
+
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    // The pre-existing server is byte-for-byte preserved; the writer merges into
+    // the container instead of replacing the file.
+    expect(parsed.mcpServers.codegraph).toEqual(codegraph);
+    expect(parsed.mcpServers.muninn).toEqual({
+      command: "huginn",
+      args: ["mcp", "run", "--project", env.project],
+    });
+    expect(report.registrations.find((r) => r.path === path)?.changed).toBe(true);
+    // The user scope is written too, and a user-global file never pins a project.
+    const home = JSON.parse(
+      readFileSync(join(env.home, ".commandcode", "mcp.json"), "utf8"),
+    ) as { mcpServers: Record<string, unknown> };
+    expect(home.mcpServers.muninn).toEqual({ command: "huginn", args: ["mcp", "run"] });
+    // `huginn doctor` sees the registration in the file Command Code actually reads.
+    expect(configRegistersMuninn(path, "mcpServers")).toBe(true);
   });
 });
 

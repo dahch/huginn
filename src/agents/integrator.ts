@@ -291,7 +291,12 @@ export const AGENT_REGISTRY: Record<AgentTarget, AgentSpec> = {
     id: "commandcode",
     label: "Command Code",
     format: "mcpServers",
-    mcpPaths: ["{home}/.commandcode/mcp.json", "{project}/.commandcode/mcp.json"],
+    // Verified against Command Code 1.88: the `project` scope reads the root
+    // `<project>/.mcp.json` (the same `mcpServers` container Claude Code and
+    // mcode use), while the `user` scope is `~/.commandcode/mcp.json`. Writing
+    // `.commandcode/mcp.json` inside the project made `cmd mcp list` blind to
+    // the server.
+    mcpPaths: ["{home}/.commandcode/mcp.json", "{project}/.mcp.json"],
     rulesFile: "AGENTS.md",
   },
   omp: {

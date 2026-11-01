@@ -234,7 +234,7 @@ The verification contracts and AST symbol indexer must integrate seamlessly into
   | `agy` | Antigravity CLI (agy) | `<home>/.gemini/config/mcp_config.json`, `<project>/.agents/mcp_config.json` | `mcpServers` |
   | `kimi` | Kimi Code CLI | `<home>/.kimi-code/mcp.json`, `<project>/.kimi/mcp.json` | `mcpServers` |
   | `pi` | Pi coding agent | `<home>/.pi/agent/mcp.json`, `<project>/.pi/mcp.json` | `mcpServers` |
-  | `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.commandcode/mcp.json` | `mcpServers` |
+  | `commandcode` | Command Code | `<home>/.commandcode/mcp.json`, `<project>/.mcp.json` | `mcpServers` |
   | `omp` | Oh My Pi | `<home>/.omp/mcp.json`, `<project>/.omp/mcp.json` | `mcpServers` |
   | `mcode` | MiniMax Code | `<project>/.mcp.json` | `mcpServers` |
   | `mimo` | MiMo Code | `<home>/.config/mimocode/mimocode.json` | `opencode` (`mcp` key) |
