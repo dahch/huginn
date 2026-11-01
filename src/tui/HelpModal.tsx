@@ -46,6 +46,19 @@ export const NAVIGATION_SHORTCUTS: ShortcutItem[] = [
       "Composer: recall your submissions. Focused viewport: scroll it (or move the command palette while typing a /command)",
   },
   { key: "PageUp / PageDown", description: "Fast-scroll focused viewport (4 lines)" },
+  {
+    key: "z (card focus)",
+    description: "Maximize the focused card; press z again to restore the split",
+  },
+  {
+    key: "Ctrl+↑ / Ctrl+↓",
+    description: "Move the conversation/stream split (from a focused card)",
+  },
+  {
+    key: "L (card focus)",
+    description:
+      "Pin/reopen the log tail; an idle tail collapses after a minute, unless its visible tail holds an error",
+  },
   { key: "Esc or q", description: "Close modal / cancel current view" },
   { key: "Enter", description: "Submit command or prompt" },
 ];

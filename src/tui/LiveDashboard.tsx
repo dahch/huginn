@@ -13,13 +13,9 @@ import { isAgentTarget } from "../engine/agent/registry";
 import { events, type LiveStage } from "../engine/engineEvents";
 import { formatUsage } from "../format";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
-import {
-  DECISION_MIN_ROWS,
-  Dashboard,
-  DecisionModal,
-  LogsCard,
-  decisionModalHeight,
-} from "./Dashboard";
+import { Dashboard, LogsCard } from "./Dashboard";
+import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
+import { DecisionModal } from "./DecisionModal.js";
 import { MarkdownLine, markdownSegments, renderSegments, wrapSegments, type MdSegment } from "./markdown";
 import { Card, cardChrome } from "./Card.js";
 import { useTerminalSize } from "./useTerminalSize";
@@ -163,6 +159,77 @@ const HEADER_STATUS_SHARE = 0.4;
 /** Columns the header keeps for the models before it shows that summary at all. */
 const HEADER_MIN_MODEL_COLUMNS = 30;
 
+/** Share of the cards row the conversation gets before the split is moved. */
+export const DEFAULT_SPLIT_RATIO = 0.58;
+/** One Ctrl+↑/↓ press moves the split by this much. */
+export const SPLIT_RATIO_STEP = 0.08;
+/** The narrowest and widest the conversation share may become. */
+export const SPLIT_RATIO_MIN = 0.3;
+export const SPLIT_RATIO_MAX = 0.8;
+/** Idle time after which the log tail collapses itself out of the frame. */
+export const LOG_AUTO_COLLAPSE_MS = 60_000;
+
+/** Which card currently owns the whole cards row, if any. */
+export type MaximizedCard = "chat" | "stream" | null;
+
+/** Clamp a card split ratio to the range the keyboard shortcuts may reach. */
+export function clampSplitRatio(ratio: number): number {
+  if (!Number.isFinite(ratio)) return DEFAULT_SPLIT_RATIO;
+  return Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, ratio));
+}
+
+/**
+ * Move the card split by `delta`, keeping it inside its range.
+ *
+ * The result is rounded to the two decimals the step and its range live in:
+ * binary floating point makes `0.58 - 0.08` equal `0.49999999999999994`, which
+ * `Math.floor` then turns into one row less than the user asked for, and the
+ * ± steps stop being reversible (Ctrl+↑ then Ctrl+↓ would not come back to the
+ * same split).
+ */
+export function adjustSplitRatio(ratio: number, delta: number): number {
+  const moved = clampSplitRatio(ratio) + delta;
+  return clampSplitRatio(Math.round(moved * 100) / 100);
+}
+
+/** The two card heights for one layout request. */
+export interface LiveCardHeights {
+  chatHeight: number;
+  streamHeight: number;
+}
+
+/**
+ * Split the cards row between the conversation and the stream. Pure, so the
+ * three layouts (conversation only, the remembered split, and either card
+ * maximized) are testable without rendering a frame.
+ *
+ * A maximized card owns every row and the other card is not rendered at all;
+ * otherwise the conversation keeps `splitRatio` of the row (clamped to the
+ * keyboard's range) and the stream takes the remainder. With no stream content
+ * the conversation owns the row whatever the remembered ratio or maximized card.
+ */
+export function liveCardHeights({
+  availableHeight,
+  splitRatio,
+  maximized,
+  showStream,
+}: {
+  availableHeight: number;
+  splitRatio: number;
+  maximized?: MaximizedCard;
+  showStream: boolean;
+}): LiveCardHeights {
+  const available = Number.isFinite(availableHeight) ? Math.max(0, Math.floor(availableHeight)) : 0;
+  if (!showStream || available === 0) return { chatHeight: available, streamHeight: 0 };
+  if (maximized === "chat") return { chatHeight: available, streamHeight: 0 };
+  if (maximized === "stream") return { chatHeight: 0, streamHeight: available };
+  const chatHeight =
+    available < 2
+      ? available
+      : Math.max(1, Math.min(available - 1, Math.floor(available * clampSplitRatio(splitRatio))));
+  return { chatHeight, streamHeight: available - chatHeight };
+}
+
 function statusRow(label: string, value: string): string {
   return `│ ${label.padEnd(STATUS_LABEL_WIDTH)} ${value.padEnd(STATUS_VALUE_WIDTH)}│`;
 }
@@ -178,14 +245,21 @@ export type FocusTarget = "composer" | "chat" | "stream";
 /**
  * Tab order for the live console: composer → conversation → agent stream →
  * composer (reversed for Shift+Tab). A collapsed stream card is skipped rather
- * than announced, so Tab always lands somewhere the user can see.
+ * than announced, so Tab always lands somewhere the user can see. `hasChat` is
+ * optional so a maximized stream card can hand the chat's turn back to the
+ * composer instead of focusing a card the layout hid.
  */
 export function nextFocus(
   current: FocusTarget,
   hasStream: boolean,
   backwards = false,
+  hasChat = true,
 ): FocusTarget {
-  const order: FocusTarget[] = hasStream ? ["composer", "chat", "stream"] : ["composer", "chat"];
+  const order: FocusTarget[] = [
+    "composer",
+    ...(hasChat ? (["chat"] as FocusTarget[]) : []),
+    ...(hasStream ? (["stream"] as FocusTarget[]) : []),
+  ];
   const index = Math.max(0, order.indexOf(current));
   const step = backwards ? -1 : 1;
   return order[(index + step + order.length) % order.length] ?? "composer";
@@ -528,6 +602,16 @@ function RefineView({
   const [currentThinker, setCurrentThinker] = useState(cfg.thinker);
   const [currentExecutor, setCurrentExecutor] = useState(cfg.executor);
   const [focus, setFocus] = useState<FocusTarget>("composer");
+  /** Remembered conversation/stream share (Ctrl+↑/↓); `0.58` is the old fixed split. */
+  const [splitRatio, setSplitRatio] = useState(DEFAULT_SPLIT_RATIO);
+  /** A card the user maximized with `z`, or `null` for the split layout. */
+  const [maximized, setMaximized] = useState<MaximizedCard>(null);
+  /** `L` pins the log tail open and disables the idle auto-collapse. */
+  const [logsPinned, setLogsPinned] = useState(false);
+  /** True once the idle timer hid the log tail; a new log (or `L`) opens it again. */
+  const [logsCollapsed, setLogsCollapsed] = useState(false);
+  /** When the newest log entry arrived — the auto-collapse timer's anchor. */
+  const [lastLogAt, setLastLogAt] = useState(() => Date.now());
   const [chatScroll, setChatScroll] = useState(0);
   const [streamScroll, setStreamScroll] = useState(0);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -706,6 +790,9 @@ function RefineView({
           { level: e.level, message: e.message, timestamp: time },
         ];
         setLogs(logBuf.current);
+        // A new event is news: show the tail again and restart the idle clock.
+        setLogsCollapsed(false);
+        setLastLogAt(Date.now());
       }),
       events.on("usage", (e) => setUsage(formatUsage(e.total))),
       events.on("decision", (req) => setDecision(req)),
@@ -765,8 +852,44 @@ function RefineView({
   if (decision || suggestionsOpen || showAgentPicker || showProfilePicker) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
+  /** The visible/recent tail holds an error: it must stay visible instead of collapsing. */
+  const logsHaveError = visibleLogs.some((entry) => entry.level === "error");
+  /** Entries the footer advertises so `[L]` can bring them back. */
+  const hiddenLogs = logsCollapsed ? logs.length : 0;
   const logsHeight =
-    visibleLogs.length > 0 ? visibleLogs.length + cardChrome("tertiary").rows : 0;
+    !logsCollapsed && visibleLogs.length > 0
+      ? visibleLogs.length + cardChrome("tertiary").rows
+      : 0;
+
+  // Idle logs are ephemeral: after a minute without a new event the tail gives
+  // its rows back to the conversation. `L` pins it open (and disables this
+  // timer); an error in the visible/recent tail is not something the user can
+  // miss, so it keeps the tail open too. A stale error that has scrolled out of
+  // the tail does not disable auto-collapse for the rest of the session. A new
+  // log restarts both the clock and the visible tail through the event handler
+  // above.
+  useEffect(() => {
+    if (logsPinned || logsCollapsed || logs.length === 0 || logsHaveError) return;
+    const idleFor = Date.now() - lastLogAt;
+    const timer = setTimeout(
+      () => setLogsCollapsed(true),
+      Math.max(0, LOG_AUTO_COLLAPSE_MS - idleFor),
+    );
+    return () => clearTimeout(timer);
+  }, [logsPinned, logsCollapsed, logs, logsHaveError, lastLogAt]);
+
+  /** `L`: pin the tail open, or release it back to the idle timer. */
+  const toggleLogs = (): void => {
+    if (logsPinned) {
+      setLogsPinned(false);
+      // Releasing the pin starts a fresh minute instead of hiding the tail the
+      // same instant because the last event is already older than the timeout.
+      setLastLogAt(Date.now());
+      return;
+    }
+    setLogsPinned(true);
+    setLogsCollapsed(false);
+  };
 
   // The header's own cost with the composer at its floor. Growing the composer
   // only ever *raises* the reserved-rows figure the art has to fit under, so the
@@ -1430,10 +1553,12 @@ function RefineView({
   // nor does "work in flight", so the panel is never an empty box.
   const hasStreamContent = streamLines.some((line) => line.trim().length > 0);
   const showStreamPanel = hasStreamContent;
-  const chatHeight = showStreamPanel
-    ? Math.max(1, Math.floor(availableHeight * 0.58))
-    : Math.max(1, availableHeight);
-  const streamHeight = showStreamPanel ? Math.max(1, availableHeight - chatHeight) : 0;
+  const { chatHeight, streamHeight } = liveCardHeights({
+    availableHeight,
+    splitRatio,
+    maximized,
+    showStream: showStreamPanel,
+  });
 
   // ── Side panel (REQ-12) ──────────────────────────────────────────────────
   // The panel shares the row the cards live in, so it changes no frame budget: the
@@ -1555,13 +1680,23 @@ function RefineView({
     return rows;
   }, [formattedChatLines, chatBodyColumns]);
 
-  // Never leave focus on a card that is not rendered.
+  // Never leave focus on a card the layout hid: a maximized card owns the row,
+  // and a stream that disappeared entirely hands focus back to the conversation.
+  // A remembered maximized card is released when its stream content is gone, so
+  // it cannot reappear maximized after the next turn starts.
   useEffect(() => {
-    if (!showStreamPanel && focus === "stream") setFocus("chat");
-  }, [showStreamPanel, focus]);
+    if (!showStreamPanel && maximized !== null) setMaximized(null);
+  }, [showStreamPanel, maximized]);
+  useEffect(() => {
+    if (streamHeight <= 0 && focus === "stream") {
+      setFocus(chatHeight > 0 ? "chat" : "composer");
+    } else if (chatHeight <= 0 && focus === "chat") {
+      setFocus(streamHeight > 0 ? "stream" : "composer");
+    }
+  }, [streamHeight, chatHeight, focus]);
 
-  const visibleChatLinesCount = Math.max(1, chatHeight - 3);
-  const visibleStreamLinesCount = Math.max(1, streamHeight - 3);
+  const visibleChatLinesCount = Math.max(1, chatHeight - cardChrome("primary").rows);
+  const visibleStreamLinesCount = Math.max(1, streamHeight - cardChrome("secondary").rows);
 
   const maxChatScroll = Math.max(0, chatRows.length - visibleChatLinesCount);
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
@@ -1662,12 +1797,20 @@ function RefineView({
       return;
     }
     if (confirmEsc) setConfirmEsc(false);
+    // `L` pins/releases the log tail, but only from a focused card: in the
+    // composer it is ordinary text (uppercase on purpose, because `[L]` is the
+    // hint the footer advertises). Tab first, then `L`.
+    if (input === "L" && focus !== "composer") {
+      toggleLogs();
+      return;
+    }
     if (key.tab) {
       // Tab moves focus and nothing else: composer → conversation → stream →
-      // composer (Shift+Tab reverses). A collapsed stream card is skipped, so the
-      // key always lands somewhere visible. It must never append a notice to the
-      // chat: one press, one line is how a "helpful" hint becomes a wall of text.
-      setFocus((current) => nextFocus(current, showStreamPanel, key.shift));
+      // composer (Shift+Tab reverses). A collapsed (or maximized-away) card is
+      // skipped, so the key always lands somewhere visible. It must never append
+      // a notice to the chat: one press, one line is how a "helpful" hint becomes
+      // a wall of text.
+      setFocus((current) => nextFocus(current, streamHeight > 0, key.shift, chatHeight > 0));
       return;
     }
 
@@ -1681,6 +1824,14 @@ function RefineView({
     if (key.pageDown) {
       if (focus === "stream") setStreamScroll((s) => Math.max(s - 4, 0));
       else setChatScroll((s) => Math.max(s - 4, 0));
+      return;
+    }
+
+    // Ctrl+↑/↓ move the card split, but only from a focused card: in the
+    // composer those chords must stay out of the draft (and the terminal).
+    if (key.ctrl && (key.upArrow || key.downArrow) && focus !== "composer") {
+      const delta = key.upArrow ? SPLIT_RATIO_STEP : -SPLIT_RATIO_STEP;
+      setSplitRatio((current) => adjustSplitRatio(current, delta));
       return;
     }
 
@@ -1738,6 +1889,14 @@ function RefineView({
         live.requestAbort();
         failSession(new LiveAbortError());
       }
+      return;
+    }
+
+    // `z` maximizes the focused card and `z` again restores the split. It only
+    // fires from a card: in the composer it is ordinary text (and must be
+    // inserted as such), which is why it sits after the input guard above.
+    if (focus !== "composer" && input === "z" && !key.ctrl && !key.meta) {
+      setMaximized((current) => (current === focus ? null : focus));
       return;
     }
 
@@ -1905,23 +2064,25 @@ function RefineView({
         // width, so this row is pixel-for-pixel what the column used to be.
         <Box flexDirection="row" width={terminalSize.columns - LIVE_VIEW_OUTER_INSET}>
           <Box flexDirection="column" width={cardsWidth}>
-            <ScrollableChatCard
-              rows={visibleChatLines}
-              totalRows={chatRows.length}
-              scrollOffset={chatScroll}
-              maxScroll={maxChatScroll}
-              isFocused={focus === "chat"}
-              busy={busy}
-              spinner={spinner}
-              height={chatHeight}
-              width={cardsWidth}
-              // One home per tip: the panel already carries it on a wide
-              // terminal, so the hero's tip box only fills that role when there
-              // is no panel beside the conversation.
-              tip={panelPlan.visible ? "" : tip}
-            />
+            {chatHeight > 0 && (
+              <ScrollableChatCard
+                rows={visibleChatLines}
+                totalRows={chatRows.length}
+                scrollOffset={chatScroll}
+                maxScroll={maxChatScroll}
+                isFocused={focus === "chat"}
+                busy={busy}
+                spinner={spinner}
+                height={chatHeight}
+                width={cardsWidth}
+                // One home per tip: the panel already carries it on a wide
+                // terminal, so the hero's tip box only fills that role when there
+                // is no panel beside the conversation.
+                tip={panelPlan.visible ? "" : tip}
+              />
+            )}
 
-            {showStreamPanel && (
+            {showStreamPanel && streamHeight > 0 && (
               <ScrollableStreamCard
                 lines={visibleStreamLines}
                 totalLines={streamLines.length}
@@ -1940,7 +2101,7 @@ function RefineView({
         </Box>
       )}
 
-      {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
+      {!logsCollapsed && visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
 
       {decision ? <DecisionModal req={decision} maxRows={decisionMaxRows} /> : null}
 
@@ -1979,9 +2140,9 @@ function RefineView({
                 <Text color={THEME.muted} wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
               ) : (
                 <Text color={THEME.muted} wrap="truncate">
-                  {`[Tab] Focus: ${focus === "composer" ? "input" : focus} · [↑/↓] ${
-                    focus === "composer" ? "History" : "Scroll"
-                  } · [PgUp/Dn] Scroll · [Enter] Send · / commands`}
+                  {`${hiddenLogs > 0 ? `[L] logs · ${hiddenLogs} (card focus) · ` : ""}[Tab] Focus: ${
+                    focus === "composer" ? "input" : focus
+                  } · [↑/↓] ${focus === "composer" ? "History" : "Scroll"} · [PgUp/Dn] Scroll · [Enter] Send · / commands`}
                 </Text>
               )}
             </Box>

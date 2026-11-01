@@ -384,7 +384,10 @@ title drift guard and the modal's row contract, including the ASCII/one-column r
 `test/tui/card.test.ts` + `test/tui/cardColors.test.ts` (the `CARD_CHROME` cost table, the painted
 height per tone, the borderless log tail and the emitted border colours),
 `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
-composer or footer off an 18-/24-row frame), and
+composer or footer off an 18-/24-row frame, and the live layout keys — `z`, `Ctrl+↑`/`Ctrl+↓`, `L` —
+with the idle log tail and its advertised hidden count, on 100×30 frames),
+`test/tui/infoPanel.test.ts` (the side panel's geometry, its `SESSION`/`REPO`/`MEMORY` sections, the
+bottom-anchored tip and the rows it must not invent), and
 `test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
 `test/commands/liveSessions.test.ts` (the persisted live store, resume flags and reattach).
 
@@ -463,9 +466,25 @@ forwarded to the model.
 
 **Focus is a three-state union** (`"composer" | "chat" | "stream"`, `FocusTarget` in
 `LiveDashboard.tsx`): `Tab`/`Shift+Tab` cycle it through `nextFocus()` — skipping the agent-stream
-card while it is collapsed — and it, **not the draft's emptiness**, decides where `↑`/`↓`/`PgUp`/
-`PgDn` go (composer: history recall + caret; card: scroll). Any editing key claims the composer back.
-A focus move never writes to the chat: a key with nothing to do must not append a line.
+card while it is collapsed, and the conversation while a maximized stream card has hidden it — and
+it, **not the draft's emptiness**, decides where `↑`/`↓`/`PgUp`/`PgDn` go (composer: history recall
++ caret; card: scroll). Any editing key claims the composer back. A focus move never writes to the
+chat: a key with nothing to do must not append a line.
+
+**The layout keys belong to the focused card, never to the composer.** From a card, `z` maximizes it
+(`z` again restores the remembered split), `Ctrl+↑`/`Ctrl+↓` move the conversation/stream split by
+`SPLIT_RATIO_STEP` (0.08, clamped to 0.30–0.80 around `DEFAULT_SPLIT_RATIO` 0.58 through the pure
+`adjustSplitRatio`), and `L` pins or reopens the log tail. In the composer `z` and `L` are ordinary
+draft text and the chord stays out of the terminal, which is the whole reason the guard is the focus
+state rather than the draft's emptiness. The split itself is the pure `liveCardHeights` (a maximized
+card takes every row, the other is not rendered), so the three layouts are testable without a frame.
+
+**The log tail is ephemeral.** `LOG_AUTO_COLLAPSE_MS` (60 s) without a new event collapses it and
+returns the rows to the conversation; a new log reopens it, an `error` still present in the visible
+tail keeps it open, and an error that has scrolled out does not disable the timer forever. `L` pins
+it (disabling the timer); releasing the pin starts a fresh minute. A collapsed tail is advertised in
+the footer as `[L] logs · N (card focus)`, where `N` counts every hidden entry — a log that vanishes
+silently is indistinguishable from a log that never arrived.
 
 Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `--session <id>` and
 `--list-sessions`/`-sl` read `<project>/.huginn/live/sessions.json` (`src/state/liveSession.ts`). The
@@ -497,13 +516,14 @@ Five display conventions a TUI change must follow:
   prefixes (`⚡ ✓ ✗ 💭`) are excluded: the first are a three-way contract, the last are producer
   output. Changing the decision alphabet is a TUI change; changing the gate/handoff literals is not.
 - **The decision modal buys only the rows it can pay for.** `decisionModalHeight(req?, maxRows?)`
-  (`src/tui/Dashboard.tsx`) is the single source of truth: `decisionBodyRows`/`decisionKeyRows`
-  return one entry per terminal row, the planner pays the double border, the title and the key
-  footer first, buys the `… +N · ↑/↓` indicator only while a body row still fits, and windows the
-  rest; below two rows it draws nothing. Both dashboards derive `decisionMaxRows` from the rows
-  their own chrome leaves and pass it in — never a height literal. `test/tui/decisionModal.test.ts`
-  asserts the height equals the rows Ink paints, and `test/tui/liveLayout.test.ts` +
-  `test/tui/dashboard.test.ts` hold 18- and 24-row frames.
+  (`src/tui/decision.ts`) is the single source of truth: `decisionBodyRowSpecs`/`decisionKeyRowSpecs`
+  model one entry per terminal row and the React builders in `src/tui/DecisionModal.tsx` render the
+  same specs, the planner pays the double border, the title and the key footer first, buys the
+  `… +N · ↑/↓` indicator only while a body row still fits, and windows the rest; a capped budget
+  below `DECISION_MIN_ROWS` draws nothing rather than a title without its key footer. Both dashboards
+  derive `decisionMaxRows` from the rows their own chrome leaves and pass it in — never a height
+  literal. `test/tui/decisionModal.test.ts` asserts the height equals the rows Ink paints, and
+  `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` hold 18- and 24-row frames.
 - **A card declares its chrome; it never guesses its height.** `src/tui/Card.tsx` owns the one
   `CARD_CHROME`/`cardChrome(tone)` table: `primary` (round, two border rows, one title row, four
   columns), `secondary` (single, the same cost) and `tertiary` (no border, one title row, two columns
@@ -514,9 +534,10 @@ Five display conventions a TUI change must follow:
   expectations are gone, and a five-entry tail now costs six rows. `Card` draws only chrome (border,
   one clipped title row, clipped body); it never scrolls, measures children or computes a height.
   `test/tui/card.test.ts` guards the table, painted heights, log cost and surface→tone map;
-  `test/tui/cardColors.test.ts` guards the emitted border colours. The decision modal, composer,
-  palette and header keep their own labelled border constants — and a few scroll budgets still use a
-  `- 3` literal — so never describe `CARD_CHROME` as the cost source for the whole TUI.
+  `test/tui/cardColors.test.ts` guards the emitted border colours. Both dashboards now also derive
+  their card scroll windows from `cardChrome(...).rows`, so no `- 3` chrome literal remains. The
+  decision modal, composer, palette and header keep their own labelled border constants, so never
+  describe `CARD_CHROME` as the cost source for the whole TUI.
 - **An output panel only claims what the runtime can deliver**: the run dashboard's `StreamCard` shows
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
   title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`

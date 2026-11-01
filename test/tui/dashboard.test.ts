@@ -504,3 +504,177 @@ describe("Stream buffer bounding (REV-001 / REV-002)", () => {
     expect(boundedLines[999]).toBe("line 1500");
   });
 });
+
+/**
+ * The run dashboard's keyboard surface (REQ-69 / ADR-62). `useInput` is the only
+ * way a user can pause, inspect or abort a running cycle, so each key is a
+ * behaviour the engine must actually receive — and a key the prompt did not
+ * advertise must stay a no-op.
+ */
+describe("run dashboard controls", () => {
+  const ANSI = /\u001B\[[0-9;?]*[A-Za-z]/g;
+  const tick = (ms = 80): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function createEngine(overrides: Record<string, unknown> = {}) {
+    return {
+      getState: () => ({ currentIteration: 1, currentPhase: "EXECUTE" }),
+      runtime: {
+        id: "commandcode",
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+      },
+      isRunning: true,
+      resolveDecision: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      requestAbort: vi.fn(),
+      ...overrides,
+    } as unknown as CycleEngine;
+  }
+
+  async function mountRun(engine: CycleEngine): Promise<{
+    stdin: ReturnType<typeof createMockStdin>;
+    output: () => string;
+    unmount: () => void;
+  }> {
+    events.clear();
+    const stdout = new PassThrough() as any;
+    stdout.columns = 100;
+    stdout.rows = 30;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const cfg = { projectPath: "/tmp/p", thinker: "a/b", executor: "c/d", mode: "auto" } as RunConfig;
+    const stdin = createMockStdin();
+    const instance = render(React.createElement(Dashboard, { engine, cfg, autoExit: false }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+    });
+    await tick();
+    return {
+      stdin,
+      output: () => output.replace(ANSI, ""),
+      unmount: () => instance.unmount(),
+    };
+  }
+
+  /** Mounts, presses `keys`, unmounts, and returns the frame the user saw. */
+  async function press(
+    keys: string[],
+    engine: CycleEngine = createEngine(),
+  ): Promise<{ output: string; engine: CycleEngine }> {
+    const harness = await mountRun(engine);
+    for (const key of keys) {
+      harness.stdin.write(key);
+      await tick(70);
+    }
+    harness.unmount();
+    return { output: harness.output(), engine };
+  }
+
+  it("pauses on `p` and resumes on the next one", async () => {
+    const paused = await press(["p"]);
+    expect(paused.engine.pause).toHaveBeenCalledTimes(1);
+    expect(paused.engine.resume).not.toHaveBeenCalled();
+    expect(paused.output).toContain("[PAUSED]");
+    expect(paused.output).toContain("[Space] Resume");
+
+    const resumed = await press(["p", "p"]);
+    expect(resumed.engine.pause).toHaveBeenCalledTimes(1);
+    expect(resumed.engine.resume).toHaveBeenCalledTimes(1);
+    expect(resumed.output).not.toContain("[PAUSED]");
+  });
+
+  it("gives Space the same pause/resume role", async () => {
+    const { engine, output } = await press([" "]);
+    expect(engine.pause).toHaveBeenCalledTimes(1);
+    expect(output).toContain("[PAUSED]");
+
+    const again = await press([" ", " "]);
+    expect(again.engine.pause).toHaveBeenCalledTimes(1);
+    expect(again.engine.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles the verbose layout with `v` and says which mode it is in", async () => {
+    const off = await press([]);
+    expect(off.output).toContain("(OFF)");
+
+    const on = await press(["v"]);
+    expect(on.output).toContain("[VERBOSE]");
+    expect(on.output).toContain("(ON)");
+  });
+
+  it("aborts on `q` and on Escape", async () => {
+    const quit = await press(["q"]);
+    expect(quit.engine.requestAbort).toHaveBeenCalledTimes(1);
+
+    const escape = await press(["\u001B"]);
+    expect(escape.engine.requestAbort).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a permission prompt with the letter the prompt advertises", async () => {
+    const permission: DecisionRequest = {
+      id: "perm-1",
+      kind: "permission",
+      iteration: 0,
+      phase: "EXECUTE",
+      attempt: 1,
+      message: "Allow writing src/index.ts?",
+    };
+    const expected: Array<[string, "continue" | "retry" | "deny"]> = [
+      ["a", "continue"],
+      ["o", "retry"],
+      ["d", "deny"],
+    ];
+    for (const [key, choice] of expected) {
+      const engine = createEngine();
+      const harness = await mountRun(engine);
+      events.emit("decision", permission);
+      await tick(120);
+      harness.stdin.write(key);
+      await tick(80);
+      harness.unmount();
+      expect(engine.resolveDecision, `key ${key}`).toHaveBeenCalledWith(choice);
+    }
+  });
+
+  it("answers a question with yes/no and ignores a key it did not offer", async () => {
+    const question: DecisionRequest = {
+      id: "q-1",
+      kind: "question",
+      iteration: 0,
+      phase: "LIVE",
+      attempt: 1,
+      message: "Which database?",
+    };
+    const yes = createEngine();
+    const yesHarness = await mountRun(yes);
+    events.emit("decision", question);
+    await tick(120);
+    yesHarness.stdin.write("y");
+    await tick(80);
+    yesHarness.unmount();
+    expect(yes.resolveDecision).toHaveBeenCalledWith("continue");
+
+    const no = createEngine();
+    const noHarness = await mountRun(no);
+    events.emit("decision", question);
+    await tick(120);
+    noHarness.stdin.write("n");
+    await tick(80);
+    noHarness.unmount();
+    expect(no.resolveDecision).toHaveBeenCalledWith("deny");
+
+    // Scroll keys belong to the terminal, not to the question: they must not
+    // answer it (the modal's own window handles them where it has one).
+    const scrolled = createEngine();
+    const scrolledHarness = await mountRun(scrolled);
+    events.emit("decision", question);
+    await tick(120);
+    scrolledHarness.stdin.write("\u001B[B");
+    await tick(80);
+    scrolledHarness.unmount();
+    expect(scrolled.resolveDecision).not.toHaveBeenCalled();
+  });
+});

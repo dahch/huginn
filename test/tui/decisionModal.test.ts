@@ -8,9 +8,12 @@ import {
   DecisionModal,
   decisionBodyRows,
   decisionKeyRows,
+} from "../../src/tui/DecisionModal";
+import {
+  DECISION_MIN_ROWS,
   decisionModalHeight,
-} from "../../src/tui/Dashboard";
-import { decisionTitle } from "../../src/tui/decision";
+  decisionTitle,
+} from "../../src/tui/decision";
 import type { DecisionRequest } from "../../src/engine/types";
 
 type MockStdin = PassThrough & { isTTY: boolean; setRawMode: () => MockStdin; ref: () => MockStdin; unref: () => MockStdin };
@@ -398,19 +401,22 @@ describe("decisionModalHeight — the modal pays only what it occupies (REQ-69)"
     expect(decisionModalHeight(req, natural + 10)).toBe(natural);
   });
 
-  it("draws nothing rather than lie about a budget smaller than its border", () => {
-    // Two border rows are the floor of any bordered box; below it the modal
-    // renders nothing instead of claiming rows the frame does not have.
-    expect(decisionModalHeight(question(), 1)).toBe(0);
-    expect(decisionModalHeight(question(), 2)).toBe(2);
-    for (const maxRows of [2, 3, 4, 5]) {
+  it("draws nothing below its documented minimum row floor", () => {
+    // A capped budget below DECISION_MIN_ROWS cannot pay for the title, one body
+    // row and the key footer together, so it draws nothing rather than a title
+    // that never says what to press.
+    for (const maxRows of [1, 2, 3, 4]) {
+      expect(decisionModalHeight(question(), maxRows), `maxRows=${maxRows}`).toBe(0);
+    }
+    expect(decisionModalHeight(question(), DECISION_MIN_ROWS)).toBe(DECISION_MIN_ROWS);
+    for (const maxRows of [DECISION_MIN_ROWS, 6, 7, 8]) {
       expect(decisionModalHeight(question(), maxRows)).toBeLessThanOrEqual(maxRows);
     }
   });
 
   it("reports the structural floor when no request exists yet", () => {
     // The run dashboard's header reserves this before a decision is pending.
-    expect(decisionModalHeight()).toBe(5);
+    expect(decisionModalHeight()).toBe(DECISION_MIN_ROWS);
   });
 
   it("counts the whole body even when it must window it", () => {
@@ -472,23 +478,21 @@ describe("decisionModalHeight — the modal pays only what it occupies (REQ-69)"
     expect(plain.output()).not.toContain("[p] ");
   });
 
-  it("draws only the border it can pay for below its structural floor", async () => {
+  it("draws nothing below its structural floor instead of a title without keys", async () => {
     const req = question();
-    const rendered = await renderCapped(req, 2);
-    rendered.unmount();
-    const lines = frameLines(rendered.output());
+    const below = await renderCapped(req, DECISION_MIN_ROWS - 1);
+    below.unmount();
+    expect(frameLines(below.output())).toHaveLength(0);
+    expect(below.output()).not.toContain(decisionTitle(req));
+    expect(below.output()).not.toContain("[1-9/Enter]");
 
-    expect(lines).toHaveLength(2);
-    // No title, no body, no key footer: the frame did not have the rows.
-    expect(rendered.output()).not.toContain(decisionTitle(req));
-    expect(rendered.output()).not.toContain("[1-9/Enter]");
-    expect(rendered.output()).not.toContain("Which database should I use?");
-
-    // Below the two border rows even the border does not exist: the modal draws
-    // nothing instead of claiming a frame it cannot open.
-    const nothing = await renderCapped(req, 1);
-    nothing.unmount();
-    expect(frameLines(nothing.output())).toHaveLength(0);
+    // At the floor the title, a body row and the key footer all survive.
+    const floor = await renderCapped(req, DECISION_MIN_ROWS);
+    floor.unmount();
+    const lines = frameLines(floor.output());
+    expect(lines).toHaveLength(DECISION_MIN_ROWS);
+    expect(floor.output()).toContain(decisionTitle(req));
+    expect(floor.output()).toContain("[1-9/Enter]");
   });
 });
 

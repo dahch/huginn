@@ -798,10 +798,14 @@ A subprocess runtime closes stdin after the prompt, so it can never consult hugi
   `COLORFGBG` when present), and a non-empty `NO_COLOR` clears every token and gates `dimColor`.
 - **AC-47.2 (Live context panel)**: `src/tui/InfoPanel.tsx` renders a compact **LIVE CONTEXT** column
   beside the conversation on wide terminals (≥ 100 columns, ≥ 8 spare rows, leaving the cards at least
-  44 columns) with the stage, agent + models, the per-agent MCP enumeration, the git branch/tree state,
-  the worktree sandbox, Muninn's counts and the size of the conversation, plus one stage-appropriate
-  tip. It lives inside the region the cards already own, so it can never push the composer, palette or
-  footer off the frame; narrower terminals do not render it at all.
+  44 columns). Its rows are grouped into `SESSION` (stage, agent, MCP badge, conversation size),
+  `REPO` (git branch/tree state and worktree sandbox) and `MEMORY` (Muninn counts) sections, plus one
+  stage-appropriate tip anchored to the bottom of the box by a flexible spacer. A section with no data
+  is not drawn at all — `slicePanelLines` keeps a header only while a row follows it — so no heading
+  is left over an empty group. It lives inside the region the cards already own, so it can never push
+  the composer, palette or footer off the frame; narrower terminals do not render it at all.
+  `test/tui/infoPanel.test.ts` covers the geometry, the section order, the anchored tip, the clipping
+  of a hostile value and the rows the panel must not invent (AC-30.5).
 - **AC-47.3 (Empty-state hero)**: `src/tui/LiveHero.tsx` renders the raven brand plus the first-run
   guidance inside the conversation card when the conversation is empty, sharing the header's art
   (`buildRavenArtRows`, REQ-29) and the console's hint list (`EMPTY_CHAT_HINTS`), sliced to the rows
@@ -1182,17 +1186,20 @@ iteration and 6 afterwards** (down from 14).
   fallback) are all unchanged. Only huginn's own TUI display and feedback glyphs move.
 
 ### REQ-69: The decision modal buys only the rows it can pay for
-- **AC-69.1 (Exact height)**: `decisionModalHeight(req?, maxRows?)` in `src/tui/Dashboard.tsx`
-  returns the exact number of rows `DecisionModal` paints, double border included;
-  `DECISION_MIN_ROWS` (5 = two border rows + one title + one body row + one key row) is the
-  structural floor a dashboard reserves before a decision exists. `decisionBodyRows` and
-  `decisionKeyRows` expose one entry per terminal row, so a newline in a message cannot steal a row
-  the layout did not count.
+- **AC-69.1 (Exact height)**: the modal's policy lives in `src/tui/decision.ts`:
+  `decisionModalHeight(req?, maxRows?)` returns the exact number of rows `DecisionModal` paints,
+  double border included, and `DECISION_MIN_ROWS` (5 = two border rows + one title + one body row +
+  one key row) is the structural floor a dashboard reserves before a decision exists.
+  `decisionBodyRowSpecs` and `decisionKeyRowSpecs` expose one plain entry per terminal row (rendered
+  by `decisionBodyRows`/`decisionKeyRows` in `src/tui/DecisionModal.tsx`), so a newline in a message
+  cannot steal a row the layout did not count. Neither dashboard imports the other's page module for
+  the modal.
 - **AC-69.2 (Frame budget)**: both dashboards derive `decisionMaxRows` from the rows left after
   their own fixed chrome (header, composer/footer, log tail, open palette, card floor) and pass it
   to the modal. The modal never paints more than that budget: it pays the double border, the title
   and the key footer first, buys the `… +N · ↑/↓` indicator only while a body row still fits, and
-  windows the rest. Below two rows it paints nothing rather than claim a frame it cannot open.
+  windows the rest. A capped budget below `DECISION_MIN_ROWS` paints nothing at all — a title without
+  the key footer would say what happened but not what to press.
 - **AC-69.3 (Hidden rows are reachable)**: a windowed body scrolls with `↑`/`↓`, and the indicator
   names how many body rows are hidden. The live dashboard consumes those keys while a decision is
   open, so a scroll never resolves the decision or echoes "press a number"; a digit still answers
@@ -1203,7 +1210,8 @@ iteration and 6 afterwards** (down from 14).
   footer.
 - **AC-69.5 (Drift guard)**: `test/tui/decisionModal.test.ts` compares `decisionModalHeight` with
   the rows Ink actually paints for every decision kind — a request that fits, one that must window,
-  and budgets below the two border rows — so a height literal can never drift from the real cost.
+  and budgets below the documented floor (which must draw nothing) — so a height literal can never
+  drift from the real cost.
 
 ### REQ-70: Cards declare one chrome hierarchy and its exact cost
 - **AC-70.1 (One cost table)**: `CARD_CHROME` and `cardChrome(tone)` live in `src/tui/Card.tsx`.
@@ -1233,6 +1241,34 @@ iteration and 6 afterwards** (down from 14).
   tone, the borderless tertiary card, `LogsCard`'s row cost and the six surface→tone mappings;
   `test/tui/cardColors.test.ts` renders with colour forced on and asserts the border escape Ink
   actually emits for the accent, `borderFocus`, quiet-border and borderless cases.
+
+### REQ-71: The live console's layout is a keyboard surface and the idle log tail gives its rows back
+- **AC-71.1 (Layout keys belong to the focused card)**: `LiveDashboard` resolves `z`, `Ctrl+↑`,
+  `Ctrl+↓` and `L` only while a card owns the focus, never from the composer — there `z` and `L` are
+  ordinary draft text and the chord stays out of the terminal, so typing can never rearrange the
+  frame. `z` maximizes the focused card and `z` again restores the remembered split;
+  `Ctrl+↑`/`Ctrl+↓` move that split by `SPLIT_RATIO_STEP` (0.08) through the pure
+  `adjustSplitRatio`/`clampSplitRatio`, clamped to `[SPLIT_RATIO_MIN 0.30, SPLIT_RATIO_MAX 0.80]`
+  around `DEFAULT_SPLIT_RATIO` (0.58).
+- **AC-71.2 (A maximized card is the only card)**: the pure `liveCardHeights` gives a maximized card
+  every available row and zero to the other one, which is then not rendered; releasing the maximized
+  state restores the exact ratio in force before it. `nextFocus` walks only visible surfaces (a
+  collapsed stream, a maximized-away conversation), so `Tab` never lands on a card the layout hid.
+- **AC-71.3 (The log tail is ephemeral and pinnable)**: after `LOG_AUTO_COLLAPSE_MS` (60 s) without a
+  new event the tail collapses and returns its rows to the conversation; a new log reopens it, an
+  `error` still present in the visible tail keeps it open, and an error that has scrolled out does
+  not disable the timer for the rest of the session. `[L]` (card focus only) pins the tail open and
+  disables the timer; releasing the pin starts a fresh minute instead of collapsing the same instant.
+- **AC-71.4 (Hidden state is announced)**: the footer advertises the collapsed tail as
+  `[L] logs · N (card focus)`, where `N` counts **every** hidden entry (`logsCollapsed ?
+  logs.length : 0`), not just the visible window. A visible tail still costs
+  `visibleLogs.length + cardChrome("tertiary").rows` (AC-70.4).
+- **AC-71.5 (Drift guards)**: `test/tui/liveLayout.test.ts` drives the real keyboard path — `z` typed
+  into the composer stays text, `z`/`Ctrl+↑`/`Ctrl+↓`/`L` from a card change the layout, one step up
+  and one down return the same ratio, the idle timer collapses the tail and `L` reopens it, a pinned
+  tail outlives every timeout and collapses again one minute after release, a visible error keeps it
+  open while a stale one does not, the advertised count is the whole tail, and 100×30 keeps at least
+  six conversation body rows with the logs collapsed.
 
 ---
 

@@ -20,6 +20,13 @@
   computes the exact height. Both dashboards pass the rows their own chrome leaves as `maxRows`, so
   a tall question windows its body behind a `… +N · ↑/↓` indicator (scrolled with `↑`/`↓`) instead
   of pushing the composer and footer off an 18- or 24-row terminal (REQ-69 / ADR-64).
+- **Live console layout controls and a sectioned context panel.** From a focused card, `z`
+  maximizes it and restores the remembered split, `Ctrl+↑`/`Ctrl+↓` move the conversation/stream
+  split, and `L` pins or reopens the log tail. `L` is card-only, so typing it in the composer stays
+  draft text. The idle log tail collapses after a minute, reopens on the next event, advertises every
+  hidden entry in the footer, and only stays open for an error still present in its visible tail.
+  `InfoPanel` groups its rows into `SESSION`, `REPO` and `MEMORY` sections (an empty section is
+  omitted) and anchors the stage tip to the bottom of the column (REQ-71 / ADR-67).
 - **One chrome-cost table for the TUI's cards.** `src/tui/Card.tsx` exports `CARD_CHROME`,
   `cardChrome(tone)` and the `Card` primitive. `primary` is the round conversation box,
   `secondary` is the quieter single box used by the stream, pipeline and side panel, and
@@ -36,7 +43,13 @@
   box, the stream and pipeline step back to a quiet `single` border, and the log tail loses its box
   and its mid-line `│` in favour of a leading `│ ` rule. This also removes `StreamCard`'s
   verbose-only accent border; the `[VERBOSE]` marker still carries that state, and focus is still
-  signalled by `borderFocus` and the card title (REQ-70 / ADR-65).
+  signalled by `borderFocus` and the card title (REQ-70 / ADR-65). Both dashboards now derive every
+  card body and scroll budget from `cardChrome(...).rows`, so no `- 3` chrome literal remains.
+- **The decision modal is split into focused modules.** The pure title, row specs, planner and
+  height live in `src/tui/decision.ts`, and the React row builders and modal live in
+  `src/tui/DecisionModal.tsx`; neither dashboard imports the other's page module. A capped budget
+  below `DECISION_MIN_ROWS` now draws nothing, so the modal never shows a title without its key
+  footer (REQ-69 / ADR-66).
 - **Feedback speaks `!`:** `FEEDBACK_WARN` is `!` (alongside `✓` and `…`). This is TUI-only: the
   gate literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`), the producer markers
   (`⚡ ✓ ✗ 💭`) and every engine/CLI warning output (the `⚠️ REVIEW REQUESTED` handoff line, its

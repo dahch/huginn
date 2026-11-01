@@ -150,7 +150,8 @@ src/
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
     ├── commandRegistry.ts  single slash-command registry (id, aliases, argHint, description) driving dispatch, the palette and /help (REQ-28 / ADR-28)
     ├── glyphs.ts           the one display glyph table: phase/status marks plus the decision alphabet, shared by the TUI and PROGRESS.md (REQ-52 / REQ-68 / ADR-51 / ADR-63)
-    ├── decision.ts         the decision modal's pure exhaustive title formatter, `decisionTitle(req)` (REQ-68 / ADR-63)
+    ├── decision.ts         decision modal's pure policy: exhaustive title, row specs, planner and `decisionModalHeight` (REQ-68 / REQ-69 / ADR-63 / ADR-64)
+    ├── DecisionModal.tsx    decision modal's React row builders, windowed body and Ink component
     ├── Card.tsx           the one chrome-cost table (`CARD_CHROME`/`cardChrome`) and the `Card` primitive that draws exactly that chrome (REQ-70 / ADR-65)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
@@ -159,7 +160,7 @@ src/
     ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
     ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only (REQ-47)
     ├── LiveHero.tsx        empty-conversation hero (brand + first-run guidance) (REQ-47)
-    ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive) plus the decision modal's row planner (`decisionModalHeight`, REQ-69)
+    ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
     ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette, composer, side panel)
     ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp), attributed to the active agent
     ├── AgentPickerModal.tsx interactive runtime picker (/agent): availability, active marker, detected path (REQ-33)
@@ -2588,10 +2589,20 @@ forbid the washed-out colour families by name.
 - **`InfoPanel.tsx` — the LIVE CONTEXT column.** Rendered only when the terminal is wide enough:
   `SIDE_PANEL_MIN_COLUMNS` = 100, `SIDE_PANEL_MIN_ROWS` = 8 spare rows, and enough width left for the
   cards (`SIDE_PANEL_MIN_CARD_COLUMNS` = 44) after `SIDE_PANEL_WIDTH` = 34 columns plus a 1-column
-  gap. It shows the stage, agent + models, the per-agent MCP enumeration, the git branch/tree state,
-  the worktree sandbox, Muninn's counts, the size of the conversation and one stage-appropriate tip
-  (`PANEL_TIP_PREFIX`). It lives inside the region the cards already own, so it can never push the
-  composer, palette or footer off the frame; below the thresholds the header alone carries the facts.
+  gap. Its rows are grouped into `SESSION` (stage, agent, MCP badge, conversation size), `REPO`
+  (git branch/tree state and worktree sandbox) and `MEMORY` (Muninn counts); a section with no data is
+  not drawn at all, so no heading is left over an empty group. The stage-appropriate tip
+  (`PANEL_TIP_PREFIX`) is anchored to the bottom of the box by a spacer instead of floating under the
+  last data row. It lives inside the region the cards already own, so it can never push the composer,
+  palette or footer off the frame; below the thresholds the header alone carries the facts.
+- **Keyboard layout controls (`LiveDashboard.tsx`).** `Tab`/`Shift+Tab` cycle focus through the
+  composer, conversation and stream (skipping a collapsed stream). From a focused card, `z`
+  maximizes it and `z` again restores the remembered split, while `Ctrl+↑`/`Ctrl+↓` move the
+  conversation/stream split by `SPLIT_RATIO_STEP` and clamp it to its range. `L` pins or reopens the
+  log tail from a focused card; it is deliberately not a composer key, so typing `L` stays draft text
+  (the footer says `(card focus)` and the cheat sheet repeats it). An idle tail collapses after
+  `LOG_AUTO_COLLAPSE_MS` (60 s), a new log reopens it, and only an error still present in the visible
+  tail keeps it open; a stale error that has scrolled out no longer disables auto-collapse.
 - **`LiveHero.tsx` — the empty-state hero.** When the conversation is empty the card renders the raven
   brand (`buildRavenArtRows`, the same art as `RavenHeader`) plus the console's first-run hints
   (`EMPTY_CHAT_HINTS`), sliced to the rows the card really has — an empty session guides instead of
@@ -2747,22 +2758,29 @@ body grew with the request (`questionItems`, descriptions, follow-ups). On a 24-
 question under-reserved the modal by eight rows and pushed the frame, footer included, past the
 terminal. Now:
 
-- **Rows, not nodes.** `decisionBodyRows(req)` and `decisionKeyRows(req)` return one `ReactNode` per
-  terminal row — a message's newlines are separate rows, and a question's options, follow-ups and
-  `+ N more question(s)` note each own a row — so the modal can count, slice and window its body
-  without asking Yoga what height it produced. The key footer is one row per row of hints (the
-  post-cycle prompt pays a second row only when it actually offers the promotion recovery).
+- **Rows, not nodes.** `decisionBodyRowSpecs(req)` and `decisionKeyRowSpecs(req)` in
+  `src/tui/decision.ts` model one plain entry per terminal row — a message's newlines are separate
+  rows, and a question's options, follow-ups and `+ N more question(s)` note each own a row — so the
+  planner can count, slice and window its body without asking Yoga what height it produced. The
+  React `decisionBodyRows`/`decisionKeyRows` in `src/tui/DecisionModal.tsx` render those same specs.
+  The key footer is one row per row of hints (the post-cycle prompt pays a second row only when it
+  actually offers the promotion recovery).
 - **One pure planner.** `planDecisionModal(bodyCount, keyCount, maxRows, scroll)` pays the double
   border (2), the title (1) and the key footer first, buys the `… +N · ↑/↓` indicator only while it
   still leaves a body row, and spends the rest on the body window. `decisionModalHeight(req?,
   maxRows?)` exposes it; with no request it returns `DECISION_MIN_ROWS` (5 = border + title + one
-  body row + one key row), which both dashboards reserve before a decision exists. Under two rows the
-  modal draws nothing instead of claiming a framed box it cannot open.
+  body row + one key row), which both dashboards reserve before a decision exists. A capped budget
+  below `DECISION_MIN_ROWS` draws nothing at all: the modal never degrades to a title without the key
+  footer that says what to press. The planner, row specs and height helper live in
+  `src/tui/decision.ts`; the React row builders and component live in `src/tui/DecisionModal.tsx`, so
+  neither dashboard imports the other's page module.
 - **Budget from the frame.** The run dashboard derives `decisionMaxRows` from the rows left after the
   header, footer, middle-card floor, log tail, report pill and promotion notice; the live dashboard
   uses the same idea around its header floor, composer, footer, palette, log tail and
-  `CARD_MIN_ROWS`. Both pass the result as `maxRows`; `VIEWPORT_RESERVED_ROWS` uses the structural
-  floor so the header never spends rows the modal would need.
+  `CARD_MIN_ROWS`. Both pass the result as `maxRows`. The run dashboard's `VIEWPORT_RESERVED_ROWS`
+  includes the structural `decisionModalHeight()` floor so its header never spends rows the modal
+  would need; the live view budgets the modal from `decisionMaxRows` at render time, and its constant
+  reservation intentionally excludes the decision floor.
 - **Reachable hidden rows.** `↑`/`↓` scroll the window and the scroll offset resets on `req.id`. In
   live mode `LiveDashboard` consumes those (and `PgUp`/`PgDn`) before `resolveDecisionKey`, so a
   scroll never resolves a decision or answers "press a number"; a digit still picks the first
@@ -2802,12 +2820,54 @@ one table:
   `visibleLogs.length + cardChrome("tertiary").rows`, so the old `+ 3` literal (and the five-row
   expectations that encoded it) disappear. The log tail itself now spends `entries + 1` rows (two
   fewer than before), and the same table supplies `SIDE_PANEL_BORDER_ROWS`/`SIDE_PANEL_BORDER_COLUMNS`
-  and the scrollable cards' body budgets.
+  and the scrollable cards' body budgets. The remaining scroll budgets also come from the table:
+  the run dashboard's stream window is `middleHeight - cardChrome("secondary").rows`, and the live
+  conversation/stream windows subtract `cardChrome("primary"|"secondary").rows`, so no `- 3` literal
+  remains in either dashboard.
 - **Guards.** `test/tui/card.test.ts` pins the table, the painted height per tone, the borderless
   tertiary card, the log-tail cost and the surface→tone mapping; `test/tui/cardColors.test.ts`
   forces colour on and asserts the ANSI border Ink actually emits. `test/tui/liveLayout.test.ts`
   holds the 30-row log-tail budget at three entries.
 - **Still outside the table.** The decision modal's double border, the composer, the palette and the
   header keep their own labelled constants; unifying them needs an `alert`/`double` tone and is a
-  separate change. A few scroll-budget adjustments still use a `- 3` literal and must be migrated
-  before the "one source of truth" claim holds for the whole TUI.
+  separate change.
+
+### 32.9 Layout controls belong to a focused card, and the shared modal is a module (REQ-71 / ADR-66 / ADR-67)
+
+Two coupled changes: the live console's rows became adjustable, and the decision modal stopped living
+inside the run page.
+
+**Layout controls.** `LiveDashboard` already resolves every key by focus (`FocusTarget`), so the new
+keys reuse that resolution instead of inspecting the draft:
+
+- **`z` — maximize/restore.** `maximized: MaximizedCard | null` holds the card; `liveCardHeights`
+  gives it every available row and the other card zero, so the other is not rendered at all. `z`
+  again clears it and the remembered `splitRatio` comes back. `nextFocus` is passed `hasChat =
+  chatHeight > 0`, so `Tab` cannot focus the card the layout hid, and any maximized state is released
+  when the stream content disappears, so a card maximized for one phase cannot reappear maximized on
+  the next turn.
+- **`Ctrl+↑`/`Ctrl+↓` — move the split.** `adjustSplitRatio` clamps the current ratio, adds
+  `SPLIT_RATIO_STEP` (0.08) and rounds to two decimals before clamping again, so it is pinned to
+  `[SPLIT_RATIO_MIN 0.30, SPLIT_RATIO_MAX 0.80]` around `DEFAULT_SPLIT_RATIO` (0.58). The step is
+  exact in both directions, so one press up and one down returns the same split.
+- **Card-only, deliberately.** From the composer `z` and `L` are draft text and the chord is matched
+  explicitly (`key.ctrl && (key.upArrow || key.downArrow)`) so it never reaches the terminal. The
+  guard is `focus !== "composer"`, because a layout key that also types is a dead keypress waiting to
+  happen.
+- **The log tail is ephemeral.** With no new event for `LOG_AUTO_COLLAPSE_MS` (60 s) the tail
+  collapses and its rows return to the conversation; a new log reopens it. `logsHaveError` only
+  inspects the *visible* tail, so an error that scrolled out does not pin the tail for the session.
+  `toggleLogs` pins it (disabling the timer) and, on release, resets `lastLogAt` so a fresh minute
+  starts instead of an immediate collapse. A collapsed tail advertises
+  `[L] logs · N (card focus)` with `N = logs.length` — the whole tail, not the visible window.
+- **Guards.** `test/tui/liveLayout.test.ts` drives the real keyboard path (`z` typed into the
+  composer stays text; `z`/`Ctrl+↑`/`Ctrl+↓`/`L` from a card change the layout), the idle timer, the
+  pin/release cycle, the stale-error rule, the advertised count, and the 100×30 frame floor of six
+  conversation body rows with the logs collapsed. `test/tui/infoPanel.test.ts` pins the panel's
+  sectioned geometry and the bottom-anchored tip.
+
+**The modal's module split (ADR-66).** `decisionModalHeight`, `planDecisionModal`,
+`decisionBodyRowSpecs`/`decisionKeyRowSpecs` and `decisionTitle` now live in `src/tui/decision.ts`;
+`src/tui/DecisionModal.tsx` maps the specs to Ink nodes (`decisionBodyRows`/`decisionKeyRows`) and owns
+the body scroll state and its reset on `req.id`. Both dashboards import `./DecisionModal` and
+`./decision`, so the live page no longer pulls the run page (and its engine graph) in for a modal.

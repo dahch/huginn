@@ -1929,3 +1929,72 @@ avoids. They are ordered by how central the decision is to the design.
     border constants; and not every scroll-budget adjustment has been migrated to the table — a few
     `- 3` literals remain, and they must be derived from `cardChrome` before the "one source" claim
     can be made for the whole TUI.
+
+## ADR-66: The decision modal's policy is a pure module, its React surface a separate one
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: ADR-64 gave the decision modal an exact row planner, and both grew up inside
+  `src/tui/Dashboard.tsx`. That made the run-cycle page the owner of a policy the live console also
+  needs: `LiveDashboard` imported `DecisionModal`, `decisionKeyRows` and `decisionModalHeight` from
+  `./Dashboard`, so the whole run page and its engine graph came along for a title string and a row
+  count, and a test that only wanted to measure heights had to mount a page to get them.
+- **Decision**:
+  1. `src/tui/decision.ts` owns the modal's policy and nothing React-specific: `decisionTitle(req)`,
+     `decisionBodyRowSpecs(req)`/`decisionKeyRowSpecs(req)` (one plain entry per terminal row),
+     `planDecisionModal(...)`, `decisionModalHeight(...)` and `DECISION_MIN_ROWS`.
+  2. `src/tui/DecisionModal.tsx` owns the React surface: it maps those specs to Ink nodes
+     (`decisionBodyRows`/`decisionKeyRows`) and owns the body scroll state and its reset on
+     `req.id`. It imports no dashboard.
+  3. Both dashboards import the modal from `./DecisionModal` and the planner from `./decision`, so no
+     page module imports another page module for the modal.
+- **Alternatives rejected**: (a) keep the modal in `Dashboard.tsx` and export it — that is the coupling
+  this removes, and it keeps the run page's engine imports on the live page's load path; (b) move the
+  planner into `DecisionModal.tsx` — a pure height test would then still have to import Ink and React;
+  (c) extract one shared `modals.tsx` for every modal — the other modals share no policy, and a single
+  barrel would re-couple what this split separates.
+- **Consequences**:
+  - *Positive*: the policy is importable and testable without mounting a page; the row specs are the
+    single source both the renderer and the reservation count, so the two cannot drift; neither
+    dashboard depends on the other's page module for the modal.
+  - *Negative*: the modal now spans two files, so a new row kind must be added to the spec builder
+    **and** the renderer — `test/tui/decisionModal.test.ts` compares the plan with the painted frame,
+    which is what catches a renderer that forgot a spec.
+
+## ADR-67: Layout keys belong to a focused card, and the idle log tail gives its rows back
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The live console kept a fixed conversation/stream split and always drew the log tail.
+  On a 30-row terminal the tail and the stream took rows the conversation needed, and the only way to
+  change the balance was to resize the terminal. Keyboard space was already contested: `↑`/`↓` mean
+  "scroll the focused card" or "recall a submission", so any new layout key had to resolve by focus
+  rather than by inspecting the draft (AC-34.3 is the bug that taught this).
+- **Decision**:
+  1. `z` maximizes the focused card — the pure `liveCardHeights` gives it every available row and the
+     other card is not rendered — and `z` again restores the remembered split ratio.
+     `Ctrl+↑`/`Ctrl+↓` move that ratio in `SPLIT_RATIO_STEP` (0.08) steps through the pure
+     `adjustSplitRatio`/`clampSplitRatio`, clamped to `[SPLIT_RATIO_MIN 0.30, SPLIT_RATIO_MAX 0.80]`
+     around `DEFAULT_SPLIT_RATIO` (0.58).
+  2. All of them are card-only. From the composer, `z` and `L` are ordinary draft text and the chord
+     never reaches the terminal; the guard is the focus state (`FocusTarget`), never the draft's
+     emptiness. `nextFocus` walks only visible surfaces, so maximizing a card cannot leave focus on
+     the card the layout hid.
+  3. The log tail is ephemeral: `LOG_AUTO_COLLAPSE_MS` (60 s) without a new event collapses it, a new
+     log reopens it, an `error` still present in the visible tail keeps it open (a stale error that
+     has scrolled out does not), and `L` pins it, disabling the timer. Releasing the pin starts a
+     fresh minute instead of collapsing the same instant. The collapsed tail is advertised in the
+     footer as `[L] logs · N (card focus)`, where `N` counts every hidden entry.
+- **Alternatives rejected**: (a) dedicated layout commands (`/layout`) — they cost a submission and
+  cannot be repeated while reading; (b) layout keys that also work from the composer — `z` and `L`
+  would stop being typeable letters; (c) a permanent split — it is exactly what starves the
+  conversation on a short terminal; (d) collapsing the tail silently — a log that vanished without a
+  count is indistinguishable from a log that never arrived.
+- **Consequences**:
+  - *Positive*: one terminal size now serves several reading modes without resizing; the conversation
+    owns the rows back when nothing is being logged; a hidden tail announces itself; the layout maths
+    stays pure and is asserted on 100×30 frames.
+  - *Negative*: the maximized state is view-only and is released when the stream content disappears
+    (so a card maximized for one phase cannot reappear maximized after the next turn starts), and the
+    idle timer adds a `setTimeout` to the dashboard's render graph — its edges are pinned by
+    `test/tui/liveLayout.test.ts`, including "an error that scrolled out does not disable the timer".

@@ -237,6 +237,26 @@ describe("the one chrome-cost table (REQ-70)", () => {
     expect(output).not.toContain("╭");
   });
 
+  it("anchors the panel's tip to the bottom of the box", () => {
+    const plan = sidePanelPlan({ columns: 120, availableHeight: 20, inset: 2 });
+    const data: PanelData = {
+      stageLabel: "REFINE",
+      stageToken: "accent",
+      busy: false,
+      spinner: "⠋",
+      agentName: "opencode",
+      mcpText: "MCP: 2 connected · opencode",
+      mcpToken: "ok",
+      git: { branch: "feature/card", clean: true, sandbox: false },
+      memory: { entitiesCount: 1, observationsCount: 2 },
+      context: { turns: 1, chars: 10 },
+      tip: "type / for commands",
+    };
+    const lines = visibleLines(renderNode(React.createElement(InfoPanel, { plan, data })));
+    // The bottom border is last; the anchored tip is the body row just above it.
+    expect(lines[plan.height - 2]).toContain("TIP");
+  });
+
   it("maps every promised surface to its tone", () => {
     const read = (file: string): string =>
       readFileSync(new URL(`../../src/tui/${file}`, import.meta.url), "utf8");

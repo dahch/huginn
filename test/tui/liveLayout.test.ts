@@ -7,7 +7,17 @@ import type { DiagnosticsInfo, LiveEngine } from "../../src/engine/liveMode";
 import type { RunConfig } from "../../src/config";
 import type { DecisionRequest } from "../../src/engine/types";
 import { decisionTitle } from "../../src/tui/decision";
-import { LiveApp } from "../../src/tui/LiveDashboard";
+import {
+  DEFAULT_SPLIT_RATIO,
+  LOG_AUTO_COLLAPSE_MS,
+  SPLIT_RATIO_MAX,
+  SPLIT_RATIO_MIN,
+  SPLIT_RATIO_STEP,
+  LiveApp,
+  adjustSplitRatio,
+  liveCardHeights,
+  nextFocus,
+} from "../../src/tui/LiveDashboard";
 import {
   PANEL_LABEL_COLUMNS,
   PANEL_TITLE,
@@ -23,6 +33,7 @@ import {
   type PanelLine,
 } from "../../src/tui/InfoPanel.js";
 import { HERO_BRAND_TEXT, LiveHero, heroPlan } from "../../src/tui/LiveHero.js";
+import { cardChrome } from "../../src/tui/Card.js";
 import { EMPTY_CHAT_HINTS } from "../../src/tui/feedback.js";
 
 const ANSI = /\u001B\[[0-9;?]*[A-Za-z]/g;
@@ -219,11 +230,765 @@ const panelData: PanelData = {
 /** The visible text of a line — what the row actually draws. */
 function lineText(line: PanelLine): string {
   if (line.kind === "row") return `${line.label.padEnd(PANEL_LABEL_COLUMNS)}${line.value}`;
+  if (line.kind === "section") return line.label;
   if (line.kind === "note") return `${PANEL_TIP_PREFIX}${line.text}`;
   if (line.kind === "badge") return line.text;
   if (line.kind === "title") return line.text;
   return "─".repeat(30);
 }
+
+describe("card split and ephemeral log tail", () => {
+  it("gives the conversation the whole cards row when the stream is absent", () => {
+    expect(
+      liveCardHeights({
+        availableHeight: 20,
+        splitRatio: DEFAULT_SPLIT_RATIO,
+        maximized: null,
+        showStream: false,
+      }),
+    ).toEqual({ chatHeight: 20, streamHeight: 0 });
+    // A remembered `z` never outlives the stream content it maximized.
+    expect(
+      liveCardHeights({
+        availableHeight: 20,
+        splitRatio: DEFAULT_SPLIT_RATIO,
+        maximized: "stream",
+        showStream: false,
+      }),
+    ).toEqual({ chatHeight: 20, streamHeight: 0 });
+  });
+
+  it("never hands either card a negative or fractional row count", () => {
+    for (const availableHeight of [0, 1, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const heights = liveCardHeights({
+        availableHeight,
+        splitRatio: DEFAULT_SPLIT_RATIO,
+        maximized: null,
+        showStream: true,
+      });
+      const where = String(availableHeight);
+      expect(Number.isInteger(heights.chatHeight), where).toBe(true);
+      expect(Number.isInteger(heights.streamHeight), where).toBe(true);
+      expect(heights.chatHeight, where).toBeGreaterThanOrEqual(0);
+      expect(heights.streamHeight, where).toBeGreaterThanOrEqual(0);
+    }
+    // One row of room is the conversation's: a split cannot make it negative.
+    expect(
+      liveCardHeights({ availableHeight: 1, splitRatio: 0.5, maximized: null, showStream: true }),
+    ).toEqual({ chatHeight: 1, streamHeight: 0 });
+  });
+
+  it("remembers the conversation/stream split instead of hard-coding one", () => {
+    const mid = liveCardHeights({
+      availableHeight: 20,
+      splitRatio: 0.5,
+      maximized: null,
+      showStream: true,
+    });
+    expect(mid).toEqual({ chatHeight: 10, streamHeight: 10 });
+    const wide = liveCardHeights({
+      availableHeight: 20,
+      splitRatio: SPLIT_RATIO_MIN,
+      maximized: null,
+      showStream: true,
+    });
+    expect(wide).toEqual({ chatHeight: 6, streamHeight: 14 });
+  });
+
+  it("maximizes either card and restores the remembered split", () => {
+    const maximizedChat = liveCardHeights({
+      availableHeight: 18,
+      splitRatio: 0.5,
+      maximized: "chat",
+      showStream: true,
+    });
+    expect(maximizedChat).toEqual({ chatHeight: 18, streamHeight: 0 });
+    const maximizedStream = liveCardHeights({
+      availableHeight: 18,
+      splitRatio: 0.5,
+      maximized: "stream",
+      showStream: true,
+    });
+    expect(maximizedStream).toEqual({ chatHeight: 0, streamHeight: 18 });
+    // Restoring is just "no maximized card": the ratio was never overwritten.
+    expect(
+      liveCardHeights({
+        availableHeight: 18,
+        splitRatio: 0.5,
+        maximized: null,
+        showStream: true,
+      }),
+    ).toEqual({ chatHeight: 9, streamHeight: 9 });
+  });
+
+  it("moves the split in 0.08 steps and clamps it to [0.30, 0.80]", () => {
+    expect(adjustSplitRatio(0.58, SPLIT_RATIO_STEP)).toBeCloseTo(0.66);
+    expect(adjustSplitRatio(0.58, -SPLIT_RATIO_STEP)).toBeCloseTo(0.5);
+    expect(adjustSplitRatio(SPLIT_RATIO_MIN, -SPLIT_RATIO_STEP)).toBe(SPLIT_RATIO_MIN);
+    expect(adjustSplitRatio(SPLIT_RATIO_MAX, SPLIT_RATIO_STEP)).toBe(SPLIT_RATIO_MAX);
+  });
+
+  it("keeps the step exact, so one press up and one down is the same split", () => {
+    // 0.58 - 0.08 is 0.49999999999999994 in binary floating point, and a split a
+    // hair under a half paints one row less than the user asked for.
+    expect(adjustSplitRatio(0.58, -SPLIT_RATIO_STEP)).toBe(0.5);
+    expect(adjustSplitRatio(0.58, SPLIT_RATIO_STEP)).toBe(0.66);
+    const up = adjustSplitRatio(DEFAULT_SPLIT_RATIO, SPLIT_RATIO_STEP);
+    expect(adjustSplitRatio(up, -SPLIT_RATIO_STEP)).toBe(DEFAULT_SPLIT_RATIO);
+    // A non-finite ratio falls back to the default instead of poisoning the split.
+    expect(adjustSplitRatio(Number.NaN, SPLIT_RATIO_STEP)).toBe(0.66);
+  });
+
+  it("keeps at least six conversation body rows at 100x30 with logs collapsed", () => {
+    // 100x30 spends a 9-row header, a 4-row composer and the 1-row footer, so
+    // the cards row is 16 rows. With the stream active and the log tail hidden,
+    // the default split must still leave the conversation six body rows.
+    const heights = liveCardHeights({
+      availableHeight: 16,
+      splitRatio: DEFAULT_SPLIT_RATIO,
+      maximized: null,
+      showStream: true,
+    });
+    expect(heights.chatHeight - cardChrome("primary").rows).toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe("live card sizing and ephemeral logs (keyboard)", () => {
+  beforeEach(() => {
+    events.clear();
+  });
+
+  afterEach(() => {
+    events.clear();
+    vi.useRealTimers();
+  });
+
+  it("still types z into the composer instead of maximizing a card", async () => {
+    const h = await mountLive(createMockLive(), 120, 40);
+    h.stdin.write("z");
+    await tick(80);
+    h.unmount();
+
+    expect(h.output()).toContain("❯ z");
+  });
+
+  it("keeps focus on the card after z maximizes it and z restores the split", async () => {
+    const h = await mountLive(createMockLive(), 120, 40);
+    events.emit("phaseStream", { text: "reasoning…" });
+    await tick(140);
+    h.stdin.write("\t"); // composer → conversation
+    await tick(60);
+    h.stdin.write("z");
+    await tick(80);
+    h.stdin.write("z");
+    await tick(80);
+    h.unmount();
+
+    expect(h.output()).toContain("Conversation ● [Focused]");
+    expect(h.output()).toContain("[Tab] Focus: chat");
+    expect(h.output()).not.toContain("❯ z");
+  });
+
+  /** Let React flush an external event without relying on the faked timers. */
+  const flushReact = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  it("collapses the log tail after the idle timer and L reopens it from a focused card", async () => {
+    const h = await mountLive(createMockLive(), 100, 30);
+    try {
+      // Only the collapse timer is faked: React's scheduler keeps its real
+      // macrotasks, so an `events.emit` becomes a render before time advances.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      events.emit("log", { level: "info", message: "ephemeral-log" });
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+      await flushReact();
+      h.stdin.write("\t"); // composer → conversation
+      await flushReact();
+      h.stdin.write("L");
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(80);
+      await flushReact();
+    } finally {
+      h.unmount();
+      vi.useRealTimers();
+    }
+
+    // `L` pinned it back open; the collapse itself is asserted by the next test.
+    expect(h.output()).toContain("SYSTEM LOGS");
+    expect(h.output()).toContain("ephemeral-log");
+    expect(h.output()).not.toContain("[L] logs ·");
+  });
+
+  it("types L into the composer instead of reopening a collapsed log tail", async () => {
+    const h = await mountLive(createMockLive(), 100, 30);
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      events.emit("log", { level: "info", message: "composer-log" });
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+      await flushReact();
+      h.stdin.write("L");
+      await flushReact();
+    } finally {
+      h.unmount();
+      vi.useRealTimers();
+    }
+
+    // The uppercase key is a shortcut only on a focused card; in the composer it
+    // is ordinary draft text, and the collapsed tail stays exactly as it was.
+    expect(h.output()).toContain("❯ L");
+    expect(h.output()).not.toContain("SYSTEM LOGS");
+    expect(h.output()).toContain("[L] logs · 1");
+  });
+
+  it("collapses the log tail out of the frame after the idle timer", async () => {
+    const h = await mountLive(createMockLive(), 100, 30);
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      events.emit("log", { level: "info", message: "ephemeral-log" });
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+      await flushReact();
+    } finally {
+      h.unmount();
+      vi.useRealTimers();
+    }
+
+    expect(h.output()).toContain("[L] logs · 1");
+  });
+
+  it("never auto-collapses a tail that contains an error", async () => {
+    const h = await mountLive(createMockLive(), 100, 30);
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      events.emit("log", { level: "error", message: "boom" });
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS * 2);
+      await flushReact();
+    } finally {
+      h.unmount();
+      vi.useRealTimers();
+    }
+
+    expect(h.output()).toContain("boom");
+    expect(h.output()).not.toContain("[L] logs ·");
+  });
+});
+
+describe("maximized cards, the moved split and persistent logs (keyboard)", () => {
+  beforeEach(() => {
+    events.clear();
+  });
+
+  afterEach(() => {
+    events.clear();
+    vi.useRealTimers();
+  });
+
+  /**
+   * The painted height of one card in the final frame — border rows, title row
+   * and body — or `null` when the layout did not render it at all. The console
+   * writes one frame on unmount (no TTY here), so this is exactly what the user
+   * would see.
+   */
+  function cardRows(output: string, title: string): number | null {
+    const lines = visibleLines(output);
+    const titleAt = lines.findIndex((line) => line.includes(title));
+    // `Card` draws the border first and the title under it, so the card starts
+    // one row above its title.
+    if (titleAt < 1) return null;
+    for (let index = titleAt + 1; index < lines.length; index += 1) {
+      const trimmed = lines[index]!.trimStart();
+      if (trimmed.startsWith("╰") || trimmed.startsWith("└")) {
+        return index - (titleAt - 1) + 1;
+      }
+    }
+    return null;
+  }
+
+  const CHAT = "Conversation";
+  const STREAM = "THINKING & LIVE AGENT STREAM";
+
+  /** Mounts the console with a live stream and returns the painted card sizes. */
+  async function cardsAfter(
+    keys: string[] = [],
+    columns = 100,
+    rows = 30,
+  ): Promise<{ chat: number | null; stream: number | null; output: string }> {
+    const harness = await mountLive(createMockLive(), columns, rows);
+    events.emit("phaseStream", { text: "reasoning…" });
+    await tick(140);
+    for (const key of keys) {
+      harness.stdin.write(key);
+      await tick(70);
+    }
+    harness.unmount();
+    const output = harness.output();
+    return { chat: cardRows(output, CHAT), stream: cardRows(output, STREAM), output };
+  }
+
+  it("keeps the pre-maximize split as the baseline at 100x30", async () => {
+    const base = await cardsAfter();
+    // 30 rows spend the header, the composer and the footer; the cards row is
+    // 16 and the conversation keeps its default 0.58 share of it.
+    expect(base.chat).toBe(9);
+    expect(base.stream).toBe(7);
+    expect(base.chat! + base.stream!).toBe(16);
+  });
+
+  it("maximizes the focused stream card and gives the rows back on a second z", async () => {
+    const base = await cardsAfter();
+    const maximized = await cardsAfter(["\t", "\t", "z"]);
+    // The stream owns the whole cards row; the conversation is not rendered at
+    // all instead of being squeezed to a one-row stub.
+    expect(maximized.chat).toBeNull();
+    expect(maximized.stream).toBe(base.chat! + base.stream!);
+    expect(maximized.output).not.toContain(CHAT);
+    // Focus stays on the card that owns the row, so `z`/Tab still act on it.
+    expect(maximized.output).toContain("[Tab] Focus: stream");
+
+    const restored = await cardsAfter(["\t", "\t", "z", "z"]);
+    expect(restored.chat).toBe(base.chat);
+    expect(restored.stream).toBe(base.stream);
+    expect(restored.output).toContain("[Tab] Focus: stream");
+    // `z` is a command on a card and ordinary text in the composer, never both.
+    expect(restored.output).not.toContain("❯ z");
+  });
+
+  it("maximizes the focused conversation and restores it the same way", async () => {
+    const base = await cardsAfter();
+    const maximized = await cardsAfter(["\t", "z"]);
+    expect(maximized.chat).toBe(base.chat! + base.stream!);
+    expect(maximized.stream).toBeNull();
+    expect(maximized.output).toContain("[Tab] Focus: chat");
+
+    const restored = await cardsAfter(["\t", "z", "z"]);
+    expect(restored.chat).toBe(base.chat);
+    expect(restored.stream).toBe(base.stream);
+  });
+
+  it("keeps the stream card closed for a blank-only stream buffer", async () => {
+    const base = await cardsAfter();
+    const harness = await mountLive(createMockLive(), 100, 30);
+    // Every phase that emits nothing leaves a newline in the buffer: that is
+    // not content, so the card must not open (and must not take focus).
+    events.emit("phaseStream", { text: "\n" });
+    await tick(140);
+    harness.stdin.write("\t"); // composer → conversation
+    await tick(70);
+    harness.unmount();
+
+    const output = harness.output();
+    expect(output).toContain(CHAT);
+    expect(output).not.toContain(STREAM);
+    // The conversation owns the whole row, exactly as if no stream existed.
+    expect(cardRows(output, CHAT)).toBe(base.chat! + base.stream!);
+    expect(output).toContain("[Tab] Focus: chat");
+  });
+
+  /** `\u001B[1;5A`/`B` is xterm's Ctrl+↑/↓. */
+  const CTRL_UP = "\u001B[1;5A";
+  const CTRL_DOWN = "\u001B[1;5B";
+
+  it("moves the split by one 0.08 step per Ctrl+↑/↓ from a focused card", async () => {
+    const base = await cardsAfter();
+    const grown = await cardsAfter(["\t", CTRL_UP]);
+    // 0.58 → 0.66 of 16 rows: 9 → 10, and the stream pays for it.
+    expect(grown.chat).toBe(base.chat! + 1);
+    expect(grown.stream).toBe(base.stream! - 1);
+
+    const shrunk = await cardsAfter(["\t", CTRL_DOWN]);
+    expect(shrunk.chat).toBe(base.chat! - 1);
+    expect(shrunk.stream).toBe(base.stream! + 1);
+  });
+
+  it("clamps the split to [0.30, 0.80] however many times it is pressed", async () => {
+    const many = Array.from({ length: 30 }, () => CTRL_UP);
+    const maxed = await cardsAfter(["\t", ...many]);
+    // 0.80 of 16 rows is 12; the conversation never takes the stream's last rows.
+    expect(maxed.chat).toBe(12);
+    expect(maxed.stream).toBe(4);
+
+    const drained = await cardsAfter(["\t", ...Array.from({ length: 30 }, () => CTRL_DOWN)]);
+    // 0.30 of 16 is 4; the conversation is never squeezed below it.
+    expect(drained.chat).toBe(4);
+    expect(drained.stream).toBe(12);
+  });
+
+  it("leaves the split alone while the composer owns the keys", async () => {
+    const base = await cardsAfter();
+    const composer = await cardsAfter([CTRL_UP, CTRL_UP, CTRL_UP]);
+    expect(composer.chat).toBe(base.chat);
+    expect(composer.stream).toBe(base.stream);
+    // The chord never leaks into the draft either: the placeholder still shows.
+    expect(composer.output).toContain("❯ Message...");
+    expect(composer.output).toContain("[Tab] Focus: input");
+  });
+
+  it("never focuses a card the maximized layout hid", () => {
+    // Composer → (no conversation) → stream → composer.
+    expect(nextFocus("composer", true, false, false)).toBe("stream");
+    expect(nextFocus("stream", true, false, false)).toBe("composer");
+    expect(nextFocus("composer", true, true, false)).toBe("stream");
+    // Neither card: Tab stays on the composer instead of announcing nothing.
+    expect(nextFocus("composer", false, false, false)).toBe("composer");
+  });
+
+  /** Let React flush an external event without relying on the faked timers. */
+  const flushReact = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  /** Mounts, emits the given logs and runs `act`, all under faked timers. */
+  async function withLogs(
+    logs: Array<{ level: "info" | "warn" | "error"; message: string }>,
+    act: (harness: Harness) => Promise<void>,
+    withStream = false,
+  ): Promise<string> {
+    const harness = await mountLive(createMockLive(), 100, 30);
+    if (withStream) {
+      // The cards row is only split when the stream has content, and the split
+      // is what the collapsed tail gives its rows back to.
+      events.emit("phaseStream", { text: "reasoning…" });
+      await tick(140);
+    }
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      for (const entry of logs) {
+        events.emit("log", entry);
+        await flushReact();
+      }
+      await act(harness);
+    } finally {
+      harness.unmount();
+      vi.useRealTimers();
+    }
+    return harness.output();
+  }
+
+  it("lets the visible tail own exactly its entries plus its title row", async () => {
+    const base = await cardsAfter();
+    const output = await withLogs(
+      [0, 1, 2].map((index) => ({ level: "info" as const, message: `entry-${index}` })),
+      async () => {},
+      true,
+    );
+    const chat = cardRows(output, CHAT);
+    const stream = cardRows(output, STREAM);
+    // Three entries and the tertiary card's one title row come out of the cards
+    // row, not out of the terminal: nothing is pushed off the frame.
+    expect(chat! + stream!).toBe(base.chat! + base.stream! - (3 + cardChrome("tertiary").rows));
+    expect(output).toContain("SYSTEM LOGS");
+    expect(visibleLines(output).length).toBeLessThanOrEqual(30);
+  });
+
+  it("collapses the idle tail out of the frame and advertises the hidden count", async () => {
+    const base = await cardsAfter();
+    const output = await withLogs(
+      [0, 1, 2].map((index) => ({ level: "info" as const, message: `entry-${index}` })),
+      async () => {
+        await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+        await flushReact();
+      },
+      true,
+    );
+    const chat = cardRows(output, CHAT);
+    const stream = cardRows(output, STREAM);
+    // Collapsed logs occupy no row at all: the cards row is the un-logged one.
+    expect(chat! + stream!).toBe(base.chat! + base.stream!);
+    expect(output).not.toContain("SYSTEM LOGS");
+    expect(output).not.toContain("entry-0");
+    // ...and the footer says how many rows `L` would bring back.
+    expect(output).toContain("[L] logs · 3");
+  });
+
+  it("keeps a tail holding an error open past the idle timeout", async () => {
+    const output = await withLogs(
+      [
+        { level: "info", message: "first" },
+        { level: "error", message: "boom" },
+      ],
+      async () => {
+        await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS * 2);
+        await flushReact();
+      },
+    );
+    expect(output).toContain("boom");
+    expect(output).toContain("SYSTEM LOGS");
+    expect(output).not.toContain("[L] logs ·");
+  });
+
+  it("advertises every hidden entry, not just the visible tail size", async () => {
+    const output = await withLogs(
+      Array.from({ length: 6 }, (_, index) => ({
+        level: "info" as const,
+        message: `queued-${index}`,
+      })),
+      async () => {
+        await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+        await flushReact();
+      },
+      true,
+    );
+    // The 30-row frame only holds a three-entry tail, but all six queued entries
+    // are hidden by the collapse and `L` brings all of them back.
+    expect(output).toContain("[L] logs · 6");
+  });
+
+  it("auto-collapses once a stale error has scrolled out of the visible tail", async () => {
+    const output = await withLogs(
+      [
+        { level: "error", message: "old-boom" },
+        ...Array.from({ length: 5 }, (_, index) => ({
+          level: "info" as const,
+          message: `after-${index}`,
+        })),
+      ],
+      async () => {
+        await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+        await flushReact();
+      },
+    );
+    // The error is still in the ring buffer but no longer in the visible tail,
+    // so it must not disable auto-collapse for the rest of the session.
+    expect(output).not.toContain("SYSTEM LOGS");
+    expect(output).toContain("[L] logs · 6");
+  });
+
+  it("pins the tail with L past every timeout and releases it to a fresh minute", async () => {
+    const pinned = await withLogs([{ level: "info", message: "pinned-entry" }], async (harness) => {
+      harness.stdin.write("\t"); // composer → conversation
+      await flushReact();
+      harness.stdin.write("L");
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS * 2);
+      await flushReact();
+    });
+    expect(pinned).toContain("pinned-entry");
+    expect(pinned).not.toContain("[L] logs ·");
+
+    const released = await withLogs([{ level: "info", message: "pinned-entry" }], async (harness) => {
+      harness.stdin.write("\t"); // composer → conversation
+      await flushReact();
+      harness.stdin.write("L");
+      await flushReact();
+      harness.stdin.write("L");
+      await flushReact();
+      // Unpinning starts a new minute: the tail is not hidden on the same
+      // keypress just because the last event is already older than the timeout.
+      await vi.advanceTimersByTimeAsync(200);
+      await flushReact();
+    });
+    expect(released).toContain("pinned-entry");
+    expect(released).not.toContain("[L] logs ·");
+  });
+
+  it("collapses the tail again one minute after the pin is released", async () => {
+    const output = await withLogs([{ level: "info", message: "pinned-entry" }], async (harness) => {
+      harness.stdin.write("\t"); // composer → conversation
+      await flushReact();
+      harness.stdin.write("L");
+      await flushReact();
+      harness.stdin.write("L");
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 200);
+      await flushReact();
+    });
+    expect(output).not.toContain("SYSTEM LOGS");
+    expect(output).toContain("[L] logs · 1");
+  });
+
+  it("reopens a collapsed tail when a new event arrives", async () => {
+    const output = await withLogs([{ level: "info", message: "first" }], async () => {
+      await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+      await flushReact();
+      events.emit("log", { level: "info", message: "second" });
+      await flushReact();
+      await vi.advanceTimersByTimeAsync(200);
+      await flushReact();
+    });
+    expect(output).toContain("SYSTEM LOGS");
+    expect(output).toContain("second");
+    expect(output).toContain("first");
+    expect(output).not.toContain("[L] logs ·");
+  });
+
+  it("keeps six conversation body rows at 100x30 with the stream and collapsed logs", async () => {
+    const output = await withLogs(
+      [0, 1].map((index) => ({ level: "info" as const, message: `entry-${index}` })),
+      async () => {
+        await vi.advanceTimersByTimeAsync(LOG_AUTO_COLLAPSE_MS + 80);
+        await flushReact();
+      },
+      true,
+    );
+    const chat = cardRows(output, CHAT);
+    const stream = cardRows(output, STREAM);
+    expect(chat).not.toBeNull();
+    // The frame the user gets: the conversation's body rows, title and borders
+    // paid for out of the painted card.
+    expect(chat! - cardChrome("primary").rows).toBeGreaterThanOrEqual(6);
+    // And the pure layout function the dashboard called agrees with that frame:
+    // the cards row it was handed is the two cards it painted, and its default
+    // split still leaves six body rows (AC: verified by the layout function).
+    const heights = liveCardHeights({
+      availableHeight: chat! + stream!,
+      splitRatio: DEFAULT_SPLIT_RATIO,
+      maximized: null,
+      showStream: true,
+    });
+    expect(heights.chatHeight).toBe(chat);
+    expect(heights.chatHeight - cardChrome("primary").rows).toBeGreaterThanOrEqual(6);
+  });
+
+  it("draws no metric the diagnostics never reported", async () => {
+    const harness = await mountLive(createMockLive(), 120, 40);
+    events.emit("phaseStream", { text: "reasoning…" });
+    await tick(140);
+    harness.unmount();
+    const output = harness.output();
+    // `DiagnosticsInfo` exposes no iteration counter, so no progress bar, no
+    // percentage and no iteration row may be drawn to fill the panel's space.
+    expect(output).not.toMatch(/\d+\s*%/);
+    expect(output.toLowerCase()).not.toContain("iteration");
+    expect(output.toLowerCase()).not.toContain("progress");
+  });
+});
+
+/**
+ * The live console's decision keys (REQ-37 / AC-37.3). Every decision kind owns a
+ * small alphabet, and a key outside it must never answer anything — Ink sends
+ * `""` for every non-alphanumeric keypress, which is exactly how the first option
+ * used to get picked by accident.
+ */
+describe("live decision keys (REQ-37 / AC-37.3)", () => {
+  beforeEach(() => {
+    events.clear();
+  });
+
+  afterEach(() => {
+    events.clear();
+  });
+
+  async function answer(
+    request: DecisionRequest,
+    keys: string[],
+  ): Promise<{ live: LiveEngine; output: string }> {
+    const live = createMockLive();
+    const harness = await mountLive(live, 100, 34);
+    events.emit("decision", request);
+    await tick(140);
+    for (const key of keys) {
+      harness.stdin.write(key);
+      await tick(80);
+    }
+    harness.unmount();
+    return { live, output: harness.output() };
+  }
+
+  const permission: DecisionRequest = {
+    id: "perm-1",
+    kind: "permission",
+    iteration: 0,
+    phase: "EXECUTE",
+    attempt: 1,
+    message: "Allow writing src/index.ts?",
+  };
+
+  it("maps the permission keys to allow, retry and deny", async () => {
+    const expected: Array<[string, "continue" | "retry" | "deny"]> = [
+      ["a", "continue"],
+      ["o", "retry"],
+      ["d", "deny"],
+    ];
+    for (const [key, choice] of expected) {
+      const { live } = await answer(permission, [key]);
+      expect(live.resolveDecision, `key ${key}`).toHaveBeenCalledWith(choice, undefined);
+    }
+  });
+
+  it("leaves an unadvertised permission key unanswered", async () => {
+    const { live } = await answer(permission, ["x"]);
+    expect(live.resolveDecision).not.toHaveBeenCalled();
+  });
+
+  it("maps the question keys to the chosen option, a skip and an abort", async () => {
+    const question: DecisionRequest = {
+      id: "q-2",
+      kind: "question",
+      iteration: 0,
+      phase: "LIVE",
+      attempt: 1,
+      message: "Which database?",
+      questionItems: [
+        {
+          question: "Which database?",
+          options: [{ label: "Postgres" }, { label: "SQLite" }],
+        },
+      ],
+    };
+    const accepted = await answer(question, ["\r"]);
+    expect(accepted.live.resolveDecision).toHaveBeenCalledWith("continue", ["Postgres"]);
+
+    const skipped = await answer(question, ["d"]);
+    expect(skipped.live.resolveDecision).toHaveBeenCalledWith("deny", undefined);
+
+    const aborted = await answer(question, ["\u001B"]);
+    expect(aborted.live.resolveDecision).toHaveBeenCalledWith("abort", undefined);
+  });
+
+  it("tells the user what to press instead of swallowing an unknown question key", async () => {
+    const question: DecisionRequest = {
+      id: "q-3",
+      kind: "question",
+      iteration: 0,
+      phase: "LIVE",
+      attempt: 1,
+      message: "Which queue?",
+      questionItems: [
+        {
+          question: "Which queue?",
+          options: [{ label: "SQS" }, { label: "RabbitMQ" }, { label: "Kafka" }],
+        },
+      ],
+    };
+    const { live, output } = await answer(question, ["x"]);
+    expect(live.resolveDecision).not.toHaveBeenCalled();
+    // The count comes from the question, so the hint can never advertise an
+    // option the question does not have.
+    expect(output).toContain("Press 1-3 to pick an option");
+  });
+
+  it("offers the promotion-recovery keys only when the prompt offers them", async () => {
+    const full: DecisionRequest = {
+      id: "post-1",
+      kind: "post-cycle-live",
+      iteration: 0,
+      phase: "LIVE",
+      attempt: 1,
+      message: "Cycle failed.",
+      choices: ["retry-promotion", "repair", "retry", "continue", "abort"],
+    };
+    const expected: Array<[string, "retry-promotion" | "repair" | "retry" | "continue" | "abort"]> = [
+      ["t", "retry-promotion"],
+      ["p", "repair"],
+      ["r", "retry"],
+      ["c", "continue"],
+      ["a", "abort"],
+    ];
+    for (const [key, choice] of expected) {
+      const { live } = await answer(full, [key]);
+      expect(live.resolveDecision, `key ${key}`).toHaveBeenCalledWith(choice, undefined);
+    }
+
+    const plain: DecisionRequest = {
+      ...full,
+      choices: ["retry", "continue", "abort"],
+    };
+    const offered = await answer(plain, ["t"]);
+    expect(offered.live.resolveDecision).not.toHaveBeenCalled();
+    const other = await answer(plain, ["p"]);
+    expect(other.live.resolveDecision).not.toHaveBeenCalled();
+  });
+});
 
 describe("panel lines (REQ-12)", () => {
   const contentWidth = SIDE_PANEL_WIDTH - 4;
@@ -311,6 +1076,46 @@ describe("panel lines (REQ-12)", () => {
     expect(tipOnly[tipOnly.length - 1]?.kind).not.toBe("divider");
     expect(slicePanelLines(lines, 0)).toEqual([]);
     expect(slicePanelLines(lines, 99)).toEqual(lines);
+  });
+
+  it("groups the rows into SESSION / REPO / MEMORY sections", () => {
+    const lines = panelLines(panelData, contentWidth);
+    const headings = lines.filter((line) => line.kind === "section").map((line) => line.label);
+    expect(headings).toEqual(["SESSION", "REPO", "MEMORY"]);
+    const at = (label: string): number =>
+      lines.findIndex((line) => line.kind === "section" && line.label === label);
+    expect(at("SESSION")).toBeLessThan(
+      lines.findIndex((line) => line.kind === "row" && line.label === "stage"),
+    );
+    expect(at("REPO")).toBeLessThan(
+      lines.findIndex((line) => line.kind === "row" && line.label === "git"),
+    );
+    expect(at("MEMORY")).toBeLessThan(
+      lines.findIndex((line) => line.kind === "row" && line.label === "muninn"),
+    );
+  });
+
+  it("does not draw a section whose data is missing", () => {
+    const lines = panelLines(
+      {
+        ...panelData,
+        git: null,
+        memory: null,
+        context: { turns: 0, chars: 0 },
+        tip: "",
+      },
+      contentWidth,
+    );
+    expect(lines.filter((line) => line.kind === "section").map((line) => line.label)).toEqual([
+      "SESSION",
+    ]);
+  });
+
+  it("drops a section header left without any row under it", () => {
+    const lines = panelLines(panelData, contentWidth);
+    const memoryAt = lines.findIndex((line) => line.kind === "section" && line.label === "MEMORY");
+    const sliced = slicePanelLines(lines, memoryAt + 1);
+    expect(sliced[sliced.length - 1]?.kind).not.toBe("section");
   });
 
   it("defaults the caller's inset to two columns when it is omitted", () => {
