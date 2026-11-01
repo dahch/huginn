@@ -32,7 +32,7 @@ const ESC = "\u001b";
 describe("feedback copy (REQ-31 / AC-31.1, AC-31.2)", () => {
   it("prefixes every acknowledgement with one of the three feedback marks", () => {
     expect(okFeedback("Saved.")).toBe("✓ Saved.");
-    expect(warnFeedback("Careful.")).toBe("⚠ Careful.");
+    expect(warnFeedback("Careful.")).toBe("! Careful.");
     expect(busyFeedback("Working…")).toBe("… Working…");
     expect(FEEDBACK_PREFIXES).toEqual([FEEDBACK_OK, FEEDBACK_WARN, FEEDBACK_BUSY]);
     for (const text of [okFeedback("a"), warnFeedback("b"), busyFeedback("c")]) {
@@ -43,7 +43,7 @@ describe("feedback copy (REQ-31 / AC-31.1, AC-31.2)", () => {
 
   it("strips terminal control sequences from every message it composes", () => {
     expect(okFeedback(`done ${ESC}[31mred${ESC}[0m`)).toBe("✓ done red");
-    expect(warnFeedback(`bad ${ESC}[2J${ESC}[H`)).toBe("⚠ bad ");
+    expect(warnFeedback(`bad ${ESC}[2J${ESC}[H`)).toBe("! bad ");
     expect(causeText(new Error(`${ESC}[31mboom${ESC}[0m`))).toBe("boom");
     expect(causeText(undefined)).toBe("");
     expect(causeText("plain failure")).toBe("plain failure");
@@ -52,13 +52,13 @@ describe("feedback copy (REQ-31 / AC-31.1, AC-31.2)", () => {
   it("leads a failure with the component and the next step, and keeps the cause as detail", () => {
     const message = failureFeedback("Runtime switch failed", NEXT_STEP.runtimeSwitch, new Error("binary not found"));
     const [headline, cause] = message.split("\n");
-    expect(headline).toBe("⚠ Runtime switch failed — run `/agent` to open the runtime picker, then choose an installed runtime");
+    expect(headline).toBe("! Runtime switch failed — run `/agent` to open the runtime picker, then choose an installed runtime");
     expect(cause).toBe("  cause: binary not found");
     // The hint is on the first line, the cause never is.
     expect(headline).not.toContain("binary not found");
     // Without a cause the message stays a single actionable line.
     expect(failureFeedback("Diagnostics failed", NEXT_STEP.diagnostics)).toBe(
-      "⚠ Diagnostics failed — run `/mcp` to inspect the runtime and its servers, then retry `/status`",
+      "! Diagnostics failed — run `/mcp` to inspect the runtime and its servers, then retry `/status`",
     );
   });
 
@@ -70,8 +70,8 @@ describe("feedback copy (REQ-31 / AC-31.1, AC-31.2)", () => {
       "Model settings were not saved — could not write /proj/.huginn/config.json: " +
         'check permissions, then retry /model (choose "Session Only" to keep the change in memory)',
     );
-    // `failureHeadline` carries no glyph: surfaces with their own ⚠ add it.
-    expect(failureHeadline("x", "y")).not.toMatch(/^[✓⚠…]/);
+    // `failureHeadline` carries no glyph: surfaces with their own ! add it.
+    expect(failureHeadline("x", "y")).not.toMatch(/^[✓!…]/);
   });
 
   it("mentions the model, runtime and MCP commands in the relevant hints (AC-31.2)", () => {

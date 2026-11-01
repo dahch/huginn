@@ -371,7 +371,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
       {errorMsg ? (
         <Box marginY={0}>
           <Text bold color={THEME.danger}>
-            ⚠ {sanitizeTerminalText(errorMsg)}
+            ! {sanitizeTerminalText(errorMsg)}
           </Text>
         </Box>
       ) : null}
@@ -407,7 +407,7 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
       ) : discoveryError ? (
         <Box flexDirection="column" paddingY={1}>
           <Text bold color={THEME.danger}>
-            ⚠ Model discovery from {safeRuntimeName} failed: {discoveryError}
+            ! Model discovery from {safeRuntimeName} failed: {discoveryError}
           </Text>
           <Text color={THEME.muted}>Type a provider/model id and press Enter to continue.</Text>
           {/* AC-31.2: free-text entry *or* the `/model <id>` shortcut, never a bare cause. */}

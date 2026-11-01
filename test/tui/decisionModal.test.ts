@@ -2,7 +2,8 @@ import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { Box, render } from "ink";
-import { DecisionModal } from "../../src/tui/Dashboard";
+import stringWidth from "string-width";
+import { DecisionModal, decisionTitle } from "../../src/tui/Dashboard";
 import type { DecisionRequest } from "../../src/engine/types";
 
 type MockStdin = PassThrough & { isTTY: boolean; setRawMode: () => MockStdin; ref: () => MockStdin; unref: () => MockStdin };
@@ -61,6 +62,96 @@ async function renderInFrame(req: DecisionRequest, rows = 30): Promise<string> {
   instance.unmount();
   return output;
 }
+
+const EMOJI = /\p{Extended_Pictographic}/u;
+const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
+
+const baseRequest: DecisionRequest = {
+  id: "d1",
+  kind: "gate-blocked",
+  iteration: 3,
+  phase: "EXECUTE",
+  attempt: 1,
+  message: "A decision is required.",
+};
+
+/** The rendered title row, with Ink's colour/cursor sequences stripped. */
+function titleRow(output: string, title: string): string | undefined {
+  return output
+    .replace(ANSI, "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .find((line) => line.includes(title));
+}
+
+/** REQ-68 / ADR-63 — the decision modal speaks the product's single-width alphabet. */
+describe("DecisionModal — decision alphabet (REQ-68)", () => {
+  const cases: Array<[string, DecisionRequest, string]> = [
+    [
+      "approve-draft",
+      { ...baseRequest, kind: "approve-draft", phase: "LIVE", iteration: 0 },
+      "> DECISION · Approve drafted docs",
+    ],
+    [
+      "scope-extraction",
+      { ...baseRequest, kind: "scope-extraction", phase: "LIVE", iteration: 0 },
+      "! DECISION · Scope extraction failed",
+    ],
+    [
+      "draft-format",
+      { ...baseRequest, kind: "draft-format", phase: "LIVE", iteration: 0 },
+      "! DECISION · Draft format violated",
+    ],
+    [
+      "post-cycle-live",
+      { ...baseRequest, kind: "post-cycle-live", phase: "LIVE", iteration: 1 },
+      "✓ CYCLE FINISHED · Next action",
+    ],
+    [
+      "question",
+      {
+        ...baseRequest,
+        kind: "question",
+        phase: "LIVE",
+        iteration: 0,
+        questionIndex: 1,
+        questionTotal: 3,
+      },
+      "? QUESTION FROM AGENT · Input required (2/3)",
+    ],
+    ["gate-blocked", baseRequest, "! DECISION · Gate EXECUTE · iteration 3"],
+  ];
+
+  it("renders six single-width, emoji-free titles", async () => {
+    for (const [kind, req, expected] of cases) {
+      expect(decisionTitle(req), kind).toBe(expected);
+      const output = await renderModal(req);
+      const row = titleRow(output, expected);
+      expect(row, `${kind} must render its title: ${JSON.stringify(output)}`).toBeDefined();
+      expect(row).not.toMatch(EMOJI);
+      // One terminal row, one column per code point: no double-width glyph.
+      expect(stringWidth(row!)).toBe(row!.length);
+    }
+  });
+
+  it("resolves every DecisionKind through the shared table", () => {
+    const kinds: DecisionRequest["kind"][] = [
+      "gate-blocked",
+      "permission",
+      "question",
+      "spec-deviation",
+      "approve-draft",
+      "scope-extraction",
+      "draft-format",
+      "post-cycle-live",
+    ];
+    for (const kind of kinds) {
+      const title = decisionTitle({ ...baseRequest, kind });
+      expect(title).not.toMatch(EMOJI);
+      expect(stringWidth(title)).toBe(title.length);
+    }
+  });
+});
 
 const question = (overrides: Partial<DecisionRequest> = {}): DecisionRequest => ({
   id: "q1",

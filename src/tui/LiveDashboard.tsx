@@ -1017,7 +1017,7 @@ function RefineView({
 
   /**
    * Switch the active runtime (REQ-33). Shared by `/agent <id>` and the picker so
-   * both report the same busy/✓/⚠ feedback and never crash the view on failure.
+   * both report the same busy/✓/! feedback and never crash the view on failure.
    */
   const switchAgent = async (id: string): Promise<boolean> => {
     if (id === live.runtime.id) {
@@ -1358,7 +1358,7 @@ function RefineView({
       } catch (err) {
         const hint = configSaveStep(targetPath);
         emitSystem(failureFeedback("Model settings were not saved", hint, err));
-        // The modal stays open and shows its own ⚠ row with the same copy.
+        // The modal stays open and shows its own ! row with the same copy.
         throw new Error(failureHeadline("Model settings were not saved", hint));
       }
 

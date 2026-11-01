@@ -53,7 +53,7 @@ export function parseValidateStepVerdict(text: string): Verdict | null {
 
   // Mandated trailing handoff markers.
   if (/🛑\s*BLOCKED|^\s*🛑/m.test(text)) merge("blocked");
-  if (/⚠️\s*REVIEW REQUESTED|^\s*⚠️/m.test(text)) merge("warning");
+  if (/!\s*REVIEW REQUESTED/m.test(text)) merge("warning");
   if (/✅\s*AUTO-APPROVED|^\s*✅/m.test(text)) merge("pass");
   if (/🔴\s*(PASS|WARN)/.test(text)) merge("warning");
 
@@ -119,8 +119,9 @@ export function parseSpecAuditVerdict(text: string): Verdict | null {
  * `### Overall gate:` line or one of the three exact handoff phrases.
  *
  * Deliberately narrower than {@link parseValidateStepVerdict}: every role
- * template contains bare ✅ / ⚠️ / 🔴 glyphs (`### Positive Highlights ✅`,
- * `### Critical Findings 🔴`, `> ⚠️ SKIP …`), so a whole-body emoji scan would
+ * template contains bare ✅ / 🔴 glyphs (`### Positive Highlights ✅`,
+ * `### Critical Findings 🔴`) and a `> ! SKIP …` directive, so a whole-body
+ * emoji scan would
  * read a clean report as blocked and re-introduce the REV-102 bug. These exact
  * phrases only exist in the consolidation template, so a role that echoes one
  * is genuinely contradicting its own status line.
@@ -136,7 +137,7 @@ export function parseGateVocabularyVerdict(text: string): Verdict | null {
   else if (/overall gate:\s*🟢/i.test(text)) merge("pass");
 
   if (/🛑\s*BLOCKED/.test(text)) merge("blocked");
-  if (/⚠️\s*REVIEW REQUESTED/.test(text)) merge("warning");
+  if (/!\s*REVIEW REQUESTED/.test(text)) merge("warning");
   if (/✅\s*AUTO-APPROVED/.test(text)) merge("pass");
 
   return best;
@@ -251,7 +252,7 @@ ${truncated}
   if (/🛑|blocked/i.test(res.text) && !/not blocked/i.test(res.text)) {
     return { status: "blocked", summary: res.text.slice(0, MAX_FALLBACK_SUMMARY_LENGTH), actionItems: [], parsed: false };
   }
-  if (/warning|⚠️/i.test(res.text)) {
+  if (/warning|!/i.test(res.text)) {
     return { status: "warning", summary: res.text.slice(0, MAX_FALLBACK_SUMMARY_LENGTH), actionItems: [], parsed: false };
   }
   // fail closed: an unreadable judge report must never pass a blocking gate

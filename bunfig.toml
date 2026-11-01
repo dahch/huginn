@@ -1,0 +1,6 @@
+# `bun test` runs the unit suite in `src` and the Vitest integration suite in
+# `test` in the same process. Several command tests assert the process exit code
+# after calling `main()`, so a value left behind by another file must not leak
+# across tests or into Bun's own exit status.
+[test]
+preload = ["./test/bunSetup.ts"]

@@ -58,7 +58,7 @@ export async function runHeadless(engine: CycleEngine): Promise<void> {
     return new Promise((resolve) => {
       if (!tty) {
         // Unattended (CI / pipe): no human available. Abort so state is preserved.
-        process.stdout.write(`\n${chalk.yellow.bold("⚠️  DECISION REQUIRED")} ${chalk.white(req.message)}\n`);
+        process.stdout.write(`\n${chalk.yellow.bold("!  DECISION REQUIRED")} ${chalk.white(req.message)}\n`);
         if (req.kind === "permission") {
           writeLine(chalk.dim("   [CI/non-TTY] Auto-denying permission."));
           resolve("deny");
@@ -73,7 +73,7 @@ export async function runHeadless(engine: CycleEngine): Promise<void> {
       writeLine(chalk.yellow("┌" + "─".repeat(BOX_WIDTH - 2) + "┐"));
       writeLine(
         chalk.yellow("│") +
-          padBox(`  ${chalk.yellow.bold("⚠️  DECISION REQUIRED")} ` + chalk.dim(`(iter ${req.iteration}, phase ${req.phase})`)) +
+          padBox(`  ${chalk.yellow.bold("!  DECISION REQUIRED")} ` + chalk.dim(`(iter ${req.iteration}, phase ${req.phase})`)) +
           chalk.yellow("│"),
       );
       writeLine(chalk.yellow("│") + padBox(`  ${chalk.white.bold(req.message)}`) + chalk.yellow("│"));
@@ -239,7 +239,7 @@ writeLine("");
       chalk.cyan("│") +
         padBox(
           `  ${chalk.green(`✓ Passed: ${passed}`)}   ` +
-            `${chalk.yellow(`⚠ Warnings: ${warned}`)}   ` +
+            `${chalk.yellow(`! Warnings: ${warned}`)}   ` +
             `${chalk.red(`✗ Blocked: ${blocked}`)}   ` +
             `${chalk.gray(`⏭ Skipped: ${skipped}`)}`,
         ) +
@@ -269,7 +269,7 @@ export async function runLiveHeadless(live: LiveEngine): Promise<void> {
   const askDecision = (req: DecisionRequest): Promise<DecisionChoice> => {
     return new Promise((resolve) => {
       if (!tty) {
-        process.stdout.write(`\n${chalk.yellow.bold("⚠️  DECISION REQUIRED")} ${chalk.white(req.message)}\n`);
+        process.stdout.write(`\n${chalk.yellow.bold("!  DECISION REQUIRED")} ${chalk.white(req.message)}\n`);
         writeLine(chalk.yellow("   (non-interactive stdin — aborting; use the TUI for live mode)"));
         resolve("abort");
         return;
@@ -279,7 +279,7 @@ export async function runLiveHeadless(live: LiveEngine): Promise<void> {
       writeLine(
         chalk.yellow("│") +
           padBox(
-            `  ${chalk.yellow.bold("⚠️  DECISION REQUIRED")} ` + chalk.dim(`(${req.kind}, ${req.phase})`),
+            `  ${chalk.yellow.bold("!  DECISION REQUIRED")} ` + chalk.dim(`(${req.kind}, ${req.phase})`),
           ) +
           chalk.yellow("│"),
       );

@@ -256,7 +256,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         <Text color={muninn ? THEME.ok : THEME.warn} wrap="truncate">
           {muninn
             ? `✓ Muninn (the memory brain) is registered for ${agentLabel} as "${sanitizeTerminalText(muninn.name)}" — one project-scoped brain, shared by every agent.`
-            : `⚠ Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
+            : `! Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
         </Text>
       </Box>
 

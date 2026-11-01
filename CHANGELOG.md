@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A decision alphabet that matches the rest of the TUI.** `src/tui/glyphs.ts` gains
+  `DECISION_GLYPHS` (`approve` `>`, `question` `?`, `warn` `!`, `done` `✓`) and `decisionGlyph(kind)`,
+  and `DecisionModal` now composes its title with the pure exported `decisionTitle(req)` instead of
+  inline pictographs. The decision modal, the feedback channel and the dashboard share one printable,
+  single-column alphabet (REQ-68 / ADR-63).
+- **A drift guard for the decision surface.** `test/tui/decisionModal.test.ts` renders all six title
+  kinds and fails on any `\p{Extended_Pictographic}` code point or a display width that disagrees
+  with the string length; `test/tui/glyphs.test.ts` covers the new table.
+
+### Changed
+
+- **Feedback speaks `!`:** `FEEDBACK_WARN` is `!` (alongside `✓` and `…`), and the gate's warning
+  handoff line is `! REVIEW REQUESTED` across the instructions, enforcement and parsers. The gate
+  literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`) and the producer markers
+  (`⚡ ✓ ✗ 💭`) are unchanged.
+
 ## 2.0.0-rc.5
 
 Thirty-nine commits since `2.0.0-rc.4`, 99 files: `src` +6362/−1518, `test` +1568/−358, docs

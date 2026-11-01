@@ -479,7 +479,7 @@ export async function handleInitCommand(
     // (REV-201): require both a returned report and a clean exit code.
     report.setupRan = setupReport !== undefined && process.exitCode !== 1;
     if (!report.setupRan) {
-      error(chalk.yellow(`   ⚠ Muninn MCP registration did not complete for ${report.agent}.`));
+      error(chalk.yellow(`   ! Muninn MCP registration did not complete for ${report.agent}.`));
       error(
         chalk.dim(
           `     re-run \`huginn setup --agent ${report.agent}\` to retry (or pass --skip-setup to skip it).`,

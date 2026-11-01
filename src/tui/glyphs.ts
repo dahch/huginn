@@ -12,7 +12,7 @@
  * parsers agree on (`### Overall gate: 🟢/🟡/🔴`) and the stream markers a runtime
  * emits. Those are contracts and producer output, not display glyphs.
  */
-import type { Verdict } from "../engine/types";
+import type { DecisionKind, Verdict } from "../engine/types";
 
 /** Status glyphs, one per state a phase row can be in. */
 export const STATUS_GLYPHS = {
@@ -31,6 +31,48 @@ export const STATUS_GLYPHS = {
 } as const;
 
 export type StatusGlyph = keyof typeof STATUS_GLYPHS;
+
+/**
+ * Decision-modal glyphs (REQ-68 / ADR-63).
+ *
+ * The decision modal and the feedback channel used to speak pictographs (`📋`,
+ * `❓`, a double-width warning sign) while the rest of the product used the single-width
+ * status alphabet, so the one surface that demands the user's attention was
+ * also the one that broke the monospace grid. These four marks are the decision
+ * alphabet: one printable, single-column character per intent, resolved by the
+ * modal's own semantic theme token. The gate/fidelity contract literals and the
+ * stream markers a runtime emits are still out of scope.
+ */
+export const DECISION_GLYPHS = {
+  /** A drafted document awaits approval. */
+  approve: ">",
+  /** The agent is asking for input. */
+  question: "?",
+  /** The run failed or needs attention. */
+  warn: "!",
+  /** The cycle finished and offers a next action. */
+  done: "✓",
+} as const;
+
+export type DecisionGlyph = keyof typeof DECISION_GLYPHS;
+
+/** The decision glyph for a {@link DecisionKind} (permission/gate share `warn`). */
+export function decisionGlyph(kind: DecisionKind): string {
+  switch (kind) {
+    case "approve-draft":
+      return DECISION_GLYPHS.approve;
+    case "question":
+      return DECISION_GLYPHS.question;
+    case "post-cycle-live":
+      return DECISION_GLYPHS.done;
+    case "gate-blocked":
+    case "permission":
+    case "spec-deviation":
+    case "scope-extraction":
+    case "draft-format":
+      return DECISION_GLYPHS.warn;
+  }
+}
 
 /** The status glyph for a verdict. */
 export function verdictGlyph(verdict: Verdict): string {

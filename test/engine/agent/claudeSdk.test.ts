@@ -7,8 +7,13 @@ import {
   type ClaudeTurnHandle,
 } from "../../../src/engine/agent/drivers/claude-sdk.js";
 
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
+// Defer the lookup into the mock so the factory can be hoisted by Vitest while
+// Bun (which has no `vi.hoisted`) still initialises `queryMock` before the first
+// call. The SDK is optional and never actually imported by this test.
+const queryMock = vi.fn();
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  query: (...args: Parameters<typeof queryMock>) => queryMock(...args),
+}));
 
 function fakeTurn(overrides: Partial<ClaudeTurnHandle> = {}): ClaudeTurnHandle {
   return {

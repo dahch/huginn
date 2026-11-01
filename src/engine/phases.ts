@@ -277,7 +277,7 @@ const GATE_LINES: Record<GateVerdict, string> = {
 
 const HANDOFF_LINES: Record<GateVerdict, string> = {
   pass: "✅ AUTO-APPROVED — no action required, continuing to next step.",
-  warning: "⚠️ REVIEW REQUESTED — address the items above before continuing.",
+  warning: "! REVIEW REQUESTED — address the items above before continuing.",
   blocked: "🛑 BLOCKED — do not proceed until issues are resolved and /validate-step is re-run.",
 };
 
@@ -368,7 +368,7 @@ function parseFidelityVerdict(report: string): GateVerdict | null {
 }
 
 const GATE_LINE_RE = /^[#>\s]*Overall gate:.*$/gim;
-const HANDOFF_LINE_RE = /^[#>\s]*(?:✅|⚠️|🛑).*$/gim;
+const HANDOFF_LINE_RE = /^[#>\s]*(?:✅|!\s*REVIEW REQUESTED|🛑).*$/gim;
 
 /**
  * Overwrite the synthesis output's verdict lines with huginn's computed verdict

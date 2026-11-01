@@ -186,13 +186,13 @@ describe("every command acknowledges itself (REQ-31 / AC-31.1)", () => {
       for (const message of harness.messages) {
         expect(message.trim().length, `${command.id}: ${JSON.stringify(message)}`).toBeGreaterThan(0);
       }
-      // One voice: every acknowledgement opens with ✓ / ⚠ / … — except the
+      // One voice: every acknowledgement opens with ✓ / ! / … — except the
       // `/status` diagnostics panel, which draws its own boxed report.
       const first = harness.messages[0]!;
       const isPanel = first.startsWith("╭─");
       expect(
         hasFeedbackPrefix(first) || isPanel,
-        `${command.id} must acknowledge with a ✓/⚠/… line: ${JSON.stringify(first)}`,
+        `${command.id} must acknowledge with a ✓/!/… line: ${JSON.stringify(first)}`,
       ).toBe(true);
     }
   });
@@ -221,7 +221,7 @@ describe("every command acknowledges itself (REQ-31 / AC-31.1)", () => {
     harness.unmount();
 
     expect(harness.messages[0]).toBe("… Drafting spec.md, adr.md and plan.md from the refined scope…");
-    expect(harness.messages[1]).toContain("⚠ Draft aborted");
+    expect(harness.messages[1]).toContain("! Draft aborted");
   });
 
   it("confirms a model switch, and an agent switch, with a result line", async () => {
@@ -269,7 +269,7 @@ describe("every command acknowledges itself (REQ-31 / AC-31.1)", () => {
     await run(unknown.stdin, "/nope");
     unknown.unmount();
     expect(unknown.messages[0]).toBe(
-      '⚠ Unknown command "/nope" — type /help for the command reference.',
+      '! Unknown command "/nope" — type /help for the command reference.',
     );
 
     const bare = await mountLive(createMockLive());
@@ -278,7 +278,7 @@ describe("every command acknowledges itself (REQ-31 / AC-31.1)", () => {
     await tick(60);
     bare.unmount();
     expect(bare.messages[0]).toContain('"/" is not a command yet');
-    expect(bare.messages[0]?.startsWith("⚠")).toBe(true);
+    expect(bare.messages[0]?.startsWith("!")).toBe(true);
   });
 
   it("confirms before /quit and acknowledges the exit", async () => {
@@ -288,7 +288,7 @@ describe("every command acknowledges itself (REQ-31 / AC-31.1)", () => {
     await run(harness.stdin, "/quit");
     expect(live.requestAbort).not.toHaveBeenCalled();
     expect(harness.messages[0]).toBe(
-      "⚠ Type /quit or /abort again to confirm exit — anything else cancels.",
+      "! Type /quit or /abort again to confirm exit — anything else cancels.",
     );
     harness.unmount();
   });
@@ -313,7 +313,7 @@ describe("actionable errors (REQ-31 / AC-31.2)", () => {
 
     const failure = harness.messages.find((m) => m.includes("Diagnostics failed"));
     expect(failure).toBeDefined();
-    expect(failure?.startsWith("⚠ Diagnostics failed — run `/mcp`")).toBe(true);
+    expect(failure?.startsWith("! Diagnostics failed — run `/mcp`")).toBe(true);
     expect(failure).toContain("cause: sqlite busy");
     expect(failure).not.toContain("\u001b[31m");
   });
@@ -328,7 +328,7 @@ describe("actionable errors (REQ-31 / AC-31.2)", () => {
 
     expect(live.switchRuntime).toHaveBeenCalledWith("claude");
     const failure = harness.messages.find((m) => m.includes("Runtime switch failed"));
-    expect(failure).toContain("⚠ Runtime switch failed — run `/agent`");
+    expect(failure).toContain("! Runtime switch failed — run `/agent`");
     expect(failure).toContain("cause: binary not found");
   });
 
@@ -343,7 +343,7 @@ describe("actionable errors (REQ-31 / AC-31.2)", () => {
     harness.unmount();
 
     const failure = harness.messages.find((m) => m.includes("Failed to update models"));
-    expect(failure).toContain("⚠ Failed to update models — run `/model <id>`");
+    expect(failure).toContain("! Failed to update models — run `/model <id>`");
     expect(failure).toContain("cause: registry unreachable");
   });
 
@@ -357,7 +357,7 @@ describe("actionable errors (REQ-31 / AC-31.2)", () => {
     harness.unmount();
 
     const failure = harness.messages.find((m) => m.includes("Live session failed"));
-    expect(failure).toContain("⚠ Live session failed — retry the turn, or switch with `/model <id>`");
+    expect(failure).toContain("! Live session failed — retry the turn, or switch with `/model <id>`");
     expect(failure).toContain("cause: model overloaded");
   });
 });

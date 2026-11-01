@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { STATUS_GLYPHS, phaseGlyph, verdictGlyph } from "../../src/tui/glyphs.js";
+import stringWidth from "string-width";
+import {
+  DECISION_GLYPHS,
+  STATUS_GLYPHS,
+  decisionGlyph,
+  phaseGlyph,
+  verdictGlyph,
+} from "../../src/tui/glyphs.js";
 import { verdictIcon } from "../../src/format.js";
 import { freshState, renderProgressMarkdown } from "../../src/state/store.js";
 
@@ -31,6 +38,30 @@ describe("semantic glyph table (REQ-52)", () => {
       expect(glyph).not.toMatch(EMOJI);
       // One code point, so the column never shifts by a width.
       expect([...glyph]).toHaveLength(1);
+    }
+  });
+
+  it("defines the decision alphabet as single-width, emoji-free marks (REQ-68)", () => {
+    const decisions = [...Object.values(DECISION_GLYPHS), decisionGlyph("question"), decisionGlyph("post-cycle-live")];
+    for (const glyph of decisions) {
+      expect(glyph).not.toMatch(EMOJI);
+      expect([...glyph]).toHaveLength(1);
+      expect(stringWidth(glyph)).toBe(1);
+    }
+    // Every DecisionKind resolves to one of the four table entries.
+    const kinds = [
+      "gate-blocked",
+      "permission",
+      "question",
+      "spec-deviation",
+      "approve-draft",
+      "scope-extraction",
+      "draft-format",
+      "post-cycle-live",
+    ] as const;
+    const members = new Set<string>(Object.values(DECISION_GLYPHS));
+    for (const kind of kinds) {
+      expect(members.has(decisionGlyph(kind))).toBe(true);
     }
   });
 

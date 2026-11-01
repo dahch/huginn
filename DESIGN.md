@@ -140,10 +140,10 @@ src/
     ├── theme.ts            semantic colour tokens, light/dark/auto modes, NO_COLOR handling (REQ-47)
     ├── useTerminalSize.ts  responsive rows/columns hook listening to stdout resize
     ├── commandRegistry.ts  single slash-command registry (id, aliases, argHint, description) driving dispatch, the palette and /help (REQ-28 / ADR-28)
-    ├── glyphs.ts           the one phase/status glyph table (single-width ASCII) shared by the TUI and PROGRESS.md (REQ-52 / ADR-51)
+    ├── glyphs.ts           the one display glyph table: phase/status marks plus the decision alphabet, shared by the TUI and PROGRESS.md (REQ-52 / REQ-68 / ADR-51 / ADR-63)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
-    ├── feedback.ts         the one feedback voice: ✓/⚠/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
+    ├── feedback.ts         the one feedback voice: ✓/!/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
     ├── sessionContext.ts   shared status summaries for the header and the side panel (no fabricated values) (REQ-47)
     ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
     ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only (REQ-47)
@@ -404,7 +404,7 @@ flowchart LR
   `### Audit status:` line, and `gateDecision` skips `judgePhase` on a green marker. A warning or
   blocked marker pays for the judge (whose only new output is the structured `actionItems`), and a
   missing marker fails closed through the judge. `parseGateVocabularyVerdict` reads only the exact
-  consolidation vocabulary — never bare ✅/⚠️/🔴, which every role template ships in its headings.
+  consolidation vocabulary — never bare ✅/!/🔴, which every role template ships in its headings.
 - **Read-only guard**: for the auditor phases the engine hashes the work tree
   (`treeHash`) before and after the step; a missing or changed signature forces `blocked`
   (`readOnlyTreeViolation`) and the phase's own verdict is discarded — an audit that wrote to the
@@ -920,7 +920,7 @@ interface DoctorReport { checks: DoctorCheck[]; ok: boolean; }
 c.status === "ok")`). The integration check iterates `listRegistry()` + `resolveMcpPaths()`
 (read-only) and reports `N/total` registered. The Muninn check defaults its DB path to
 `<projectPath>/.huginn/muninn.db` (never dependent on the process CWD) and always `close()`s the
-service. `handleDoctorCommand` prints one colorized line per check (`✔`/`⚠`/`✖`) and sets
+service. `handleDoctorCommand` prints one colorized line per check (`✔`/`!`/`✖`) and sets
 `process.exitCode = report.ok ? 0 : 1`.
 
 ### 19.4 Git worktree sandbox lifecycle
@@ -1316,7 +1316,7 @@ stateDiagram-v2
    - Live query string filters models by `id`, `name`, `provider`, or `description`.
    - Visual provider badges (`[Anthropic]`, `[OpenAI]`, `[Google]`, etc.) visually categorize models.
    - Enter selects the highlighted model (accepted verbatim), or applies the typed custom model string. The `provider/model` requirement is waived for a catalog selection and for runtimes whose own catalog exposes bare ids (`agy`, Command Code): bare text for a fully-qualified runtime is scoped as `${runtime.id}/<text>`, while a runtime that lists bare ids keeps the text verbatim so its CLI can resolve its own short name. With no catalog, no filter and no current value there is nothing to select, and the row reports `No models discovered from <runtime> — type a provider/model id and press Enter`.
-   - Validates the canonical `provider/model` syntax (`slashIdx > 0 && slashIdx < modelId.length - 1`) only when the choice is not a catalog/exempt id; invalid formats display an inline error banner (`⚠ Custom models must be in provider/model format`).
+   - Validates the canonical `provider/model` syntax (`slashIdx > 0 && slashIdx < modelId.length - 1`) only when the choice is not a catalog/exempt id; invalid formats display an inline error banner (`! Custom models must be in provider/model format`).
 2. **Step 2: Choose Executor (`step: "executor"`)**:
    - Prompts user to select the execution model for coding, test execution, gates, and commits.
    - Inherits the catalog and filtering mechanism from Step 1.
@@ -1727,7 +1727,7 @@ Because skills are read from the repository, the loader treats discovery and rea
 | `/resume` | Continues a saved run without re-planning: `getResumePoint()` (which validates `planHash`) then `onApprove()`; with no valid point it answers with a warning pointing at `/draft`. |
 | `/quit` (alias `/abort`) | **Two-step confirmation**: the first invocation only asks to confirm; a second within the same session aborts. Any other command resets the pending confirmation. |
 
-Each branch above answers with a sanitized acknowledgement from `feedback.ts` (`✓` result, `⚠` problem naming the next step with the raw cause on a `cause:` line, `…` while running), so no dispatched input is a silent no-op (REQ-31). While a bare `/…` draft has matches, the palette takes `↑`/`↓` (and `j`/`k`) / `Tab` / `Enter` / `Esc` *before* the dashboard's focus-toggle (`Tab`) and scroll-trap (`↑`/`↓`) handlers, and a draft with no matches does not count as open (REQ-28 / AC-28.3).
+Each branch above answers with a sanitized acknowledgement from `feedback.ts` (`✓` result, `!` problem naming the next step with the raw cause on a `cause:` line, `…` while running), so no dispatched input is a silent no-op (REQ-31). While a bare `/…` draft has matches, the palette takes `↑`/`↓` (and `j`/`k`) / `Tab` / `Enter` / `Esc` *before* the dashboard's focus-toggle (`Tab`) and scroll-trap (`↑`/`↓`) handlers, and a draft with no matches does not count as open (REQ-28 / AC-28.3).
 
 `SkillsModal` and `HelpModal` follow the same TUI conventions as the other modals: a `stateRef` bridge for fresh `useInput` callbacks under React 19, centered list windowing (`VISIBLE_LIST_ITEMS = 8`, `VISIBLE_BODY_LINES = 8`), `Tab` pane focus, and `Esc`/`q` dismissal. `HelpModal` sanitizes and clamps every external prop at the component boundary, and its `SLASH_COMMANDS` array is now *derived* from the command registry instead of hand-maintained. `ProfilePickerModal` follows the same conventions (`stateRef` bridge, `VISIBLE_PROFILE_ROWS` = 6, `Esc` to cancel) and owns the row budget while it is open, exactly like the palette and the runtime picker.
 
@@ -2005,8 +2005,8 @@ therefore share one visual identity without sharing a rendering path.
 
 ### 26.5 Fluid feedback (REQ-31)
 
-`src/tui/feedback.ts` is the console's single voice: `okFeedback` (`✓`), `warnFeedback` (`⚠`),
-`busyFeedback` (`…`), `failureFeedback` (a `⚠ <component> — <next step>` headline whose hint always
+`src/tui/feedback.ts` is the console's single voice: `okFeedback` (`✓`), `warnFeedback` (`!`),
+`busyFeedback` (`…`), `failureFeedback` (a `! <component> — <next step>` headline whose hint always
 precedes a sanitized `cause:` line) and the `NEXT_STEP` hints (`/model <id>`, `/agent`, `/mcp`,
 diagnostics, session). Every `submit()` branch emits one of them — including the previously silent
 paths and the registry entry with no handler — so an action can no longer appear to do nothing, and
@@ -2680,7 +2680,26 @@ The profile used to be fixed before the run and merely *displayed*. Now:
   a change applies to the **next** cycle, and the modal footer repeats it. While the picker is open it
   owns the row budget (the log tail steps aside, like the palette and the runtime picker).
 
+### 32.6 The decision modal and feedback channel share the single-width alphabet (REQ-68 / ADR-63)
 
+`DecisionModal` used to be the exception ADR-51 left behind: its title was assembled inline from
+pictographs (`📋`, `❓`, a double-width warning sign), while every other surface read the glyph table.
+Now:
 
-
-
+- **`DECISION_GLYPHS`** (`src/tui/glyphs.ts`) defines `approve` `>`, `question` `?`, `warn` `!` and
+  `done` `✓`, and `decisionGlyph(kind)` maps every `DecisionKind` onto one of them (permission,
+  `gate-blocked`, `spec-deviation`, `scope-extraction` and `draft-format` share `warn`). Every entry
+  is one printable, single-column code point, and the guardian test covers the table alongside
+  `STATUS_GLYPHS`.
+- **`decisionTitle(req)`** is a pure exported function, and `DecisionModal` renders exactly its
+  result: `> DECISION · Approve drafted docs`, `! DECISION · Scope extraction failed`,
+  `! DECISION · Draft format violated`, `✓ CYCLE FINISHED · Next action`,
+  `? QUESTION FROM AGENT · Input required` (with `(i/n)` when a block carries several questions) and
+  `! DECISION · Gate <PHASE> · iteration <n>`.
+- **`feedback.ts`** speaks the same alphabet: `FEEDBACK_OK` `✓`, `FEEDBACK_WARN` `!`,
+  `FEEDBACK_BUSY` `…`. The gate's warning handoff line is `! REVIEW REQUESTED`, updated together with
+  its parser and tests (the three-way contract from AGENTS.md §6). The gate/fidelity literals and the
+  runtime's producer markers (`⚡ ✓ ✗ 💭`) stay untouched.
+- **Drift guard**: `test/tui/decisionModal.test.ts` renders all six title kinds and fails on any
+  `\p{Extended_Pictographic}` code point or on `stringWidth(line) !== line.length`; no surface may
+  reintroduce a double-width decision glyph without failing the suite.

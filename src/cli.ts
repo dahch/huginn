@@ -1528,7 +1528,7 @@ export async function validateModels(
       const pid = model.split("/")[0];
       if (!known.has(pid)) {
         const warnMsg =
-          `[huginn] ⚠ provider "${pid}" (${role}) is not in the configured provider list. ` +
+          `[huginn] ! provider "${pid}" (${role}) is not in the configured provider list. ` +
           `If it is an env-only provider, this is fine — otherwise check the model string.`;
         if (cfg.tui) {
           events.emit("log", { level: "warn", message: warnMsg });
@@ -1538,7 +1538,7 @@ export async function validateModels(
       }
     }
   } catch {
-    const warnMsg = `[huginn] ⚠ could not validate models against providers (continuing anyway).`;
+    const warnMsg = `[huginn] ! could not validate models against providers (continuing anyway).`;
     if (cfg.tui) {
       events.emit("log", { level: "warn", message: warnMsg });
     } else {
