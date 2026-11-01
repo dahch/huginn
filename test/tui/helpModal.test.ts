@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { HelpModal, SLASH_COMMANDS, NAVIGATION_SHORTCUTS } from "../../src/tui/HelpModal";
 
 function createMockStdin(): PassThrough & {

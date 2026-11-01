@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { LiveApp } from "../../src/tui/LiveDashboard";
 import { SLASH_COMMANDS } from "../../src/tui/commandRegistry";
 import { events } from "../../src/engine/engineEvents";

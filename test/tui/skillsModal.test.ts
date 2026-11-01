@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { SkillsModal } from "../../src/tui/SkillsModal";
 import { sanitizeTerminalText } from "../../src/util/text";
 import type { Skill } from "../../src/engine/skills/types.js";

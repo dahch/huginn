@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { AgentPickerModal, buildAgentRows } from "../../src/tui/AgentPickerModal";
 import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../../src/agents/integrator.js";
 

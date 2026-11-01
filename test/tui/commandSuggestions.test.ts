@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import {
   CommandSuggestions,
   MAX_SUGGESTION_ROWS,

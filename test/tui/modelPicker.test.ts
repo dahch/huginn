@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { ModelPickerModal, type ModelPickerResult } from "../../src/tui/ModelPickerModal";
 import type { IAgentRuntime, ModelInfo } from "../../src/engine/agent/types.js";
 import { LiveEngine } from "../../src/engine/liveMode";
@@ -1216,6 +1216,8 @@ describe("Iteration 21 Review Fixes (REV-001 through REV-005)", () => {
     port: 0,
     serverTimeoutMs: 1000,
     phaseTimeoutMs: 1000,
+    ignorePlanChanges: false,
+    sandbox: false,
   };
 
   let emittedChatMessages: Array<{ role: string; text: string }> = [];
@@ -1290,7 +1292,7 @@ describe("Iteration 21 Review Fixes (REV-001 through REV-005)", () => {
 
     // Verify live models were NOT mutated due to early persistence failure
     expect(live.getModels().thinker.modelID).toBe("claude-opus-4-5");
-    expect(live.cfg.thinker).toBe("anthropic/claude-opus-4-5");
+    expect(live.getConfig().thinker).toBe("anthropic/claude-opus-4-5");
   });
 
   it("REV-003: Pre-flight model check auto-onboarding sets chooseModel=true when defaults are absent", async () => {

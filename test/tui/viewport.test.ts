@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { render, Text } from "ink";
+import { Text } from "ink";
+import { render } from "./inkRender";
 import {
   DEFAULT_COLUMNS,
   DEFAULT_ROWS,

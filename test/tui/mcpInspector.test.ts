@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { McpInspectorModal } from "../../src/tui/McpInspectorModal";
 import { sanitizeTerminalText } from "../../src/util/text";
 import type { IAgentRuntime, McpStatusReport } from "../../src/engine/agent/types.js";
@@ -622,7 +622,7 @@ describe("McpInspectorModal Component (AC-24.2, ADR-24)", () => {
 
     const stdin = createMockStdin();
     const runtime: IAgentRuntime = {
-      id: "failing",
+      id: "opencode",
       name: "Failing Runtime",
       isAvailable: async () => true,
       getAvailableModels: async () => [],
