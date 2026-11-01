@@ -35,8 +35,8 @@ export interface Sandbox {
 export interface PromoteResult {
   /** Whether the sandbox commits were integrated into the primary branch. */
   promoted: boolean;
-  /** Integration strategy used: fast-forward, cherry-pick, or no-op. */
-  method: "ff" | "cherry-pick" | "none";
+  /** Integration strategy used: fast-forward, merge, cherry-pick, or no-op. */
+  method: "ff" | "merge" | "cherry-pick" | "none";
   /** Commit SHAs that were (or were meant to be) integrated. */
   commits: string[];
   /**
@@ -781,6 +781,8 @@ export class WorktreeManager {
     // Resolve collisions *before* integrating: `git merge --ff-only` refuses to
     // overwrite an untracked file **or** a tracked file with local changes, which
     // is what stranded the iteration this ADR exists for.
+    const viaMerge = this.rangeHasMergeCommits(sandbox);
+    const method = viaMerge ? "merge" : "cherry-pick";
     const parked = this.parkCollisions(root, sandbox);
     if (parked.error) {
       // huginn could not safely move the colliding file(s): do not integrate, but
@@ -791,7 +793,7 @@ export class WorktreeManager {
       this.removeWorktree(root, sandbox);
       return {
         promoted: false,
-        method: "cherry-pick",
+        method,
         commits,
         failure: "failed",
         detail: parked.error,
@@ -799,28 +801,33 @@ export class WorktreeManager {
       };
     }
 
-    const merge = git(root, ["merge", "--ff-only", sandbox.branch]);
-    if (merge.code === 0) {
+    const ff = git(root, ["merge", "--ff-only", sandbox.branch]);
+    if (ff.code === 0) {
       this.removeWorktreeAndBranch(root, sandbox);
       return { promoted: true, method: "ff", commits, backups: parked.backups };
     }
 
-    const cherry = git(root, [
-      "cherry-pick",
-      `${sandbox.baseCommit}..${sandbox.branch}`,
-    ]);
-    if (cherry.code === 0) {
+    // A range that carries a merge commit — the recovery path merges the primary
+    // HEAD into the preserved branch — cannot be replayed with cherry-pick: git
+    // refuses a merge commit without `-m` and, once its changes are already
+    // present, dies with "the previous cherry-pick is now empty". Integrate it
+    // with a real merge instead, on the same parked/restored contract.
+    const integration = viaMerge
+      ? git(root, ["merge", "--no-ff", "--no-edit", sandbox.branch], { env: HARNESS_IDENTITY })
+      : git(root, ["cherry-pick", `${sandbox.baseCommit}..${sandbox.branch}`]);
+    if (integration.code === 0) {
       this.removeWorktreeAndBranch(root, sandbox);
-      return { promoted: true, method: "cherry-pick", commits, backups: parked.backups };
+      return { promoted: true, method, commits, backups: parked.backups };
     }
 
     // Conflict: restore the primary tree to its pre-promotion state (including
     // any parked file), remove the worktree, but KEEP the branch so the commits
     // are recoverable by hand.
     const detail = sanitizeTerminalText(
-      (cherry.stderr || merge.stderr || "integration conflicted").trim(),
+      (integration.stderr || integration.stdout || ff.stderr || "integration conflicted").trim(),
     );
-    git(root, ["cherry-pick", "--abort"]);
+    if (viaMerge) git(root, ["merge", "--abort"]);
+    else git(root, ["cherry-pick", "--abort"]);
     const leftovers = parked.restore();
     this.removeWorktree(root, sandbox);
     console.warn(
@@ -829,7 +836,7 @@ export class WorktreeManager {
     );
     return {
       promoted: false,
-      method: "cherry-pick",
+      method,
       commits,
       detail,
       failure: "conflict",
@@ -1166,6 +1173,25 @@ export class WorktreeManager {
         `refs/heads/${branch}`,
       ]).code === 0
     );
+  }
+
+  /**
+   * Whether the integration range carries a merge commit.
+   *
+   * The promotion-repair path (`CycleEngine.repairPromotion`) merges the primary
+   * HEAD into the preserved branch, so a later integration must be a merge too:
+   * `git cherry-pick base..branch` cannot replay a merge commit, and once its
+   * changes are already present it exits 1 with "the previous cherry-pick is now
+   * empty". Bounded to one commit because any answer is enough.
+   */
+  private rangeHasMergeCommits(sandbox: Sandbox): boolean {
+    const res = git(sandbox.projectRoot, [
+      "rev-list",
+      "--merges",
+      "--max-count=1",
+      `${sandbox.baseCommit}..${sandbox.branch}`,
+    ]);
+    return res.code === 0 && res.stdout.trim().length > 0;
   }
 
   /**

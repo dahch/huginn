@@ -9,7 +9,7 @@ import type { PromotionRecord } from "../state/schema";
  */
 export interface PromotionRetryResult {
   promoted: boolean;
-  method: "ff" | "cherry-pick" | "none";
+  method: "ff" | "merge" | "cherry-pick" | "none";
   commits: string[];
   /** The record huginn persisted for this attempt (`state.promotion`). */
   record: PromotionRecord;

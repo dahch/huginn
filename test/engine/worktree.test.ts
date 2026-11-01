@@ -831,6 +831,69 @@ describe("promotion recovery primitives (ADR-62)", () => {
     expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("resolved\n");
   });
 
+  it("merges a range that already carries a merge commit instead of cherry-picking it", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 7);
+    fs.writeFileSync(path.join(sandbox.path, "sandbox.txt"), "iteration\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    // The shape promotion repair leaves behind: the primary had advanced, was
+    // merged into the preserved branch and committed as a merge commit.
+    fs.writeFileSync(path.join(root, "unrelated.txt"), "primary\n");
+    commitAll(root, "primary before repair");
+    expect(mgr.mergeRef(sandbox, headCommit(root)!).clean).toBe(true);
+    expect(mgr.commitMerge(sandbox, "chore: repair merge").pending).toBe(true);
+    const merges = git(root, [
+      "rev-list",
+      "--merges",
+      `${sandbox.baseCommit}..${sandbox.branch}`,
+    ]).stdout.trim();
+    expect(merges).not.toBe("");
+
+    // A commit lands on the primary after the repair merge, so `--ff-only` cannot
+    // integrate the branch any more. Cherry-picking the range used to fail with
+    // "the previous cherry-pick is now empty"; a real merge integrates it.
+    fs.writeFileSync(path.join(root, "primary.txt"), "advanced\n");
+    commitAll(root, "primary advances");
+
+    const result = mgr.promoteSandbox(sandbox);
+
+    expect(result.promoted).toBe(true);
+    expect(result.method).toBe("merge");
+    expect(fs.readFileSync(path.join(root, "sandbox.txt"), "utf8")).toBe("iteration\n");
+    expect(fs.readFileSync(path.join(root, "primary.txt"), "utf8")).toBe("advanced\n");
+    expect(branchExists(root, sandbox.branch)).toBe(false);
+  });
+
+  it("restores the primary tree when the merge integration conflicts", () => {
+    const root = freshRepo();
+    const mgr = new WorktreeManager(root);
+    const sandbox = mgr.createSandbox(root, 8);
+    fs.writeFileSync(path.join(sandbox.path, "file.txt"), "sandbox\n");
+    commitAll(sandbox.path, "iteration edit");
+
+    // A repair-style merge commit (non-conflicting), then a conflicting primary
+    // commit, so the *integration* merge — not the repair one — conflicts.
+    fs.writeFileSync(path.join(root, "unrelated.txt"), "primary\n");
+    commitAll(root, "primary before repair");
+    expect(mgr.mergeRef(sandbox, headCommit(root)!).clean).toBe(true);
+    expect(mgr.commitMerge(sandbox, "chore: repair merge").pending).toBe(true);
+    fs.writeFileSync(path.join(root, "file.txt"), "primary-after\n");
+    commitAll(root, "primary after repair");
+
+    const primaryHead = headCommit(root);
+    const result = mgr.promoteSandbox(sandbox);
+
+    expect(result.promoted).toBe(false);
+    expect(result.failure).toBe("conflict");
+    expect(result.method).toBe("merge");
+    // `git merge --abort` restored the primary tree exactly as it was.
+    expect(headCommit(root)).toBe(primaryHead);
+    expect(fs.readFileSync(path.join(root, "file.txt"), "utf8")).toBe("primary-after\n");
+    expect(branchExists(root, sandbox.branch)).toBe(true);
+  });
+
   it("aborts a merge without touching the branch", () => {
     const root = freshRepo();
     const mgr = new WorktreeManager(root);

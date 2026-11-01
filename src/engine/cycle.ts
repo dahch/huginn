@@ -1194,12 +1194,9 @@ export class CycleEngine {
     if (!target.ok) return target.result;
 
     const worktrees = this.getWorktrees();
-    const head = headCommit(this.cfg.projectPath);
     let sandbox: Sandbox | undefined;
     let settled = false;
     try {
-      if (!head) throw new Error("the primary branch has no HEAD commit to merge");
-
       sandbox = worktrees.openSandboxFromBranch(
         this.cfg.projectPath,
         target.branch,
@@ -1210,78 +1207,107 @@ export class CycleEngine {
       const ctx = this.promotionContext(sandbox, target.iteration, target.base);
       const step = this.promotionStep();
 
-      const merge = worktrees.mergeRef(sandbox, head);
-      if (!merge.clean && merge.conflicts.length === 0) {
-        throw new Error(
-          `cannot merge ${head.slice(0, 12)} into ${target.branch}: ${
-            merge.detail ?? "git merge failed"
-          }`,
-        );
-      }
+      // The diagnosis/verification turns can take minutes. Bind every merge to
+      // the primary HEAD that will actually be integrated: if a commit lands on
+      // the primary while we resolve and verify, restart from the iteration's own
+      // tip and re-merge, because the tree we verified is not the tree that would
+      // be promoted — and `promoteSandbox` could no longer fast-forward.
+      const MAX_MERGE_ATTEMPTS = 3;
+      for (let attempt = 1; ; attempt++) {
+        const head = headCommit(this.cfg.projectPath);
+        if (!head) throw new Error("the primary branch has no HEAD commit to merge");
 
-      if (merge.conflicts.length > 0) {
-        const report = this.promotionConflictReport(
-          record!,
-          merge.conflicts,
-          head,
-          target.iteration.index,
-        );
-        const diagnosed = await this.runDiagnosis(
-          step,
-          ctx,
-          target.iteration,
-          1,
-          report,
-          undefined,
-        );
-        const fixRes = await this.withPhaseSession(
-          ctx,
-          target.iteration,
-          "REPAIR_PROMOTION",
-          this.models.executor,
-          (scoped) =>
-            repairPromotionFindings(scoped, {
-              detail: record!.detail ?? "",
-              conflicts: merge.conflicts,
-              head,
-              plan: diagnosed.plan,
-            }),
-        );
-        const key = this.attemptKey(target.iteration.index, "REPAIR_PROMOTION");
-        this.state.phaseAttempts[key] = (this.state.phaseAttempts[key] ?? 0) + 1;
-        this.recordFix(
-          { text: fixRes.text, messageId: fixRes.messageId },
-          target.iteration.index,
-          step,
-          1,
-          formatModel(this.models.executor),
-        );
-        this.persist();
-      }
+        const merge = worktrees.mergeRef(sandbox, head);
+        if (!merge.clean && merge.conflicts.length === 0) {
+          throw new Error(
+            `cannot merge ${head.slice(0, 12)} into ${target.branch}: ${
+              merge.detail ?? "git merge failed"
+            }`,
+          );
+        }
 
-      worktrees.commitMerge(
-        sandbox,
-        `chore(iter-${target.iteration.index}): merge ${head.slice(0, 12)} into ${target.branch}`,
-      );
+        if (merge.conflicts.length > 0) {
+          const report = this.promotionConflictReport(
+            record!,
+            merge.conflicts,
+            head,
+            target.iteration.index,
+          );
+          const diagnosed = await this.runDiagnosis(
+            step,
+            ctx,
+            target.iteration,
+            1,
+            report,
+            undefined,
+          );
+          const fixRes = await this.withPhaseSession(
+            ctx,
+            target.iteration,
+            "REPAIR_PROMOTION",
+            this.models.executor,
+            (scoped) =>
+              repairPromotionFindings(scoped, {
+                detail: record!.detail ?? "",
+                conflicts: merge.conflicts,
+                head,
+                plan: diagnosed.plan,
+              }),
+          );
+          const key = this.attemptKey(target.iteration.index, "REPAIR_PROMOTION");
+          this.state.phaseAttempts[key] = (this.state.phaseAttempts[key] ?? 0) + 1;
+          this.recordFix(
+            { text: fixRes.text, messageId: fixRes.messageId },
+            target.iteration.index,
+            step,
+            1,
+            formatModel(this.models.executor),
+          );
+          this.persist();
+        }
 
-      const verification = await verifyIteration({ ...ctx, session: undefined, sessionId: "" });
-      if (verification.crash) {
-        throw new Error(
-          `verification crashed (${verification.crash.command} → ${verification.crash.signal}); ` +
-            `a crash is an environment failure, not something this repair can fix`,
+        worktrees.commitMerge(
+          sandbox,
+          `chore(iter-${target.iteration.index}): merge ${head.slice(0, 12)} into ${target.branch}`,
         );
-      }
-      if (verification.authoritativeVerdict !== "pass") {
-        // The merged tree never reached the primary branch and must not look
-        // verified: restore the branch to the tip the iteration produced.
-        if (preMergeTip) worktrees.resetTo(sandbox, preMergeTip);
-        throw new Error(
-          `the merged tree does not verify: ${sanitizeTerminalText(verification.text)
-            .split("\n")
-            .filter((line) => line.trim().length > 0)
-            .slice(-6)
-            .join(" · ")}`,
-        );
+
+        const verification = await verifyIteration({ ...ctx, session: undefined, sessionId: "" });
+        if (verification.crash) {
+          throw new Error(
+            `verification crashed (${verification.crash.command} → ${verification.crash.signal}); ` +
+              `a crash is an environment failure, not something this repair can fix`,
+          );
+        }
+        if (verification.authoritativeVerdict !== "pass") {
+          // The merged tree never reached the primary branch and must not look
+          // verified: restore the branch to the tip the iteration produced.
+          if (preMergeTip) worktrees.resetTo(sandbox, preMergeTip);
+          throw new Error(
+            `the merged tree does not verify: ${sanitizeTerminalText(verification.text)
+              .split("\n")
+              .filter((line) => line.trim().length > 0)
+              .slice(-6)
+              .join(" · ")}`,
+          );
+        }
+
+        if (headCommit(this.cfg.projectPath) === head) break;
+
+        if (attempt >= MAX_MERGE_ATTEMPTS) {
+          // Give up without leaving an unverified merge commit behind: the branch
+          // returns to the iteration's own tip and the primary tree is untouched.
+          if (preMergeTip) worktrees.resetTo(sandbox, preMergeTip);
+          throw new Error(
+            `the primary branch advanced ${attempt} times while the promotion was ` +
+              `being repaired; ${target.branch} was restored to its pre-merge tip — ` +
+              `re-run \`huginn promote --repair\` once the primary branch settles`,
+          );
+        }
+
+        // The primary moved during this attempt: loop and merge the new HEAD on
+        // top of the merge we just made (no reset), so an existing resolution is
+        // kept and only the newly landed commits are integrated, then verify the
+        // combined tree again before promoting.
       }
 
       const result = worktrees.promoteSandbox(sandbox);

@@ -369,7 +369,8 @@ the primary branch while the agent works:
   exception** — it scans the worktree but persists symbols to the primary project's
   `.huginn/muninn.db`, so long-term memory survives the sandbox (ADR-20).
 - On iteration success the sandbox commits are integrated into your active branch
-  (`git merge --ff-only`, falling back to `git cherry-pick`) and the worktree + branch are removed.
+  (`git merge --ff-only`, falling back to `git merge --no-ff` when the range contains a repair merge
+  commit, otherwise `git cherry-pick`) and the worktree + branch are removed.
   Every local path the integration would overwrite is first parked under
   `<project>/.huginn/promotion-backup/<stamp>/`: **untracked** files (content and mode preserved,
   symlinks kept as links) and **tracked files with staged or unstaged local changes** (the user's
@@ -386,8 +387,8 @@ the primary branch while the agent works:
   with `.harness/state.json` recording the step that was in flight. The next run reattaches that
   sandbox and restarts exactly that step — earlier steps keep their work, and the interrupted step is
   re-run rather than skipped (ADR-56). Your working tree is still never touched.
-- If promotion fails, the primary tree is restored (a conflict aborts the cherry-pick and puts every
-  parked file back, including a tracked file's staged/unstaged index state), the worktree is removed,
+- If promotion fails, the primary tree is restored (a conflict aborts the merge or cherry-pick and puts
+  every parked file back, including a tracked file's staged/unstaged index state), the worktree is removed,
   the `huginn/task-iter-<N>` branch is **kept** so the
   work is recoverable by hand (`git log <branch>`), and the run fails closed — it finishes as an
   error naming that branch, **never as `aborted`**. A later run renames the branch out of the reclaim

@@ -938,13 +938,13 @@ stateDiagram-v2
     Created --> Running: phases run against sandbox.path
     Running --> Promoted: COMMIT_ALL ok → promoteSandbox()
     Running --> Discarded: abort / phase error → discardSandbox()
-    Promoted --> [*]: merge --ff-only | cherry-pick; worktree+branch removed
+    Promoted --> [*]: merge --ff-only | merge --no-ff (merge-commit range) | cherry-pick; worktree+branch removed
     Discarded --> [*]: worktree+branch removed; primary tree untouched
     Running --> Parked: local collisions (untracked / tracked-modified) → .huginn/promotion-backup/<stamp>/
-    Parked --> Promoted: integration retried (ff, else cherry-pick)
+    Parked --> Promoted: integration retried (ff, else merge/cherry-pick)
     Parked --> Failed: parking failed → no integration attempt
-    Running --> Conflict: integration fails both strategies
-    Conflict --> [*]: cherry-pick --abort, parked files restored (index state included), worktree removed, branch KEPT, run fails closed as an error
+    Running --> Conflict: integration fails every strategy
+    Conflict --> [*]: merge/cherry-pick --abort, parked files restored (index state included), worktree removed, branch KEPT, run fails closed as an error
     Failed --> [*]: worktree removed, branch KEPT, parked files put back, run fails closed as an error
 ```
 
@@ -953,7 +953,7 @@ stateDiagram-v2
 | method | behavior |
 |---|---|
 | `createSandbox(projectRoot, iteration)` | resolves HEAD, **fails closed** (throws, no mutation) if the repo has no HEAD commit or the branch/path already exists, and screens the target path with `assertDocPath` (a tracked `.huginn` symlink cannot redirect the worktree out of the project, SEC-104); then `git worktree add -b <branch> <path> HEAD` (parent `0o700`); symlinks shared deps |
-| `promoteSandbox(sandbox)` | parks local collisions (untracked and tracked-modified), then integrates via `git merge --ff-only <branch>`, else `git cherry-pick <baseCommit>..<branch>`; returns `{ promoted, method: "ff"\|"cherry-pick"\|"none", commits, backups?, detail?, failure? }` |
+| `promoteSandbox(sandbox)` | parks local collisions (untracked and tracked-modified), then integrates via `git merge --ff-only <branch>`, else `git merge --no-ff <branch>` when the range carries a merge commit (a repair merge cannot be replayed by cherry-pick), else `git cherry-pick <baseCommit>..<branch>`; returns `{ promoted, method: "ff"\|"merge"\|"cherry-pick"\|"none", commits, backups?, detail?, failure? }` |
 | `discardSandbox(sandbox)` | removes the worktree (`--force`, tolerant) and deletes the ephemeral branch; idempotent; never touches the primary tree |
 | `listSandboxes()` | parses `git worktree list --porcelain`, keeping only entries under `<root>/.huginn/worktrees/` |
 | `cleanupAll()` | discards every listed sandbox **and** deletes orphaned `huginn/task-iter-*` branches with no worktree (safety net); returns the reclaimed resource count |

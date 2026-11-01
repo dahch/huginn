@@ -67,6 +67,15 @@
 
 ### Fixed
 
+- **A repaired promotion no longer dies on an empty cherry-pick.** `repairPromotion` leaves a merge
+  commit on the preserved branch. If the primary advanced while the repair was diagnosing or
+  verifying, `git merge --ff-only` could not integrate the branch and the `git cherry-pick
+  base..branch` fallback exited 1 with "the previous cherry-pick is now empty", so `--retry` could
+  never recover it. `promoteSandbox` now detects a merge commit in the range (`git rev-list --merges
+  base..branch`) and integrates with `git merge --no-ff` instead, restoring the primary tree with
+  `git merge --abort` on a conflict; `repairPromotion` re-reads the primary HEAD after verification
+  and merges the newly landed commits on top of the tree it already proved (bounded to three
+  attempts), so the promoted tree is the verified tree.
 - **A dead systemd user manager no longer fails every prompt.** `userScopeAvailable` only checked that
   `$XDG_RUNTIME_DIR/systemd/private` existed, so a socket left behind by a stopped manager still made
   huginn wrap every generic-runtime prompt and every `Verification:` command in `systemd-run --user

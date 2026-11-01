@@ -328,6 +328,52 @@ describe("repairPromotion — thinker diagnoses, executor resolves, VERIFY decid
     expect(fs.existsSync(worktree)).toBe(false);
   }, 60000);
 
+  it("re-merges when the primary advances while the repair is being verified", async () => {
+    const { preserved, cfg, plan } = conflictingAfterDocs([
+      "test -f file.txt",
+      "grep -q resolved file.txt",
+    ]);
+    let advanced = false;
+    const { engine, prompts } = makeEngine(
+      cfg,
+      plan,
+      preserved.root,
+      preserved,
+      async (request) => {
+        if (request.text.includes("Lead Architect / Diagnostician")) {
+          return { messageId: "diag", text: "### Root Cause\nconflict" };
+        }
+        if (request.text.includes("resolving a git integration conflict")) {
+          fs.writeFileSync(path.join(request.directory!, "file.txt"), "resolved\n");
+          // A commit lands on the primary while the repair is in flight, after
+          // the merge that repairPromotion verified.
+          if (!advanced) {
+            advanced = true;
+            fs.writeFileSync(path.join(preserved.root, "advanced.txt"), "landed\n");
+            commitAll(preserved.root, "primary advances during repair");
+          }
+          return { messageId: "fix", text: "Resolved." };
+        }
+        return { messageId: "other", text: "ok" };
+      },
+    );
+
+    const result = await engine.repairPromotion();
+
+    expect(result.promoted).toBe(true);
+    // The branch already contains the advanced primary HEAD after the re-merge,
+    // so the integration is a fast-forward and no empty cherry-pick loop starts.
+    expect(result.method).toBe("ff");
+    expect(fs.readFileSync(path.join(preserved.root, "file.txt"), "utf8")).toBe("resolved\n");
+    expect(fs.readFileSync(path.join(preserved.root, "advanced.txt"), "utf8")).toBe("landed\n");
+    expect(branchExists(preserved.root, preserved.branch)).toBe(false);
+    // The advanced commit only added a file, so the second merge was clean: the
+    // resolver ran exactly once.
+    expect(
+      prompts.filter((p) => p.text.includes("resolving a git integration conflict")),
+    ).toHaveLength(1);
+  }, 60000);
+
   it("rolls back the merge and keeps the branch when the merged tree does not verify", async () => {
     const { preserved, cfg, plan } = conflictingAfterDocs(["test -f file.txt", "false"]);
     const { engine } = makeEngine(cfg, plan, preserved.root, preserved, async (request) => {

@@ -204,7 +204,10 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
   `manifest.json`), resetting tracked paths to `HEAD` so the merge/cherry-pick can proceed. On a
   failed integration every entry is restored, including its staged/unstaged index state. A partially
   staged file or a staged *new* file fails closed (the branch is preserved) because its exact index
-  state cannot be reproduced without copying index blobs.
+  state cannot be reproduced without copying index blobs. An integration range that contains a merge
+  commit (a repair merge) is integrated with `git merge --no-ff`, never cherry-picked: git cannot
+  replay a merge commit and reports "the previous cherry-pick is now empty" for an already-present
+  change.
 - **A failed promotion is recoverable (ADR-62).** `CycleEngine.retryPromotion()` reopens the preserved
   branch (`openSandboxFromBranch`, base = `integrationBase()` or `state.iterationBaseCommit` — never
   the branch tip) and re-attempts the integration with no model turn; it then indexes the symbols,
@@ -212,9 +215,12 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
   `repairPromotion()` is offered **only** for a `conflict`: huginn merges the primary HEAD into the
   branch without committing, `DIAGNOSE` runs on the thinker (read-only), the executor resolves the
   files, huginn commits the merge (refusing leftover markers) and `verifyIteration` runs in the
-  worktree before the fast-forward. A `failed` promotion is never given to a model — it names the
-  index conflict and points at `huginn promote --retry`. Neither routine is a `PipelineStep` and
-  `REPAIR_PROMOTION` is in no profile; `huginn promote` is a CLI subcommand, not a phase.
+  worktree before the fast-forward. It re-reads the primary HEAD after verification and, if a commit
+  landed meanwhile, merges the new HEAD on top of the verified merge and verifies again (bounded to
+  three attempts), because the tree it proved is the tree that must be promoted. A `failed` promotion
+  is never given to a model — it names the index conflict and points at `huginn promote --retry`.
+  Neither routine is a `PipelineStep` and `REPAIR_PROMOTION` is in no profile; `huginn promote` is a
+  CLI subcommand, not a phase.
 
 ## 5. Runtime requirements
 
