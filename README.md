@@ -543,6 +543,7 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
 - **One Glyph Language, Single Width**: every phase/status glyph comes from one table (`src/tui/glyphs.ts`), shared by the dashboard and `.harness/PROGRESS.md` — `·` pending, the braille spinner while running, `✓` pass, `!` warning, `✕` blocked, `–` skipped, and the `PROGRESS.md` phase kinds `?` (SPEC_AUDIT) `>` (EXECUTE) `=` (VALIDATE_STEP) `%` (TEST_MODULE) `V` (VERIFY) `#` (SECURE_CHECK) `@` (REVIEW) `~` (DOC_SYNC) `.` (COMMIT_ALL) `&` (REPAIR_PROMOTION), `+` for any other phase (a `FIX_*` row keeps its `└─` indent). The decision modal draws its title from the same alphabet (`DECISION_GLYPHS`: `+` approve, `?` question, `!` warning, `*` finished — non-letter marks, so they never read as modal key hints) through the pure `decisionTitle(req)` in `src/tui/decision.ts`, and the feedback voice is `✓` / `!` / `…`, so the surface asking for your attention cannot break the grid either. Printable and single-width, so the monospace grid and `NO_COLOR` behaviour hold; the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) are untouched.
 - **Selectable Runtime Picker (`AgentPickerModal`)**: bare `/agent` opens a modal over every registered target, each with an availability marker (`✔` / `— not installed`), the active runtime marked, and the highlighted entry's resolved binary path. `↑`/`↓` (or `j`/`k`) navigate, `Enter` switches, `Esc` cancels; a failed switch keeps the picker open so another runtime can be chosen immediately. `/agent <id>` still works for power users.
 - **Agent-Agnostic Questions**: any runtime can ask you a clarifying question through a marked output block; the decision modal renders the real option rows — a digit picks that option verbatim, `Enter` accepts the recommended one, `d` skips and `Esc` aborts (see [Clarifying questions](#clarifying-questions-agent-agnostic)).
+- **Decision Modal Row Budget (`decisionModalHeight`)**: the modal charges the frame its real row cost instead of a constant. Both dashboards derive a `maxRows` budget from what the header, composer, footer, log tail and palette leave, and the modal pays its double border, title and key footer first; a body that does not fit is windowed with `↑`/`↓` and a `… +N · ↑/↓` marker names the hidden rows. A pending decision can therefore never push the composer or footer off an 18-row terminal, and the last-report pill and pipeline cards keep their own floor. The planner is pure (`decisionModalHeight`, `decisionBodyRows`, `decisionKeyRows`), so a guard test compares the reserved height with the rows Ink actually paints.
 - **Interactive Model & Provider Selector (`ModelPickerModal`)**:
   - Launch with `--choose-model` flag: `huginn --choose-model` or `huginn live --choose-model`.
   - In-session slash commands:
@@ -604,8 +605,10 @@ CLI cannot open a prompt of its own. When the agent needs a decision it emits a 
 ```
 
 Huginn parses the JSON `QuestionItem[]` out of the reply, **strips the block from what you see**,
-and opens its decision modal with the real options — every option stays on screen, however many the
-agent offered. Keys: a digit `1`–`9` picks that option verbatim, `Enter` accepts the recommended
+and opens its decision modal with the real options — every option the agent offered is rendered, and
+when the request is taller than the frame the modal windows the body with `↑`/`↓` (a `… +N` row says
+how many options are hidden) instead of pushing the composer or footer off-screen. Keys: a digit
+`1`–`9` picks that option verbatim, `Enter` accepts the recommended
 (first) one, `d` skips the question (the turn continues without an answer) and `Esc` aborts it. A
 block with several questions is asked one modal at a time (the title shows `(2/3)`), and each chosen
 answer is paired with its own question before the answers are sent back as a follow-up turn. An

@@ -158,7 +158,7 @@ src/
     ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
     ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only (REQ-47)
     ├── LiveHero.tsx        empty-conversation hero (brand + first-run guidance) (REQ-47)
-    ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
+    ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive) plus the decision modal's row planner (`decisionModalHeight`, REQ-69)
     ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette, composer, side panel)
     ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp), attributed to the active agent
     ├── AgentPickerModal.tsx interactive runtime picker (/agent): availability, active marker, detected path (REQ-33)
@@ -501,7 +501,7 @@ stateDiagram-v2
     RUNNING --> ABORTED: abort or other error → resolveAll + persist(aborted=true)
     RUNNING --> [*]: SIGINT/SIGTERM → requestAbort (interrupts agent + sets flag)
     COMPLETED --> [*]
-    FAILED --> [*]: branch preserved under huginn/… ; recover by hand
+    FAILED --> [*]: branch preserved under huginn/… ; huginn promote or by hand
     ABORTED --> RUNNING: re-run (auto-resume) or --resume
     ABORTED --> [*]: --force-restart wipes .harness/
 ```
@@ -1012,7 +1012,8 @@ stateDiagram-v2
   log and live post-cycle prompt). On a **conflict** (both strategies fail) the primary tree is
   restored with `git cherry-pick --abort`, **every parked file is put back** — including a tracked
   file's staged/unstaged state (`git add` / `git rm --cached`) — the worktree is removed, but the
-  `huginn/task-iter-<N>` branch is **kept** so the sandbox work stays recoverable by hand; the result
+  `huginn/task-iter-<N>` branch is **kept** so the sandbox work stays recoverable (`huginn promote
+  --retry`, or `git log <branch>` by hand); the result
   carries `failure: "conflict"` and a sanitized `detail`. A parking failure never attempts the
   integration at all: the result is `failure: "failed"` with the branch (and any un-restorable backup
   directory) preserved. A `git log` that cannot be read is reported as `failure: "failed"` rather than
@@ -2207,8 +2208,11 @@ sequenceDiagram
   untouched and produces the same `DecisionRequest`.
 - **Decision UI.** `DecisionModal` (and `LiveDashboard.resolveDecisionKey`) render one row per option
   with its description, inline (a `<Box>` column, not a `<Box>` inside a `<Text>` — Ink would not draw
-  it), and the modal is `flexShrink: 0` so the fixed-height frame gives up conversation rows instead
-  of clipping options. A paged block shows a `(i/n)` counter in the title. A digit `1`–`9` picks that
+  it), and the modal charges its real row cost before the composer (`decisionModalHeight`, REQ-69)
+  instead of letting the frame give up conversation rows until the composer scrolls away. When the
+  body does not fit the rows the frame can spare, the title and the key footer are paid first, the
+  body is windowed with `↑`/`↓`, and a `… +N · ↑/↓` row says how many options are hidden. A paged
+  block shows a `(i/n)` counter in the title. A digit `1`–`9` picks that
   option verbatim, `Enter` accepts the recommended (first) one, `d` skips and `Esc` aborts; keys are
   matched explicitly, so the `input === ""` that Ink sends for non-alphanumeric keys (Escape included)
   can no longer silently answer. When a block arrives whole through opencode's native channel, only
@@ -2617,8 +2621,11 @@ there; the pieces that live outside `worktree.ts`:
   `✕ ABORTED` (`STATUS_GLYPHS.blocked`) for a genuine abort and `✓ COMPLETED` (`STATUS_GLYPHS.pass`)
   for success; every interpolated branch/backup path is `sanitizeTerminalText`ed.
 - **Fail-closed but honest**: a promotion failure sets `outcome.reason = "error"` and finishes the run
-  as an *error*, never as `aborted` (§ 19.4). Recovery is by hand (`git log <branch>`), and a re-run
-  renames the branch out of the reclaim namespace instead of deleting it.
+  as an *error*, never as `aborted` (§ 19.4). Recovery is `huginn promote --retry` (deterministic, no
+  model turn) or `huginn promote --repair` for a content `conflict` (ADR-62), with the live
+  post-cycle prompt offering the same `[t]`/`[p]`; the preserved branch is still recoverable by hand
+  (`git log <branch>`) as the last resort, and a re-run renames the branch out of the reclaim
+  namespace instead of deleting it.
 
 ### 32.2 The run output panel is never dead (REQ-51 / ADR-50)
 
@@ -2723,3 +2730,35 @@ Now:
 - **Drift guard**: `test/tui/decisionModal.test.ts` renders every title kind and fails on any
   `\p{Extended_Pictographic}` code point or on `stringWidth(line) !== line.length`; no surface may
   reintroduce a double-width decision glyph without failing the suite.
+
+### 32.7 The decision modal buys only the rows it can pay for (REQ-69)
+
+The modal used to charge a flat `DECISION_HEIGHT = 7` in the run dashboard and `6` in live, while its
+body grew with the request (`questionItems`, descriptions, follow-ups). On a 24-row terminal a tall
+question under-reserved the modal by eight rows and pushed the frame, footer included, past the
+terminal. Now:
+
+- **Rows, not nodes.** `decisionBodyRows(req)` and `decisionKeyRows(req)` return one `ReactNode` per
+  terminal row — a message's newlines are separate rows, and a question's options, follow-ups and
+  `+ N more question(s)` note each own a row — so the modal can count, slice and window its body
+  without asking Yoga what height it produced. The key footer is one row per row of hints (the
+  post-cycle prompt pays a second row only when it actually offers the promotion recovery).
+- **One pure planner.** `planDecisionModal(bodyCount, keyCount, maxRows, scroll)` pays the double
+  border (2), the title (1) and the key footer first, buys the `… +N · ↑/↓` indicator only while it
+  still leaves a body row, and spends the rest on the body window. `decisionModalHeight(req?,
+  maxRows?)` exposes it; with no request it returns `DECISION_MIN_ROWS` (5 = border + title + one
+  body row + one key row), which both dashboards reserve before a decision exists. Under two rows the
+  modal draws nothing instead of claiming a framed box it cannot open.
+- **Budget from the frame.** The run dashboard derives `decisionMaxRows` from the rows left after the
+  header, footer, middle-card floor, log tail, report pill and promotion notice; the live dashboard
+  uses the same idea around its header floor, composer, footer, palette, log tail and
+  `CARD_MIN_ROWS`. Both pass the result as `maxRows`; `VIEWPORT_RESERVED_ROWS` uses the structural
+  floor so the header never spends rows the modal would need.
+- **Reachable hidden rows.** `↑`/`↓` scroll the window and the scroll offset resets on `req.id`. In
+  live mode `LiveDashboard` consumes those (and `PgUp`/`PgDn`) before `resolveDecisionKey`, so a
+  scroll never resolves a decision or answers "press a number"; a digit still picks the first
+  question's option verbatim after the body has scrolled.
+- **Guarded.** `test/tui/decisionModal.test.ts` asserts the height equals the rows Ink actually
+  paints for every kind (fitting, windowed and below-border budgets); `test/tui/liveLayout.test.ts`
+  and `test/tui/dashboard.test.ts` hold the whole frame at 18 and 24 rows and assert the title, the
+  `… +N` indicator and the key footer survive.

@@ -379,8 +379,10 @@ mapper and the `--permissions` mapping), `src/engine/steps/retrieval.test.ts` +
 writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verification that throws fails closed),
 `test/engine/agent/piMcp.test.ts` (the `pi mcp list --json` parser and the native driver's MCP bridge),
 `test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment),
-`test/tui/glyphs.test.ts` + `test/tui/decisionModal.test.ts` (the glyph tables and the decision
-title drift guard, including the ASCII/one-column rule), and
+`test/tui/glyphs.test.ts` + `test/tui/decisionModal.test.ts` (the glyph tables, the decision
+title drift guard and the modal's row contract, including the ASCII/one-column rule),
+`test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
+composer or footer off an 18-/24-row frame), and
 `test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
 `test/commands/liveSessions.test.ts` (the persisted live store, resume flags and reattach).
 
@@ -468,7 +470,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Two display conventions a TUI change must follow:
+Four display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -492,6 +494,14 @@ Two display conventions a TUI change must follow:
   `### Overall fidelity: …`), the engine's `⚠️ REVIEW REQUESTED` handoff line and the runtime stream
   prefixes (`⚡ ✓ ✗ 💭`) are excluded: the first are a three-way contract, the last are producer
   output. Changing the decision alphabet is a TUI change; changing the gate/handoff literals is not.
+- **The decision modal buys only the rows it can pay for.** `decisionModalHeight(req?, maxRows?)`
+  (`src/tui/Dashboard.tsx`) is the single source of truth: `decisionBodyRows`/`decisionKeyRows`
+  return one entry per terminal row, the planner pays the double border, the title and the key
+  footer first, buys the `… +N · ↑/↓` indicator only while a body row still fits, and windows the
+  rest; below two rows it draws nothing. Both dashboards derive `decisionMaxRows` from the rows
+  their own chrome leaves and pass it in — never a height literal. `test/tui/decisionModal.test.ts`
+  asserts the height equals the rows Ink paints, and `test/tui/liveLayout.test.ts` +
+  `test/tui/dashboard.test.ts` hold 18- and 24-row frames.
 - **An output panel only claims what the runtime can deliver**: the run dashboard's `StreamCard` shows
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
   title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`

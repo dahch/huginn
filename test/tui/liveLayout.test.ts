@@ -5,6 +5,8 @@ import { render } from "./inkRender";
 import { events } from "../../src/engine/engineEvents";
 import type { DiagnosticsInfo, LiveEngine } from "../../src/engine/liveMode";
 import type { RunConfig } from "../../src/config";
+import type { DecisionRequest } from "../../src/engine/types";
+import { decisionTitle } from "../../src/tui/decision";
 import { LiveApp } from "../../src/tui/LiveDashboard";
 import {
   PANEL_LABEL_COLUMNS,
@@ -545,4 +547,115 @@ describe("live frame with the side panel (REQ-12)", () => {
       }
     }
   }, 30000);
+});
+
+// ── a pending decision cannot eat the frame (REQ-69) ────────────────────────
+
+describe("live frame under the decision modal (REQ-69)", () => {
+  beforeEach(() => {
+    events.clear();
+  });
+
+  afterEach(() => {
+    events.clear();
+  });
+
+  /** The tall case: three described options and two follow-up questions. */
+  const tallDecision: DecisionRequest = {
+    id: "d-24",
+    kind: "question",
+    iteration: 0,
+    phase: "LIVE",
+    attempt: 1,
+    message: "Which database should I use?",
+    questionItems: [
+      {
+        question: "Which database should I use?",
+        options: [
+          { label: "Postgres", description: "production-ready" },
+          { label: "SQLite", description: "zero-config" },
+          { label: "DuckDB", description: "analytics-first" },
+        ],
+      },
+      { question: "Which migration tool?", options: [{ label: "Prisma" }, { label: "Drizzle" }] },
+      { question: "Where do backups go?", options: [{ label: "S3" }, { label: "Local" }] },
+    ],
+  };
+
+  it("keeps the composer and the footer inside a 24-row terminal", async () => {
+    const harness = await mountLive(createMockLive(), 80, 24);
+    events.emit("decision", tallDecision);
+    await tick(140);
+    harness.unmount();
+
+    const output = harness.output();
+    expect(visibleLines(output).length, "the frame never exceeds 24 rows").toBeLessThanOrEqual(24);
+    // The composer and the footer are the parts that must never disappear
+    // beneath the modal, whatever the body does.
+    // The composer is disabled under a decision, so it shows its dot prompt —
+    // but it and the footer are still inside the frame, not under the modal.
+    expect(output).toContain("Message...");
+    expect(output).toContain("[Tab] Focus:");
+    expect(output).toContain("stage: REFINE");
+    // The modal is there, with its alert border and a windowed body.
+    expect(output).toContain(decisionTitle(tallDecision));
+    expect(output).toContain("╔");
+    expect(output).toContain("… +");
+    expect(output).toContain("[1-9/Enter]");
+    for (const line of output.replace(ANSI, "").split("\n")) {
+      expect(line.length, JSON.stringify(line)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it("keeps the composer and the footer on an 18-row terminal too", async () => {
+    const harness = await mountLive(createMockLive(), 80, 18);
+    events.emit("decision", tallDecision);
+    await tick(140);
+    harness.unmount();
+
+    const output = harness.output();
+    expect(visibleLines(output).length, "the frame never exceeds 18 rows").toBeLessThanOrEqual(18);
+    expect(output).toContain("Message...");
+    expect(output).toContain("[Tab] Focus:");
+    expect(output).toContain(decisionTitle(tallDecision));
+  });
+
+  it("gives ↑/↓ to the windowed modal instead of answering or echoing the question", async () => {
+    const live = createMockLive();
+    const harness = await mountLive(live, 80, 24);
+    events.emit("decision", tallDecision);
+    await tick(140);
+    // Scroll keys belong to the modal's window: they must not resolve the
+    // decision, and they must not be re-read as "press a number".
+    harness.stdin.write("\u001B[B");
+    await tick(60);
+    harness.stdin.write("\u001B[A");
+    await tick(80);
+    harness.unmount();
+
+    const output = harness.output();
+    expect(live.resolveDecision).not.toHaveBeenCalled();
+    expect(output).not.toContain("Press 1-");
+    // The frame is still intact after the scroll keys.
+    expect(output).toContain(decisionTitle(tallDecision));
+    expect(output).toContain("[1-9/Enter]");
+  });
+
+  it("still answers the first question by number after the body scrolled", async () => {
+    const live = createMockLive();
+    const harness = await mountLive(live, 80, 24);
+    events.emit("decision", tallDecision);
+    await tick(140);
+    // Walk the window to its tail, then answer with a number: the keys belong
+    // to the first question even when its options are above the visible window.
+    for (let index = 0; index < 4; index += 1) {
+      harness.stdin.write("\u001B[B");
+      await tick(30);
+    }
+    harness.stdin.write("2");
+    await tick(100);
+    harness.unmount();
+
+    expect(live.resolveDecision).toHaveBeenCalledWith("continue", ["SQLite"]);
+  });
 });

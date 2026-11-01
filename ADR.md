@@ -1832,3 +1832,53 @@ avoids. They are ordered by how central the decision is to the design.
   - *Negative*: the decision alphabet spends `+`/`*` where a pictograph would be more
     self-explanatory, and a future decision kind must be added to both `decisionGlyph` and the
     exhaustive `decisionTitle` switch or it fails to compile/guard.
+
+
+## ADR-64: The decision modal buys only the rows it can pay for
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: Both dashboards reserved a constant for the decision modal (`DECISION_HEIGHT = 7` in
+  the run dashboard, `6` in live) while the modal's body grew with the request: a question can carry
+  several message lines, up to eight described options per item, follow-up questions and their
+  options, plus the `+ N more question(s)` note. The constant was therefore either too large (wasting
+  rows on a small prompt) or too small: on a 24-row terminal a tall question under-reserved the modal
+  by eight rows, so the box painted over the frame and pushed the footer off-screen. The modal could
+  not simply be left to Ink either — Ink lays out `Text`/`Box` subtrees whose emitted height the
+  parent never learns, which is how the conversation card had already painted over its own border
+  (ADR-61). A surface that asks for the user's attention must never be the reason the composer
+  disappears.
+- **Decision**:
+  1. The modal's body and key footer are modelled as **one entry per terminal row**:
+     `decisionBodyRows(req)` and `decisionKeyRows(req)` return `ReactNode[]`, so a newline is a row
+     the budget knows about and a body can be sliced without fighting Yoga. The question's first
+     item renders its own rows; the rest stay visible as muted rows plus the `+ N` note.
+  2. One pure planner, `planDecisionModal(bodyCount, keyCount, maxRows, scroll)`, turns the counted
+     rows into an exact layout: it pays the double border, the title and the key footer **before**
+     any body row, buys the `… +N · ↑/↓` indicator only when it still leaves a body row, then
+     windows the body. `decisionModalHeight(req?, maxRows?)` exposes the result; with no request it
+     returns `DECISION_MIN_ROWS` (5), the floor both dashboards reserve. Below two rows the modal
+     draws nothing rather than claim a framed box it cannot open.
+  3. Each dashboard computes a `decisionMaxRows` budget from what its own fixed chrome leaves (header,
+     composer/footer, log tail, open palette, card floor) and passes it in; no dashboard carries a
+     height literal any more. `VIEWPORT_RESERVED_ROWS` uses the structural floor so the header never
+     spends rows the modal would need.
+  4. `↑`/`↓` scroll a windowed body (offset reset on `req.id`), and `LiveDashboard` consumes those
+     keys before `resolveDecisionKey` so a scroll never resolves a decision or is echoed as "press a
+     number". The first question remains answerable by digit while the body is scrolled.
+- **Alternatives rejected**: (a) raising the constant to the tallest possible request — it still
+  fails on an 18-row terminal, and a request is unbounded in follow-ups; (b) letting the modal clip
+  its own body — clipped options become unanswerable; (c) letting Ink lay the body out and measuring
+  the result — the emitted height is not available before the frame is painted, and a second layout
+  pass would still be wrong on the first frame; (d) always opening a fullscreen modal — it hides the
+  conversation the question is about and is a worse answer on a tall terminal.
+- **Consequences**:
+  - *Positive*: a decision can never push the composer or footer off-screen; the modal spends exactly
+    the rows it paints (`test/tui/decisionModal.test.ts` compares the planner with Ink's frame); a
+    tall request stays usable behind a scroll instead of losing options; both dashboards share one
+    planner instead of two literals.
+  - *Negative*: a windowed body hides rows until the user scrolls (mitigated by the `… +N` indicator
+    and the preserved first-question key handling), and `decisionBodyRows`/`decisionKeyRows` must be
+    revisited whenever the modal gains a new kind of row. `decisionKeyRows` falls back to the gate
+    keys for an unknown kind (unlike the exhaustive `decisionTitle` switch), so a new `DecisionKind`
+    compiles even if its body or footer rows were never counted — the guard test is what catches it.

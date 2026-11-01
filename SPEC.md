@@ -1181,6 +1181,30 @@ iteration and 6 afterwards** (down from 14).
   `⚠️ REVIEW REQUESTED` handoff line, `HANDOFF_LINE_RE`, both verdict parsers and their fail-closed
   fallback) are all unchanged. Only huginn's own TUI display and feedback glyphs move.
 
+### REQ-69: The decision modal buys only the rows it can pay for
+- **AC-69.1 (Exact height)**: `decisionModalHeight(req?, maxRows?)` in `src/tui/Dashboard.tsx`
+  returns the exact number of rows `DecisionModal` paints, double border included;
+  `DECISION_MIN_ROWS` (5 = two border rows + one title + one body row + one key row) is the
+  structural floor a dashboard reserves before a decision exists. `decisionBodyRows` and
+  `decisionKeyRows` expose one entry per terminal row, so a newline in a message cannot steal a row
+  the layout did not count.
+- **AC-69.2 (Frame budget)**: both dashboards derive `decisionMaxRows` from the rows left after
+  their own fixed chrome (header, composer/footer, log tail, open palette, card floor) and pass it
+  to the modal. The modal never paints more than that budget: it pays the double border, the title
+  and the key footer first, buys the `… +N · ↑/↓` indicator only while a body row still fits, and
+  windows the rest. Below two rows it paints nothing rather than claim a frame it cannot open.
+- **AC-69.3 (Hidden rows are reachable)**: a windowed body scrolls with `↑`/`↓`, and the indicator
+  names how many body rows are hidden. The live dashboard consumes those keys while a decision is
+  open, so a scroll never resolves the decision or echoes "press a number"; a digit still answers
+  the first question verbatim after scrolling.
+- **AC-69.4 (Footer survives)**: a pending decision no longer pushes the composer or the footer off
+  a short terminal. `test/tui/liveLayout.test.ts` and `test/tui/dashboard.test.ts` mount a tall
+  question on 18- and 24-row frames and assert the frame's row count, the modal title and the key
+  footer.
+- **AC-69.5 (Drift guard)**: `test/tui/decisionModal.test.ts` compares `decisionModalHeight` with
+  the rows Ink actually paints for every decision kind — a request that fits, one that must window,
+  and budgets below the two border rows — so a height literal can never drift from the real cost.
+
 ---
 
 ## Appendix — module map

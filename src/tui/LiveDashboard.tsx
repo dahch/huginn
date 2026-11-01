@@ -13,7 +13,13 @@ import { isAgentTarget } from "../engine/agent/registry";
 import { events, type LiveStage } from "../engine/engineEvents";
 import { formatUsage } from "../format";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
-import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
+import {
+  DECISION_MIN_ROWS,
+  Dashboard,
+  DecisionModal,
+  LogsCard,
+  decisionModalHeight,
+} from "./Dashboard";
 import { MarkdownLine, markdownSegments, renderSegments, wrapSegments, type MdSegment } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
@@ -756,10 +762,6 @@ function RefineView({
   // the composer, which is the part that has to give. That is what keeps the
   // input row and the footer on screen at any terminal size, with no line ever
   // spilling over it.
-  // The decision modal's own frame, reserved before the composer so a pending
-  // decision can never be the reason the input row scrolls away.
-  const decisionHeight = decision ? 6 : 0;
-
   let maxLogsAllowed = 0;
   if (terminalSize.rows >= 36) maxLogsAllowed = 4;
   else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
@@ -768,7 +770,7 @@ function RefineView({
   // While the palette, the agent picker or a decision is open it owns the row
   // budget: the log tail steps aside so none of them can push the input row or
   // the frame off-screen (AC-28.4 / REV-303). A decision especially needs the
-  // rows, since the modal keeps its natural height instead of clipping options.
+  // rows: its frame is reserved in full before the composer (REQ-69).
   if (decision || suggestionsOpen || showAgentPicker || showProfilePicker) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
@@ -795,6 +797,26 @@ function RefineView({
   const paletteReservedWhileOpen = suggestionsOpen
     ? MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS
     : 0;
+  /**
+   * Rows the decision modal may claim: everything the frame has left once the
+   * header floor, the composer's floor, the footer, the log tail, the open
+   * palette and the conversation's own `CARD_MIN_ROWS` floor are paid for.
+   *
+   * The modal charges before the composer, but it can never charge more than
+   * what exists — `decisionModalHeight` turns this budget into the exact rows it
+   * will draw, windowing the body if it does not fit (REQ-69).
+   */
+  const decisionMaxRows = Math.max(
+    DECISION_MIN_ROWS,
+    terminalSize.rows -
+      headerFloorHeight -
+      INPUT_HEIGHT -
+      FOOTER_HEIGHT -
+      logsHeight -
+      paletteReservedWhileOpen -
+      CARD_MIN_ROWS,
+  );
+  const decisionHeight = decision ? decisionModalHeight(decision, decisionMaxRows) : 0;
   /**
    * Rows the frame needs however tall the composer gets: the header, the
    * composer's chrome (margin + border), the footer, the visible log tail, a
@@ -1564,6 +1586,9 @@ function RefineView({
       return;
     }
     if (decision) {
+      // The modal owns ↑/↓ while its body is windowed: a scroll key must reach it
+      // instead of being echoed back as "press a number" (REQ-69).
+      if (key.upArrow || key.downArrow || key.pageUp || key.pageDown) return;
       const resolved = resolveDecisionKey(input, key);
       if (resolved) {
         live.resolveDecision(resolved.choice, resolved.answers);
@@ -1925,7 +1950,7 @@ function RefineView({
 
       {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
 
-      {decision ? <DecisionModal req={decision} /> : null}
+      {decision ? <DecisionModal req={decision} maxRows={decisionMaxRows} /> : null}
 
       {!showModelPicker &&
         !showMcpInspector &&

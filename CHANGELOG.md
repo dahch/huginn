@@ -15,6 +15,11 @@
   kind and fails on any `\p{Extended_Pictographic}` code point or a display width that disagrees
   with the string length; `test/tui/glyphs.test.ts` covers the new table, including its ASCII
   requirement.
+- **The decision modal never outgrows the frame.** Its body and key footer are modelled one terminal
+  row per entry (`decisionBodyRows`/`decisionKeyRows`) and a pure planner (`decisionModalHeight`)
+  computes the exact height. Both dashboards pass the rows their own chrome leaves as `maxRows`, so
+  a tall question windows its body behind a `… +N · ↑/↓` indicator (scrolled with `↑`/`↓`) instead
+  of pushing the composer and footer off an 18- or 24-row terminal (REQ-69 / ADR-64).
 
 ### Changed
 

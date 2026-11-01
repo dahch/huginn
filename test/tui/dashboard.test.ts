@@ -7,6 +7,7 @@ import { runLiveTui, runTui } from "../../src/tui/app";
 import { events } from "../../src/engine/engineEvents";
 import type { CycleEngine } from "../../src/engine/cycle";
 import type { DecisionRequest } from "../../src/engine/types";
+import { decisionTitle } from "../../src/tui/decision";
 import type { RunConfig } from "../../src/config";
 import type { HarnessState } from "../../src/state/schema";
 
@@ -381,6 +382,91 @@ describe("post-cycle promotion recovery (ADR-62)", () => {
     await tick();
     expect(onlyRetry.resolveDecision).toHaveBeenCalledWith("retry");
     onlyRetry.unmount();
+  });
+});
+
+/**
+ * REQ-69 — the run dashboard reserves the modal's real row cost through
+ * `decisionModalHeight`, not the old `DECISION_HEIGHT = 7` literal. With a tall
+ * request on a 24-row terminal the literal under-reserved the modal by eight
+ * rows and pushed the frame (and its footer) past the terminal.
+ */
+describe("run dashboard decision budget (REQ-69)", () => {
+  const ANSI = /\u001B\[[0-9;?]*[A-Za-z]/g;
+  const tallDecision: DecisionRequest = {
+    id: "run-decision",
+    kind: "question",
+    iteration: 0,
+    phase: "LIVE",
+    attempt: 1,
+    message: "Which database should I use?",
+    questionItems: [
+      {
+        question: "Which database should I use?",
+        options: [
+          { label: "Postgres", description: "production-ready" },
+          { label: "SQLite", description: "zero-config" },
+          { label: "DuckDB", description: "analytics-first" },
+        ],
+      },
+      { question: "Which migration tool?", options: [{ label: "Prisma" }, { label: "Drizzle" }] },
+      { question: "Where do backups go?", options: [{ label: "S3" }, { label: "Local" }] },
+    ],
+  };
+
+  async function mountRunDecision(rows: number): Promise<{ output: () => string; unmount: () => void }> {
+    events.clear();
+    const stdout = new PassThrough() as any;
+    stdout.columns = 100;
+    stdout.rows = rows;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const state = { currentIteration: 1, currentPhase: "EXECUTE" } as unknown as HarnessState;
+    const engine = {
+      getState: () => state,
+      runtime: {
+        id: "commandcode",
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+      },
+      resolveDecision: () => {},
+      pause: () => {},
+      resume: () => {},
+      requestAbort: () => {},
+    } as unknown as CycleEngine;
+    const cfg = { projectPath: "/tmp/p", thinker: "a/b", executor: "c/d", mode: "auto" } as RunConfig;
+    const instance = render(React.createElement(Dashboard, { engine, cfg, autoExit: false }), {
+      stdout,
+      stdin: createMockStdin(),
+      patchConsole: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    events.emit("decision", tallDecision);
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    return {
+      output: () => output.replace(ANSI, ""),
+      unmount: () => {
+        instance.unmount();
+        events.clear();
+      },
+    };
+  }
+
+  it("windows the modal and keeps its footer inside a 24-row frame", async () => {
+    const harness = await mountRunDecision(24);
+    harness.unmount();
+    const output = harness.output();
+
+    const lines = output.split("\n").map((line) => line.replace(/\s+$/, ""));
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    expect(lines.length, "the run frame never exceeds 24 rows").toBeLessThanOrEqual(24);
+    expect(output).toContain(decisionTitle(tallDecision));
+    // The tall body is windowed rather than overflowing the frame.
+    expect(output).toContain("… +");
+    expect(output).toContain("[1-9/Enter]");
+    // The footer is the last surface; the modal must not push it away.
+    expect(output).toContain("Interactive decision");
   });
 });
 

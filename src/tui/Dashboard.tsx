@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import type { RunConfig } from "../config";
@@ -10,7 +10,7 @@ import { useTerminalSize } from "./useTerminalSize";
 import type { PromotionRecord } from "../state/schema";
 import { phasesForProfile, type ProfileName } from "../engine/profiles";
 import { sanitizeTerminalText } from "../util/text";
-import { THEME, mcpStatusToken } from "./theme.js";
+import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
 import { TWO_RAVENS } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
 import { STATUS_GLYPHS } from "./glyphs.js";
@@ -38,8 +38,22 @@ const VIEW_OUTER_INSET = 2;
 const MIDDLE_MIN_ROWS = 6;
 /** Tallest log tail the dashboard renders (5 entries + border). */
 const LOGS_MAX_ROWS = 5;
-/** The decision modal, and the last-report pill. */
-const DECISION_HEIGHT = 7;
+/** Rows the decision modal's double border spends (top + bottom). */
+const DECISION_BORDER_ROWS = 2;
+/** The modal's title row — never windowed away. */
+const DECISION_TITLE_ROWS = 1;
+/** Narrowest body the modal keeps before it starts dropping chrome. */
+const DECISION_BODY_MIN_ROWS = 1;
+/** At least one key-footer row: the modal must always say what to press. */
+const DECISION_KEY_MIN_ROWS = 1;
+/**
+ * The smallest decision modal that still shows its title, one body row and its
+ * key footer. `decisionModalHeight` computes the real cost of an actual request;
+ * this is the floor the header reserves before one exists.
+ */
+export const DECISION_MIN_ROWS =
+  DECISION_BORDER_ROWS + DECISION_TITLE_ROWS + DECISION_BODY_MIN_ROWS + DECISION_KEY_MIN_ROWS;
+/** The last-report pill. */
 const REPORT_HEIGHT = 1;
 /** The promotion-failure notice row, shown only when an integration failed. */
 const PROMOTION_HEIGHT = 1;
@@ -53,7 +67,7 @@ const VIEWPORT_RESERVED_ROWS =
   MIDDLE_MIN_ROWS +
   FOOTER_HEIGHT +
   LOGS_MAX_ROWS +
-  DECISION_HEIGHT +
+  decisionModalHeight() +
   REPORT_HEIGHT +
   PROMOTION_HEIGHT;
 
@@ -329,7 +343,6 @@ export function Dashboard({
   const headerHeight = headerPlan.height;
   const footerHeight = FOOTER_HEIGHT;
   const reportHeight = ui.lastReport && !ui.decision ? REPORT_HEIGHT : 0;
-  const decisionHeight = ui.decision ? DECISION_HEIGHT : 0;
   const promotionFailed =
     ui.promotion?.status === "conflict" || ui.promotion?.status === "failed";
   const promotionHeight = promotionFailed && !ui.decision ? PROMOTION_HEIGHT : 0;
@@ -343,6 +356,25 @@ export function Dashboard({
 
   const visibleLogs = ui.logs.slice(-maxLogsAllowed);
   const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+
+  // The decision modal charges before the middle cards, but it can never charge
+  // more than the frame has: this is everything left once the header, the middle
+  // floor, the log tail, the report pill, the notice and the footer are paid for
+  // (REQ-69). `decisionModalHeight` turns that budget into the exact row cost.
+  const decisionMaxRows = Math.max(
+    DECISION_MIN_ROWS,
+    terminalSize.rows -
+      headerHeight -
+      footerHeight -
+      MIDDLE_MIN_ROWS -
+      logsHeight -
+      reportHeight -
+      promotionHeight -
+      1,
+  );
+  const decisionHeight = ui.decision
+    ? decisionModalHeight(ui.decision, decisionMaxRows)
+    : 0;
 
   const middleHeight = Math.max(
     MIDDLE_MIN_ROWS,
@@ -485,7 +517,7 @@ export function Dashboard({
         </Box>
       ) : null}
 
-      {ui.decision ? <DecisionModal req={ui.decision} /> : null}
+      {ui.decision ? <DecisionModal req={ui.decision} maxRows={decisionMaxRows} /> : null}
 
       {ui.lastReport && !ui.decision && <ReportPill report={ui.lastReport} />}
 
@@ -919,133 +951,341 @@ function ReportPill({ report }: { report: PhaseResult }) {
   );
 }
 
+/** One `[key] label` hint, rendered inline in a single footer row. */
+type KeyHint = { key: string; label: string; token: ThemeToken };
+
+/**
+ * A request message broken into one row per line, so a newline in the message
+ * can never steal a row the layout did not count.
+ */
+function textRows(
+  text: string,
+  keyPrefix: string,
+  color: ThemeToken = "text",
+  bold = false,
+): ReactNode[] {
+  return text.split("\n").map((line, index) => (
+    <Text key={`${keyPrefix}-${index}`} color={THEME[color]} bold={bold} wrap="truncate">
+      {line}
+    </Text>
+  ));
+}
+
+/** One footer row: every key hint inline on that single terminal row. */
+function keyHintsRow(hints: KeyHint[], rowKey: string): ReactNode {
+  return (
+    <Text key={rowKey} wrap="truncate">
+      {hints.flatMap((hint, index) => [
+        <Text key={`${rowKey}-k${index}`} bold color={THEME[hint.token]}>
+          {hint.key}
+        </Text>,
+        <Text key={`${rowKey}-l${index}`}>{hint.label}</Text>,
+      ])}
+    </Text>
+  );
+}
+
+/** The options of one question, one terminal row per option. */
+function optionRows(
+  options: ReadonlyArray<{ label: string; description?: string }>,
+  itemKey: string,
+  muted = false,
+): ReactNode[] {
+  return options.map((option, index) => (
+    <Text key={`${itemKey}-o${index}`} wrap="truncate" color={muted ? THEME.muted : undefined}>
+      {muted ? (
+        `    (${index + 1}) ${option.label}`
+      ) : (
+        <>
+          <Text bold color={THEME.ok}>{`  [${index + 1}] `}</Text>
+          <Text>{option.label}</Text>
+          {option.description ? (
+            <Text color={THEME.muted}> — {option.description}</Text>
+          ) : null}
+        </>
+      )}
+    </Text>
+  ));
+}
+
+/**
+ * The modal body as an array of **one entry per terminal row** (REQ-69).
+ *
+ * The body used to be a single `ReactNode` tree of `<Text>`/`<Box>` nodes whose
+ * height only Yoga knew, so it could not be clipped without fighting the layout
+ * engine. With one row per entry the modal (and {@link decisionModalHeight})
+ * can count, slice and window the body and still be exact.
+ */
+export function decisionBodyRows(req: DecisionRequest): ReactNode[] {
+  const firstItem = req.kind === "question" ? req.questionItems?.[0] : undefined;
+
+  // A question renders its own text below, so repeating the request's message
+  // there would show the same sentence twice.
+  if (!firstItem) return textRows(req.message, "msg", "text", true);
+
+  const rows: ReactNode[] = [];
+  rows.push(...textRows(firstItem.question, "question"));
+  rows.push(...optionRows(firstItem.options ?? [], "first"));
+
+  // A block that arrived whole (opencode's native channel) still only lets one
+  // question be answered, but the rest stay visible instead of collapsing into
+  // an unreadable "+N more".
+  const followUps = req.questionItems?.slice(1) ?? [];
+  followUps.forEach((item, index) => {
+    rows.push(
+      <Text key={`more-q${index}`} color={THEME.muted} wrap="truncate">
+        • {item.question}
+      </Text>,
+    );
+    rows.push(...optionRows(item.options ?? [], `more-${index}`, true));
+  });
+  if (followUps.length > 0) {
+    rows.push(
+      <Text key="more-note" color={THEME.muted} wrap="truncate">
+        {`+ ${followUps.length} more question(s) — answer the first, the rest follow.`}
+      </Text>,
+    );
+  }
+  return rows;
+}
+
+/**
+ * The modal's key footer, one entry per terminal row. It is paid for **before**
+ * any body row, so windowing the body can never hide what to press (REQ-69).
+ */
+export function decisionKeyRows(req: DecisionRequest): ReactNode[] {
+  switch (req.kind) {
+    case "approve-draft":
+      return [
+        keyHintsRow(
+          [
+            { key: "[r] ", label: "Re-draft with latest chat   ", token: "accent" },
+            { key: "[c] ", label: "OK — commit & execute   ", token: "ok" },
+            { key: "[a] ", label: "Abort", token: "danger" },
+          ],
+          "keys",
+        ),
+      ];
+    case "scope-extraction":
+      return [
+        keyHintsRow(
+          [
+            { key: "[r] ", label: "Retry extraction   ", token: "accent" },
+            { key: "[c] ", label: "Use my last message   ", token: "warn" },
+            { key: "[a] ", label: "Abort", token: "danger" },
+          ],
+          "keys",
+        ),
+      ];
+    case "draft-format":
+      return [
+        keyHintsRow(
+          [
+            { key: "[r] ", label: "Retry with contract   ", token: "accent" },
+            { key: "[c] ", label: "Accept as-is   ", token: "warn" },
+            { key: "[a] ", label: "Abort", token: "danger" },
+          ],
+          "keys",
+        ),
+      ];
+    case "post-cycle-live": {
+      const offers = (choice: DecisionChoice): boolean =>
+        !req.choices || req.choices.includes(choice);
+      const rows: ReactNode[] = [];
+      const recovery: KeyHint[] = [];
+      if (offers("retry-promotion")) {
+        recovery.push({ key: "[t] ", label: "Retry promotion (no model)   ", token: "accent" });
+      }
+      if (offers("repair")) {
+        recovery.push({
+          key: "[p] ",
+          label: "Repair promotion (thinker + executor)",
+          token: "thinker",
+        });
+      }
+      if (recovery.length > 0) rows.push(keyHintsRow(recovery, "recovery"));
+      rows.push(
+        keyHintsRow(
+          [
+            { key: "[c] ", label: "Exit / Finish   ", token: "ok" },
+            { key: "[r] ", label: "Return to Live mode   ", token: "accent" },
+            { key: "[a] ", label: "Exit", token: "danger" },
+          ],
+          "keys",
+        ),
+      );
+      return rows;
+    }
+    case "question":
+      return [
+        keyHintsRow(
+          [
+            { key: "[1-9/Enter] ", label: "Pick an option   ", token: "ok" },
+            { key: "[d] ", label: "Reject / skip question", token: "danger" },
+          ],
+          "keys",
+        ),
+      ];
+    case "permission":
+      return [
+        keyHintsRow(
+          [
+            { key: "[a] ", label: "Allow Always   ", token: "accent" },
+            { key: "[o] ", label: "Allow Once   ", token: "accent" },
+            { key: "[d] ", label: "Deny", token: "danger" },
+          ],
+          "keys",
+        ),
+      ];
+    case "gate-blocked":
+    case "spec-deviation":
+    default:
+      return [
+        keyHintsRow(
+          [
+            { key: "[r] ", label: "Retry with Thinker   ", token: "accent" },
+            { key: "[c] ", label: "Force Continue   ", token: "warn" },
+            { key: "[a] ", label: "Abort Run", token: "danger" },
+          ],
+          "keys",
+        ),
+      ];
+  }
+}
+
+/** How {@link planDecisionModal} spends a row budget. */
+interface DecisionModalPlan {
+  /** Total rows the modal draws, double border included. */
+  height: number;
+  /** Title rows drawn (zero only below the border + title floor). */
+  titleRows: number;
+  /** First body row to draw, and how many of them. */
+  bodyStart: number;
+  bodyCount: number;
+  /** Body rows the window hides: the number the `… +N` indicator reports. */
+  hiddenBody: number;
+  /** Key-footer rows drawn. */
+  keyCount: number;
+  /** Whether the `… +N` indicator row is paid for. */
+  showIndicator: boolean;
+}
+
+/**
+ * Turn a body/footer size into an exact layout, honouring `maxRows`.
+ *
+ * Without a cap the modal keeps its natural height. With one, it pays the
+ * double border, the title and the key footer first, buys the `… +N` indicator
+ * only when it still leaves a body row, and spends the rest on the body window
+ * — so it never draws more rows than `maxRows` (REQ-69).
+ */
+function planDecisionModal(
+  bodyCount: number,
+  keyCount: number,
+  maxRows?: number,
+  scroll = 0,
+): DecisionModalPlan {
+  // A double-bordered box cannot exist in fewer than its two border rows: below
+  // that the modal draws nothing rather than lie about the rows it occupied.
+  if (maxRows !== undefined && maxRows < DECISION_BORDER_ROWS) {
+    return {
+      height: 0,
+      titleRows: 0,
+      bodyStart: 0,
+      bodyCount: 0,
+      hiddenBody: bodyCount,
+      keyCount: 0,
+      showIndicator: false,
+    };
+  }
+
+  const natural = DECISION_BORDER_ROWS + DECISION_TITLE_ROWS + bodyCount + keyCount;
+  if (maxRows === undefined || natural <= maxRows) {
+    return {
+      height: natural,
+      titleRows: DECISION_TITLE_ROWS,
+      bodyStart: 0,
+      bodyCount,
+      hiddenBody: 0,
+      keyCount,
+      showIndicator: false,
+    };
+  }
+
+  let interior = Math.max(0, maxRows - DECISION_BORDER_ROWS);
+  const titleRows = Math.min(DECISION_TITLE_ROWS, interior);
+  interior -= titleRows;
+  const keys = Math.min(keyCount, Math.max(0, interior - DECISION_BODY_MIN_ROWS));
+  interior -= keys;
+  const showIndicator = interior - 1 >= DECISION_BODY_MIN_ROWS;
+  const bodyRoom = showIndicator ? interior - 1 : interior;
+  const count = Math.max(0, Math.min(bodyCount, bodyRoom));
+  const start = Math.min(Math.max(0, Math.floor(scroll)), Math.max(0, bodyCount - count));
+  return {
+    height: DECISION_BORDER_ROWS + titleRows + count + (showIndicator ? 1 : 0) + keys,
+    titleRows,
+    bodyStart: start,
+    bodyCount: count,
+    hiddenBody: bodyCount - count,
+    keyCount: keys,
+    showIndicator,
+  };
+}
+
+/**
+ * The exact number of terminal rows a decision modal draws, double border
+ * included. Pure and exported so both dashboards reserve the real cost instead
+ * of a literal, and so the guard tests can compare the reservation with the
+ * rows Ink actually paints (REQ-69).
+ *
+ * Called with no request it returns the structural floor — the rows the header
+ * reserves before any decision exists.
+ */
+export function decisionModalHeight(req?: DecisionRequest, maxRows?: number): number {
+  if (!req) return DECISION_MIN_ROWS;
+  return planDecisionModal(
+    decisionBodyRows(req).length,
+    decisionKeyRows(req).length,
+    maxRows,
+  ).height;
+}
+
 /**
  * The decision modal renders its title through the pure formatter in
  * `src/tui/decision.ts` (REQ-68 / ADR-63), so the drift guard can measure every
  * kind without importing this dashboard.
+ *
+ * Row contract (REQ-69): the modal charges its rows before the composer, but it
+ * can never charge more than the frame has. `maxRows` caps the whole box
+ * (double border included), the body is windowed with `↑/↓` when it does not
+ * fit, and the title and key footer are paid before any body row. It keeps
+ * `borderStyle="double"` and `THEME.warn` on purpose: this is the only surface
+ * with a double border, so the alert is unmistakable.
  */
-export function DecisionModal({ req }: { req: DecisionRequest }) {
-  const isPerm = req.kind === "permission";
-  const isQuestion = req.kind === "question";
-  const title = decisionTitle(req);
-  const keys =
-    req.kind === "approve-draft" ? (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Re-draft with latest chat   </Text>
-        <Text bold color={THEME.ok}>[c] </Text>
-        <Text>OK — commit & execute   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort</Text>
-      </>
-    ) : req.kind === "scope-extraction" ? (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Retry extraction   </Text>
-        <Text bold color={THEME.warn}>[c] </Text>
-        <Text>Use my last message   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort</Text>
-      </>
-    ) : req.kind === "draft-format" ? (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Retry with contract   </Text>
-        <Text bold color={THEME.warn}>[c] </Text>
-        <Text>Accept as-is   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort</Text>
-      </>
-    ) : req.kind === "post-cycle-live" ? (
-      <>
-        {(!req.choices ||
-          req.choices.includes("retry-promotion") ||
-          req.choices.includes("repair")) && (
-          <Text>
-            {(!req.choices || req.choices.includes("retry-promotion")) && (
-              <>
-                <Text bold color={THEME.accent}>[t] </Text>
-                <Text>Retry promotion (no model)   </Text>
-              </>
-            )}
-            {(!req.choices || req.choices.includes("repair")) && (
-              <>
-                <Text bold color={THEME.thinker}>[p] </Text>
-                <Text>Repair promotion (thinker + executor)</Text>
-              </>
-            )}
-          </Text>
-        )}
-        <Text>
-          <Text bold color={THEME.ok}>[c] </Text>
-          <Text>Exit / Finish   </Text>
-          <Text bold color={THEME.accent}>[r] </Text>
-          <Text>Return to Live mode   </Text>
-          <Text bold color={THEME.danger}>[a] </Text>
-          <Text>Exit</Text>
-        </Text>
-      </>
-    ) : isPerm ? (
-      <>
-        <Text bold color={THEME.accent}>[a] </Text>
-        <Text>Allow Always   </Text>
-        <Text bold color={THEME.accent}>[o] </Text>
-        <Text>Allow Once   </Text>
-        <Text bold color={THEME.danger}>[d] </Text>
-        <Text>Deny</Text>
-      </>
-    ) : isQuestion ? (
-      <>
-        {/* Real options (AC-37.3): a digit picks that answer verbatim instead of
-            only "accept the recommended one". Only the first question is
-            selectable, so it is the only one whose options are numbered. */}
-        <Text color={THEME.text}>
-          {req.questionItems?.[0] ? req.questionItems[0].question : req.message}
-        </Text>
-        {(req.questionItems?.[0]?.options ?? []).map((option, optionIndex) => (
-          <Box key={`opt-${optionIndex}`}>
-            <Text bold color={THEME.ok}>{`  [${optionIndex + 1}] `}</Text>
-            <Text>{option.label}</Text>
-            {option.description ? <Text color={THEME.muted}> — {option.description}</Text> : null}
-          </Box>
-        ))}
-        {req.questionItems && req.questionItems.length > 1 ? (
-          <>
-            {/* A block that arrived whole (opencode's native channel) still only
-                lets one question be answered, but the rest stay visible instead
-                of collapsing into an unreadable "+N more". */}
-            {req.questionItems.slice(1).map((item, index) => (
-              <Box key={`more-${index}`} flexDirection="column">
-                <Text color={THEME.muted}>• {item.question}</Text>
-                {(item.options ?? []).map((option, optionIndex) => (
-                  <Text key={`more-${index}-${optionIndex}`} color={THEME.muted}>
-                    {`    (${optionIndex + 1}) ${option.label}`}
-                  </Text>
-                ))}
-              </Box>
-            ))}
-            <Text color={THEME.muted}>
-              + {req.questionItems.length - 1} more question(s) — answer the first, the rest follow.
-            </Text>
-          </>
-        ) : null}
-        <Text>
-          <Text bold color={THEME.ok}>[1-9/Enter] </Text>
-          <Text>Pick an option   </Text>
-          <Text bold color={THEME.danger}>[d] </Text>
-          <Text>Reject / skip question</Text>
-        </Text>
-      </>
-    ) : (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Retry with Thinker   </Text>
-        <Text bold color={THEME.warn}>[c] </Text>
-        <Text>Force Continue   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort Run</Text>
-      </>
-    );
+export function DecisionModal({ req, maxRows }: { req: DecisionRequest; maxRows?: number }) {
+  const body = decisionBodyRows(req);
+  const keys = decisionKeyRows(req);
+  const [scroll, setScroll] = useState(0);
+  const plan = planDecisionModal(body.length, keys.length, maxRows, scroll);
+  const maxScroll = Math.max(0, body.length - plan.bodyCount);
+
+  // A new request starts at the top of its own body.
+  useEffect(() => {
+    setScroll(0);
+  }, [req.id]);
+
+  useInput((_input, key) => {
+    if (maxScroll === 0) return;
+    if (key.upArrow) {
+      setScroll((value) => Math.max(0, Math.min(value, maxScroll) - 1));
+    } else if (key.downArrow) {
+      setScroll((value) => Math.min(maxScroll, Math.min(value, maxScroll) + 1));
+    }
+  });
+
+  if (plan.height === 0) return null;
+
+  const visibleBody = body.slice(plan.bodyStart, plan.bodyStart + plan.bodyCount);
+  const visibleKeys = keys.slice(0, plan.keyCount);
   return (
     <Box
       marginTop={0}
@@ -1054,20 +1294,20 @@ export function DecisionModal({ req }: { req: DecisionRequest }) {
       paddingX={1}
       flexDirection="column"
       flexShrink={0}
+      height={plan.height}
     >
-      <Text bold color={THEME.warn}>
-        {title}
-      </Text>
-      {/* A question already renders its own text below, so repeating the
-          request's message there would show the same sentence twice. */}
-      {!(isQuestion && req.questionItems?.[0]) && (
-        <Text color={THEME.text} bold>
-          {req.message}
+      {plan.titleRows > 0 && (
+        <Text bold color={THEME.warn} wrap="truncate">
+          {decisionTitle(req)}
         </Text>
       )}
-      {/* A column, not a <Text>: Ink does not render a <Box> subtree inside a
-          <Text>, which made the question options invisible (REV-001). */}
-      <Box marginTop={1} flexDirection="column">{keys}</Box>
+      {visibleBody}
+      {plan.showIndicator && (
+        <Text color={THEME.muted} wrap="truncate">
+          {`… +${plan.hiddenBody} · ↑/↓`}
+        </Text>
+      )}
+      {visibleKeys}
     </Box>
   );
 }
