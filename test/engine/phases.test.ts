@@ -165,9 +165,7 @@ export function compute(): number {
 
       // Asserts that it returns the structured report with contract-compiler-failure
       expect(result.messageId).toBe("contract-compiler-failure");
-      expect(result.raw).toMatchObject({
-        info: { id: "contract-compiler-failure" },
-      });
+      expect(result.raw.info).toEqual({ id: "contract-compiler-failure" });
 
       // Asserts that the structured report contains the required gate markers
       expect(result.text).toContain("### Overall gate: 🔴");
