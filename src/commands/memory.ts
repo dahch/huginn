@@ -250,10 +250,16 @@ export async function handleMemoryCommand(
 
   if (subcommand === "decisions") {
     const root = projectRoot ?? process.cwd();
+    // The conventional ADR file may be `adr.md` or `ADR.md`; pick the one that
+    // exists (lower-case first), exactly like `run`/`live` resolve their docs.
+    const lowerAdr = path.join(root, "adr.md");
+    const upperAdr = path.join(root, "ADR.md");
     const adrPath =
       typeof args["--adr"] === "string"
         ? path.resolve(args["--adr"])
-        : path.join(root, "adr.md");
+        : fs.existsSync(lowerAdr) || !fs.existsSync(upperAdr)
+          ? lowerAdr
+          : upperAdr;
     const result = recordAdrsAsDecisions({
       adrPath,
       projectRoot: root,

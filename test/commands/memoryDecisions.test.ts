@@ -64,6 +64,15 @@ describe("huginn memory decisions", () => {
     expect(decisionCount()).toBe(2);
   });
 
+  it("defaults to ADR.md when adr.md is absent", async () => {
+    const upper = path.join(dir, "ADR.md");
+    fs.renameSync(adrPath, upper);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await handleMemoryCommand("decisions", { "--project": dir, "--db": dbPath }, []);
+    expect(output(log)).toContain("2 saved");
+    expect(decisionCount()).toBe(2);
+  });
+
   it("--dry-run writes nothing", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await handleMemoryCommand(

@@ -67,6 +67,11 @@
 
 ### Fixed
 
+- **`huginn memory decisions` found a repository's `ADR.md`.** The backfill defaulted to the
+  lower-case `adr.md` only, so on this repository (and any project that follows the upper-case
+  convention `run`/`live` already resolve) it reported "0 saved" against an existing document. The
+  default now picks the file that exists (`adr.md`, then `ADR.md`), exactly like every other tracked
+  document.
 - **A repaired promotion no longer dies on an empty cherry-pick.** `repairPromotion` leaves a merge
   commit on the preserved branch. If the primary advanced while the repair was diagnosing or
   verifying, `git merge --ff-only` could not integrate the branch and the `git cherry-pick

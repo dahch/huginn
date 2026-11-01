@@ -708,7 +708,7 @@ modules. ADRs are stored as `decision` observations as `plan`/`live` writes them
 increment leaves one `iter-<n>` observation behind. `EXECUTE` receives the block in addition to its
 own instruction, and `SPEC_AUDIT` audits the plan's iteration index plus the current increment instead
 of the entire document. Memory is advisory — it never decides a gate — and `HUGINN_MEMORY=0` turns
-retrieval off. `huginn memory decisions` backfills an existing `adr.md`.
+retrieval off. `huginn memory decisions` backfills an existing `adr.md` (or `ADR.md`).
 
 The auditor phases (`SPEC_AUDIT`, `VALIDATE_STEP`, `SECURE_CHECK`, `REVIEW`) are **read-only**: huginn
 hashes the working tree before and after the step and forces BLOCKED if the signature is missing or

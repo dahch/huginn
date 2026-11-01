@@ -1107,7 +1107,7 @@ iteration and 6 afterwards** (down from 14).
   the FTS index and entity links follow).
 - **AC-64.3 (Read containment)**: the ADR file is read through `readFileBounded` (symlink and
   project-escape screened), and only file paths the indexer already knows are linked.
-- **AC-64.4 (Backfill)**: `huginn memory decisions [--adr …] [--dry-run]` seeds an existing ADR file.
+- **AC-64.4 (Backfill)**: `huginn memory decisions [--adr …] [--dry-run]` seeds an existing ADR file, resolving the conventional name case-insensitively (`adr.md`, then `ADR.md`).
 
 ### REQ-65: Each promoted increment is curated
 - **AC-65.1 (One observation)**: after a successful promotion (and after in-place indexing) huginn

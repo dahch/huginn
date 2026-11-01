@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemoryService } from "@dahch/muninn";
+import { MemoryService, indexFilesIntoMuninn } from "@dahch/muninn";
 import {
   MAX_MEMORY_CONTEXT,
   incrementSignals,
   memoryBlockFor,
   retrieveIncrementContext,
 } from "./retrieval";
+import { recordIterationObservation } from "../memory/curation";
+import type { Iteration } from "../../plan/types";
 import type { StepContext } from "./types";
 
 let dir: string;
@@ -117,5 +119,55 @@ describe("retrieveIncrementContext", () => {
     expect(signals).toContain("Scaffold");
     expect(signals).toContain("the app answers /health");
     expect(signals).toContain("REQ-1");
+  });
+
+  it("returns a non-empty, bounded block for a real indexed increment", () => {
+    // A self-contained fixture, never the repository's own database: the real
+    // indexer builds the symbol graph, the real curation writes `iter-1`, and
+    // retrieval has to find both by the iteration's module.
+    const moduleDir = join(dir, "src", "engine");
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(
+      join(moduleDir, "demo.ts"),
+      "export function demoIncrement(value: string): string {\n  return value.trim();\n}\n",
+    );
+    const service = new MemoryService({ projectRoot: dir, dbPath });
+    try {
+      indexFilesIntoMuninn(service, ["src/engine/demo.ts"], { projectRoot: dir });
+    } finally {
+      service.close();
+    }
+
+    const iteration: Iteration = {
+      index: 1,
+      title: "Demo increment",
+      prompt: "build it",
+      startLine: 1,
+      modules: ["src/engine"],
+      goal: "demoIncrement trims its input",
+      acceptanceCriteria: ["REQ-DEMO-1"],
+      verification: ["bun test"],
+    } as Iteration;
+    recordIterationObservation({
+      projectRoot: dir,
+      dbPath,
+      iteration,
+      verdicts: [],
+      filesChanged: ["src/engine/demo.ts"],
+    });
+
+    const block = retrieveIncrementContext({
+      projectRoot: dir,
+      dbPath,
+      modules: ["src/engine"],
+      signals: incrementSignals(iteration),
+    });
+
+    expect(block.length).toBeGreaterThan(0);
+    expect(block).toContain("<<<BEGIN UNTRUSTED-");
+    expect(block).toContain("iter 1: demo-increment");
+    expect(block).toContain("demoIncrement");
+    // The injected body is hard-capped at 8 KB; only the nonce wrapper may add.
+    expect(block.length).toBeLessThanOrEqual(MAX_MEMORY_CONTEXT + 1_000);
   });
 });
