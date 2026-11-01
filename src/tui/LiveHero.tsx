@@ -19,12 +19,14 @@
 import React from "react";
 import { Box, Text } from "ink";
 import {
+  COMPACT_BRAND_WIDTH,
   RAVEN_ART_ROWS,
   RAVEN_ART_WIDTH,
   WORDMARK_WIDTH,
   buildRavenArtRows,
   type RavenArtRow,
 } from "./RavenHeader.js";
+import type { RavenMood } from "../brand.js";
 import { EMPTY_CHAT_HINTS, emptyChatHints } from "./feedback.js";
 import { THEME } from "./theme.js";
 
@@ -47,7 +49,7 @@ export const HERO_TIP_LABEL = "TIP";
 /** Columns the guidance is indented by, so it reads as copy under the brand. */
 export const HERO_COPY_INDENT = 2;
 
-export type HeroVariant = "full" | "wordmark" | "text";
+export type HeroVariant = "full" | "wordmark" | "compact" | "text";
 
 export interface HeroRequest {
   /** Body rows the conversation card has for the hero. */
@@ -56,6 +58,8 @@ export interface HeroRequest {
   columns: number;
   /** The stage's tip; `""` hides the tip box. */
   tip?: string;
+  /** The raven's mood; only the beak glyph changes (defaults to `idle`). */
+  mood?: RavenMood;
 }
 
 export interface HeroPlan {
@@ -76,9 +80,11 @@ export interface HeroPlan {
 /**
  * Lay the hero out for a card body of `rows` × `columns`.
  *
- * Degradation is width-first — mark + wordmark → wordmark only → one-line brand —
- * and then row-first: an art block only earns its five rows when the guidance
- * keeps {@link HERO_MIN_COPY_ROWS} of its own underneath, and the tip box is the
+ * Degradation is width-first and matches `ravenHeaderPlan` exactly — mark +
+ * wordmark → wordmark only → the one-row `<(o  HUGINN` → one-line brand — and
+ * then row-first: a five-row art block only earns its rows when the guidance
+ * keeps {@link HERO_MIN_COPY_ROWS} of its own underneath, so a short card
+ * falls back to the compact row instead of losing its copy. The tip box is the
  * *last* claim, shown only when every guidance row still fits above it. Nothing
  * is ever fabricated to fill a row: a hero with one row of room shows the brand
  * and nothing else.
@@ -89,12 +95,29 @@ export function heroPlan(request: HeroRequest): HeroPlan {
   const rows = Math.max(0, Math.floor(request.rows));
   const columns = Math.max(0, Math.floor(request.columns));
   const tip = (request.tip ?? "").trim();
+  const mood = request.mood ?? "idle";
 
   let variant: HeroVariant =
-    columns >= RAVEN_ART_WIDTH ? "full" : columns >= WORDMARK_WIDTH ? "wordmark" : "text";
-  if (variant !== "text" && rows < RAVEN_ART_ROWS + HERO_MIN_COPY_ROWS) variant = "text";
+    columns >= RAVEN_ART_WIDTH
+      ? "full"
+      : columns >= WORDMARK_WIDTH
+        ? "wordmark"
+        : columns >= COMPACT_BRAND_WIDTH
+          ? "compact"
+          : "text";
+  // A five-row block that would starve the first-run guidance steps down to the
+  // same one-row rung the header uses, never straight to plain text. Requiring
+  // the *whole* hint list (not just the minimum) keeps an 80×24 frame, whose
+  // header now pays for its art, from showing a bird at the cost of its advice.
+  const fullCopyRows = Math.max(HERO_MIN_COPY_ROWS, EMPTY_CHAT_HINTS.length);
+  if ((variant === "full" || variant === "wordmark") && rows < RAVEN_ART_ROWS + fullCopyRows) {
+    variant = columns >= COMPACT_BRAND_WIDTH ? "compact" : "text";
+  }
 
-  const used = Math.min(rows, variant === "text" ? HERO_BRAND_ROWS : RAVEN_ART_ROWS);
+  const used = Math.min(
+    rows,
+    variant === "text" ? HERO_BRAND_ROWS : variant === "compact" ? 1 : RAVEN_ART_ROWS,
+  );
   const copyBudget = rows - used;
   const tipBudget = HERO_TIP_GAP_ROWS + HERO_TIP_ROWS;
   const showTip =
@@ -107,7 +130,7 @@ export function heroPlan(request: HeroRequest): HeroPlan {
     variant,
     // A branch that did not fit is never drawn: the wordmark alone reads better
     // than a mark squeezed against it (mirrors `ravenHeaderPlan`).
-    artRows: variant === "text" ? [] : buildRavenArtRows(variant),
+    artRows: variant === "text" ? [] : buildRavenArtRows(variant, mood),
     copyRows,
     showTip,
     tipWidth: Math.min(columns, HERO_TIP_WIDTH),
@@ -123,12 +146,14 @@ export function LiveHero({
   rows,
   columns,
   tip = "",
+  mood = "idle",
 }: {
   rows: number;
   columns: number;
   tip?: string;
+  mood?: RavenMood;
 }): React.ReactElement | null {
-  const plan = heroPlan({ rows, columns, tip });
+  const plan = heroPlan({ rows, columns, tip, mood });
   if (plan.rows === 0) return null;
 
   return (

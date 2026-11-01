@@ -12,6 +12,7 @@ import {
   verdictGlyph,
 } from "../../src/tui/glyphs.js";
 import { verdictIcon } from "../../src/format.js";
+import { RAVEN_MARK, RAVEN_MOODS } from "../../src/brand.js";
 import { freshState, renderProgressMarkdown } from "../../src/state/store.js";
 
 /** Every code point that renders as an emoji (double-width, multi-toned). */
@@ -98,6 +99,24 @@ describe("semantic glyph table (REQ-52)", () => {
     for (const kind of kinds) {
       expect(members.has(decisionGlyph(kind))).toBe(true);
     }
+  });
+
+  it("keeps every raven mood on a single-column, emoji-free grid (REQ-73)", () => {
+    // The raven's mood is part of the display alphabet: a mood glyph that was
+    // double-width would shift the whole header by a column.
+    const idleWidth = RAVEN_MARK[0]!.length;
+    for (const [mood, rows] of Object.entries(RAVEN_MOODS)) {
+      expect(rows, mood).toHaveLength(RAVEN_MARK.length);
+      for (const [index, row] of rows.entries()) {
+        expect(row.length, `${mood} row ${index}`).toBe(RAVEN_MARK[index]!.length);
+        expect(row).toMatch(/^[\x20-\x7e]*$/);
+        for (const glyph of row) {
+          expect(glyph, `${mood}: ${JSON.stringify(glyph)}`).not.toMatch(EMOJI);
+          expect(stringWidth(glyph), `${mood}: ${JSON.stringify(glyph)}`).toBe(1);
+        }
+      }
+    }
+    expect(idleWidth).toBeGreaterThan(0);
   });
 
   it("is the single source the TUI verdict icon reads from", () => {

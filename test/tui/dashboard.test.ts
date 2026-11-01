@@ -219,7 +219,10 @@ describe("Dashboard promotion notice (AC-49.3)", () => {
 describe("PipelineCard order (REV-6202)", () => {
   const ANSI = /\u001B\[[0-9;?]*[A-Za-z]/g;
 
-  async function renderPipeline(profile: string): Promise<string> {
+  async function renderPipeline(
+    profile: string,
+    act?: () => Promise<void>,
+  ): Promise<string> {
     const stdout = new PassThrough() as any;
     stdout.columns = 120;
     stdout.rows = 40;
@@ -254,8 +257,12 @@ describe("PipelineCard order (REV-6202)", () => {
       stdin: createMockStdin(),
       patchConsole: false,
     });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    instance.unmount();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      if (act) await act();
+    } finally {
+      instance.unmount();
+    }
     return output.replace(ANSI, "");
   }
 
@@ -273,6 +280,83 @@ describe("PipelineCard order (REV-6202)", () => {
     expect(output).toContain("EXECUTE");
     expect(output).not.toContain("SPEC_AUDIT");
     expect(output).not.toContain("SECURE_CHECK");
+  });
+
+  it("draws the pipeline as a rail and names the increment in the title (REQ-73)", async () => {
+    const output = await renderPipeline("huginn");
+    // The rail is one row per phase, so the card's height is unchanged: the
+    // connector is drawn inside the row the phase already occupied.
+    expect(output).toContain("iter 1/1");
+    expect(output).toContain("├─");
+    expect(output).toContain("└─");
+    expect(output).toContain("EXECUTE");
+    expect(output).toContain("VERIFY");
+
+    // Exactly one connector per phase row: no row was added, and no row carries
+    // two nodes.
+    const railLines = output
+      .split("\n")
+      .filter((line) => /[├└]─ /.test(line));
+    expect(railLines.length).toBeGreaterThan(2);
+    for (const line of railLines) {
+      expect((line.match(/[├└]─ /g) ?? []).length, line).toBe(1);
+    }
+    // The increment lives in the title row, never as an extra body row.
+    const titleLine = output.split("\n").find((line) => line.includes("PIPELINE PHASES"));
+    expect(titleLine).toContain("iter 1/1");
+    expect(titleLine).not.toMatch(/├─|└─/);
+  });
+
+  it("marks the current phase node with the status glyph inside the rail", async () => {
+    const output = await renderPipeline("huginn");
+    const verifyLine = output
+      .split("\n")
+      .find((line) => line.includes("VERIFY") && /[├└]─ /.test(line));
+    expect(verifyLine).toBeDefined();
+    // The current node keeps a status glyph before its connector; skipping it
+    // would leave the rail with no "you are here" mark.
+    expect(verifyLine).toMatch(/[·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✓✕!–]\s*[├└]─ /);
+  });
+
+  it("prints the live increment and its total from the run's events", async () => {
+    const output = await renderPipeline("huginn", async () => {
+      events.emit("iterationStart", { iteration: 2, totalIterations: 4, title: "Increment 2" });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+    expect(output).toContain("iter 2/4");
+  });
+
+  it("shows a finished phase's verdict glyph and hangs a fix round off the rail", async () => {
+    const output = await renderPipeline("huginn", async () => {
+      events.emit("verdict", {
+        iteration: 1,
+        phase: "EXECUTE",
+        verdict: "pass",
+        attempt: 1,
+        durationMs: 2000,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      events.emit("phaseStart", {
+        iteration: 1,
+        totalIterations: 1,
+        phase: "FIX_VERIFY",
+        attempt: 2,
+        model: "c/d",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+
+    // The finished node keeps the verdict glyph inside its rail row.
+    const executeLine = output
+      .split("\n")
+      .find((line) => line.includes("EXECUTE") && /[├└]─ /.test(line));
+    expect(executeLine).toBeDefined();
+    expect(executeLine).toMatch(/✓\s*[├└]─ /);
+    // A fix round hangs off the same rail under the phase it repairs.
+    const fixLine = output
+      .split("\n")
+      .find((line) => line.includes("FIX_VERIF") && line.includes("└─"));
+    expect(fixLine).toBeDefined();
   });
 });
 

@@ -13,11 +13,20 @@ import {
   SPLIT_RATIO_MAX,
   SPLIT_RATIO_MIN,
   SPLIT_RATIO_STEP,
+  VIEWPORT_RESERVED_ROWS_CLOSED,
+  VIEWPORT_RESERVED_ROWS_OPEN,
   LiveApp,
   adjustSplitRatio,
   liveCardHeights,
   nextFocus,
 } from "../../src/tui/LiveDashboard";
+import { MAX_SUGGESTION_ROWS } from "../../src/tui/CommandSuggestions.js";
+import {
+  COMPACT_BRAND,
+  RAVEN_ART_ROWS,
+  ravenHeaderPlan,
+} from "../../src/tui/RavenHeader.js";
+import { HUGINN_WORDMARK } from "../../src/brand.js";
 import {
   PANEL_LABEL_COLUMNS,
   PANEL_TITLE,
@@ -1140,6 +1149,55 @@ describe("panel lines (REQ-12)", () => {
   });
 });
 
+// ── header viewport budget ───────────────────────────────────────────────────
+
+describe("live header viewport budget (REQ-73)", () => {
+  it("charges the palette rows only while the palette is open", () => {
+    // The open budget is the closed one plus the tallest palette (its content
+    // rows and its own two border rows).
+    expect(VIEWPORT_RESERVED_ROWS_OPEN - VIEWPORT_RESERVED_ROWS_CLOSED).toBe(
+      MAX_SUGGESTION_ROWS + 2,
+    );
+  });
+
+  it("re-derives the header plan when the palette opens, and returns the art on close", () => {
+    const sizing = { columns: 80, rows: 24, contextRows: 2, outerInset: 2 } as const;
+    const closed = ravenHeaderPlan({
+      ...sizing,
+      reservedRows: VIEWPORT_RESERVED_ROWS_CLOSED,
+    });
+    expect(closed.variant).toBe("full");
+    expect(closed.artRows).toBe(RAVEN_ART_ROWS);
+
+    // 24 rows cannot pay for the palette's 8 extra rows plus the five-row art,
+    // so the header shrinks (here to plain text) instead of squeezing the frame.
+    const open = ravenHeaderPlan({
+      ...sizing,
+      reservedRows: VIEWPORT_RESERVED_ROWS_OPEN,
+    });
+    expect(open.variant).toBe("text");
+    expect(open.height).toBeLessThan(closed.height);
+
+    // Closing the palette gives the art back: the same terminal, the closed
+    // budget, the full plan again.
+    const reopened = ravenHeaderPlan({
+      ...sizing,
+      reservedRows: VIEWPORT_RESERVED_ROWS_CLOSED,
+    });
+    expect(reopened).toEqual(closed);
+  });
+
+  it("keeps the compact row at 80×28 when the palette opens", () => {
+    const sizing = { columns: 80, rows: 28, contextRows: 2, outerInset: 2 } as const;
+    const closed = ravenHeaderPlan({ ...sizing, reservedRows: VIEWPORT_RESERVED_ROWS_CLOSED });
+    const open = ravenHeaderPlan({ ...sizing, reservedRows: VIEWPORT_RESERVED_ROWS_OPEN });
+    expect(closed.variant).toBe("full");
+    expect(open.variant).toBe("compact");
+    expect(open.height).toBeLessThan(closed.height);
+    expect(open.height).toBe(closed.height - RAVEN_ART_ROWS + 1);
+  });
+});
+
 // ── heroPlan ─────────────────────────────────────────────────────────────────
 
 describe("empty-state hero (REQ-12)", () => {
@@ -1150,12 +1208,60 @@ describe("empty-state hero (REQ-12)", () => {
     expect(heroPlan({ rows: 20, columns: 74 }).variant).toBe("full");
     expect(heroPlan({ rows: 20, columns: 60 }).variant).toBe("full");
     expect(heroPlan({ rows: 20, columns: 50 }).variant).toBe("wordmark");
-    expect(heroPlan({ rows: 20, columns: 30 }).variant).toBe("text");
+    // Below the wordmark, the one-row raven head is the last art rung (REQ-73).
+    expect(heroPlan({ rows: 20, columns: 30 }).variant).toBe("compact");
+    expect(heroPlan({ rows: 20, columns: 30 }).artRows.map((row) => `${row.mark}${row.wordmark}`)).toEqual([
+      "<(o  HUGINN",
+    ]);
+    expect(heroPlan({ rows: 20, columns: 8 }).variant).toBe("text");
     // The wordmark-only variant drops the mark column entirely.
     expect(heroPlan({ rows: 20, columns: 50 }).artRows.every((row) => row.mark === "")).toBe(true);
     expect(heroPlan({ rows: 20, columns: 74 }).artRows.some((row) => row.mark.includes("<(o"))).toBe(
       true,
     );
+  });
+
+  it("carries the raven's mood into the art on the header's exact grid", () => {
+    const idle = heroPlan({ rows: 20, columns: 74, mood: "idle" });
+    const thinking = heroPlan({ rows: 20, columns: 74, mood: "thinking" });
+    const sleeping = heroPlan({ rows: 20, columns: 74, mood: "sleeping" });
+    expect(idle.variant).toBe("full");
+    expect(thinking.variant).toBe("full");
+    expect(sleeping.variant).toBe("full");
+    expect(thinking.artRows).toHaveLength(idle.artRows.length);
+    expect(sleeping.artRows).toHaveLength(idle.artRows.length);
+    for (const [index, row] of idle.artRows.entries()) {
+      // Wordmark and column budget are mood-independent.
+      expect(thinking.artRows[index]?.wordmark).toBe(row.wordmark);
+      expect(sleeping.artRows[index]?.wordmark).toBe(row.wordmark);
+      expect(thinking.artRows[index]?.mark.length).toBe(row.mark.length);
+      expect(sleeping.artRows[index]?.mark.length).toBe(row.mark.length);
+    }
+    expect(idle.artRows[2]?.mark).toContain("<(o");
+    expect(thinking.artRows[2]?.mark).toContain("<(O");
+    expect(sleeping.artRows[2]?.mark).toContain("<(- ");
+    // The default is idle, so an omitted mood never silently differs.
+    expect(heroPlan({ rows: 20, columns: 74 }).artRows).toEqual(idle.artRows);
+  });
+
+  it("draws nothing when the card body has no rows, and clamps nonsense", () => {
+    const empty = heroPlan({ rows: 0, columns: 74 });
+    expect(empty.rows).toBe(0);
+    expect(empty.copyRows).toEqual([]);
+    expect(LiveHero({ rows: 0, columns: 74 })).toBeNull();
+
+    const clamped = heroPlan({ rows: -10, columns: -4 });
+    expect(clamped.variant).toBe("text");
+    expect(clamped.artRows).toEqual([]);
+    expect(clamped.rows).toBe(0);
+  });
+
+  it("hides a blank tip and clamps the tip box to the card's own width", () => {
+    expect(heroPlan({ rows: 19, columns: 74, tip: "   " }).showTip).toBe(false);
+    const narrow = heroPlan({ rows: 19, columns: 30, tip: "type / for commands" });
+    expect(narrow.showTip).toBe(true);
+    expect(narrow.tipWidth).toBe(30);
+    expect(narrow.tipWidth).toBeLessThanOrEqual(30);
   });
 
   it("never draws more rows than the card body has, and is never blank", () => {
@@ -1164,9 +1270,11 @@ describe("empty-state hero (REQ-12)", () => {
       expect(plan.rows, `rows=${rows}`).toBeLessThanOrEqual(rows);
       expect(plan.rows, `rows=${rows}`).toBeGreaterThan(0);
     }
-    // One row of room is still the brand, not an empty box.
+    // One row of room is still the brand, not an empty box — and at 74 columns
+    // it is the compact raven head rather than the plain text fallback.
     const single = heroPlan({ rows: 1, columns: 74 });
-    expect(single.variant).toBe("text");
+    expect(single.variant).toBe("compact");
+    expect(single.artRows).toHaveLength(1);
     expect(single.copyRows).toEqual([]);
     expect(single.rows).toBe(1);
   });
@@ -1201,10 +1309,34 @@ describe("empty-state hero (REQ-12)", () => {
     }
   });
 
-  it("falls back to the one-line brand when the card is too narrow for art", () => {
-    expect(heroPlan({ rows: 6, columns: 20 }).variant).toBe("text");
-    expect(LiveHero({ rows: 6, columns: 20 })).not.toBeNull();
+  it("falls back to the one-line brand when the card is too narrow for even the compact art", () => {
+    expect(heroPlan({ rows: 6, columns: 8 }).variant).toBe("text");
+    expect(LiveHero({ rows: 6, columns: 8 })).not.toBeNull();
     expect(HERO_BRAND_TEXT).toBe("HUGINN LIVE");
+  });
+});
+
+// ── busy raven ───────────────────────────────────────────────────────────────
+
+describe("busy raven (REQ-73)", () => {
+  beforeEach(() => {
+    events.clear();
+  });
+
+  afterEach(() => {
+    events.clear();
+  });
+
+  it("opens the raven's beak while a turn is in flight", async () => {
+    const live = createMockLive({ chat: vi.fn().mockReturnValue(new Promise(() => {})) });
+    const harness = await mountLive(live, 80, 36);
+    await run(harness.stdin, "hello");
+    await tick(120);
+    expect(live.chat).toHaveBeenCalledWith("hello");
+    harness.unmount();
+    // Busy: the header and the empty-state hero both draw the thinking mood.
+    expect(harness.output()).toContain("<(O");
+    expect(harness.output()).not.toContain("<(o");
   });
 });
 

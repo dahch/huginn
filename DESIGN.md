@@ -52,7 +52,7 @@ src/
 │   ├── compiler.ts         TypeScript Compiler API contract verification, pre-emit diagnostics, visual error snippets
 │   └── index.ts            re-exports verifyTypeScriptContracts, formatDiagnosticsReport, TypeValidator, types
 ├── banner.ts               ASCII banner + path shortening (prints the shared HUGINN wordmark)
-├── brand.ts                shared ASCII brand assets: HUGINN wordmark + raven mark + the two-ravens idle mark, artWidth (REQ-29 / ADR-29, REQ-51)
+├── brand.ts                shared ASCII brand assets: HUGINN wordmark + raven mark + its three mood variants + the two-ravens idle mark, artWidth (REQ-29 / ADR-29, REQ-51, REQ-73 / ADR-69)
 ├── format.ts               shared formatting: durations, verdict badges/icons/colors (delegates the glyph to the shared table)
 ├── headless.ts             stdout frontend; stdin decision answering; runLiveHeadless
 ├── update.ts               background npm version check (cache + semver compare + reminder)
@@ -159,9 +159,9 @@ src/
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
     ├── feedback.ts         the one feedback voice: ✓/!/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
     ├── sessionContext.ts   shared status summaries for the header and the side panel (no fabricated values) (REQ-47)
-    ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header with a size-derived plan (REQ-29 / ADR-29)
+    ├── RavenHeader.tsx     shared ASCII raven mark + HUGINN wordmark header: a four-rung size plan (full → wordmark → compact → text) and the raven's mood (REQ-29 / ADR-29, REQ-73 / ADR-69)
     ├── InfoPanel.tsx       live side panel (LIVE CONTEXT), wide terminals only (REQ-47)
-    ├── LiveHero.tsx        empty-conversation hero (brand + first-run guidance) (REQ-47)
+    ├── LiveHero.tsx        empty-conversation hero (brand + first-run guidance), same four-rung plan and mood as the header (REQ-47, REQ-73)
     ├── Dashboard.tsx       the run-cycle dashboard component (fullscreen, responsive)
     ├── LiveDashboard.tsx   the live-mode dashboard (chat, stage, approval box, fullscreen, slash-command dispatch, palette, composer, side panel)
     ├── McpInspectorModal.tsx interactive two-pane MCP server/tool inspector (/mcp), attributed to the active agent
@@ -1146,7 +1146,7 @@ The `useTerminalSize()` hook dynamically measures and adapts to terminal dimensi
   The table covers the card surfaces only; the decision modal's double border and the composer,
   palette and header borders keep their own labelled constants.
 - Layout cards (`ScrollableChatCard`, `ScrollableStreamCard`, `PipelineCard`, `LogsCard`) dynamically calculate their height from available viewport `rows`:
-  - `HeaderCard` (the raven header) and `InputBar` / `FooterBar` occupy fixed overhead. The header's row cost is no longer a constant: `useRavenHeaderPlan` / `ravenHeaderPlan` (`src/tui/RavenHeader.tsx`) derives it from the measured columns/rows, the viewport floor and the caller's context rows, resolving mark + wordmark → wordmark-only → plain text, so the header never spends rows the budget did not reserve (REQ-29 / AC-29.3).
+  - `HeaderCard` (the raven header) and `InputBar` / `FooterBar` occupy fixed overhead. The header's row cost is no longer a constant: `useRavenHeaderPlan` / `ravenHeaderPlan` (`src/tui/RavenHeader.tsx`) derives it from the measured columns/rows, the viewport floor and the caller's context rows, resolving mark + wordmark → wordmark-only → the one-row `<(o  HUGINN` → plain text, so the header never spends rows the budget did not reserve (REQ-29 / AC-29.3, REQ-73). The live view reserves the palette's rows only while the palette is actually open (`VIEWPORT_RESERVED_ROWS_CLOSED` / `_OPEN`, plus the modal reserve), so the art it can afford follows the surfaces that are really on screen (AC-73.3).
   - Middle cards scale to occupy 100% of remaining vertical height without vertical overflow.
 
 ### 20.3 Zero Stdout Pollution & Hot Console Interception (`patchConsole`)
@@ -1995,18 +1995,19 @@ draft has matches, `↑`/`↓` (and `j`/`k`) move the highlight, `Tab` accepts, 
 only while it is open — and the overlay's height (≤6 content rows, shrinking on short terminals)
 is part of the layout budget so the cards shrink instead of overflowing.
 
-### 26.3 Raven identity (`src/brand.ts` + `src/tui/RavenHeader.tsx`) (REQ-29)
+### 26.3 Raven identity (`src/brand.ts` + `src/tui/RavenHeader.tsx`) (REQ-29, REQ-73)
 
 The eagle emoji is gone from the source. One dependency-free `src/brand.ts` holds the five-row
-`HUGINN` wordmark (also printed by the CLI banner) and the three-row ASCII raven mark; one
-`RavenHeader` component renders them for both `Dashboard` and `LiveDashboard` so the headers cannot
-diverge. `ravenHeaderPlan()` derives the variant and exact row cost from the measured
-columns/rows, a `reservedRows` viewport floor and the caller's context rows:
-mark + wordmark at ≥ 72 columns → wordmark only → plain `HUGINN` text (also when the terminal is
-too short to afford the art). The header additionally carries the live stage, the MCP badge, the
-runtime, the project path and the models, with every dynamic value sanitized and width-clamped
-(`headerValue`) so a header row can never wrap into an unbudgeted extra line. The CLI and the TUI
-therefore share one visual identity without sharing a rendering path.
+`HUGINN` wordmark (also printed by the CLI banner) and the three-row ASCII raven mark with its three
+moods (`RAVEN_MOODS`/`ravenMark`: `idle` `o`, `thinking` `O`, `sleeping` `-`, all on the identical
+grid); one `RavenHeader` component renders them for both `Dashboard` and `LiveDashboard` so the
+headers cannot diverge. `ravenHeaderPlan()` derives the variant and exact row cost from the measured
+columns/rows, a `reservedRows` viewport floor and the caller's context rows: mark + wordmark at
+≥ 72 columns → wordmark only → the one-row `<(o  HUGINN` compact brand → plain `HUGINN` text (the
+tall rungs also drop when the terminal is too short to afford them). The header additionally carries
+the live stage, the MCP badge, the runtime, the project path and the models, with every dynamic value
+sanitized and width-clamped (`headerValue`) so a header row can never wrap into an unbudgeted extra
+line. The CLI and the TUI therefore share one visual identity without sharing a rendering path.
 
 ### 26.4 Honest MCP/Muninn liveness & hardened stdio lifecycle (REQ-30)
 
@@ -2606,25 +2607,32 @@ forbid the washed-out colour families by name.
   `LOG_AUTO_COLLAPSE_MS` (60 s), a new log reopens it, and only an error still present in the visible
   tail keeps it open; a stale error that has scrolled out no longer disables auto-collapse.
 - **`LiveHero.tsx` — the empty-state hero.** When the conversation is empty the card renders the raven
-  brand (`buildRavenArtRows`, the same art as `RavenHeader`) plus the console's first-run hints
-  (`EMPTY_CHAT_HINTS`), sliced to the rows the card really has — an empty session guides instead of
-  looking like a dead console.
+  brand (`buildRavenArtRows`, the same art and the same full → wordmark → compact → text degradation
+  as `RavenHeader`, including its mood) plus the console's first-run hints (`EMPTY_CHAT_HINTS`),
+  sliced to the rows the card really has. The art only earns its five rows when the *whole* hint list
+  still fits underneath; otherwise the hero steps down to the compact row rather than dropping the
+  guidance — an empty session guides instead of looking like a dead console.
 - **`sessionContext.ts` — one vocabulary, no fabrication.** The header's second row and the panel
   derive their strings from pure functions, so they cannot disagree. Two rules: a counter with
   nothing to count renders `""` (never `0`), an unreadable Muninn database reports its sanitized
   error instead of looking empty, and the summaries carry no colour — the TUI picks the token, which
   is what keeps `NO_COLOR` a presentation concern.
 
-## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-54)
+## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-73)
 
-This sub-phase answers four things a real run exposed: a finished iteration whose sandbox could not be
-merged was *stranded* and reported as an abort; a Muninn command whose `--project` disagreed with its
-working directory wrote into the wrong database; the run dashboard's output panel stayed at
-`(waiting for agent stream / tool executions...)` for the whole run on every subprocess runtime; and the
-phase grid was drawn with double-width emoji that broke the monospace grid. The implementation lives in
+This sub-phase opened by answering four things a real run exposed: a finished iteration whose sandbox
+could not be merged was *stranded* and reported as an abort; a Muninn command whose `--project`
+disagreed with its working directory wrote into the wrong database; the run dashboard's output panel
+stayed at `(waiting for agent stream / tool executions...)` for the whole run on every subprocess
+runtime; and the phase grid was drawn with double-width emoji that broke the monospace grid. Later
+increments in the same sub-phase added sessions, profiles, the shared single-width decision alphabet,
+the card chrome hierarchy, the live layout keys, transcript navigation, and (REQ-73) the raven's moods
+with a frame that only pays for visible chrome. The implementation lives in
 `src/engine/worktree.ts`, `src/engine/cycle.ts`, `src/state/schema.ts`, `src/state/store.ts`,
 `@dahch/muninn`'s db client and memory service, `src/commands/doctor.ts`,
-`src/tui/glyphs.ts` (new), `src/tui/Dashboard.tsx`, `src/tui/ProfilePickerModal.tsx` (new),
+`src/tui/glyphs.ts` (new), `src/tui/Card.tsx` (new), `src/tui/search.ts` (new),
+`src/tui/clipboard.ts` (new), `src/tui/Dashboard.tsx`, `src/tui/LiveDashboard.tsx`,
+`src/tui/RavenHeader.tsx`, `src/tui/LiveHero.tsx`, `src/tui/ProfilePickerModal.tsx` (new),
 `src/tui/feedback.ts`, `src/brand.ts`, `src/engine/agent/types.ts` and `src/cli.ts`. The phase *engine*
 (`runPhase`/`runIteration`), the pipeline-as-data model, the sandbox *model* and the Muninn schema are
 untouched.
@@ -2781,8 +2789,9 @@ terminal. Now:
   uses the same idea around its header floor, composer, footer, palette, log tail and
   `CARD_MIN_ROWS`. Both pass the result as `maxRows`. The run dashboard's `VIEWPORT_RESERVED_ROWS`
   includes the structural `decisionModalHeight()` floor so its header never spends rows the modal
-  would need; the live view budgets the modal from `decisionMaxRows` at render time, and its constant
-  reservation intentionally excludes the decision floor.
+  would need; the live view budgets the modal from `decisionMaxRows` at render time, and its
+  `VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN` figures intentionally exclude the decision floor (they
+  price the palette and the full-screen modals, not a pending decision).
 - **Reachable hidden rows.** `↑`/`↓` scroll the window and the scroll offset resets on `req.id`. In
   live mode `LiveDashboard` consumes those (and `PgUp`/`PgDn`) before `resolveDecisionKey`, so a
   scroll never resolves a decision or answers "press a number"; a digit still picks the first
@@ -2899,3 +2908,44 @@ The live transcript gained three keyboard surfaces without moving policy into th
   message jump, the copy path and the Esc/search interaction), and
   `test/tui/transcriptSearchColors.test.ts` asserts the emitted warning border. The `/help` cheat
   sheet and the README table are kept in sync by `test/tui/helpModal.test.ts`.
+
+### 32.11 Raven presence follows the run, and the frame pays only for visible chrome (REQ-73 / ADR-69)
+
+The raven stops being a fixed drawing, and the header stops paying for surfaces nobody opened:
+
+- **Mood is one cell.** `src/brand.ts` exports `RAVEN_MOODS` / `ravenMark(mood)` — `idle` (`o`),
+  `thinking` (`O`) and `sleeping` (`-`) — as three rows that are byte-identical to `RAVEN_MARK` except
+  the beak cell, so the grid is fixed and nothing re-measures. `buildRavenArtRows(variant, mood)`
+  threads it into the header and `heroPlan({ …, mood })` into the empty-state hero. The live console
+  passes `thinking` while a turn is in flight and `idle` otherwise; the compact rung always draws the
+  idle head. `sleeping` is defined and tested but no surface draws it yet — it exists so a future
+  idle/away state does not have to invent a fourth grid.
+- **A one-row rung, four variants.** `COMPACT_BRAND` (`<(o  HUGINN`, width `COMPACT_BRAND_WIDTH`) is
+  the last art rung before plain text in both plans. `ravenHeaderPlan` resolves
+  full → wordmark → compact → text; the row test is `reservedRows + HEADER_BORDER_ROWS + artRows +
+  contextRows`, so compact needs one art row where full and wordmark need five. `heroPlan` mirrors
+  the order and, when a five-row block would starve the guidance, steps down to compact instead of
+  straight to text (`fullCopyRows = max(HERO_MIN_COPY_ROWS, EMPTY_CHAT_HINTS.length)`).
+- **Reserve only visible chrome.** `LiveDashboard` exports `VIEWPORT_RESERVED_ROWS_CLOSED`
+  (`CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT` = 13) and `VIEWPORT_RESERVED_ROWS_OPEN`
+  (= closed + `MAX_SUGGESTION_ROWS` + `PALETTE_BORDER_ROWS`, 21), and adds
+  `MODAL_COMPACT_RESERVE_ROWS` (`RAVEN_ART_ROWS - 1`) while a full-screen modal is open. The plan is
+  derived from the active figure, so the header shrinks when the palette opens and grows back when it
+  closes. On 80×24 the closed figure affords the full mark (22 rows); at that height the open palette
+  drops it to plain text, and 80×28 keeps the compact row.
+- **The stage owns the conversation's accent.** `ScrollableChatCard` passes
+  `accentToken={busy ? STAGE_LABEL[stage].token : "accent"}` to `Card`, so an unfocused conversation
+  border names the running stage (`accent` refine, `warn` draft, `thinker` approve, `executor`
+  execute). A focused card still uses `borderFocus` — colour is never the only cue.
+- **The pipeline is a rail with the increment in its title.** `PipelineCard` now takes
+  `iteration`/`totalIterations`, prints `iter n/m` through `Card`'s `titleRight`, and draws
+  `├─`/`└─` connectors with `   └─` for a `FIX_*` round, keeping the status glyph before the
+  connector. One connector per phase row, so the height and the existing windowing are unchanged.
+- **Guards.** `src/brand.test.ts` (three moods, shared grid, one changed cell),
+  `test/tui/glyphs.test.ts` (moods stay single-width and emoji-free),
+  `test/tui/ravenHeader.test.ts` (compact/wordmark/text plans, the mood in the composed rows, 80×24
+  with the closed budget), `test/tui/liveLayout.test.ts` (the closed/open difference is exactly the
+  palette, the 80×24 and 80×28 plans, the compact hero, the busy raven),
+  `test/tui/liveStageAccent.test.ts` (the emitted busy accent border) and
+  `test/tui/dashboard.test.ts` (`iter n/m` in the title, one connector per phase row, the fix round
+  hanging off the rail).

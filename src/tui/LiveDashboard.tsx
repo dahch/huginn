@@ -78,6 +78,7 @@ import { sanitizeTerminalText } from "../util/text.js";
 import { copyToTerminal, formatCharCount } from "./clipboard.js";
 import { findMatches, matchLabel } from "./search.js";
 import {
+  RAVEN_ART_ROWS,
   RavenHeader,
   headerValue,
   ravenHeaderPlan,
@@ -137,17 +138,31 @@ const FOOTER_HEIGHT = 1;
 const PALETTE_BORDER_ROWS = 2;
 
 /**
- * Rows the header may not spend: the card floors, the input row, the footer and
- * the tallest command palette (6 content rows + border). The header's own row
- * cost is added on top when the plan is derived, so the art can never squeeze
- * the viewport (AC-29.3 / AC-28.4).
+ * Rows the header may not spend with the command palette closed: the card
+ * floors, the input row and the footer. The palette is *not* reserved here —
+ * charging the header for a surface that is not on screen made it give up its
+ * art for rows nobody was using (REQ-73).
  *
- * The side panel is deliberately absent from this figure: it shares the cards'
- * row rather than claiming one of its own, so it can never take a row from the
- * composer, the palette or the footer (REQ-12).
+ * The side panel is deliberately absent from this figure too: it shares the
+ * cards' row rather than claiming one of its own, so it can never take a row
+ * from the composer, the palette or the footer (REQ-12).
  */
-const VIEWPORT_RESERVED_ROWS =
-  CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT + MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS;
+export const VIEWPORT_RESERVED_ROWS_CLOSED =
+  CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT;
+/**
+ * Rows the header may not spend while the palette is open: the closed floor plus
+ * the tallest palette (6 content rows + its own border). The plan is re-derived
+ * when the palette opens, so the header may shrink — and grow back on close.
+ */
+export const VIEWPORT_RESERVED_ROWS_OPEN =
+  VIEWPORT_RESERVED_ROWS_CLOSED + MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS;
+/**
+ * Extra floor a full-screen modal (help, skills, model/MCP/agent/profile
+ * pickers) claims. It is enough to price the five-row art out of the header
+ * while still leaving the one-row compact brand affordable, so the modal gets
+ * the rows the bird was using (REQ-73).
+ */
+const MODAL_COMPACT_RESERVE_ROWS = RAVEN_ART_ROWS - 1;
 
 /**
  * How long a diagnostics probe stays good (Phase 7B / REQ-12). The side panel and
@@ -914,6 +929,19 @@ function RefineView({
     setLogsCollapsed(false);
   };
 
+  // The palette is only reserved while it is actually open: opening it is what
+  // makes the header re-derive its plan (and possibly shrink), and closing it
+  // gives the art back (REQ-73).
+  const fullScreenModalOpen =
+    showModelPicker ||
+    showMcpInspector ||
+    showHelp ||
+    showSkills ||
+    showAgentPicker ||
+    showProfilePicker;
+  const viewportReservedRows =
+    (suggestionsOpen ? VIEWPORT_RESERVED_ROWS_OPEN : VIEWPORT_RESERVED_ROWS_CLOSED) +
+    (fullScreenModalOpen ? MODAL_COMPACT_RESERVE_ROWS : 0);
   // The header's own cost with the composer at its floor. Growing the composer
   // only ever *raises* the reserved-rows figure the art has to fit under, so the
   // header can only get shorter — this is the worst case the composer pays for.
@@ -923,10 +951,10 @@ function RefineView({
         columns: terminalSize.columns,
         rows: terminalSize.rows,
         contextRows: LIVE_HEADER_CONTEXT_ROWS,
-        reservedRows: VIEWPORT_RESERVED_ROWS,
+        reservedRows: viewportReservedRows,
         outerInset: LIVE_VIEW_OUTER_INSET,
       }).height,
-    [terminalSize.columns, terminalSize.rows],
+    [terminalSize.columns, terminalSize.rows, viewportReservedRows],
   );
   // The palette's tallest possible cost while it is open. It is reserved in full
   // so the composer can never claim rows the palette needs: the palette's own
@@ -992,7 +1020,7 @@ function RefineView({
   // degrading instead of squeezing the conversation (AC-29.3).
   const headerPlan = useRavenHeaderPlan(
     LIVE_HEADER_CONTEXT_ROWS,
-    VIEWPORT_RESERVED_ROWS + (composerRows - 1),
+    viewportReservedRows + (composerRows - 1),
     terminalSize,
     LIVE_VIEW_OUTER_INSET,
   );
@@ -2170,6 +2198,7 @@ function RefineView({
         stage={stage}
         cfg={cfg}
         spinner={spinner}
+        busy={busy}
         runtimeName={currentRuntimeName}
         thinker={currentThinker}
         executor={currentExecutor}
@@ -2240,6 +2269,8 @@ function RefineView({
                 isFocused={focus === "chat"}
                 busy={busy}
                 spinner={spinner}
+                accentToken={busy ? STAGE_LABEL[stage].token : "accent"}
+                mood={busy ? "thinking" : "idle"}
                 height={chatHeight}
                 width={cardsWidth}
                 matchText={searchMatchText}
@@ -2343,6 +2374,7 @@ function LiveHeader({
   stage,
   cfg,
   spinner,
+  busy,
   runtimeName,
   thinker,
   executor,
@@ -2354,6 +2386,8 @@ function LiveHeader({
   stage: LiveStage;
   cfg: RunConfig;
   spinner: string;
+  /** The arm's turn is in flight: the raven opens its beak while thinking. */
+  busy: boolean;
   runtimeName: string;
   thinker: string;
   executor: string;
@@ -2413,6 +2447,7 @@ function LiveHeader({
   return (
     <RavenHeader
       plan={plan}
+      mood={busy ? "thinking" : "idle"}
       suffix="LIVE"
       rows={[
         [
@@ -2478,6 +2513,8 @@ function ScrollableChatCard({
   isFocused,
   busy,
   spinner,
+  accentToken,
+  mood,
   height,
   width,
   matchText,
@@ -2490,6 +2527,10 @@ function ScrollableChatCard({
   isFocused: boolean;
   busy: boolean;
   spinner: string;
+  /** The active stage's token while a turn is in flight; `accent` when idle. */
+  accentToken: ThemeToken;
+  /** The raven mood the empty-state hero draws. */
+  mood: "idle" | "thinking" | "sleeping";
   height: number;
   /** Columns the card occupies (the panel takes the rest of the row). */
   width: number;
@@ -2529,12 +2570,13 @@ function ScrollableChatCard({
         </>
       }
       focused={isFocused}
+      accentToken={accentToken}
       height={height}
       width={width}
       minHeight={CARD_MIN_ROWS}
     >
       {rows.length === 0 ? (
-        <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} />
+        <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} mood={mood} />
       ) : (
         rows.map((row) => {
           if (row.segments.length === 0) {

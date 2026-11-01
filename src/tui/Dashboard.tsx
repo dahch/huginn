@@ -474,6 +474,8 @@ export function Dashboard({
             spinner={spinner}
             height={middleHeight}
             profile={cfg.profile}
+            iteration={ui.currentIteration}
+            totalIterations={ui.totalIterations}
           />
         </Box>
         <Box width={ui.verbose ? "65%" : "58%"} flexDirection="column">
@@ -675,6 +677,8 @@ function PipelineCard({
   spinner,
   height,
   profile,
+  iteration,
+  totalIterations,
 }: {
   phases: Record<string, PhaseStatus>;
   currentPhase: string;
@@ -683,6 +687,9 @@ function PipelineCard({
   height?: number;
   /** The active methodology profile — it owns the order, not this panel. */
   profile?: ProfileName;
+  /** The increment being run, printed in the title as `iter n/m`. */
+  iteration: number;
+  totalIterations: number;
 }) {
   // The panel lists the phases the *active profile* runs, in the order it runs
   // them. The registry order would show `VERIFY` last while the Huginn Cycle
@@ -719,8 +726,18 @@ function PipelineCard({
   }
 
   return (
-    <Card tone="secondary" title="PIPELINE PHASES" height={height} minHeight={6}>
-      {itemsToRender.map((name) => {
+    <Card
+      tone="secondary"
+      title="PIPELINE PHASES"
+      titleRight={
+        <Text color={THEME.muted} wrap="truncate">
+          {`iter ${iteration}/${Math.max(1, totalIterations)}`}
+        </Text>
+      }
+      height={height}
+      minHeight={6}
+    >
+      {itemsToRender.map((name, index) => {
         const st = phases[name];
         const isCurrent = name === currentPhase;
         const isFix = name.startsWith("FIX");
@@ -748,12 +765,16 @@ function PipelineCard({
                   : "skip";
         }
 
-        const indent = isFix ? " └─ " : " ";
+        // The pipeline reads as a journey, not a list: every phase hangs off the
+        // same rail, the last one closes it with `└─`, and the current node keeps
+        // the status glyph (the spinner) that says where the run actually is.
+        const isLast = index === itemsToRender.length - 1;
+        const rail = isFix ? "   └─ " : ` ${isLast ? "└─" : "├─"} `;
         return (
           <Box key={name} justifyContent="space-between">
-            <Text color={color}>
+            <Text color={color} wrap="truncate">
               {icon}
-              {indent}
+              {rail}
               <Text bold={isCurrent}>{name.padEnd(14)}</Text>
             </Text>
             <Text dimColor={THEME.colorEnabled && !isCurrent} color={color}>

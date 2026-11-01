@@ -33,6 +33,37 @@ export const RAVEN_MARK: readonly string[] = [
   "   \\__/   \\_\\",
 ];
 
+/** The three moods the raven can express (REQ-73 / ADR-69). */
+export type RavenMood = "idle" | "thinking" | "sleeping";
+
+/**
+ * The raven's mood variants.
+ *
+ * The mood is carried by the raven's beak/mouth glyph (`o`): `thinking` opens it
+ * into an `O` and `sleeping` closes it into a `-`. Everything else — the same
+ * three rows, the same columns, the same leading spaces — is byte-for-byte
+ * identical to {@link RAVEN_MARK}, so switching mood costs the layout table
+ * exactly zero rows and zero columns and no caller has to re-measure anything.
+ */
+export const RAVEN_MOODS: Readonly<Record<RavenMood, readonly string[]>> = {
+  idle: RAVEN_MARK,
+  thinking: [
+    "    ___",
+    "  <(O  \\___",
+    "   \\__/   \\_\\",
+  ],
+  sleeping: [
+    "    ___",
+    "  <(-  \\___",
+    "   \\__/   \\_\\",
+  ],
+};
+
+/** The raven mark for a mood, in the exact same grid as {@link RAVEN_MARK}. */
+export function ravenMark(mood: RavenMood): readonly string[] {
+  return RAVEN_MOODS[mood];
+}
+
 /**
  * The two ravens perched side by side — Huginn (thought) and Muninn (memory) —
  * for the run panel's idle state (REQ-51 / AC-51.2). Printable ASCII only, like

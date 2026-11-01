@@ -381,11 +381,14 @@ writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verifica
 `test/engine/gitRepo.test.ts` + `test/engine/docPath.test.ts` (bootstrap and path containment),
 `test/tui/glyphs.test.ts` + `test/tui/decisionModal.test.ts` (the glyph tables, the decision
 title drift guard and the modal's row contract, including the ASCII/one-column rule),
+`test/tui/ravenHeader.test.ts` + `src/brand.test.ts` (the four-rung header plan, the raven moods
+and their shared grid), `test/tui/liveStageAccent.test.ts` (the busy stage accent),
 `test/tui/card.test.ts` + `test/tui/cardColors.test.ts` (the `CARD_CHROME` cost table, the painted
 height per tone, the borderless log tail and the emitted border colours),
 `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
-composer or footer off an 18-/24-row frame, and the live layout keys — `z`, `Ctrl+↑`/`Ctrl+↓`, `L` —
-with the idle log tail and its advertised hidden count, on 100×30 frames),
+composer or footer off an 18-/24-row frame, the live layout keys — `z`, `Ctrl+↑`/`Ctrl+↓`, `L` —
+with the idle log tail and its advertised hidden count on 100×30 frames, the closed/open header budget
+and the `iter n/m` pipeline rail),
 `test/tui/transcriptNavigation.test.ts` + `test/tui/transcriptSearchColors.test.ts` (the transcript
 keys, search/draft restoration, message jump, Esc/search interaction, OSC 52 copy and the warning
 border), `src/tui/search.test.ts` + `src/tui/clipboard.test.ts` (the pure match/label and clipboard
@@ -506,7 +509,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Five display conventions a TUI change must follow:
+Six display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -515,7 +518,10 @@ Five display conventions a TUI change must follow:
   `markdownSegments` carries the block prefix (heading marker, bullet, quote bar) so the width math
   counts it, and splitting happens between segments so a styled span is never cut mid-markup.
   The run dashboard's `PipelineCard` likewise lists `phasesForProfile(cfg.profile)`: the profile owns
-  the order, so `VERIFY` sits right after `EXECUTE` in the Huginn Cycle.
+  the order, so `VERIFY` sits right after `EXECUTE` in the Huginn Cycle. It names the increment in its
+  title row (`iter n/m`) and hangs the phases off one rail (`├─`, the last `└─`, a `FIX_*` round
+  `   └─`), which is still one row per phase — a connector is drawn inside the row it already
+  occupies.
 - **Display glyphs come from `src/tui/glyphs.ts`** — single-width status/phase marks shared by
   the dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass,
   `!` warning, `✕` blocked, `–` skipped; phase kinds `?` SPEC_AUDIT, `>` EXECUTE, `=` VALIDATE_STEP,
@@ -557,6 +563,16 @@ Five display conventions a TUI change must follow:
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
   title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`
   (`opencode`); everything else is titled `AGENT OUTPUT` and names itself (REQ-51).
+- **The raven's presence follows the run, and chrome is paid for only while it is on screen.**
+  `RAVEN_MOODS`/`ravenMark(mood)` (`src/brand.ts`) are the three moods (`idle` `o`, `thinking` `O`,
+  `sleeping` `-`) and differ from `RAVEN_MARK` by one beak cell: never add a mood that changes the
+  row/column grid, and never draw art that has to be re-measured. `ravenHeaderPlan`/`heroPlan` have
+  four rungs — mark + wordmark, wordmark, the one-row `<(o  HUGINN` (`COMPACT_BRAND`), plain text —
+  and the live console spends `VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN` (plus
+  `MODAL_COMPACT_RESERVE_ROWS` for a full-screen modal) so the header only pays for the palette or
+  modal while it is open. While a turn is in flight the conversation's `primary` border uses the
+  stage's `STAGE_LABEL` token (`accent`/`warn`/`thinker`/`executor`); a focused card still wins with
+  `borderFocus` (REQ-73 / ADR-69).
 
 **Project skills** (`src/engine/skills/loader.ts`): `loadSkills()` discovers `*.md` skills in
 `<project>/.huginn/skills/` then `<project>/.opencode/skills/` (`.huginn` wins on id collision),

@@ -2059,3 +2059,73 @@ avoids. They are ordered by how central the decision is to the design.
     character; `y` is swallowed on the stream rather than advertised as a no-op; and OSC 52 support
     varies by terminal (tmux needs `set-clipboard on`), so the copy is honestly reported as
     best-effort instead of guaranteed.
+
+## ADR-69: The raven carries the run's state, and the frame pays only for what is on screen
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The raven header was one fixed drawing. It identified the product but said nothing
+  about the work, and on a short terminal it disappeared completely: `VIEWPORT_RESERVED_ROWS` charged
+  the header for the tallest command palette *whether or not the palette was open*, so an 80×24 frame
+  could not afford five rows of art and fell straight back to plain `HUGINN` text — the one terminal
+  size where the brand is most useful paid the highest price. The remaining run state lived in prose:
+  the conversation's accent border named the theme rather than the stage, and the run dashboard's
+  `PIPELINE PHASES` card was a flat list with no "you are here" beyond the spinner and no indication
+  of which increment was running. Any of these could be fixed by adding a row; the frame had no rows
+  to add.
+- **Decision**:
+  1. **Mood is a beak glyph, not a second drawing.** `RAVEN_MOODS` and `ravenMark(mood)`
+     (`src/brand.ts`) expose `idle` (`o`), `thinking` (`O`) and `sleeping` (`-`). Every variant is
+     byte-for-byte the idle mark except that one cell, so the same three rows, the same leading
+     spaces and the same width survive a mood change and no caller re-measures anything.
+     `RavenHeader`/`buildRavenArtRows` and `LiveHero`/`heroPlan` take an optional `mood`; the live
+     console draws `thinking` while a turn is in flight and `idle` otherwise. The one-row compact
+     brand is fixed at the idle head, so a narrow frame cannot claim a mood it has no room to draw.
+  2. **A fourth, one-row rung.** `COMPACT_BRAND` (`<(o  HUGINN`) and `COMPACT_BRAND_WIDTH` sit between
+     the wordmark and the plain-text fallback in both `ravenHeaderPlan` and `heroPlan`. The five-row
+     art still needs `reservedRows + border + art + context` rows; the compact rung needs only
+     `border + 1 + context`, which is why an 80×24 frame keeps a bird instead of a word. The hero
+     uses the same rung and, when the art would starve the guidance, steps down to it rather than to
+     plain text: a first-run screen keeps both its brand and its advice.
+  3. **Reserve only what is on screen.** `LiveDashboard` exports `VIEWPORT_RESERVED_ROWS_CLOSED`
+     (card floors, composer, footer) and `VIEWPORT_RESERVED_ROWS_OPEN` (the closed figure plus
+     `MAX_SUGGESTION_ROWS` and the palette's border), and adds
+     `MODAL_COMPACT_RESERVE_ROWS = RAVEN_ART_ROWS - 1` while a full-screen modal (help, skills,
+     model/MCP/agent/profile picker) is open. The header plan is re-derived from the active figure, so
+     opening the palette may shrink the header and closing it gives the art back.
+  4. **Colour names the work, not the theme.** While a turn is in flight the conversation card's
+     `primary` accent is the active stage's token (`STAGE_LABEL`: `accent` refine, `warn` draft,
+     `thinker` approve, `executor` execute) via `Card`'s `accentToken`; at idle it returns to
+     `accent`. The stage label already exists, so this adds no vocabulary.
+  5. **The pipeline is a rail that names the increment.** `PipelineCard` prints `iter n/m` in its
+     title row through `Card`'s `titleRight` and hangs every phase off one connector: `├─` for each
+     node, `└─` for the last, and `   └─` for a `FIX_*` round beneath the phase it repairs. The status
+     glyph stays before the connector, so the current node keeps its spinner and a finished one keeps
+     its verdict mark. The connector is drawn inside the row the phase already occupied, so the card's
+     height is unchanged and the increment never costs a body row.
+- **Alternatives rejected**: (a) animate the raven across frames — that needs rows and columns to
+  change, which is exactly the budget this change is trying to recover, and a timer in the header's
+  render graph; a mood is one cell and no new layout; (b) ship each mood as an independent art
+  constant — three drawings drift, one grid does not; (c) keep reserving the palette permanently so
+  the header never moves — that is the defect: the header paid eight rows for a surface nobody had
+  opened; (d) drop the art below a threshold instead of adding a rung — the smaller the terminal, the
+  more the identity is worth, and one row is affordable almost everywhere; (e) print the increment as
+  an extra body row or a progress bar in the pipeline body — the title row is already paid for and
+  the body is the scarce surface; (f) mint stage-specific colour tokens — the profile's existing
+  tokens already name refine/draft/approve/execute.
+- **Consequences**:
+  - *Positive*: an 80×24 live console now draws the full mark (13 reserved + 2 border + 5 art +
+    2 context = 22 of 24 rows) with the palette closed, drops to plain text only while the palette is
+    open at that height, and reaches the compact row at 28 rows; the header returns to its full plan
+    the moment the palette closes. The conversation's loudest chrome now says which stage is running,
+    and the pipeline says which increment it belongs to without spending a row. Moods, the compact
+    rung and the reservation split are all pure and guarded by `src/brand.test.ts`,
+    `test/tui/ravenHeader.test.ts`, `test/tui/glyphs.test.ts`, `test/tui/liveLayout.test.ts`,
+    `test/tui/liveStageAccent.test.ts` and `test/tui/dashboard.test.ts`.
+  - *Negative*: the header's height now changes while the user types `/` (the plan is re-derived when
+    the palette opens or closes), so a caller that cached the header plan must read it from the hook
+    rather than snapshot it; the compact brand cannot express a mood, so the raven is idle-looking
+    whenever only one row fits; `MODAL_COMPACT_RESERVE_ROWS` is an `RAVEN_ART_ROWS - 1` offset and must
+    be revisited if the art ever grows a row; and the run page now passes
+    `iteration`/`totalIterations` into `PipelineCard`, so its state must keep those two fields current
+    (they already do for the progress bar).

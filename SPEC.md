@@ -876,6 +876,8 @@ makes every surface tell the truth.
 - The run dashboard never shows a dead panel: a runtime that cannot stream shows the phase's real
   report, and an idle raven state otherwise.
 - One semantic, single-width glyph language for phase status across the TUI and `.harness/PROGRESS.md`.
+- The raven's presence follows the run — a mood, a one-row brand rung and a stage-tinted conversation
+  — and the frame never reserves rows for chrome that is not on screen.
 - Sessions and methodology profiles are discoverable and selectable in-session.
 
 ### Non-Goals
@@ -1306,6 +1308,46 @@ iteration and 6 afterwards** (down from 14).
   message jump, the copy path and the Esc/search interaction; `test/tui/helpModal.test.ts` keeps
   `/help` and the README shortcut table naming the same keys and behaviour. `MODULE_MAP.md`,
   `DESIGN.md`, `ADR.md` (ADR-68) and `AGENTS.md` document the navigation, search and copy surfaces.
+
+### REQ-73: The raven carries the run's state and the frame pays only for what is on screen
+- **AC-73.1 (Moods share the mark's grid)**: `RAVEN_MOODS` and `ravenMark(mood)`
+  (`src/brand.ts`) expose exactly `idle` (`o`), `thinking` (`O`) and `sleeping` (`-`). Every mood has
+  the idle mark's rows, leading spaces, width and printable-ASCII alphabet, and only the beak cell
+  differs, so switching mood reflows nothing. `RavenHeader`/`buildRavenArtRows` and
+  `LiveHero`/`heroPlan` accept the optional mood (default `idle`); the live console draws `thinking`
+  while a turn is in flight and `idle` otherwise. The one-row compact brand is fixed at the idle
+  head — a narrow frame cannot claim a mood it has no row to draw.
+- **AC-73.2 (A one-row rung before plain text)**: `COMPACT_BRAND` (`<(o  HUGINN`) and
+  `COMPACT_BRAND_WIDTH` (`src/tui/RavenHeader.tsx`) sit between the wordmark and the plain-text
+  fallback in both `ravenHeaderPlan` and `heroPlan`. The five-row art still needs
+  `reservedRows + HEADER_BORDER_ROWS + RAVEN_ART_ROWS + contextRows`; the compact rung needs only
+  `HEADER_BORDER_ROWS + 1 + contextRows` and spends one row, and plain `HUGINN` text remains the
+  fallback when even that does not fit. The hero uses the same order and steps from full/wordmark to
+  compact when the art would starve the first-run guidance, so a short card keeps both its brand and
+  its advice.
+- **AC-73.3 (Only on-screen chrome is reserved)**: `LiveDashboard` exports
+  `VIEWPORT_RESERVED_ROWS_CLOSED` (`CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT`) and
+  `VIEWPORT_RESERVED_ROWS_OPEN` (closed plus `MAX_SUGGESTION_ROWS` and `PALETTE_BORDER_ROWS`), and
+  adds `MODAL_COMPACT_RESERVE_ROWS` (`RAVEN_ART_ROWS - 1`) while a full-screen modal is open. The
+  header plan is derived from the figure in force, so opening the palette may shrink the header and
+  closing it returns the art; no surface charges rows for a state the user cannot see.
+- **AC-73.4 (The active stage owns the conversation's accent)**: while a turn is in flight the live
+  conversation card's `primary` border uses the stage's `STAGE_LABEL` token (`accent` refine, `warn`
+  draft, `thinker` approve, `executor` execute) through `Card`'s `accentToken`; at idle it returns to
+  `accent`. Focus still wins: a focused card uses `THEME.borderFocus`.
+- **AC-73.5 (The pipeline is a rail that names the increment)**: the run dashboard's `PipelineCard`
+  prints `iter n/m` in its title row via `Card`'s `titleRight`, never as a body row, and draws one
+  connector per phase (`├─`, the last one `└─`, a `FIX_*` round `   └─` under the phase it repairs).
+  The status glyph stays before the connector, so the current phase keeps its spinner and a finished
+  one its verdict mark, and the card's height is unchanged by the rail.
+- **AC-73.6 (Drift guards)**: `src/brand.test.ts` pins the three moods, their shared grid and the
+  single changed cell; `test/tui/glyphs.test.ts` keeps every mood single-width and emoji-free;
+  `test/tui/ravenHeader.test.ts` covers the compact rung and the mood rendering;
+  `test/tui/liveLayout.test.ts` covers the compact hero, the mood plumbing, the closed/open
+  reservation and the 80×24/80×28 header plans; `test/tui/liveStageAccent.test.ts` asserts the busy
+  stage accent's ANSI border; `test/tui/dashboard.test.ts` asserts the `iter n/m` title and the rail.
+  `MODULE_MAP.md`, `DESIGN.md` (§32.11), `ADR.md` (ADR-69) and `AGENTS.md` document the moods, the
+  compact rung, the visible-chrome reservation and the pipeline rail.
 
 ---
 
