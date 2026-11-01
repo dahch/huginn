@@ -324,7 +324,7 @@ Everything else (git binary, Node, opencode CLI, missing integrations) warns.
 
 function marker(status: DoctorCheck["status"]): string {
   if (status === "ok") return chalk.green("✔");
-  if (status === "warn") return chalk.yellow("!");
+  if (status === "warn") return chalk.yellow("⚠");
   return chalk.red("✖");
 }
 

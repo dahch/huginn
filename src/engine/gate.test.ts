@@ -13,7 +13,7 @@ describe("parseValidateStepVerdict", () => {
     expect(parseValidateStepVerdict("...report...\n✅ AUTO-APPROVED — no action required")).toBe("pass");
   });
   it("reads REVIEW REQUESTED marker", () => {
-    expect(parseValidateStepVerdict("...\n! REVIEW REQUESTED — address items")).toBe("warning");
+    expect(parseValidateStepVerdict("...\n⚠️ REVIEW REQUESTED — address items")).toBe("warning");
   });
   it("reads BLOCKED marker", () => {
     expect(parseValidateStepVerdict("...\n🛑 BLOCKED — do not proceed")).toBe("blocked");
@@ -41,7 +41,7 @@ describe("parseValidateStepVerdict", () => {
   it("never downgrades a blocked report to warning (fail-open guard)", () => {
     // A 🔴 report mentioning the warning phrase must stay blocked.
     expect(parseValidateStepVerdict("🔴 BLOCKED — REVIEW REQUESTED")).toBe("blocked");
-    expect(parseValidateStepVerdict("### Overall gate: 🔴 BLOCKED\n! REVIEW REQUESTED — address items")).toBe("blocked");
+    expect(parseValidateStepVerdict("### Overall gate: 🔴 BLOCKED\n⚠️ REVIEW REQUESTED — address items")).toBe("blocked");
     // The reverse contradiction too: a 🟢 overall gate must not mask a 🛑 handoff.
     expect(parseValidateStepVerdict("### Overall gate: 🟢 PASS\n🛑 BLOCKED — do not proceed")).toBe("blocked");
   });
@@ -103,17 +103,17 @@ describe("parseGateVocabularyVerdict", () => {
     expect(parseGateVocabularyVerdict("### Overall gate: 🟡 PASS WITH WARNINGS")).toBe("warning");
     expect(parseGateVocabularyVerdict("### Overall gate: 🔴 BLOCKED")).toBe("blocked");
     expect(parseGateVocabularyVerdict("✅ AUTO-APPROVED — continue")).toBe("pass");
-    expect(parseGateVocabularyVerdict("! REVIEW REQUESTED — fix")).toBe("warning");
+    expect(parseGateVocabularyVerdict("⚠️ REVIEW REQUESTED — fix")).toBe("warning");
     expect(parseGateVocabularyVerdict("🛑 BLOCKED — stop")).toBe("blocked");
   });
 
   it("ignores the bare emoji every role template ships (REV-102)", () => {
     // ROLE_REVIEWING's `### Positive Highlights ✅`, ROLE_SECURITY's
-    // `### Critical Findings 🔴`, ROLE_QA's `> ! SKIP …` and ROLE_SPEC_AUDITOR's
+    // `### Critical Findings 🔴`, ROLE_QA's `> ⚠️ SKIP …` and ROLE_SPEC_AUDITOR's
     // `### Authorized gaps ✅` must not be read as a verdict.
     expect(parseGateVocabularyVerdict("### Positive Highlights ✅\n- good work")).toBeNull();
     expect(parseGateVocabularyVerdict("### Critical Findings 🔴\n- SEC-001")).toBeNull();
-    expect(parseGateVocabularyVerdict("> ! SKIP THIS STEP ENTIRELY IN AUDIT MODE.")).toBeNull();
+    expect(parseGateVocabularyVerdict("> ⚠️ SKIP THIS STEP ENTIRELY IN AUDIT MODE.")).toBeNull();
     expect(parseGateVocabularyVerdict("### Authorized gaps ✅\n- deferred")).toBeNull();
     expect(parseGateVocabularyVerdict("### Overall fidelity: 🟢 ALIGNED")).toBeNull();
   });

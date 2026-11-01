@@ -1120,7 +1120,7 @@ export class LiveEngine {
     // normal decision UI, and the chosen answers resume the turn.
     const parsed = parseQuestionBlock(replyText);
     if (parsed.warning) {
-      events.emit("liveChat", { role: "system", text: `! ${parsed.warning}` });
+      events.emit("liveChat", { role: "system", text: `⚠ ${parsed.warning}` });
     }
     replyText = parsed.cleanedText;
 
@@ -1151,7 +1151,7 @@ export class LiveEngine {
 
         const followParsed = parseQuestionBlock(followUp);
         if (followParsed.warning) {
-          events.emit("liveChat", { role: "system", text: `! ${followParsed.warning}` });
+          events.emit("liveChat", { role: "system", text: `⚠ ${followParsed.warning}` });
         }
         replyText = `${replyText}\n\n${followParsed.cleanedText}`.trim();
         // The visible reply already travelled in the question turn above; only

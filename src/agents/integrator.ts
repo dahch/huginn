@@ -133,13 +133,13 @@ export function removedAgentTargetNotice(target: string, where: string): string 
   const successor = REMOVED_AGENT_TARGETS.get(target) ?? "auto-detection";
   if (successor === "generic") {
     return (
-      `[huginn] ! the agent "${target}" in ${where} was removed as a built-in runtime ` +
+      `[huginn] ⚠ the agent "${target}" in ${where} was removed as a built-in runtime ` +
       `(it remains a provisioning target and runs through the "generic" runtime); ` +
       `falling back to auto-detection.`
     );
   }
   return (
-    `[huginn] ! the agent "${target}" in ${where} was removed ` +
+    `[huginn] ⚠ the agent "${target}" in ${where} was removed ` +
     `(superseded by "${successor}"); falling back to auto-detection.`
   );
 }

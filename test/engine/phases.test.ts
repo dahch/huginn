@@ -165,7 +165,9 @@ export function compute(): number {
 
       // Asserts that it returns the structured report with contract-compiler-failure
       expect(result.messageId).toBe("contract-compiler-failure");
-      expect(result.raw.info).toEqual({ id: "contract-compiler-failure" });
+      expect(result.raw).toMatchObject({
+        info: { id: "contract-compiler-failure" },
+      });
 
       // Asserts that the structured report contains the required gate markers
       expect(result.text).toContain("### Overall gate: 🔴");
@@ -213,7 +215,7 @@ export function add(a: number, b: number): number {
       expect(result.messageId).toBe("prompt_msg_id");
       expect(result.authoritativeVerdict).toBe("pass");
       expect(result.text.match(/^### Overall gate:/gim) ?? []).toHaveLength(1);
-      expect(result.text.match(/^(?:✅|!|🛑)/gim) ?? []).toHaveLength(1);
+      expect(result.text.match(/^(?:✅|⚠️|🛑)/gim) ?? []).toHaveLength(1);
       expect(parseValidateStepVerdict(result.text)).toBe("pass");
     });
 
@@ -400,7 +402,7 @@ export const greeting: string = 12345;
       const result = await validateStep(ctx);
 
       expect(result.text).toContain("### Overall gate: 🟡 PASS WITH WARNINGS");
-      expect(result.text).toContain("! REVIEW REQUESTED");
+      expect(result.text).toContain("⚠️ REVIEW REQUESTED");
       expect(parseValidateStepVerdict(result.text)).toBe("warning");
     });
 
@@ -425,7 +427,7 @@ export const greeting: string = 12345;
       const result = await validateStep(ctx);
 
       expect(result.text.match(/^### Overall gate:/gim) ?? []).toHaveLength(1);
-      expect(result.text.match(/^(?:✅|!|🛑)/gim) ?? []).toHaveLength(1);
+      expect(result.text.match(/^(?:✅|⚠️|🛑)/gim) ?? []).toHaveLength(1);
     });
 
     it("does not block when the report echoes a gate/fidelity skeleton (REV-101)", async () => {

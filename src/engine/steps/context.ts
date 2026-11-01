@@ -346,7 +346,7 @@ export function auditStatusContract(): string {
     "from your role instructions: that line is illustrative, not a template to",
     "echo. Use plain-text labels (e.g. `[CRITICAL]`, `[HIGH]`, `[MINOR]`) for",
     "per-finding severity.",
-    "Do not emit `### Overall gate:` or a ✅/!/🛑 handoff line — that vocabulary",
+    "Do not emit `### Overall gate:` or a ✅/⚠️/🛑 handoff line — that vocabulary",
     "belongs to huginn's consolidated gate, not to your audit.",
     "Huginn reads your single status line to decide the gate.",
   ].join("\n");
