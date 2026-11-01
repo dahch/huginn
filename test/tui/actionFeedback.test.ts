@@ -412,7 +412,9 @@ describe("first-run guidance (REQ-31 / AC-31.3)", () => {
       expect(output).toContain("command palette");
       expect(output).toContain("/draft");
       expect(output).toContain("Conversation");
-      expect(output).toContain("stage: REFINE");
+      // The footer speaks for the focused surface; the stage is the header's.
+      expect(output).toContain("[Tab] Focus:");
+      expect(output).not.toContain("stage:");
 
       const plain = output.replace(ANSI, "");
       const lines = plain.split("\n").map((line) => line.replace(/\s+$/, ""));

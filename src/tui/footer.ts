@@ -6,7 +6,8 @@
  * exactly the surface-specific keys first. The run dashboard repeated its own
  * copy of the same chain. {@link footerHints} is now the single source of truth:
  * it returns the keys of **the focused surface** on the left and keeps `usage`
- * and the stage badge on the right.
+ * on the right. The live stage lives in the header badge (ADR-73), so the footer
+ * never repeats it.
  *
  * It is pure (no React, no Ink): both dashboards call it, the tests call it, and
  * `columns` lets the caller clamp the result through {@link headerValue} so the
@@ -31,8 +32,6 @@ export interface FooterHintInput {
   maximized?: FooterMaximized;
   /** Token usage text, kept on the right exactly as before. */
   usage?: string;
-  /** Stage label, kept on the right exactly as before. */
-  stage?: string;
   /** Entries the collapsed log tail would bring back (`[L] logs · N`). */
   hiddenLogs?: number;
   /** Transcript search is open (its own footer replaces the focus keys). */
@@ -54,7 +53,7 @@ export interface FooterHintInput {
 export interface FooterHints {
   /** The focused surface's keys. */
   left: string;
-  /** `usage` and the stage badge (or the run dashboard's decision notice). */
+  /** `usage` (or the run dashboard's decision notice). */
   right: string;
 }
 
@@ -102,14 +101,13 @@ function rightHint(input: FooterHintInput): string {
     const notice = input.hasDecision ? "Interactive decision input active" : "";
     return [input.usage, notice].filter((part) => Boolean(part)).join(" · ");
   }
-  const usage = input.usage ? `${input.usage} · ` : "";
-  return input.stage ? `${usage}stage: ${input.stage}` : input.usage ?? "";
+  return input.usage ?? "";
 }
 
 /**
  * The footer's two cells for the current surface.
  *
- * With `columns`, the right cell is clamped first (the stage badge must survive)
+ * With `columns`, the right cell is clamped first (the usage figure must survive)
  * and the left cell gets whatever remains, through `headerValue`; the returned
  * strings therefore never exceed the terminal width together.
  */

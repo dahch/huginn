@@ -42,10 +42,6 @@ const CONTENT_WIDTH = SIDE_PANEL_WIDTH - SIDE_PANEL_BORDER_COLUMNS;
 
 /** Every section of the panel filled: the "everything reported" case. */
 const fullData: PanelData = {
-  stageLabel: "REFINE",
-  stageToken: "accent",
-  busy: false,
-  spinner: "⠋",
   agentName: "opencode",
   mcpText: "MCP: 2 connected · opencode",
   mcpToken: "ok",
@@ -219,7 +215,7 @@ describe("panel sections (REQ-12 / NFR-10)", () => {
     const indexOfSection = (label: string): number =>
       lines.findIndex((line) => line.kind === "section" && line.label === label);
     // Each group's rows sit between its own header and the next header.
-    expect(indexOfSection("SESSION")).toBeLessThan(indexOfRow("stage"));
+    expect(indexOfSection("SESSION")).toBeLessThan(indexOfRow("agent"));
     expect(indexOfRow("ctx")).toBeLessThan(indexOfSection("REPO"));
     expect(indexOfSection("REPO")).toBeLessThan(indexOfRow("git"));
     expect(indexOfRow("sandbox")).toBeLessThan(indexOfSection("MEMORY"));
@@ -243,8 +239,9 @@ describe("panel sections (REQ-12 / NFR-10)", () => {
       .filter((line) => line.kind === "row")
       .map((line) => line.label);
     // The panel's whole vocabulary: nothing about iterations, progress or
-    // percentages, because `DiagnosticsInfo` exposes none of it.
-    expect(labels).toEqual(["stage", "agent", "ctx", "git", "sandbox", "muninn"]);
+    // percentages, because `DiagnosticsInfo` exposes none of it. The live stage
+    // is the header badge's fact, not a panel row (ADR-73).
+    expect(labels).toEqual(["agent", "ctx", "git", "sandbox", "muninn"]);
     expect(labels.some((label) => /iter|progress|percent|pct/.test(label))).toBe(false);
     for (const line of panelLines(fullData, CONTENT_WIDTH)) {
       expect(lineText(line)).not.toMatch(/%|\biteration\b/i);
@@ -277,6 +274,34 @@ describe("panel sections (REQ-12 / NFR-10)", () => {
     });
   });
 
+  it("keeps the working-tree state while the value column is narrow", () => {
+    // The panel is the one home of the working-tree state, so the row's own
+    // budget is what clamps the branch — the `dirty` fact keeps its columns and
+    // the branch is the part that pays (ADR-73).
+    const lines = panelLines(
+      { ...fullData, git: { branch: "feature/the-panel", clean: false, sandbox: false } },
+      PANEL_LABEL_COLUMNS + 12,
+    );
+    const git = lines.find((line) => line.kind === "row" && line.label === "git");
+    expect(git).toBeDefined();
+    const value = git && "value" in git ? git.value : "";
+    expect(stringWidth(value)).toBeLessThanOrEqual(12);
+    expect(value.endsWith(" · dirty")).toBe(true);
+    expect(value).toContain("…");
+  });
+
+  it("drops the git row rather than report a tree without its state", () => {
+    // Ten columns cannot pay for `⎇ ` plus ` · dirty`; printing only the branch
+    // would report the tree without the fact the row exists for, so the row
+    // (and its section header, left with nothing under it) is not drawn.
+    const lines = panelLines(
+      { ...fullData, git: { branch: "feature/the-panel", clean: true, sandbox: false } },
+      PANEL_LABEL_COLUMNS + 10,
+    );
+    expect(lines.some((line) => line.kind === "row" && line.label === "git")).toBe(false);
+    expect(lines.some((line) => line.kind === "section" && line.label === "REPO")).toBe(false);
+  });
+
   it("clips a hostile value to the columns the box really has", () => {
     const lines = panelLines(
       {
@@ -292,10 +317,13 @@ describe("panel sections (REQ-12 / NFR-10)", () => {
     for (const line of lines) {
       expect(lineText(line).length, lineText(line)).toBeLessThanOrEqual(CONTENT_WIDTH);
     }
-    // A cut value says so: the last column is `…`, never a silent crop.
+    // A cut value says so: the branch is `…`-marked, never silently cropped,
+    // and the state the row exists to report survives the cut (ADR-73).
     const git = lines.find((line) => line.kind === "row" && line.label === "git");
     expect(git).toMatchObject({ kind: "row" });
-    expect(git && "value" in git ? git.value.endsWith("…") : false).toBe(true);
+    const gitValue = git && "value" in git ? git.value : "";
+    expect(gitValue).toContain("…");
+    expect(gitValue.endsWith(" · dirty")).toBe(true);
   });
 
   it("survives a zero-width or non-finite box without throwing", () => {
@@ -383,7 +411,7 @@ describe("the rendered panel (REQ-12)", () => {
   });
 
   it("anchors the tip to the bottom of the box with a single flexible spacer", () => {
-    const plan = sidePanelPlan({ columns: 120, availableHeight: 16, inset: 2 });
+    const plan = sidePanelPlan({ columns: 120, availableHeight: 15, inset: 2 });
     const interior = renderPanel(plan, fullData).slice(1, plan.height - 1);
     expect(interior).toHaveLength(plan.height - SIDE_PANEL_BORDER_ROWS);
     // The tip block is the last two rows: the divider and the note.
@@ -400,9 +428,9 @@ describe("the rendered panel (REQ-12)", () => {
   });
 
   it("claims no spacer when the row budget cut the tip away", () => {
-    // Eleven data rows fill this box exactly, so the tip (and its divider) are
+    // Ten data rows fill this box exactly, so the tip (and its divider) are
     // sliced off — and with no tip there is no spacer to push around.
-    const plan = sidePanelPlan({ columns: 120, availableHeight: 13, inset: 2 });
+    const plan = sidePanelPlan({ columns: 120, availableHeight: 12, inset: 2 });
     const interior = renderPanel(plan, fullData).slice(1, plan.height - 1);
     expect(interior.some((row) => row.includes(PANEL_TIP_PREFIX))).toBe(false);
     expect(interior.some((row) => row.includes("─"))).toBe(false);

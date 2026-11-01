@@ -1,5 +1,5 @@
 /**
- * The live session summaries shared by the header and the side panel (REQ-12).
+ * The live session summaries the side panel renders (REQ-12).
  *
  * These functions are pure strings, so the only thing worth asserting is the
  * wording they promise: the branch and its state, Muninn's counters in the
@@ -26,7 +26,6 @@ import {
   gitStat,
   mcpBadgeText,
   memoryStat,
-  sessionStat,
   stageTip,
 } from "../../src/tui/sessionContext.js";
 
@@ -110,6 +109,49 @@ describe("gitStat (REQ-12 / REQ-76)", () => {
     expect(stat.endsWith(" · clean")).toBe(true);
   });
 
+  it("keeps the state when the row budget clamps the branch (ADR-73)", () => {
+    const stat = gitStat({ branch: "feature/live-layout", clean: false, sandbox: false }, 23);
+    // The panel's value column is 23: the branch announces its cut, and the
+    // `dirty` fact — the reason the row exists — keeps every column it needs.
+    expect(stringWidth(stat)).toBeLessThanOrEqual(23);
+    expect(stat.endsWith(" · dirty")).toBe(true);
+    expect(stat).toContain("…");
+  });
+
+  it("never spends more columns than the row budget it was given (ADR-73)", () => {
+    for (const clean of [true, false]) {
+      const git = { branch: "feature/a-very-long-branch-name", clean, sandbox: true };
+      const state = clean ? " · clean" : " · dirty";
+      for (let width = 0; width <= 40; width += 1) {
+        const stat = gitStat(git, width);
+        expect(stringWidth(stat), `${clean ? "clean" : "dirty"} at ${width}`).toBeLessThanOrEqual(
+          width,
+        );
+        // The state survives whenever the budget can pay for it at all; below
+        // that the row is dropped instead of printed without the fact it reports.
+        if (width >= 11) expect(stat.endsWith(state), `${state} at ${width}`).toBe(true);
+        else expect(stat, `${state} at ${width}`).toBe("");
+      }
+    }
+    // The narrowest budget that still fits the mark and the state: a one-column
+    // branch is the ellipsis alone, and `dirty` is untouched.
+    expect(gitStat({ branch: "feature/x", clean: false, sandbox: false }, 11)).toBe(
+      "⎇ … · dirty",
+    );
+  });
+
+  it("falls back to the historic branch cap without a usable budget", () => {
+    const git = { branch: "b".repeat(GIT_BRANCH_COLUMNS + 1), clean: true, sandbox: false };
+    const unbudgeted = gitStat(git);
+    // `undefined`, `NaN` and `Infinity` all mean "no row budget was given": the
+    // historic {@link GIT_BRANCH_COLUMNS} cap applies and nothing is invented.
+    expect(gitStat(git, Number.NaN)).toBe(unbudgeted);
+    expect(gitStat(git, Number.POSITIVE_INFINITY)).toBe(unbudgeted);
+    // A fractional budget is floored rather than rounded up past the row.
+    expect(gitStat(git, 23.9)).toBe(gitStat(git, 23));
+    expect(stringWidth(gitStat(git, 23.9))).toBeLessThanOrEqual(23);
+  });
+
   it("renders nothing when git could not be read", () => {
     expect(gitStat(null)).toBe("");
     expect(gitStat({ branch: "   ", clean: true, sandbox: false })).toBe("");
@@ -135,36 +177,6 @@ describe("contextStat (REQ-12 / NFR-10)", () => {
     expect(contextStat({ turns: 1, chars: 0 })).toBe("1 turn · 0 chars");
     expect(contextStat({ turns: 2, chars: 840 })).toBe("2 turns · 840 chars");
     expect(contextStat({ turns: 3, chars: 1_400 })).toBe("3 turns · 1.4k chars");
-  });
-});
-
-describe("sessionStat (REQ-12 / REQ-76)", () => {
-  const git = { branch: "main", clean: true, sandbox: true };
-  const context = { turns: 3, chars: 1_400 };
-
-  it("joins git, sandbox and context in that order when everything fits", () => {
-    expect(sessionStat(git, context, 120)).toBe("⎇ main · clean · sandbox · ctx 3 turns · 1.4k chars");
-    expect(sessionStat(null, null, 120)).toBe("");
-    expect(sessionStat({ ...git, sandbox: false }, null, 120)).toBe("⎇ main · clean");
-  });
-
-  it("drops a whole part instead of cutting the join in half", () => {
-    const withSandbox = "⎇ main · clean · sandbox";
-    // Wide enough for git + sandbox, too narrow for the conversation counter.
-    const text = sessionStat(git, context, stringWidth(withSandbox) + 4);
-    expect(text).toBe(withSandbox);
-    expect(text).not.toContain("…");
-    expect(text).not.toContain("ctx");
-  });
-
-  it("announces the cut when even the first part does not fit", () => {
-    const text = sessionStat(git, context, 10);
-    expect(text.endsWith("…")).toBe(true);
-    expect(stringWidth(text)).toBeLessThanOrEqual(10);
-    // A zero/nonsense budget produces an empty cell, never a bare mark.
-    expect(sessionStat(git, context, 0)).toBe("");
-    expect(sessionStat(git, context, -5)).toBe("");
-    expect(sessionStat(git, context, Number.NaN)).toBe("");
   });
 });
 

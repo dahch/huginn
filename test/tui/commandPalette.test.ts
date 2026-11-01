@@ -342,7 +342,9 @@ describe("Inline slash-command palette (AC-28.2, AC-28.3, AC-28.4)", () => {
       // Idle: the agent-output panel is collapsed so the conversation gets its rows.
       expect(output).not.toContain("THINKING & LIVE AGENT STREAM");
       expect(output).toContain("▸ /help");
-      expect(output).toContain("stage: REFINE");
+      // The footer keeps the open palette's keys; the stage is the header's.
+      expect(output).toContain("[Esc] Dismiss");
+      expect(output).not.toContain("stage:");
       // AC-28.4: the palette may not push the layout past the terminal height.
       const frameRows = output
         .split("\n")

@@ -217,10 +217,6 @@ describe("the one chrome-cost table (REQ-70)", () => {
   it("draws InfoPanel as a secondary single box of exactly its planned height", () => {
     const plan = sidePanelPlan({ columns: 120, availableHeight: 20, inset: 2 });
     const data: PanelData = {
-      stageLabel: "REFINE",
-      stageToken: "accent",
-      busy: false,
-      spinner: "⠋",
       agentName: "opencode",
       mcpText: "MCP: 2 connected · opencode",
       mcpToken: "ok",
@@ -240,10 +236,6 @@ describe("the one chrome-cost table (REQ-70)", () => {
   it("anchors the panel's tip to the bottom of the box", () => {
     const plan = sidePanelPlan({ columns: 120, availableHeight: 20, inset: 2 });
     const data: PanelData = {
-      stageLabel: "REFINE",
-      stageToken: "accent",
-      busy: false,
-      spinner: "⠋",
       agentName: "opencode",
       mcpText: "MCP: 2 connected · opencode",
       mcpToken: "ok",

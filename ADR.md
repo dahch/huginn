@@ -2313,3 +2313,63 @@ avoids. They are ordered by how central the decision is to the design.
     claims two more columns whenever it is visible, so a future narrower threshold must re-check
     the three-way width sum; and `headerValue`'s degenerate branches (NaN, `Infinity`, one column)
     are behaviour that must stay covered, because callers depend on them rather than on a throw.
+
+## ADR-73: One home per fact — header identity, panel environment, footer keys
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Supersedes (in part)**: ADR-47 (the panel's `stage` row and the header's status summaries),
+  ADR-71 (the footer's stage badge) and ADR-72 (the MCP badge's home in the live header). Those
+  records stay as written; this one moves the facts they placed.
+- **Context**: The live console painted the same facts on three surfaces. The header's row 1 carried
+  the MCP badge (up to 40 columns) and the runtime name before it laid out the project path, so the
+  path was the first value clamped; its row 2 repeated the git branch and its dirtiness, the
+  worktree sandbox and the conversation counter that the side panel already reported. The panel in
+  turn repeated the live stage, which the header badge also named, and the footer appended
+  `stage: <LABEL>` to the usage figure — a fourth copy of the same state. On a 100-column frame this
+  was not only redundant: the duplication spent the columns the project path needed, and the tests
+  asserted the duplication ("the branch … in the header too", "counts the conversation in the header
+  and the panel", `stage: REFINE` in the footer), so the console could not lose it by accident but
+  also could not get better.
+- **Decision**:
+  1. **The header is identity and ephemeral state.** Row 1 is `[<spinner> <STAGE>]` plus the project
+     path; row 2 is the two active models and nothing else. MCP, the runtime name, git, the sandbox
+     and the context counter leave the header. `LIVE_HEADER_CONTEXT_ROWS` stays `2`, so the header's
+     height (and therefore `VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN`, the card heights and the decision
+     modal's budget) does not move; the row-1 path simply inherits the columns the badge and the
+     runtime used to claim.
+  2. **The panel is the environment.** Its `stage` row is gone, together with the `PanelData` fields
+     that only it consumed (`stageLabel`, `stageToken`, `busy`, `spinner`). It keeps `agent`, the
+     attributed MCP badge, `git`, `sandbox`, `muninn`, `ctx` and the bottom-anchored `TIP`.
+     `gitStat(git, maxWidth?)` now pays for the `clean`/`dirty` suffix first and clamps only the
+     branch, because the panel is the one home of that state: a long branch is `…`-marked, the state
+     always survives. Without `maxWidth` the historic `GIT_BRANCH_COLUMNS` cap is unchanged.
+  3. **The footer is the keys.** `FooterHintInput` loses `stage`; the right cell carries `usage`
+     (the run dashboard still adds its decision notice there) and the left cell carries the focused
+     surface's keys. `sessionStat` — the header-only join of git, sandbox and context — had no other
+     caller and is deleted with its test rather than left as dead code.
+  4. **The tests state the new rule.** The two `test/tui/liveLayout.test.ts` assertions that fixed
+     the old duplication are rewritten, not deleted or relaxed: one asserts a single `⎇` occurrence
+     in the panel and none on the header's models row; the other asserts the conversation counter
+     appears exactly once, in the panel. The footer assertions in the TUI suites assert the header's
+     `[<spinner> <STAGE>]` badge and the absence of `stage:`. A 100×30 regression test mounts a long
+     project path and checks it is painted whole, which the old badge/runtime layout could not do.
+- **Alternatives rejected**: (a) keep the duplication and only widen the path — the goal is one home
+  per fact, and two sources of the same state can disagree; (b) keep the MCP badge and runtime in the
+  header for convenience — that is exactly what spends the path's columns; (c) shorten the panel's
+  9-column label column so a longer branch fits — labels would stop lining up and value starts would
+  wander; (d) widen the panel to fit an arbitrary branch — it is already sized for the longest real
+  value (`⎇ upgrade/ui-ux · dirty`, 23 columns) and widening steals conversation columns for
+  edge-case names, while reserving the state costs none; (e) keep `sessionStat` "for later" — dead
+  code and a second implementation of wording the panel owns; (f) leave `git` in the header as a
+  shortcut — it recreates the two-home problem this ADR removes.
+- **Consequences**:
+  - *Positive*: every fact has one home, so the surfaces cannot drift; row 1's project path gains
+    the badge/runtime columns (verified at 100×30); the header's height and every layout constant
+    derived from it stay put; the footer no longer truncates keys to pay for a badge that is not
+    needed there; the working-tree state survives a long branch name.
+  - *Negative*: the header alone no longer answers "which runtime/MCP?" — on a terminal too narrow
+    for the panel (below `SIDE_PANEL_MIN_COLUMNS`) that environment detail is only in `/status`; the
+    panel's `git` row now yields branch columns to its state suffix; and the removed `PanelData`
+    fields are a breaking change for any embedder constructing the panel directly (in-repo callers
+    and tests were updated in the same commit).

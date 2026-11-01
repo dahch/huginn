@@ -222,6 +222,7 @@ describe("PipelineCard order (REV-6202)", () => {
   async function renderPipeline(
     profile: string,
     act?: () => Promise<void>,
+    usage?: { inputTokens: number; outputTokens: number; costUsd: number },
   ): Promise<string> {
     const stdout = new PassThrough() as any;
     stdout.columns = 120;
@@ -233,6 +234,7 @@ describe("PipelineCard order (REV-6202)", () => {
     const state = {
       currentIteration: 1,
       currentPhase: "VERIFY",
+      ...(usage ? { usage } : {}),
     } as unknown as HarnessState;
     const engine = {
       getState: () => state,
@@ -273,6 +275,27 @@ describe("PipelineCard order (REV-6202)", () => {
     expect(verify).toBeGreaterThan(-1);
     expect(validate).toBeGreaterThan(-1);
     expect(verify).toBeLessThan(validate);
+  });
+
+  it("leaves the footer to the run keys and usage, never the stage (ADR-73)", async () => {
+    const output = await renderPipeline("huginn");
+    expect(output).toContain("[Space] Pause");
+    // The live stage is the header badge's fact; the footer is the keys.
+    expect(output).not.toContain("stage:");
+  });
+
+  it("keeps the usage figure on the footer's right cell (ADR-73)", async () => {
+    const output = await renderPipeline("huginn", undefined, {
+      inputTokens: 12_400,
+      outputTokens: 3_200,
+      costUsd: 0.42,
+    });
+    const footer = output.split("\n").filter((line) => line.trim().length > 0).pop() ?? "";
+    // Keys on the left, `usage` on the right — the cell the stage badge used to
+    // share, and which it must not reclaim.
+    expect(footer).toContain("[Space] Pause");
+    expect(footer).toContain("12.4k in / 3.2k out · $0.42");
+    expect(footer).not.toContain("stage:");
   });
 
   it("never lists a phase the active profile does not run", async () => {

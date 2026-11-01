@@ -358,7 +358,7 @@ Huginn must discover available models from the active runtime and provide intera
 
 ### REQ-24: Unified Multi-MCP Monitoring & Inspector
 Huginn must monitor and display the status of all connected Model Context Protocol (MCP) servers and their tools.
-- **AC-24.1 (Header Status Badge & Non-Blocking Polling)**: The TUI header displays a live MCP indicator:
+- **AC-24.1 (MCP Status Badge & Non-Blocking Polling)**: The TUI displays a live MCP indicator (the run dashboard's header and, in the live console, the side panel — AC-77.1):
   - `MCP: 🟢 <count> active (<tools> tools)` when all servers are connected.
   - `MCP: 🟡 degraded` when any server reports error or degraded status.
   - `MCP: 🟡 timeout` when polling exceeds deadline.
@@ -452,7 +452,7 @@ The interface must read as Huginn the raven, with real brand presence.
 - **AC-29.1 (no eagle)**: no eagle emoji (`🦅`) may remain anywhere in the source; the top-left header of both `LiveDashboard` and `Dashboard` renders an ASCII raven/wordmark treatment instead.
 - **AC-29.2 (shared brand component)**: a single reusable component (`src/tui/RavenHeader` or equivalent) renders the raven mark plus the wordmark, and is used by both dashboards so the two headers cannot diverge.
 - **AC-29.3 (non-blocking across sizes)**: the ASCII mark degrades gracefully on narrow terminals (wordmark-only fallback) and never consumes so many rows that the chat/stream viewport collapses.
-- **AC-29.4 (presence, not decoration)**: the header additionally surfaces live, useful context (active runtime, thinker/executor, project, and — see REQ-30 — a truthful MCP badge), so the personality comes from meaningful feedback rather than a lone glyph.
+- **AC-29.4 (presence, not decoration)**: the header additionally surfaces live, useful context (the live stage, thinker/executor and the project), so the personality comes from meaningful feedback rather than a lone glyph. *(Amended by AC-77.1: the runtime name and the MCP badge moved to the side panel; the header is identity plus ephemeral state.)*
 
 ### REQ-30: Honest MCP/Muninn Liveness & Recovery
 MCP status must reflect reality and survive transient failure.
@@ -507,7 +507,7 @@ The MCP surface must name the active agent's servers, attribute them to it, and 
 - **AC-32.1 (CLI enumeration)**: `IAgentRuntime` gains `listMcpServers(): Promise<McpServerListing[]>` where `McpServerListing = { name: string; transport?: string; status: "connected" | "enabled" | "disabled" | "pending" | "unknown"; detail?: string }`. Runtimes with a listing command use it — `opencode mcp list`, `claude mcp list`, `qwen mcp list`, `agy mcp list`, `commandcode mcp list`, `codex mcp list --json`, `devin mcp list`, `mimo mcp list` (verified formats; parsers exported and fixture-tested). Runtimes without one (`omp`, `kimi`, `pi`, `cursor`, `mcode`) fall back to config-file discovery with `status: "unknown"`.
 - **AC-32.2 (honest status mapping)**: a status reported by the CLI maps to its true meaning — `connected`/`Connected`/`✔` → `connected` (probed); `enabled`/`configured`/`➜` → `enabled` (configured, **not** probed); `disabled` → `disabled`; `pending approval` → `pending`; anything unrecognised → `unknown`. `connected` is the only status that may be described as live.
 - **AC-32.3 (attribution & expectation management)**: the `/mcp` panel must state which agent the list came from and that Huginn only observes it ("servers come from **&lt;agent&gt;** — add or change them with the agent's own config/CLI"). It must name Muninn explicitly when present, and when absent show the exact command that registers it (`huginn setup --agent <id>`).
-- **AC-32.4 (no bare numbers, no `undefined`)**: the header badge must always be self-describing and attribute its source (e.g. `MCP: 🟢 3 connected · opencode`, `MCP: ⚪ 5 configured · agy`, `MCP: ⚪ none · claude`; the TUI paints those marks through `mcpBadgeText` as `✓`/`!`/`·`, REQ-76). Every numeric field is nullish-coalesced; the literal string `undefined`/`NaN` must be impossible in any MCP surface (guarded by a test).
+- **AC-32.4 (no bare numbers, no `undefined`)**: the MCP badge must always be self-describing and attribute its source (e.g. `MCP: 🟢 3 connected · opencode`, `MCP: ⚪ 5 configured · agy`, `MCP: ⚪ none · claude`; the TUI paints those marks through `mcpBadgeText` as `✓`/`!`/`·`, REQ-76). *(Amended by AC-77.1: the badge's live-console home is the side panel, not the header.)* Every numeric field is nullish-coalesced; the literal string `undefined`/`NaN` must be impossible in any MCP surface (guarded by a test).
 - **AC-32.5 (deeper truth where possible)**: where a CLI exposes per-server detail (`commandcode mcp list` shows scope/auth; `claude`/`qwen` health-check), that detail is shown; where it cannot be known, the UI says so explicitly ("status not reported by &lt;agent&gt;") rather than implying health.
 
 ### REQ-33: Interactive Runtime Picker
@@ -538,7 +538,7 @@ The execution cycle must be choosable, with the built-in cycle as the default.
   - `odd` — minimal: execute → test-module → commit-all (no heavy gates; for small daily changes).
   - `rdd` — receipt-driven: execute → test-module → validate-step producing a frozen *receipt* artifact whose `headCommit` and `treeHash` pin the commit range, → commit-all.
   - `strict-tdd` — tests first: a failing-test step before execute, then execute, then the test/validate gates, with a **frozen worktree snapshot** recorded as evidence so a claim of "tests passed" cannot be hallucinated.
-- **AC-36.5 (announced)**: the active profile is shown in the TUI header/`/status` and in the CLI banner, so the user always knows which methodology is running.
+- **AC-36.5 (announced)**: the active profile is shown in `/status` and in the CLI/run banner, so the user always knows which methodology is running. *(Amended by AC-77.1: the live header carries the stage, the project and the models, not the profile.)*
 - **AC-36.6 (no silent degradation)**: a profile that cannot run (missing template/prompt) fails closed with an actionable message rather than silently falling back to `huginn`.
 
 ### REQ-37: Agent-Agnostic Question Protocol
@@ -799,22 +799,24 @@ A subprocess runtime closes stdin after the prompt, so it can never consult hugi
   `COLORFGBG` when present), and a non-empty `NO_COLOR` clears every token and gates `dimColor`.
 - **AC-47.2 (Live context panel)**: `src/tui/InfoPanel.tsx` renders a compact **LIVE CONTEXT** column
   beside the conversation on wide terminals (≥ 100 columns, ≥ 8 spare rows, leaving the cards at least
-  44 columns). Its rows are grouped into `SESSION` (stage, agent, MCP badge, conversation size),
+  44 columns). Its rows are grouped into `SESSION` (agent, MCP badge, conversation size),
   `REPO` (git branch/tree state and worktree sandbox) and `MEMORY` (Muninn counts) sections, plus one
   stage-appropriate tip anchored to the bottom of the box by a flexible spacer. A section with no data
   is not drawn at all — `slicePanelLines` keeps a header only while a row follows it — so no heading
   is left over an empty group. It lives inside the region the cards already own, so it can never push
   the composer, palette or footer off the frame; narrower terminals do not render it at all.
   `test/tui/infoPanel.test.ts` covers the geometry, the section order, the anchored tip, the clipping
-  of a hostile value and the rows the panel must not invent (AC-30.5).
+  of a hostile value and the rows the panel must not invent (AC-30.5). *(Amended by AC-77.2: the
+  live stage is no longer a panel row; it lives in the header badge.)*
 - **AC-47.3 (Empty-state hero)**: `src/tui/LiveHero.tsx` renders the raven brand plus the first-run
   guidance inside the conversation card when the conversation is empty, sharing the header's art
   (`buildRavenArtRows`, REQ-29) and the console's hint list (`EMPTY_CHAT_HINTS`), sliced to the rows
   the card really has.
-- **AC-47.4 (Session summaries, no fabrication)**: `src/tui/sessionContext.ts` derives the header's and
-  the panel's shared strings from what the engine reported — a counter with nothing to count renders
+- **AC-47.4 (Session summaries, no fabrication)**: `src/tui/sessionContext.ts` derives the panel's
+  environment strings from what the engine reported — a counter with nothing to count renders
   `""` rather than `0`, and an unreadable Muninn database reports its sanitized error instead of
-  looking empty (AC-30.5). The summaries carry no colour; the TUI picks the token.
+  looking empty (AC-30.5). The summaries carry no colour; the TUI picks the token. *(Amended by
+  AC-77.2: the header no longer repeats these summaries.)*
 
 ### REQ-48: Containment of repository-controlled input (plan item 10)
 
@@ -1421,10 +1423,11 @@ iteration and 6 afterwards** (down from 14).
   `[q/Esc]` abort, `[v]` verbose and page/arrow scrolling. The palette replaces the left cell;
   transcript search replaces it with the find prompt, match count and Enter/Esc keys; a busy turn
   appends `[Esc] Abort`; a maximized card flips Maximize/Restore; a collapsed log tail prefixes
-  `[L] logs · N (card focus)`. `right` keeps token usage and the stage badge, or the run
-  dashboard's decision notice. Neither dashboard may re-inline these literals.
+  `[L] logs · N (card focus)`. `right` keeps token usage — or the run
+  dashboard's decision notice; the live stage is the header badge's fact and is never a footer
+  value (AC-77.3). Neither dashboard may re-inline these literals.
 - **AC-75.4 (The footer never exceeds the terminal)**: when `columns` is finite and positive,
-  `footerHints` clamps the right cell first through `headerValue` (so the stage badge survives),
+  `footerHints` clamps the right cell first through `headerValue` (so the usage figure survives),
   spends one column for the separator only when the right cell is non-empty, and gives the left
   cell the remaining budget. A negative/fractional hit count is floored to zero, a fractional
   width is floored rather than sliced, and a right cell that fills the terminal leaves the left
@@ -1444,8 +1447,8 @@ The console must never paint a double-width pictograph or silently crop a value 
   right after `MCP: ` through `MCP_STATUS_GLYPHS` (`healthy` → `STATUS_GLYPHS.pass` `✓`, `degraded`
   → `STATUS_GLYPHS.warning` `!`, `unknown` → `STATUS_GLYPHS.pending` `·`), so the engine's
   `MCP: 🟢 2 connected · pi` is painted as `MCP: ✓ 2 connected · pi`. `formatMcpBadge` and its
-  engine contract are untouched; the run header, the live header and `InfoPanel` all pass the
-  mapped text.
+  engine contract are untouched; the run header and `InfoPanel` pass the mapped text (the live
+  header no longer carries the badge, AC-77.1).
 - **AC-76.2 (a badge always names itself)**: a badge carrying only a mark still renders its label
   (`MCP: 🟢` → `MCP: ✓`; an empty report → `MCP: ·`), a badge the engine sent without the label is
   repaired to `MCP: <mark> …`, and an unknown status falls back to `pending` rather than dropping
@@ -1470,6 +1473,37 @@ The console must never paint a double-width pictograph or silently crop a value 
   pictograph or a double-width row;
   `test/tui/infoPanel.test.ts` and `test/tui/liveLayout.test.ts` pin the panel width and the
   23-column value budget; `src/tui/footer.test.ts` proves a clamped footer cell ends in `…`.
+
+### REQ-77: One home per fact — header identity, panel environment, footer keys
+Every live-session fact must appear on exactly one surface, so the header, the panel and the footer
+cannot disagree or spend each other's columns.
+- **AC-77.1 (the header is identity and ephemeral state)**: `LiveHeader` row 1 is
+  `[<spinner> <STAGE>]` plus the project path; row 2 is the two active models and nothing else. It
+  does not render the MCP badge, the runtime name, git, the worktree sandbox or the conversation
+  counter. `LIVE_HEADER_CONTEXT_ROWS` stays `2`, so the header's height and every budget derived
+  from it (`VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN`, card heights, the decision modal) do not move;
+  the project path inherits the columns the badge and the runtime used to spend, and a 100×30 test
+  proves a long path is painted whole instead of shortened.
+- **AC-77.2 (the panel is the environment)**: `PanelData`/`panelLines` no longer render a `stage`
+  row (and drop the `stageLabel`/`stageToken`/`busy`/`spinner` fields only it consumed). The panel
+  keeps `agent`, the attributed mapped MCP badge, `git`, `sandbox`, `muninn`, `ctx` and the
+  bottom-anchored `TIP`. `gitStat(git, maxWidth?)` pays for the `clean`/`dirty` suffix before it
+  clamps the branch, because the panel is the only surface that reports the working-tree state;
+  without `maxWidth` its historic `GIT_BRANCH_COLUMNS` cap is unchanged. When the budget cannot pay
+  for `⎇ … · dirty` at all, `gitStat` returns `""` and the row is dropped rather than printed
+  without the fact it reports.
+- **AC-77.3 (the footer is the keys)**: `FooterHintInput` no longer accepts `stage`; `footerHints`
+  returns the focused surface's keys on the left and `usage` on the right (the run dashboard keeps
+  its decision notice there). No live footer renders `stage: <LABEL>`: the stage is the header
+  badge's fact. `sessionStat` — the header-only join — is deleted with its test rather than left as
+  dead code.
+- **AC-77.4 (the tests state the new rule)**: the two `test/tui/liveLayout.test.ts` assertions that
+  fixed the old duplication are rewritten, not deleted or relaxed: one asserts a single `⎇`
+  occurrence in the panel and none on the header's models row; the other asserts the conversation
+  counter appears exactly once, in the panel. The footer assertions in the TUI suites assert the
+  header's `[<spinner> <STAGE>]` badge and the absence of `stage:`. `src/tui/footer.test.ts` and
+  `test/tui/infoPanel.test.ts` pin the new policy, and `test/tui/liveLayout.test.ts` holds the
+  100×30 project-path regression.
 
 ---
 

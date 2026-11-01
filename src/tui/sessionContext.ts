@@ -1,12 +1,12 @@
 /**
  * Live-session status summaries (Phase 7B / REQ-12).
  *
- * The console's status surfaces — the raven header's second row and the side
- * panel — describe the same few facts: which branch the session runs on and
- * whether the tree is dirty, whether the session lives in an isolated worktree,
- * what Muninn holds, and how big the conversation has grown. Keeping the wording
- * here, as pure functions, means the two surfaces can never disagree and the
- * render loop only pays for a couple of string joins.
+ * The console's environment surface — the side panel — describes a few facts:
+ * which branch the session runs on and whether the tree is dirty, whether the
+ * session lives in an isolated worktree, what Muninn holds, and how big the
+ * conversation has grown. Keeping the wording here, as pure functions, means a
+ * future surface cannot invent its own phrasing and the render loop only pays
+ * for a couple of string joins. The live header no longer repeats them (ADR-73).
  *
  * Two rules the summaries never break:
  *  - **no fabrication** (NFR-10): every value comes from what the engine
@@ -31,7 +31,7 @@ export const GIT_BRANCH_COLUMNS = 32;
 /** Columns the sanitized Muninn failure reason may claim. */
 export const MEMORY_REASON_COLUMNS = 40;
 
-/** What the header/panel needs to know about the working tree. */
+/** What the panel needs to know about the working tree. */
 export interface GitSummary {
   /** Current branch name (`unknown` when git could not be read). */
   branch: string;
@@ -75,12 +75,26 @@ export function formatCount(value: number): string {
 /**
  * `⎇ main · clean`, `⎇ feature/parser · dirty`. Empty when nothing was reported,
  * so a caller can drop the whole row instead of printing a bare glyph.
+ *
+ * With `maxWidth`, the state is paid for first and only the branch is clamped:
+ * the panel is the one home of the working-tree state (ADR-73), so a long branch
+ * name is what loses columns, never the `clean`/`dirty` fact the row reports.
+ * Without it the historic branch cap ({@link GIT_BRANCH_COLUMNS}) applies.
  */
-export function gitStat(git?: GitSummary | null): string {
+export function gitStat(git?: GitSummary | null, maxWidth?: number): string {
   if (!git) return "";
-  const branch = headerValue(git.branch, GIT_BRANCH_COLUMNS);
+  const suffix = ` · ${git.clean ? "clean" : "dirty"}`;
+  const budget =
+    maxWidth === undefined || !Number.isFinite(maxWidth)
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.floor(maxWidth));
+  const branchBudget =
+    budget === Number.POSITIVE_INFINITY
+      ? GIT_BRANCH_COLUMNS
+      : Math.max(0, budget - GIT_MARK.length - 1 - suffix.length);
+  const branch = headerValue(git.branch, branchBudget);
   if (branch.length === 0) return "";
-  return `${GIT_MARK} ${branch} · ${git.clean ? "clean" : "dirty"}`;
+  return `${GIT_MARK} ${branch}${suffix}`;
 }
 
 /** `sandbox` only when the session really runs in an isolated worktree. */
@@ -149,31 +163,6 @@ export function mcpBadgeText(badge: McpBadge): string {
   // engine sent as `MCP: 🟢` alone still names itself (`MCP: ✓`).
   const rest = clean.replace(/^MCP:\s*/, "");
   return rest.length > 0 ? `${MCP_LABEL}${glyph} ${rest}` : `${MCP_LABEL}${glyph}`;
-}
-
-/**
- * The header's one-line status summary: git state first, the sandbox next, the
- * conversation counter last. Each part only joins while the row still has room,
- * so a narrow terminal loses the *least* important detail instead of wrapping —
- * the same rule every other header value follows (AC-29.3). Pure, so the header
- * and the layout tests share one wording.
- */
-export function sessionStat(
-  git: GitSummary | null | undefined,
-  context: ContextStat | null | undefined,
-  maxWidth: number,
-): string {
-  const context_ = contextStat(context);
-  const parts = [gitStat(git), sandboxLabel(git), context_ ? `ctx ${context_}` : ""].filter(
-    (part) => part.length > 0,
-  );
-  let text = parts[0] ?? "";
-  for (const part of parts.slice(1)) {
-    const joined = text.length > 0 ? `${text} · ${part}` : part;
-    if (joined.length > maxWidth) break;
-    text = joined;
-  }
-  return headerValue(text, maxWidth);
 }
 
 /**

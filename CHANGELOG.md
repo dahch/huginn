@@ -4,10 +4,20 @@
 
 ### Added
 
+- **Each live-session fact has one home.** The live header is now identity and ephemeral state: row 1
+  is `[<spinner> <STAGE>]` plus the project path, row 2 is the two models, and the MCP badge, runtime
+  name, git, sandbox and context counter left it for the side panel. The panel no longer repeats the
+  stage, and the footer no longer appends `stage: <LABEL>`; it keeps the focused surface's keys and
+  `usage`. `LIVE_HEADER_CONTEXT_ROWS` stays `2`, so the header height and every budget derived from
+  it are unchanged, and the project path inherits the columns the badge/runtime spent (a 100×30 path
+  is now painted whole). `gitStat(git, maxWidth?)` reserves the `clean`/`dirty` suffix before it
+  clamps the branch, because the panel is the only surface that reports the working-tree state;
+  `sessionStat` had no caller left and is gone with its test (REQ-77 / ADR-73).
+
 - **Console chrome speaks one measured alphabet.** The MCP badge no longer reaches the console as
   the engine's double-width pictographs: `mcpBadgeText` (`src/tui/sessionContext.ts`) strips them and
   re-inserts one mark from `MCP_STATUS_GLYPHS` (`healthy` ✓, `degraded` !, `unknown` ·, all from
-  `STATUS_GLYPHS`), so both headers and `InfoPanel` paint `MCP: ✓ 2 connected · pi` while
+  `STATUS_GLYPHS`), so the run header and `InfoPanel` paint `MCP: ✓ 2 connected · pi` while
   `formatMcpBadge` and its engine test stay untouched. `headerValue` now clamps in display columns
   and spends the last one on `…`, so a truncated header, panel or footer value announces the cut
   instead of cropping silently (and a double-width glyph is never split). The side panel widens to
@@ -55,6 +65,14 @@
   `test/tui/cardColors.test.ts` (REQ-70 / ADR-65).
 
 ### Changed
+
+- **The live console no longer duplicates state.** The header stopped rendering MCP, the runtime name,
+  git, the sandbox and the context counter; `PanelData`/`panelLines` stopped rendering the `stage`
+  row (and the four fields only it consumed); and `footerHints` stopped accepting a `stage`. The TUI
+  tests that pinned the duplication were rewritten to the one-home rule — a single `⎇` in the panel
+  and none on the header's models row, the conversation counter exactly once, no `stage:` in any
+  footer — and `test/tui/liveLayout.test.ts` holds the 100×30 long-path regression (REQ-77 /
+  ADR-73).
 
 - **The TUI's framed surfaces now read as a hierarchy.** The conversation keeps the round accent
   box, the stream and pipeline step back to a quiet `single` border, and the log tail loses its box

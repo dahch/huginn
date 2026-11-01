@@ -1,6 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import stringWidth from "string-width";
 import { render } from "./inkRender";
 import { events } from "../../src/engine/engineEvents";
 import type { DiagnosticsInfo, LiveEngine } from "../../src/engine/liveMode";
@@ -9,6 +10,7 @@ import type { DecisionRequest } from "../../src/engine/types";
 import { decisionTitle } from "../../src/tui/decision";
 import {
   DEFAULT_SPLIT_RATIO,
+  LIVE_HEADER_CONTEXT_ROWS,
   LOG_AUTO_COLLAPSE_MS,
   SPLIT_RATIO_MAX,
   SPLIT_RATIO_MIN,
@@ -146,6 +148,7 @@ async function mountLive(
   live: LiveEngine,
   columns: number,
   rows: number,
+  cfg: RunConfig = mockCfg,
 ): Promise<Harness> {
   const restore = stubTerminalSize(rows, columns);
   const stdout = new PassThrough() as PassThrough & { columns: number; rows: number };
@@ -156,7 +159,7 @@ async function mountLive(
     output += chunk.toString();
   });
   const stdin = createMockStdin();
-  const instance = render(React.createElement(LiveApp, { live, cfg: mockCfg }), {
+  const instance = render(React.createElement(LiveApp, { live, cfg }), {
     stdout,
     stdin,
     patchConsole: false,
@@ -241,10 +244,6 @@ describe("side panel geometry (REQ-12)", () => {
 // ── panelLines / slicePanelLines ─────────────────────────────────────────────
 
 const panelData: PanelData = {
-  stageLabel: "REFINE",
-  stageToken: "accent",
-  busy: true,
-  spinner: "⠋",
   agentName: "opencode",
   mcpText: "MCP: ✓ 2 connected · opencode",
   mcpToken: "ok",
@@ -1024,7 +1023,8 @@ describe("panel lines (REQ-12)", () => {
     const lines = panelLines(panelData, contentWidth);
     const labels = lines.filter((line) => line.kind === "row").map((line) => line.label);
     expect(lines[0]).toEqual({ kind: "title", text: PANEL_TITLE });
-    expect(labels).toContain("stage");
+    // The live stage lives in the header badge, never in the panel (ADR-73).
+    expect(labels).not.toContain("stage");
     expect(labels).toContain("agent");
     // The models live in the header; repeating them in the panel cost two rows
     // and told the same story twice.
@@ -1112,7 +1112,7 @@ describe("panel lines (REQ-12)", () => {
     const at = (label: string): number =>
       lines.findIndex((line) => line.kind === "section" && line.label === label);
     expect(at("SESSION")).toBeLessThan(
-      lines.findIndex((line) => line.kind === "row" && line.label === "stage"),
+      lines.findIndex((line) => line.kind === "row" && line.label === "agent"),
     );
     expect(at("REPO")).toBeLessThan(
       lines.findIndex((line) => line.kind === "row" && line.label === "git"),
@@ -1157,8 +1157,8 @@ describe("panel lines (REQ-12)", () => {
     const labels = lines.filter((line) => line.kind === "row").map((line) => line.label);
     expect(labels).not.toContain("agent");
     expect(lines.some((line) => line.kind === "badge")).toBe(false);
-    // The stage is always known, so that row never disappears.
-    expect(labels).toContain("stage");
+    // The stage is not a panel row at all: its home is the header badge.
+    expect(labels).not.toContain("stage");
   });
 
   it("renders nothing at all when the plan says the panel is hidden", () => {
@@ -1360,6 +1360,194 @@ describe("busy raven (REQ-73)", () => {
 
 // ── the rendered frame ───────────────────────────────────────────────────────
 
+/** The final frame, ANSI-stripped, one entry per terminal row. */
+function frameRows(output: string): string[] {
+  const rows = output.replace(ANSI, "").split("\n").map((line) => line.replace(/\s+$/, ""));
+  while (rows.length > 0 && rows[rows.length - 1] === "") rows.pop();
+  return rows;
+}
+
+/** The header box's painted row range, borders included. */
+function headerBox(rows: string[]): { top: number; bottom: number } {
+  const top = rows.findIndex((row) => row.includes("╭"));
+  expect(top, "header box top border").toBeGreaterThanOrEqual(0);
+  const bottom = rows.findIndex((row, index) => index > top && row.includes("╰"));
+  expect(bottom, "header box bottom border").toBeGreaterThan(top);
+  return { top, bottom };
+}
+
+/**
+ * ADR-73 — one home per fact.
+ *
+ * These tests fix the *division*, not the wording: the header is identity and
+ * ephemeral state (the live stage and the project path, then the two models),
+ * the panel is the environment, and the footer is the keys plus `usage`. A
+ * regression that lets the environment back onto row 1 fails here, because the
+ * header row would grow a second copy of a fact the panel already reports.
+ */
+describe("one home per fact (ADR-73)", () => {
+  beforeEach(() => {
+    events.clear();
+  });
+
+  afterEach(() => {
+    events.clear();
+  });
+
+  it("keeps the header to the stage badge, the project and the models", async () => {
+    const harness = await mountLive(createMockLive(), 140, 40);
+    harness.unmount();
+
+    const rows = frameRows(harness.output());
+    const { bottom } = headerBox(rows);
+    const stageRow = rows[bottom - 2] ?? "";
+    const modelRow = rows[bottom - 1] ?? "";
+
+    expect(stageRow).toMatch(/\[[^\]]*REFINE\]/);
+    expect(stageRow).toContain(mockCfg.projectPath);
+    expect(modelRow).toContain("thinker:");
+    expect(modelRow).toContain("executor:");
+
+    // Every environment fact has exactly one surface — the panel. The header
+    // must not carry a second copy of any of them.
+    for (const [name, row] of [
+      ["stage row", stageRow],
+      ["models row", modelRow],
+    ] as const) {
+      expect(row, name).not.toContain("MCP:");
+      expect(row, name).not.toContain("runtime:");
+      expect(row, name).not.toContain("⎇");
+      expect(row, name).not.toContain("sandbox");
+      expect(row, name).not.toMatch(/\bctx\b/);
+    }
+  });
+
+  it("still spends two header context rows, so the header's height does not move", async () => {
+    const harness = await mountLive(createMockLive(), 140, 40);
+    harness.unmount();
+
+    // The literal the acceptance criteria fixes: the header's height and every
+    // budget derived from it (reserved rows, card heights, the decision modal)
+    // must not move when values leave the header.
+    expect(LIVE_HEADER_CONTEXT_ROWS).toBe(2);
+
+    const rows = frameRows(harness.output());
+    const { top, bottom } = headerBox(rows);
+    const plan = ravenHeaderPlan({
+      columns: 140,
+      rows: 40,
+      contextRows: LIVE_HEADER_CONTEXT_ROWS,
+      reservedRows: VIEWPORT_RESERVED_ROWS_CLOSED,
+      outerInset: 2,
+    });
+
+    // The painted box is exactly what a two-context-row header costs: the art,
+    // the stage row, the models row and the two borders. Dropping the values
+    // that left did not drop a row, and nothing new was added in their place.
+    expect(plan.contextRows).toBe(2);
+    expect(plan.variant).toBe("full");
+    expect(bottom - top + 1).toBe(plan.height);
+    // The plan and the render agree on how many context rows there are: the
+    // interior the frame paints is the art plus the promised context rows.
+    expect(bottom - top - 1 - plan.artRows).toBe(LIVE_HEADER_CONTEXT_ROWS);
+    // The two context rows are the last two inside the box.
+    expect(rows[bottom - 2]).toMatch(/\[[^\]]*REFINE\]/);
+    expect(rows[bottom - 1]).toContain("thinker:");
+  });
+
+  it("paints the environment nowhere while the panel is hidden", async () => {
+    const live = createMockLive();
+    const harness = await mountLive(live, SIDE_PANEL_MIN_COLUMNS - 10, 30);
+    harness.unmount();
+
+    // Below the panel threshold the environment has no surface at all; the
+    // header must not silently take the job back (ADR-73's accepted cost).
+    expect(live.getDiagnostics).not.toHaveBeenCalled();
+    const output = harness.output();
+    expect(output).not.toContain("MCP:");
+    expect(output).not.toContain("runtime:");
+    expect(output).not.toContain("⎇");
+  });
+
+  it("announces a project path too long for row 1 instead of wrapping it", async () => {
+    const projectPath = `/${"deeply-nested-segment/".repeat(12)}`;
+    const cfg = { ...mockCfg, projectPath, cwd: projectPath } as RunConfig;
+    const harness = await mountLive(createMockLive(), 100, 30, cfg);
+    harness.unmount();
+
+    const rows = frameRows(harness.output());
+    const { top, bottom } = headerBox(rows);
+    const stageRow = rows[bottom - 2] ?? "";
+
+    expect(stageRow).toMatch(/\[[^\]]*REFINE\]/);
+    // A value that does not fit is clamped in display columns and says so —
+    // never a silent crop and never a second painted row.
+    expect(stageRow).toContain("…");
+    expect(stageRow).not.toContain(projectPath);
+    expect(stringWidth(stageRow)).toBeLessThanOrEqual(100);
+    expect(bottom - top + 1).toBe(
+      ravenHeaderPlan({
+        columns: 100,
+        rows: 30,
+        contextRows: LIVE_HEADER_CONTEXT_ROWS,
+        reservedRows: VIEWPORT_RESERVED_ROWS_CLOSED,
+        outerInset: 2,
+      }).height,
+    );
+  });
+
+  it("keeps the two header context rows on a terminal too narrow for both models", async () => {
+    // 40 columns leaves the models row less than the 16 columns both ids need,
+    // so the executor is dropped — not wrapped and not pushed onto a third row.
+    const harness = await mountLive(createMockLive(), 40, 24);
+    harness.unmount();
+
+    const rows = frameRows(harness.output());
+    const { top, bottom } = headerBox(rows);
+    const stageRow = rows[bottom - 2] ?? "";
+    const modelRow = rows[bottom - 1] ?? "";
+
+    expect(stageRow).toMatch(/\[[^\]]*REFINE\]/);
+    expect(modelRow).toContain("thinker:");
+    expect(modelRow).not.toContain("executor:");
+    // No row may claim a column the terminal does not have, and the header's
+    // height is still the stage row plus the models row.
+    for (const [index, row] of rows.entries()) {
+      expect(stringWidth(row), `row ${index}`).toBeLessThanOrEqual(40);
+    }
+    expect(bottom - top + 1).toBe(
+      ravenHeaderPlan({
+        columns: 40,
+        rows: 24,
+        contextRows: LIVE_HEADER_CONTEXT_ROWS,
+        reservedRows: VIEWPORT_RESERVED_ROWS_CLOSED,
+        outerInset: 2,
+      }).height,
+    );
+  });
+
+  it("keeps the footer to the keys and the usage figure, never the stage", async () => {
+    const harness = await mountLive(createMockLive(), 140, 40);
+    try {
+      events.emit("usage", {
+        total: { inputTokens: 12_400, outputTokens: 3_200, costUsd: 0.42 },
+      });
+      await tick();
+    } finally {
+      harness.unmount();
+    }
+
+    const rows = frameRows(harness.output());
+    const footer = rows[rows.length - 1] ?? "";
+    // The keys live on the left, `usage` on the right (H-13), and the stage is
+    // the header badge's fact, so it cannot appear in either cell.
+    expect(footer).toContain("[Enter] Send");
+    expect(footer).toContain("12.4k in / 3.2k out · $0.42");
+    expect(footer).not.toContain("stage:");
+    expect(footer).not.toContain("REFINE");
+  });
+});
+
 describe("live frame with the side panel (REQ-12)", () => {
   beforeEach(() => {
     events.clear();
@@ -1375,13 +1563,16 @@ describe("live frame with the side panel (REQ-12)", () => {
 
     const output = harness.output();
     expect(output).toContain(PANEL_TITLE);
-    expect(output).toContain("stage");
-    expect(output).toContain("REFINE");
+    // The stage is the header's badge; the panel no longer repeats it.
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
+    expect(output).not.toContain("stage");
     expect(output).toContain("agent");
     expect(output).toContain("thinker");
     expect(output).toContain("executor");
     expect(output).toContain("MCP:");
-    expect(output).toContain("feature/live-layout");
+    // The panel is the only home of the working-tree state: the branch is
+    // clamped to its value column, but the `dirty` fact always survives.
+    expect(output).toContain("feature/live");
     expect(output).toContain("dirty");
     expect(output).toContain("sandbox");
     expect(output).toContain("42 entities");
@@ -1422,7 +1613,8 @@ describe("live frame with the side panel (REQ-12)", () => {
     const output = harness.output();
     expect(output).not.toContain(PANEL_TITLE);
     expect(output).toContain("Conversation");
-    expect(output).toContain("stage: REFINE");
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
+    expect(output).not.toContain("stage:");
   });
 
   it("never probes diagnostics on a terminal too narrow for the panel", async () => {
@@ -1445,21 +1637,27 @@ describe("live frame with the side panel (REQ-12)", () => {
     expect(harness.output()).toContain("System Diagnostics");
   });
 
-  it("renders the branch, its dirtiness and the sandbox in the header too", async () => {
+  it("renders the branch, its dirtiness and the sandbox in the panel only", async () => {
     const harness = await mountLive(createMockLive(), 140, 40);
     harness.unmount();
 
     const output = harness.output();
-    // The header's own status cell: git state on the right of the models row.
-    expect(output).toMatch(/thinker:.*executor:.*⎇/);
-    expect(output).toContain("⎇ feature/live-layout");
-    expect(output).toContain("dirty");
-    expect(output).toContain("sandbox");
+    expect(output).toContain(PANEL_TITLE);
+    const plain = output.replace(ANSI, "");
+    // One home per fact (ADR-73): the environment lives in the panel, so the
+    // branch appears exactly once and never on the header's models row. The
+    // value column clamps the branch, but the dirty state keeps its columns.
+    expect(plain.split("⎇ feature/live").length - 1).toBe(1);
+    expect(plain).toContain("dirty");
+    expect(plain).toContain("sandbox");
+    const modelRow = plain.split("\n").find((line) => line.includes("thinker:"));
+    expect(modelRow).toBeDefined();
+    expect(modelRow).not.toContain("⎇");
   });
 
-  it("counts the conversation in the header and the panel, and omits an empty one", async () => {
-    // A compact git status leaves the header's own status cell room for the
-    // counter; the panel always carries it on its own row.
+  it("counts the conversation in the panel only, and omits an empty one", async () => {
+    // The panel is the environment's one home, so the counter there is the only
+    // one — the header's second row carries the models and nothing else.
     const compact = createMockLive({
       getDiagnostics: vi.fn().mockResolvedValue({
         ...diagnostics,
@@ -1476,14 +1674,34 @@ describe("live frame with the side panel (REQ-12)", () => {
     harness.unmount();
 
     const output = harness.output();
-    expect(output).toContain("⎇ main · clean · ctx 2 turns");
-    // The panel carries the same count on a row of its own.
     expect(output).toContain("2 turns · 41 chars");
+    expect(output).not.toContain("ctx 2 turns");
+    const plain = output.replace(ANSI, "");
+    expect(plain.split("2 turns").length - 1).toBe(1);
 
     // An empty conversation reports no context size at all (NFR-10).
     const empty = await mountLive(createMockLive(), 120, 40);
     empty.unmount();
     expect(empty.output()).not.toContain("ctx 0 turns");
+    expect(empty.output()).not.toContain("0 turns");
+  });
+
+  it("spends the columns the header freed on the project path (100x30)", async () => {
+    const projectPath = "/home/dev/workspaces/huginn-project-with-a-very-long-name-for-layout";
+    const cfg = { ...mockCfg, projectPath, cwd: projectPath } as RunConfig;
+    const harness = await mountLive(createMockLive(), 100, 30, cfg);
+    harness.unmount();
+
+    const output = harness.output();
+    // Row 1 no longer pays for the MCP badge or the runtime name, so a path that
+    // used to be clamped is painted whole — and nothing else claims its row.
+    expect(projectPath.length).toBeGreaterThan(60);
+    expect(output).toContain(projectPath);
+    expect(output).not.toContain("runtime:");
+    const stageRow = output.replace(ANSI, "").split("\n").find((line) => line.includes("REFINE"));
+    expect(stageRow).toBeDefined();
+    expect(stageRow).toContain(projectPath);
+    expect(stageRow!.length).toBeLessThanOrEqual(100);
   });
 
   it("wraps a long paragraph one terminal row at a time (REV-6201)", async () => {
@@ -1553,7 +1771,8 @@ describe("live frame with the side panel (REQ-12)", () => {
       expect(output, where).toContain("Conversation");
       expect(output, where).toContain("THINKING & LIVE AGENT STREAM");
       expect(output, where).toContain("❯");
-      expect(output, where).toContain("stage: REFINE");
+      expect(output, where).toMatch(/\[[^\]]*REFINE\]/);
+      expect(output, where).not.toContain("stage:");
       // The panel appears exactly from the threshold up.
       expect(output.includes(PANEL_TITLE), where).toBe(columns >= SIDE_PANEL_MIN_COLUMNS);
       expect(visibleLines(output).length, where).toBeLessThanOrEqual(rows);
@@ -1611,7 +1830,8 @@ describe("live frame under the decision modal (REQ-69)", () => {
     // but it and the footer are still inside the frame, not under the modal.
     expect(output).toContain("Message...");
     expect(output).toContain("[Tab] Focus:");
-    expect(output).toContain("stage: REFINE");
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
+    expect(output).not.toContain("stage:");
     // The modal is there, with its alert border and a windowed body.
     expect(output).toContain(decisionTitle(tallDecision));
     expect(output).toContain("╔");

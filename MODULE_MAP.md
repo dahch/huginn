@@ -17,9 +17,9 @@ canonical `SPEC.md` ones.
 | `src/engine/steps/` | REQ-40, REQ-41, REQ-60, REQ-61, REQ-64…REQ-66 |
 | `src/engine/memory/`, `src/engine/steps/retrieval.ts` | REQ-64…REQ-66 |
 | `src/engine/sandbox.ts`, `src/engine/verify.ts` | REQ-56 |
-| `src/tui/*`, `src/headless.ts` | REQ-21, REQ-29, REQ-31, REQ-51, REQ-52, REQ-68, REQ-69, REQ-70, REQ-71, REQ-72, REQ-73, REQ-74, REQ-75, REQ-76 |
-| `src/tui/Modal.tsx`, `src/tui/footer.ts` | REQ-75 |
-| `src/tui/sessionContext.ts`, `src/tui/RavenHeader.tsx`, `src/tui/InfoPanel.tsx` | REQ-47, REQ-76 |
+| `src/tui/*`, `src/headless.ts` | REQ-21, REQ-29, REQ-31, REQ-51, REQ-52, REQ-68, REQ-69, REQ-70, REQ-71, REQ-72, REQ-73, REQ-74, REQ-75, REQ-76, REQ-77 |
+| `src/tui/Modal.tsx`, `src/tui/footer.ts` | REQ-75, REQ-77 |
+| `src/tui/sessionContext.ts`, `src/tui/RavenHeader.tsx`, `src/tui/InfoPanel.tsx` | REQ-47, REQ-76, REQ-77 |
 | `src/tui/search.ts`, `src/tui/clipboard.ts` | REQ-72 |
 | `src/tui/markdown.tsx` | REQ-74 |
 | `src/engine/permissionPolicy.ts`, `src/engine/runtimeEvents.ts`, `src/engine/agent/drivers/opencode.ts` | REQ-37, REQ-42, REQ-67 |

@@ -7,6 +7,10 @@
  * worktree sandbox, Muninn's counts and the size of the conversation — plus one
  * stage-appropriate tip.
  *
+ * It is the only home of the environment (ADR-73): the header carries the live
+ * stage and the project, the panel carries the agent, MCP, git, sandbox, Muninn
+ * and context size, and the footer carries the keys. No fact is repeated.
+ *
  * Its data rows are grouped into `SESSION`, `REPO` and `MEMORY` sections, and the
  * tip is anchored to the bottom of the box instead of floating under the last
  * row. A section with no data is not drawn at all.
@@ -64,14 +68,6 @@ export const PANEL_TIP_PREFIX = "TIP  ";
 
 /** Everything the panel renders. Missing fields drop their row, never print a placeholder. */
 export interface PanelData {
-  /** The live stage's label (`REFINE`, `DRAFT`…). */
-  stageLabel: string;
-  /** The theme token that label is painted with. */
-  stageToken: ThemeToken;
-  /** `true` while a turn is in flight — the spinner joins the stage row. */
-  busy: boolean;
-  /** The animated spinner frame shown while {@link busy}. */
-  spinner: string;
   /** Active agent/runtime name. */
   agentName: string;
   /** The attributed MCP badge text (`mcpBadgeText(formatMcpBadge(...))`). */
@@ -160,13 +156,16 @@ export function sidePanelPlan(request: SidePanelRequest): SidePanelPlan {
 
 /**
  * The panel's lines, in priority order: the title, then the `SESSION` rows
- * (stage, agent, conversation size), the attributed MCP badge, the `REPO` rows
+ * (agent, conversation size), the attributed MCP badge, the `REPO` rows
  * (git state and its sandbox), the `MEMORY` rows (Muninn counts), and finally
  * the tip. A section header is emitted only when the section has at least one
  * row, so an absent section never leaves a label with nothing under it.
  * Everything is clipped to `contentWidth`, so a long model id or a hostile
  * branch name can neither widen the box nor wrap into a row the layout did not
  * reserve.
+ *
+ * The live stage is deliberately not a row here: it lives in the header's badge,
+ * and one fact has one home (ADR-73). The panel reports the environment.
  */
 export function panelLines(data: PanelData, contentWidth: number): PanelLine[] {
   const width = Math.max(0, Math.floor(contentWidth));
@@ -180,9 +179,7 @@ export function panelLines(data: PanelData, contentWidth: number): PanelLine[] {
   const section = (label: string, rows: PanelLine[]): PanelLine[] =>
     rows.length > 0 ? [{ kind: "section", label }, ...rows] : [];
 
-  const session: PanelLine[] = [
-    row("stage", `${data.stageLabel}${data.busy ? ` ${data.spinner}` : ""}`, data.stageToken),
-  ];
+  const session: PanelLine[] = [];
   if (data.agentName) session.push(row("agent", data.agentName, "warn"));
   // The models live in the header only: repeating them here cost two rows and
   // told the same story twice.
@@ -193,7 +190,9 @@ export function panelLines(data: PanelData, contentWidth: number): PanelLine[] {
   if (context) session.push(row("ctx", context, "muted"));
 
   const repo: PanelLine[] = [];
-  const git = gitStat(data.git);
+  // The panel is the only home of the working-tree state, so the formatter is
+  // told the row's budget: it clamps the branch and keeps `clean`/`dirty`.
+  const git = gitStat(data.git, valueWidth);
   if (git) {
     repo.push(row("git", git, data.git!.clean ? "ok" : "danger"));
     const sandbox = sandboxLabel(data.git);

@@ -81,7 +81,6 @@ import {
   fetchMcpStatusWithTimeout,
   formatMcpBadge,
   MCP_STATUS_POLL_TIMEOUT_MS,
-  type McpBadge,
 } from "../engine/agent/mcpStatus.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { copyToTerminal, formatCharCount } from "./clipboard.js";
@@ -99,7 +98,6 @@ import { footerHints } from "./footer.js";
 import { LiveHero } from "./LiveHero.js";
 import {
   mcpBadgeText,
-  sessionStat,
   stageTip,
   type ContextStat,
   type GitSummary,
@@ -113,8 +111,16 @@ const STATUS_VALUE_WIDTH = 35;
 const STATUS_LINE_WIDTH = STATUS_LABEL_WIDTH + STATUS_VALUE_WIDTH + 4;
 const STATUS_TITLE = "System Diagnostics";
 
-/** Live context rows rendered by `LiveHeader` (stage/badge + models). */
-const LIVE_HEADER_CONTEXT_ROWS = 2;
+/**
+ * Live context rows rendered by `LiveHeader` (stage badge + models).
+ *
+ * Exported because it is a layout contract, not an implementation detail: the
+ * header's height, and therefore every budget derived from it
+ * (`VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN`, the card heights and the decision
+ * modal's rows), moves with it. `test/tui/liveLayout.test.ts` asserts the value
+ * and that the painted header spends exactly that many context rows (ADR-73).
+ */
+export const LIVE_HEADER_CONTEXT_ROWS = 2;
 /**
  * Columns the live view's outer `paddingX={1}` spends: around the header and
  * around the main row (cards + side panel) below it.
@@ -189,11 +195,6 @@ const DIAGNOSTICS_TTL_MS = 3_000;
  * `git status` on the project.
  */
 const DIAGNOSTICS_POLL_MS = 15_000;
-/** Share of the header's second row the git/sandbox/context summary may claim. */
-const HEADER_STATUS_SHARE = 0.4;
-/** Columns the header keeps for the models before it shows that summary at all. */
-const HEADER_MIN_MODEL_COLUMNS = 30;
-
 /** Share of the cards row the conversation gets before the split is moved. */
 export const DEFAULT_SPLIT_RATIO = 0.58;
 /** One Ctrl+↑/↓ press moves the split by this much. */
@@ -1694,10 +1695,6 @@ function RefineView({
   /** The one reminder the panel and the hero's tip box show for this stage. */
   const tip = stageTip(stage);
   const panelData: PanelData = {
-    stageLabel: STAGE_LABEL[stage].label,
-    stageToken: STAGE_LABEL[stage].token,
-    busy,
-    spinner,
     agentName: currentRuntimeName,
     mcpText: mcpBadgeText(mcpBadge),
     mcpToken: mcpStatusToken(mcpBadge.status),
@@ -2215,14 +2212,14 @@ function RefineView({
   const visibleStreamLines = streamLines.slice(streamStart, streamStart + visibleStreamLinesCount);
 
   // One footer policy for both dashboards (H-13): the left cell belongs to the
-  // focused surface, the right cell keeps usage and the stage badge.
+  // focused surface, the right cell keeps the usage figure. The stage lives in
+  // the header badge, so the footer does not repeat it.
   const footer = footerHints({
     focus,
     paletteOpen: suggestionsOpen,
     busy,
     maximized,
     usage,
-    stage: STAGE_LABEL[stage].label,
     hiddenLogs,
     search: search !== null,
     searchMatches: searchMatches.length,
@@ -2244,12 +2241,8 @@ function RefineView({
         cfg={cfg}
         spinner={spinner}
         busy={busy}
-        runtimeName={currentRuntimeName}
         thinker={currentThinker}
         executor={currentExecutor}
-        mcpBadge={mcpBadge}
-        git={gitSummary}
-        context={sessionContext}
       />
 
       {showModelPicker ? (
@@ -2406,12 +2399,8 @@ function LiveHeader({
   cfg,
   spinner,
   busy,
-  runtimeName,
   thinker,
   executor,
-  mcpBadge,
-  git,
-  context,
 }: {
   plan: RavenHeaderPlan;
   stage: LiveStage;
@@ -2419,58 +2408,33 @@ function LiveHeader({
   spinner: string;
   /** The arm's turn is in flight: the raven opens its beak while thinking. */
   busy: boolean;
-  runtimeName: string;
   thinker: string;
   executor: string;
-  /** The attributed MCP badge (already resolved by the caller, AC-32.4). */
-  mcpBadge: McpBadge;
-  /** The working tree as last probed, or `null` while nothing is known. */
-  git: GitSummary | null;
-  /** The conversation's own size, for the header's context counter. */
-  context: ContextStat;
 }) {
   const s = STAGE_LABEL[stage];
-  // Presence over decoration (AC-29.4): the raven brand is followed by the live
-  // stage, a (truthful) MCP badge, the active runtime, the project path and the
-  // active models. Every dynamic value is sanitized and clamped to the columns
-  // actually left over, and detail that no longer fits is dropped rather than
-  // wrapped, so each row costs exactly the one line the budget reserved (AC-29.3).
+  // Identity and ephemeral state only (ADR-73): row 1 is the live stage badge
+  // and the project the session runs on; row 2 is the two active models. The
+  // environment (agent, MCP, git, sandbox, Muninn, context size) has one home in
+  // the side panel, so the header stops repeating it. Every dynamic value is
+  // sanitized and clamped to the columns actually left over, and detail that no
+  // longer fits is dropped rather than wrapped, so each row costs exactly the
+  // one line the budget reserved (AC-29.3).
   const rowWidth = plan.contentWidth;
   const gap = 2;
   const sep = " · ";
   const stageBadge = `[${spinner} ${s.label}]`;
 
-  // Row 1: right cell, left to right — MCP badge → runtime → project path. The
-  // badge attributes its source agent, so it gets a wider budget, clamped to the
-  // columns the right cell actually has (AC-29.3) before the rest is laid out.
-  const rightBudget = Math.max(0, rowWidth - stageBadge.length - gap - 2);
-  const mcpText = headerValue(mcpBadgeText(mcpBadge), Math.max(0, Math.min(40, rightBudget)));
-  const runtimeLabel = `${sep}runtime: `;
-  const runtimeBudget = Math.max(6, Math.min(24, Math.floor(rightBudget * 0.25)));
-  const runtimeValue =
-    rightBudget - mcpText.length - runtimeLabel.length >= runtimeBudget
-      ? headerValue(runtimeName, runtimeBudget)
-      : "";
-  const projectRoom =
-    rightBudget - mcpText.length - (runtimeValue ? runtimeLabel.length + runtimeValue.length : 0) - sep.length;
-  const projectValue = projectRoom >= 10 ? headerValue(cfg.projectPath, projectRoom) : "";
+  // Row 1: the stage badge on the left, the project path on the right. With the
+  // MCP badge and the runtime name gone from this row, the path gets every
+  // column the badge does not need; `gap` keeps the two cells from touching and
+  // `sep` is the ` · ` prefix the project cell draws.
+  const projectBudget = Math.max(0, rowWidth - stageBadge.length - gap - sep.length);
+  const projectValue = headerValue(cfg.projectPath, projectBudget);
 
-  // Row 2 (REQ-12): the models on the left, the session's own status on the
-  // right — branch and whether the tree is dirty, the worktree sandbox, and the
-  // conversation counter. The status cell is whole-or-nothing: it only claims
-  // columns while the models keep `HEADER_MIN_MODEL_COLUMNS` of their own, so a
-  // squeezed row loses the summary rather than the model names, and it is
-  // clamped to its share of the row so it can never wrap.
-  const statusRoom = Math.min(
-    Math.max(0, rowWidth - HEADER_MIN_MODEL_COLUMNS),
-    Math.floor(rowWidth * HEADER_STATUS_SHARE),
-  );
-  const statusText = statusRoom > 0 ? sessionStat(git, context, statusRoom) : "";
-  const modelsWidth = rowWidth - (statusText.length > 0 ? statusText.length + gap : 0);
-  const modelLabels = "thinker: ".length + "executor: ".length;
-  const modelRoom = modelsWidth - gap - modelLabels - 2;
+  // Row 2 (REQ-12): the models, and nothing else.
+  const modelRoom = rowWidth - gap - "thinker: ".length - "executor: ".length - 2;
   const bothModels = modelRoom >= 16;
-  const thinkerBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : modelsWidth - "thinker: ".length - gap);
+  const thinkerBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : rowWidth - "thinker: ".length - gap);
   const safeThinker = headerValue(thinker, thinkerBudget);
   const executorBudget = modelRoom - safeThinker.length;
   const safeExecutor = bothModels && executorBudget >= 4 ? headerValue(executor, executorBudget) : "";
@@ -2486,19 +2450,6 @@ function LiveHeader({
             {stageBadge}
           </Text>,
           <>
-            <Text key="mcp" color={mcpStatusToken(mcpBadge.status)} wrap="truncate">
-              {mcpText}
-            </Text>
-            {runtimeValue ? (
-              <>
-                <Text key="runtime-label" color={THEME.muted} wrap="truncate">
-                  {runtimeLabel}
-                </Text>
-                <Text key="runtime" color={THEME.warn} wrap="truncate">
-                  {runtimeValue}
-                </Text>
-              </>
-            ) : null}
             {projectValue ? (
               <Text key="project" color={THEME.muted} wrap="truncate">
                 {`${sep}${projectValue}`}
@@ -2521,13 +2472,6 @@ function LiveHeader({
                     {safeExecutor}
                   </Text>
                 </>,
-              ]
-            : []),
-          ...(statusText
-            ? [
-                <Text key="status" color={THEME.muted} wrap="truncate">
-                  {statusText}
-                </Text>,
               ]
             : []),
         ],

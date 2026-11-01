@@ -383,8 +383,9 @@ writes), `test/engine/phasesContractGuard.test.ts` (a compiler-contract verifica
 title drift guard and the modal's row contract, including the ASCII/one-column rule),
 `test/tui/ravenHeader.test.ts` + `src/brand.test.ts` (the four-rung header plan, the raven moods
 and their shared grid, the display-column truncation with `…`, and a scan of both frames for a
-pictograph or a double-width row), `test/tui/sessionContext.test.ts` (the `mcpBadgeText` mapping and
-`formatCount`, REQ-76 / ADR-72), `test/tui/liveStageAccent.test.ts` (the busy stage accent),
+pictograph or a double-width row), `test/tui/sessionContext.test.ts` (the `mcpBadgeText` mapping,
+the budgeted `gitStat` that keeps `clean`/`dirty`, and `formatCount`; REQ-76 / REQ-77),
+`test/tui/liveStageAccent.test.ts` (the busy stage accent),
 `test/tui/card.test.ts` + `test/tui/cardColors.test.ts` (the `CARD_CHROME` cost table, the painted
 height per tone, the borderless log tail and the emitted border colours),
 `test/tui/markdown.test.ts` + `test/tui/markdownTable.test.ts` + `test/tui/liveMarkdownTable.test.ts`
@@ -402,7 +403,7 @@ keys, search/draft restoration, message jump, Esc/search interaction, OSC 52 cop
 border), `src/tui/search.test.ts` + `src/tui/clipboard.test.ts` (the pure match/label and clipboard
 helpers),
 `test/tui/infoPanel.test.ts` (the side panel's geometry, its `SESSION`/`REPO`/`MEMORY` sections, the
-bottom-anchored tip and the rows it must not invent), and
+bottom-anchored tip, the `stage` row it no longer draws and the rows it must not invent), and
 `test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
 `test/commands/liveSessions.test.ts` (the persisted live store, resume flags and reattach).
 
@@ -517,7 +518,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Nine display conventions a TUI change must follow:
+Ten display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -588,8 +589,10 @@ Nine display conventions a TUI change must follow:
   `q` only `HelpModal`/`SkillsModal`, `Enter` only the three selectors (Skills' own execute action
   excepted), `Tab` only the Skills/MCP panes, `p`/`g` only the profile picker, and `k`/`j` only where
   they already were. The footer is the pure `footerHints` (`src/tui/footer.ts`; `footerHints.ts` is a
-  re-export): the left cell is the **focused** surface's keys, the right keeps usage + stage, and the
-  palette/search/busy/maximized/hidden-log states replace the left where they own the keyboard. With
+  re-export): the left cell is the **focused** surface's keys, the right keeps `usage` (the run
+  dashboard adds its decision notice there), and the
+  palette/search/busy/maximized/hidden-log states replace the left where they own the keyboard. The
+  live stage is **not** a footer value: it lives in the header badge (ADR-73). With
   `columns`, the right cell is clamped first through `headerValue`, so the footer never exceeds the
   terminal; neither dashboard may re-inline those literals. `test/tui/modalContract.test.ts` and
   `src/tui/footer.test.ts` are the drift guards (REQ-75 / ADR-71).
@@ -607,6 +610,19 @@ Nine display conventions a TUI change must follow:
   modal while it is open. While a turn is in flight the conversation's `primary` border uses the
   stage's `STAGE_LABEL` token (`accent`/`warn`/`thinker`/`executor`); a focused card still wins with
   `borderFocus` (REQ-73 / ADR-69).
+- **One fact has one home: the header is identity and ephemeral state, the panel is the
+  environment, the footer is the keys.** The live `LiveHeader` row 1 is `[<spinner> <STAGE>]` plus
+  the project path, and row 2 is the two active models; the panel owns `agent`, the mapped MCP badge,
+  `git`, `sandbox`, `muninn`, `ctx` and the bottom-anchored `TIP`; `footerHints` owns the keys and
+  `usage`. Do not re-add the runtime name, the MCP badge, git, the sandbox or the context counter to
+  the header, the `stage` row to `PanelData`/`panelLines`, or `stage:` to the footer — that is the
+  duplication ADR-73 removed. `LIVE_HEADER_CONTEXT_ROWS` stays `2` so the header's height and every
+  budget derived from it (`VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN`, card heights, the decision modal)
+  do not move. `gitStat(git, maxWidth?)` reserves the `clean`/`dirty` suffix before clamping the
+  branch, because the panel is the only surface that reports the working-tree state. Guards:
+  `test/tui/liveLayout.test.ts` (one `⎇` in the panel, none on the header's models row; the
+  conversation counter appears once; a long path is whole at 100×30), `test/tui/infoPanel.test.ts`
+  (`stage` is not a row) and `src/tui/footer.test.ts` (the right cell never carries the stage).
 - **A clamped value announces its cut, and the console paints no pictograph.** `headerValue`
   (`src/tui/RavenHeader.tsx`) sanitizes, collapses whitespace and clamps in **display columns**
   (`stringWidth`), never code units: a fitting value is returned intact, a larger one keeps its head
@@ -616,7 +632,8 @@ Nine display conventions a TUI change must follow:
   inherits the same contract, so a clamped footer cell ends in `…`. The engine's MCP badge still
   ships `🟢`/`🟡`/`⚪`; the console maps it through `mcpBadgeText` (`src/tui/sessionContext.ts`) and
   `MCP_STATUS_GLYPHS` (`healthy` ✓, `degraded` !, `unknown` ·) before painting, so the row reads
-  `MCP: ✓ 2 connected · pi` in both headers and in `InfoPanel`. Never change `formatMcpBadge` to
+  `MCP: ✓ 2 connected · pi` in the run dashboard header and in `InfoPanel` (the live header no
+  longer carries it, ADR-73). Never change `formatMcpBadge` to
   fix a TUI width bug, and never add a pictograph to console chrome (REQ-76 / ADR-72).
   `SIDE_PANEL_WIDTH` is 36 columns so the value column is 23 columns, and `memoryStat` formats its
   counters with `formatCount`; the 100-column threshold still leaves 44 columns for the

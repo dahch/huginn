@@ -7,7 +7,6 @@ const base = {
   busy: false,
   maximized: null,
   usage: undefined,
-  stage: undefined,
 };
 
 describe("footerHints — the footer speaks for the focused surface (H-13)", () => {
@@ -52,11 +51,21 @@ describe("footerHints — the footer speaks for the focused surface (H-13)", () 
     expect(hints.left).toContain("[Esc] Abort");
   });
 
-  it("keeps usage and the stage badge on the right, as before", () => {
-    expect(footerHints({ ...base, usage: "1.2k/8k", stage: "REFINE" }).right).toBe(
-      "1.2k/8k · stage: REFINE",
-    );
-    expect(footerHints({ ...base, stage: "EXECUTE" }).right).toBe("stage: EXECUTE");
+  it("keeps usage on the right and never repeats the live stage", () => {
+    expect(footerHints({ ...base, usage: "1.2k/8k" }).right).toBe("1.2k/8k");
+    expect(footerHints({ ...base }).right).toBe("");
+  });
+
+  it("leaves the right cell to usage on every surface, never to a stage badge", () => {
+    const usage = "1.2k in / 8k out · $0.02";
+    for (const focus of ["composer", "chat", "stream", "run"] as const) {
+      const hints = footerHints({ ...base, focus, usage });
+      // The live stage belongs to the header badge (ADR-73); the footer's two
+      // cells are the focused surface's keys and the usage figure.
+      expect(hints.right, focus).toBe(usage);
+      expect(hints.left, focus).not.toContain("stage:");
+      expect(hints.right, focus).not.toContain("stage:");
+    }
   });
 
   it("uses the run keys and names a decision that owns the keyboard", () => {
@@ -75,12 +84,11 @@ describe("footerHints — the footer speaks for the focused surface (H-13)", () 
       ...base,
       focus: "chat",
       usage: "123k/200k tokens",
-      stage: "EXECUTE",
       hiddenLogs: 3,
       busy: true,
       columns: 100,
     });
-    expect(hints.right).toBe("123k/200k tokens · stage: EXECUTE");
+    expect(hints.right).toBe("123k/200k tokens");
     expect(hints.left.length + hints.right.length).toBeLessThanOrEqual(100);
     // The card's keys are clamped, not silently dropped in favour of the badge.
     expect(hints.left.startsWith("[L] logs · 3")).toBe(true);
@@ -157,7 +165,6 @@ describe("footerHints — clamping is hired only when a width is known", () => {
     ...base,
     focus: "chat" as const,
     usage: "1.2k/8k tokens",
-    stage: "EXECUTE",
     busy: true,
   };
 
@@ -168,12 +175,13 @@ describe("footerHints — clamping is hired only when a width is known", () => {
     }
   });
 
-  it("clamps the right cell first, because the stage badge must survive", () => {
+  it("clamps the right cell first, because the usage figure must survive", () => {
     const hints = footerHints({ ...wide, columns: 40 });
     const full = footerHints(wide);
-    expect(hints.right).toBe("1.2k/8k tokens · stage: EXECUTE");
-    // The badge is intact and the left cell is the head of its own hint, not a
-    // string cut in favour of History/Send — with the `…` that says it was cut.
+    expect(hints.right).toBe("1.2k/8k tokens");
+    // The usage figure is intact and the left cell is the head of its own hint,
+    // not a string cut in favour of History/Send — with the `…` that says it was
+    // cut.
     expect(hints.left.endsWith("…")).toBe(true);
     expect(full.left.startsWith(hints.left.slice(0, -1))).toBe(true);
     expect(hints.left.length).toBe(40 - hints.right.length - 1);
@@ -184,7 +192,6 @@ describe("footerHints — clamping is hired only when a width is known", () => {
       ...base,
       focus: "composer",
       usage: undefined,
-      stage: undefined,
       columns: 20,
     });
     expect(hints.right).toBe("");
@@ -240,7 +247,6 @@ describe("footerHints — purity", () => {
       focus: "chat" as const,
       hiddenLogs: 2,
       usage: "1k/2k",
-      stage: "REVIEW",
       columns: 90,
     };
     const snapshot = { ...input };

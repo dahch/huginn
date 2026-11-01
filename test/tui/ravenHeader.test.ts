@@ -560,7 +560,7 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     events.clear();
   });
 
-  it("renders the mark + wordmark and keeps runtime/thinker/executor/project/MCP context", async () => {
+  it("keeps stage/thinker/executor/project in the header and the environment in the panel", async () => {
     const output = await capture(
       React.createElement(LiveApp, { live: createMockLive(), cfg: mockCfg, initialShowModelPicker: false }),
       100,
@@ -571,14 +571,17 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     for (const row of HUGINN_WORDMARK) {
       expect(output).toContain(row.replace(/\s+$/, ""));
     }
-    // Presence over decoration (AC-29.4).
-    expect(output).toContain("runtime:");
-    expect(output).toContain("opencode");
+    // The header is identity and ephemeral state (ADR-73): the live stage badge,
+    // the project path and the two models.
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
     expect(output).toContain("/mock/project");
     expect(output).toContain("thinker:");
     expect(output).toContain("executor:");
+    // The environment — the runtime/agent, the MCP badge, git — lives in the
+    // panel now, so the header no longer repeats the runtime name.
+    expect(output).toContain("opencode");
     expect(output).toContain("MCP:");
-    expect(output).toContain("REFINE");
+    expect(output).not.toContain("runtime:");
   });
 
   it("renders raven art, not the text mark, on an 80×24 terminal (REQ-73)", async () => {
@@ -597,7 +600,9 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     expect(output).toContain("Conversation");
     // Idle: no stream content, so the agent-output panel is collapsed by design.
     expect(output).not.toContain("THINKING & LIVE AGENT STREAM");
-    expect(output).toContain("stage: REFINE");
+    // The stage is the header's badge; the footer carries keys, not state.
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
+    expect(output).not.toContain("stage:");
     // The frame still fits: the bird costs four rows more than text did, so the
     // cards (and the hero) shrink instead of pushing the composer off-screen.
     expect(visibleLines(output).length).toBeLessThanOrEqual(rows);
@@ -635,7 +640,8 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     expect(output).toContain("▸ /help");
     expect(output).toContain("<(o");
     expect(output).toContain("Conversation");
-    expect(output).toContain("stage: REFINE");
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
+    expect(output).not.toContain("stage:");
     expect(visibleLines(output).length).toBeLessThanOrEqual(rows);
   });
 
