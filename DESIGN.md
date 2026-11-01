@@ -1220,6 +1220,31 @@ High-frequency token streaming from language models can cause rapid React re-ren
 - **1,000-Line Ring Buffer**: Stream lines are clamped to the latest 1,000 lines, preventing unbounded memory growth during long-running builds.
 - **Scroll Containment**: Keyboard navigation (`PageUp`/`PageDown` by 4 lines, `↑`/`↓` line-by-line) operates directly on internal state (`streamScroll`, `chatScroll`). Terminal scrollback remains untainted by mouse or touchpad movements.
 
+### 20.5 The canonical-size visual smoke matrix
+
+The layout invariants used to be confirmed by looking at a screenshot. `test/tui/smokeMatrix.test.ts`
+now mounts both surfaces at 80×24, 100×30, 120×40 and 160×50: `LiveApp` in its `refine` stage and the
+run `Dashboard` with an initial state. The whole matrix runs three times — colour on, `NO_COLOR=1`
+and `HUGINN_THEME=dark` — through the shared `test/tui/inkRender.ts` helper, and each case mounts,
+waits one short flush, reads the painted frame and unmounts, so no timer survives the case.
+
+- **Width is display width.** Every row is stripped of CSI/OSC escapes and measured with
+  `string-width`, never `.length`: box drawing, braille, `…` and accented prose all disagree with
+  code-unit counts. The row count must also fit `rows`, because one extra row pushes the footer off
+  the alternate screen.
+- **Chrome never paints a pictograph.** A `\p{Extended_Pictographic}` match fails the frame; the
+  glyph tables (`src/tui/glyphs.ts`, `src/tui/sessionContext.ts`) are what keep the console on a
+  single-width alphabet.
+- **`NO_COLOR` is proved, not assumed.** Colour is forced at the shell (`FORCE_COLOR=3`), so the
+  absence of `\x1b[3x m`/`\x1b[9x m`/`\x1b[38;`/`\x1b[48;` SGR in the frame is the theme's doing,
+  not a non-TTY runner dropping colour. Bold (`1`/`22`) is not colour and stays allowed.
+- **A failure is a location.** The assertion message names the surface, the size and the offending
+  row (with its measured width and painted text), so CI reports where the grid broke instead of a
+  frame diff nobody can read.
+
+Run it alone with `bun run vitest run test/tui/smokeMatrix.test.ts`; the README's «Validación visual»
+section records the same matrix for users.
+
 ## 21. Decoupled Multi-Agent Runtime Architecture (`IAgentRuntime`)
 
 > **Superseded by §5 / REQ-67.** The engines speak `RuntimePort`; the sections below document the

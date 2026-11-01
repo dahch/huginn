@@ -1122,6 +1122,26 @@ bun run dev -- ...    # run from source
 bun run build         # bundle to dist/ for the global bin
 ```
 
+## Validación visual
+
+La pasada a ojo de la consola es ahora una matriz automática: `test/tui/smokeMatrix.test.ts` monta la
+vista live (`LiveApp` en `refine`) y el dashboard de ejecución (`Dashboard` con el estado inicial) en
+los cuatro tamaños canónicos, y falla si una fila se sale del terminal, si sobran filas o si vuelve a
+aparecer un glifo de doble ancho.
+
+| Superficie | Tamaños | Entornos |
+|---|---|---|
+| `LiveApp` (refine) + `Dashboard` (estado inicial) | 80×24 · 100×30 · 120×40 · 160×50 | color auto · `NO_COLOR=1` · `HUGINN_THEME=dark` |
+
+Cada frame se mide con `string-width` (no con `.length`): ninguna línea supera `columns` en columnas
+de display, el número de líneas no supera `rows`, ninguna línea contiene
+`\p{Extended_Pictographic}`, y bajo `NO_COLOR=1` no aparece ningún SGR de color. El mensaje de fallo
+nombra la superficie, el tamaño y la fila infractora.
+
+```sh
+bun run vitest run test/tui/smokeMatrix.test.ts
+```
+
 ## Built-in step prompts (no installer)
 
 - The roles and task bodies the cycle runs (`spec-auditor`, `qa`, `security`, `doc-writer`,

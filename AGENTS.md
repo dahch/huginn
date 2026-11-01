@@ -397,7 +397,9 @@ surface footer hints, the 100-column clamp and the no-inline-literals guard),
 `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
 composer or footer off an 18-/24-row frame, the live layout keys — `z`, `Ctrl+↑`/`Ctrl+↓`, `L` —
 with the idle log tail and its advertised hidden count on 100×30 frames, the closed/open header budget
-and the `iter n/m` pipeline rail),
+and the `iter n/m` pipeline rail), `test/tui/smokeMatrix.test.ts` (both surfaces at 80×24, 100×30,
+120×40 and 160×50, with colour on, `NO_COLOR=1` and `HUGINN_THEME=dark`: display-column width, row
+count, no pictograph and no colour SGR),
 `test/tui/transcriptNavigation.test.ts` + `test/tui/transcriptSearchColors.test.ts` (the transcript
 keys, search/draft restoration, message jump, Esc/search interaction, OSC 52 copy and the warning
 border), `src/tui/search.test.ts` + `src/tui/clipboard.test.ts` (the pure match/label and clipboard
