@@ -189,7 +189,10 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
   build is killed in its own cgroup instead of thrashing the host; the phase sees a crashed command.
   Payload arguments have `$` doubled (`escapeSystemdArgument`) because systemd expands `$VAR` in
   `ExecStart` and `$$` is its escape. The cap is opt-out (`HUGINN_MEMORY_MAX=off`) and degrades to a
-  plain spawn off Linux or without a user manager — so no test or platform depends on it existing.
+  plain spawn off Linux, without a user manager, or when the manager socket exists but nothing answers
+  on it: `userScopeAvailable` probes liveness with a bounded, process-cached
+  `systemctl --user is-system-running` instead of trusting the socket file — so no test or platform
+  depends on it existing.
 - **Atomic increments.** Every profile runs `VERIFY` (the plan's commands, real exit codes) before
   its commit. After the phase loop, `WorktreeManager.commitPendingChanges` creates a deterministic
   `chore(iter-N): checkpoint — …` commit for anything `COMMIT_ALL` left uncommitted, and only then is

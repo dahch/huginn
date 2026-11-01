@@ -423,8 +423,10 @@ desktop freezes. So huginn also contains the processes it spawns:
   taking the machine with it.
 - The default limit is **70 % of RAM**, clamped to **[2 GiB, 12 GiB]**; swap inside the scope defaults
   to `4G` and tasks to `1024`.
-- It degrades to a no-op where it cannot work — macOS, Windows, a container without a user manager, or
-  no `systemd-run` on `PATH` — so the pipeline behaves exactly as before there.
+- It degrades to a no-op where it cannot work — macOS, Windows, a container without a user manager, a
+  manager socket that exists but does not answer (probed with a bounded `systemctl --user
+  is-system-running`), or no `systemd-run` on `PATH` — so the pipeline behaves exactly as before
+  there.
 
 | Variable | Effect |
 |---|---|

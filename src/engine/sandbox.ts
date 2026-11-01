@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { totalmem } from "node:os";
 import { delimiter, join } from "node:path";
@@ -46,6 +47,31 @@ const DEFAULT_TASKS_MAX = 1024;
 /** Values that mean "do not cap" for the size-valued variables. */
 const DISABLED_VALUES = new Set(["off", "none", "no", "false", "0", "disabled"]);
 
+/**
+ * How long the user-manager liveness probe may take. It runs once per process
+ * and only on the path that is about to create a scope, so a dead manager costs
+ * at most this much before every subsequent phase degrades to a plain spawn.
+ */
+const USER_MANAGER_PROBE_TIMEOUT_MS = 1500;
+
+/**
+ * States `systemctl --user is-system-running` prints for a manager that is
+ * actually reachable. `running` exits 0; `degraded`, `starting`, `initializing`
+ * and `maintenance` exit non-zero but still describe a live manager, so the
+ * state string — not the exit code — decides.
+ */
+const LIVE_USER_MANAGER_STATES = new Set([
+  "running",
+  "degraded",
+  "starting",
+  "initializing",
+  "maintenance",
+]);
+
+/** stderr of a manager whose socket exists but whose bus is unreachable. */
+const USER_MANAGER_BUS_ERROR =
+  /failed to connect to (the )?(user (scope )?)?bus|no medium found|connection refused/i;
+
 export interface ScopeOptions {
   /** Environment to read; defaults to `process.env`. */
   env?: Record<string, string | undefined>;
@@ -59,6 +85,11 @@ export interface ScopeOptions {
   exists?: (path: string) => boolean;
   /** Override the uid probe (tests). */
   getuid?: () => number;
+  /**
+   * Override the user-manager liveness probe (tests). The default runs a
+   * bounded `systemctl --user is-system-running` once per process.
+   */
+  liveness?: () => boolean;
 }
 
 /** The command to spawn, either the original one or a `systemd-run` wrapper. */
@@ -147,10 +178,49 @@ export function findSystemdRun(options: ScopeOptions = {}): string | undefined {
 }
 
 /**
+ * One bounded liveness probe of the user manager. The socket existing is not
+ * enough: a container or a broken session can leave `$XDG_RUNTIME_DIR/systemd/
+ * private` on disk while nothing answers on it, and `systemd-run --user
+ * --scope` then fails with "Failed to connect to user scope bus" for every
+ * prompt and every `Verification:` command. `is-system-running` is the
+ * cheapest read that proves the manager is actually there.
+ */
+function probeUserManager(env: Record<string, string | undefined>): boolean {
+  try {
+    const res = spawnSync("systemctl", ["--user", "--no-pager", "is-system-running"], {
+      env,
+      encoding: "utf8",
+      timeout: USER_MANAGER_PROBE_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (res.error) return false;
+    const stderr = (res.stderr ?? "").trim();
+    if (USER_MANAGER_BUS_ERROR.test(stderr)) return false;
+    const state = ((res.stdout ?? "").trim().split(/\s+/)[0] ?? "").toLowerCase();
+    return LIVE_USER_MANAGER_STATES.has(state);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The probe is memoised for the life of the process: `planScopedCommand` runs
+ * for every agent prompt and every verification command, and a dead manager
+ * must not cost 1.5 s each time. The key is the runtime directory, so a test or
+ * a reattached session with a different one probes again.
+ */
+let userManagerProbe: { key: string; live: boolean } | null = null;
+
+/** Drop the memoised liveness answer (tests that drive the real probe). */
+export function resetUserManagerProbe(): void {
+  userManagerProbe = null;
+}
+
+/**
  * Whether a transient **user** scope can be created right now: Linux, a
- * non-root uid and a reachable user manager socket. Root is excluded because
- * `systemd-run --user` needs `XDG_RUNTIME_DIR`/a user bus that a root shell
- * rarely has; the fallback (no cap) is better than a failed spawn.
+ * non-root uid, a manager socket on disk **and** a manager that answers. Root is
+ * excluded because `systemd-run --user` needs `XDG_RUNTIME_DIR`/a user bus that
+ * a root shell rarely has; the fallback (no cap) is better than a failed spawn.
  */
 export function userScopeAvailable(options: ScopeOptions = {}): boolean {
   if (options.available !== undefined) return options.available;
@@ -162,7 +232,14 @@ export function userScopeAvailable(options: ScopeOptions = {}): boolean {
   const env = options.env ?? process.env;
   const runtimeDir = env.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
   const exists = options.exists ?? existsSync;
-  return exists(join(runtimeDir, "systemd", "private"));
+  // A missing socket is conclusive: there is nothing to probe.
+  if (!exists(join(runtimeDir, "systemd", "private"))) return false;
+  if (options.liveness !== undefined) return options.liveness();
+  const key = `${runtimeDir}\u0000${env.PATH ?? ""}`;
+  if (userManagerProbe?.key !== key) {
+    userManagerProbe = { key, live: probeUserManager(env) };
+  }
+  return userManagerProbe.live;
 }
 
 /**

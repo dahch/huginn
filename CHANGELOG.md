@@ -67,6 +67,13 @@
 
 ### Fixed
 
+- **A dead systemd user manager no longer fails every prompt.** `userScopeAvailable` only checked that
+  `$XDG_RUNTIME_DIR/systemd/private` existed, so a socket left behind by a stopped manager still made
+  huginn wrap every generic-runtime prompt and every `Verification:` command in `systemd-run --user
+  --scope`, which then died with "Failed to connect to user scope bus" — the opposite of the promised
+  degrade-to-plain-spawn. Availability now probes the manager with a bounded
+  (`systemctl --user is-system-running`, 1.5 s, memoized per process) liveness check after the socket
+  check; `HUGINN_MEMORY_MAX=off` still short-circuits before any probe.
 - **Command Code found Muninn again.** `AGENT_REGISTRY.commandcode` wrote the project scope to
   `<project>/.commandcode/mcp.json`, but Command Code 1.88 loads the project `mcpServers` from the
   repository root `.mcp.json` (the user scope is `~/.commandcode/mcp.json`), so `cmd mcp list` never

@@ -25,6 +25,8 @@ function scopeable(env: Record<string, string | undefined> = {}): ScopeOptions {
     totalBytes: 16 * GIB,
     exists: () => true,
     getuid: () => 1000,
+    // The manager answers. Tests that want the probing behavior override this.
+    liveness: () => true,
   };
 }
 
@@ -111,12 +113,47 @@ describe("userScopeAvailable", () => {
     expect(userScopeAvailable({ ...scopeable(), exists: () => false })).toBe(false);
     expect(userScopeAvailable(scopeable())).toBe(true);
   });
+
+  it("rejects a present-but-dead manager socket", () => {
+    // The socket file exists (containers and broken sessions leave it behind),
+    // but nothing answers on the bus: `systemd-run --user --scope` would fail
+    // for every prompt, so the command must degrade to a plain spawn.
+    expect(
+      userScopeAvailable({
+        ...scopeable(),
+        liveness: () => false,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts a live manager even when only the socket was checked before", () => {
+    expect(
+      userScopeAvailable({
+        ...scopeable(),
+        liveness: () => true,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("planScopedCommand", () => {
   it("leaves the command untouched when the cap is disabled", () => {
-    const planned = planScopedCommand("pi", ["-c"], scopeable({ HUGINN_MEMORY_MAX: "off" }));
+    // `HUGINN_MEMORY_MAX=off` is checked before the manager probe: an explicit
+    // opt-out must not pay for (or depend on) liveness detection.
+    let probed = false;
+    const planned = planScopedCommand(
+      "pi",
+      ["-c"],
+      {
+        ...scopeable({ HUGINN_MEMORY_MAX: "off" }),
+        liveness: () => {
+          probed = true;
+          return true;
+        },
+      },
+    );
     expect(planned).toEqual({ command: "pi", args: ["-c"], scoped: false });
+    expect(probed).toBe(false);
   });
 
   it("leaves the command untouched where no user scope exists", () => {
