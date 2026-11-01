@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import {
   LiveAbortError,
@@ -75,6 +75,8 @@ import {
   type McpBadge,
 } from "../engine/agent/mcpStatus.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { copyToTerminal, formatCharCount } from "./clipboard.js";
+import { findMatches, matchLabel } from "./search.js";
 import {
   RavenHeader,
   headerValue,
@@ -90,6 +92,7 @@ import {
   type ContextStat,
   type GitSummary,
 } from "./sessionContext.js";
+
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -115,12 +118,18 @@ const INPUT_BORDER_ROWS = 2;
 const INPUT_CHROME_ROWS = INPUT_MARGIN_ROWS + INPUT_BORDER_ROWS;
 /** The composer's footprint with a single content line — its budget floor. */
 const INPUT_HEIGHT = INPUT_CHROME_ROWS + 1;
+/** The composer's normal prompt glyph (`COMPOSER_PROMPT` starts every draft row). */
+const COMPOSER_PROMPT = "❯ ";
 /**
  * Columns the composer spends before the draft text itself: this view's own
- * `paddingX={1}` (2), the composer's border (2) and `paddingX={1}` (2), and the
- * `❯ ` prompt glyph (2). A row may never widen past these (REV-3201).
+ * `paddingX={1}` (2), the composer's border (2), `paddingX={1}` (2) and the
+ * normal prompt glyph. A row may never widen past these (REV-3201).
  */
-const COMPOSER_TEXT_INSET = 8;
+const COMPOSER_TEXT_INSET = 6 + COMPOSER_PROMPT.length;
+/** The composer's prompt while transcript search is open (`Ctrl+F`). */
+const SEARCH_PROMPT = `find ${COMPOSER_PROMPT}`;
+/** Extra columns the longer search prompt spends over the normal prompt. */
+const SEARCH_PROMPT_EXTRA_COLUMNS = SEARCH_PROMPT.length - COMPOSER_PROMPT.length;
 /** Submitted prompts kept for ↑/↓ recall (REQ-34 / AC-34.1). */
 const INPUT_HISTORY_LIMIT = 50;
 const FOOTER_HEIGHT = 1;
@@ -323,6 +332,8 @@ interface FormattedLine {
   id: string;
   type: "system" | "user_header" | "user_body" | "assistant_header" | "assistant_body" | "blank";
   text: string;
+  /** Index into the conversation's `messages` — what transcript search returns. */
+  messageIndex: number;
 }
 
 /**
@@ -336,6 +347,8 @@ interface ChatRow {
   segments: MdSegment[];
   /** Columns the body indent spends, already subtracted from the wrap width. */
   paddingLeft: number;
+  /** The message this row belongs to, so a search hit can scroll to it. */
+  messageIndex: number;
 }
 
 /**
@@ -519,6 +532,7 @@ function RefineView({
   initialShowModelPicker?: boolean;
 }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const terminalSize = useTerminalSize();
   /**
    * The composer's draft and the caret into it (Phase 6 / REQ-6). They live in
@@ -534,6 +548,14 @@ function RefineView({
   });
   const draftInput = draft.text;
   const cursor = draft.cursor;
+  /**
+   * Transcript search mode (Ctrl+F). `query` is what the composer shows instead of
+   * the draft while searching; `index` is the position in the derived match list.
+   * The draft itself is never edited, and `draftBeforeSearch` is what Esc puts
+   * back (the same object, in case a future edit path does touch it).
+   */
+  const [search, setSearch] = useState<{ query: string; index: number } | null>(null);
+  const draftBeforeSearch = useRef<{ text: string; cursor: number }>({ text: "", cursor: 0 });
   /** Submitted prompts of this session, oldest first (REQ-34 / AC-34.1). */
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   /** Position while recalling: `null` means "not recalling". */
@@ -735,22 +757,22 @@ function RefineView({
     const lines: FormattedLine[] = [];
     messages.forEach((m, mIdx) => {
       if (m.role === "system") {
-        lines.push({ id: `sys-${mIdx}`, type: "system", text: `─ ${m.text}` });
+        lines.push({ id: `sys-${mIdx}`, type: "system", text: `─ ${m.text}`, messageIndex: mIdx });
         return;
       }
       if (m.role === "user") {
-        lines.push({ id: `u-h-${mIdx}`, type: "user_header", text: "you »" });
+        lines.push({ id: `u-h-${mIdx}`, type: "user_header", text: "you »", messageIndex: mIdx });
         m.text.split("\n").forEach((l, lIdx) => {
-          lines.push({ id: `u-b-${mIdx}-${lIdx}`, type: "user_body", text: l });
+          lines.push({ id: `u-b-${mIdx}-${lIdx}`, type: "user_body", text: l, messageIndex: mIdx });
         });
-        lines.push({ id: `u-sp-${mIdx}`, type: "blank", text: "" });
+        lines.push({ id: `u-sp-${mIdx}`, type: "blank", text: "", messageIndex: mIdx });
         return;
       }
-      lines.push({ id: `a-h-${mIdx}`, type: "assistant_header", text: "thinker »" });
+      lines.push({ id: `a-h-${mIdx}`, type: "assistant_header", text: "thinker »", messageIndex: mIdx });
       m.text.split("\n").forEach((l, lIdx) => {
-        lines.push({ id: `a-b-${mIdx}-${lIdx}`, type: "assistant_body", text: l });
+        lines.push({ id: `a-b-${mIdx}-${lIdx}`, type: "assistant_body", text: l, messageIndex: mIdx });
       });
-      lines.push({ id: `a-sp-${mIdx}`, type: "blank", text: "" });
+      lines.push({ id: `a-sp-${mIdx}`, type: "blank", text: "", messageIndex: mIdx });
     });
     return lines;
   }, [messages]);
@@ -832,6 +854,7 @@ function RefineView({
     suggestionQuery !== null &&
     !suggestionsDismissed &&
     inputEnabled &&
+    search === null &&
     suggestionMatches.length > 0;
 
   // ── Frame budget (REQ-6 / REV-6001) ──────────────────────────────────────
@@ -1655,11 +1678,16 @@ function RefineView({
     const rows: ChatRow[] = [];
     for (const line of formattedChatLines) {
       if (line.type === "blank") {
-        rows.push({ id: line.id, segments: [], paddingLeft: 0 });
+        rows.push({ id: line.id, segments: [], paddingLeft: 0, messageIndex: line.messageIndex });
         continue;
       }
       if (line.type === "user_header") {
-        rows.push({ id: line.id, segments: [{ text: "you »", color: THEME.ok, bold: true }], paddingLeft: 0 });
+        rows.push({
+          id: line.id,
+          segments: [{ text: "you »", color: THEME.ok, bold: true }],
+          paddingLeft: 0,
+          messageIndex: line.messageIndex,
+        });
         continue;
       }
       if (line.type === "assistant_header") {
@@ -1667,6 +1695,7 @@ function RefineView({
           id: line.id,
           segments: [{ text: "thinker »", color: THEME.accentStrong, bold: true }],
           paddingLeft: 0,
+          messageIndex: line.messageIndex,
         });
         continue;
       }
@@ -1674,11 +1703,25 @@ function RefineView({
       const color = line.type === "system" ? THEME.system : THEME.text;
       const width = Math.max(1, chatBodyColumns - paddingLeft);
       wrapSegments(markdownSegments(line.text, color), width).forEach((segments, index) => {
-        rows.push({ id: `${line.id}-w${index}`, segments, paddingLeft });
+        rows.push({ id: `${line.id}-w${index}`, segments, paddingLeft, messageIndex: line.messageIndex });
       });
     }
     return rows;
   }, [formattedChatLines, chatBodyColumns]);
+
+  /**
+   * First terminal row of every message (REQ-72 / AC-72.3). Search jumps by
+   * message, never by wrapped row: a message is the unit the user typed or read,
+   * and its first row is the only stable anchor across card resizes.
+   */
+  const messageStartRow = useMemo<number[]>(() => {
+    const starts: number[] = [];
+    chatRows.forEach((row, index) => {
+      if (row.messageIndex < 0 || starts[row.messageIndex] !== undefined) return;
+      starts[row.messageIndex] = index;
+    });
+    return starts;
+  }, [chatRows]);
 
   // Never leave focus on a card the layout hid: a maximized card owns the row,
   // and a stream that disappeared entirely hands focus back to the conversation.
@@ -1700,6 +1743,56 @@ function RefineView({
 
   const maxChatScroll = Math.max(0, chatRows.length - visibleChatLinesCount);
   const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
+
+  // ── Transcript search (Ctrl+F) and clipboard (y) ─────────────────────────
+  // The query is matched against the messages, and the card title numbers the
+  // hits; Enter maps the selected message back to its first painted row.
+  const searchMatches = useMemo(
+    () => findMatches(messages, search?.query ?? ""),
+    [messages, search?.query],
+  );
+  const searchIndex =
+    searchMatches.length === 0 ? 0 : Math.min(search?.index ?? 0, searchMatches.length - 1);
+  const searchMatchText = search === null ? "" : matchLabel(searchIndex, searchMatches.length);
+  const searchTextWidth = Math.max(
+    1,
+    terminalSize.columns - COMPOSER_TEXT_INSET - SEARCH_PROMPT_EXTRA_COLUMNS,
+  );
+  const searchLayout = useMemo(
+    () => layoutComposer(search?.query ?? "", (search?.query ?? "").length, searchTextWidth),
+    [search?.query, searchTextWidth],
+  );
+
+  /** Scroll the conversation so `messageIndex`'s first row is at the top. */
+  const jumpToMessage = (messageIndex: number): void => {
+    if (messageIndex < 0) return;
+    const row = messageStartRow[messageIndex];
+    if (row === undefined) return;
+    setChatScroll(Math.min(maxChatScroll, Math.max(0, maxChatScroll - row)));
+  };
+
+  /**
+   * `y` on the conversation: copy the newest assistant message through OSC 52.
+   * One system message reports the channel and its limits — never a claim that
+   * the clipboard changed, because a terminal is free to ignore the sequence.
+   */
+  const copyLastAssistant = (): void => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (message.role !== "assistant") continue;
+      if (copyToTerminal(message.text, stdout)) {
+        emitSystem(
+          okFeedback(
+            `Copied ${formatCharCount(message.text.length)} chars (OSC 52 — some terminals ignore it)`,
+          ),
+        );
+      } else {
+        emitSystem(warnFeedback("Clipboard payload too large — 100 KB max"));
+      }
+      return;
+    }
+    emitSystem(warnFeedback("Nothing to copy yet — no assistant message in the conversation."));
+  };
 
   useInput((input, key) => {
     if (
@@ -1730,6 +1823,66 @@ function RefineView({
               : "Press Enter to accept, or d to skip this question.",
         });
       }
+      return;
+    }
+
+    // Transcript search owns the keyboard while it is open (Ctrl+F). Esc puts
+    // the draft back, Enter jumps to the selected message and closes; ↑/↓ walk
+    // the hit list. It is handled before the palette and before any focus or
+    // editing branch, so a search query can never be typed into the draft.
+    if (search !== null) {
+      // Every key the search branch consumes is "another key" for the two-step
+      // abort: an arming from before search must not survive it.
+      if (confirmEsc) setConfirmEsc(false);
+      if (key.ctrl && input.toLowerCase() === "f") {
+        setDraft(draftBeforeSearch.current);
+        setSearch(null);
+        return;
+      }
+      if (key.escape) {
+        setDraft(draftBeforeSearch.current);
+        setSearch(null);
+        return;
+      }
+      if (key.return) {
+        const match = searchMatches[searchIndex];
+        if (match !== undefined) jumpToMessage(match);
+        setSearch(null);
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const delta = key.upArrow ? -1 : 1;
+        setSearch((current) => {
+          if (current === null) return current;
+          const size = searchMatches.length;
+          if (size === 0) return current;
+          const at = Math.min(current.index, size - 1);
+          return { ...current, index: (at + delta + size) % size };
+        });
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setSearch((current) =>
+          current === null ? current : { query: current.query.slice(0, -1), index: 0 },
+        );
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+      const typed = sanitizeComposerInput(input);
+      if (typed.length > 0) {
+        setSearch((current) =>
+          current === null ? current : { query: current.query + typed, index: 0 },
+        );
+      }
+      return;
+    }
+
+    // Ctrl+F opens transcript search from any focus — and while a turn is busy —
+    // so it deliberately sits before the Ctrl/Meta guard further below.
+    if (key.ctrl && input.toLowerCase() === "f") {
+      if (confirmEsc) setConfirmEsc(false);
+      draftBeforeSearch.current = draft;
+      setSearch({ query: "", index: 0 });
       return;
     }
 
@@ -1802,6 +1955,20 @@ function RefineView({
     // hint the footer advertises). Tab first, then `L`.
     if (input === "L" && focus !== "composer") {
       toggleLogs();
+      return;
+    }
+    // `g`/`G` jump to the start/end of the focused transcript. From a card only:
+    // in the composer they are ordinary letters and must be typed as such.
+    if ((input === "g" || input === "G") && focus !== "composer" && !key.ctrl && !key.meta) {
+      if (focus === "stream") setStreamScroll(input === "g" ? maxStreamScroll : 0);
+      else setChatScroll(input === "g" ? maxChatScroll : 0);
+      return;
+    }
+    // `y` copies the newest assistant message with OSC 52. It is a card key too:
+    // in the composer it stays draft text, and the agent stream has nothing to
+    // copy, so it is swallowed rather than echoing a stray letter into the draft.
+    if (input === "y" && focus !== "composer" && !key.ctrl && !key.meta) {
+      if (focus === "chat") copyLastAssistant();
       return;
     }
     if (key.tab) {
@@ -2075,6 +2242,7 @@ function RefineView({
                 spinner={spinner}
                 height={chatHeight}
                 width={cardsWidth}
+                matchText={searchMatchText}
                 // One home per tip: the panel already carries it on a wide
                 // terminal, so the hero's tip box only fills that role when there
                 // is no panel beside the conversation.
@@ -2113,15 +2281,21 @@ function RefineView({
         !showProfilePicker && (
         <>
           <ChatInputRow
-            value={draftInput}
-            enabled={inputEnabled}
-            isFocused={focus === "composer"}
-            placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect"
-            historyHint={historyHint}
-            width={composerTextWidth}
-            rows={composerLayout.rows}
-            cursorRow={composerLayout.cursorRow}
-            cursorCol={composerLayout.cursorCol}
+            value={search ? search.query : draftInput}
+            enabled={search ? true : inputEnabled}
+            isFocused={search ? true : focus === "composer"}
+            placeholder={
+              search
+                ? "search the conversation…"
+                : "Message...  type / for commands · /draft when ready · /mcp to inspect"
+            }
+            historyHint={search ? "" : historyHint}
+            prompt={search ? SEARCH_PROMPT : COMPOSER_PROMPT}
+            borderColor={search ? THEME.warn : undefined}
+            width={search ? searchTextWidth : composerTextWidth}
+            rows={search ? searchLayout.rows : composerLayout.rows}
+            cursorRow={search ? searchLayout.cursorRow : composerLayout.cursorRow}
+            cursorCol={search ? searchLayout.cursorCol : composerLayout.cursorCol}
             visibleRows={composerRows}
           />
           {suggestionsOpen && (
@@ -2136,7 +2310,13 @@ function RefineView({
               screen. The stage label never shrinks; the hint truncates. */}
           <Box justifyContent="space-between" height={FOOTER_HEIGHT} overflow="hidden" flexDirection="row">
             <Box flexShrink={1} overflow="hidden">
-              {suggestionsOpen ? (
+              {search ? (
+                <Text color={THEME.warn} wrap="truncate">
+                  {`find ❯ [↑/↓] ${searchMatches.length} match${
+                    searchMatches.length === 1 ? "" : "es"
+                  } · [Enter] Jump${searchMatchText ? ` ${searchMatchText}` : ""} · [Esc] Cancel`}
+                </Text>
+              ) : suggestionsOpen ? (
                 <Text color={THEME.muted} wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
               ) : (
                 <Text color={THEME.muted} wrap="truncate">
@@ -2300,6 +2480,7 @@ function ScrollableChatCard({
   spinner,
   height,
   width,
+  matchText,
   tip,
 }: {
   rows: ChatRow[];
@@ -2312,6 +2493,8 @@ function ScrollableChatCard({
   height: number;
   /** Columns the card occupies (the panel takes the rest of the row). */
   width: number;
+  /** `n/m` while transcript search is open and has hits (`""` otherwise). */
+  matchText?: string;
   /** The stage's reminder, shown in the hero's tip box while the card is empty. */
   tip: string;
 }) {
@@ -2331,6 +2514,11 @@ function ScrollableChatCard({
       title={`Conversation ${isFocused ? "● [Focused]" : "○ [Tab to focus]"}`}
       titleRight={
         <>
+          {matchText && (
+            <Text color={THEME.warn} wrap="truncate">
+              {`match ${matchText} `}
+            </Text>
+          )}
           {maxScroll > 0 && (
             <Text color={THEME.muted} wrap="truncate">
               {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
@@ -2440,6 +2628,8 @@ function ChatInputRow({
   isFocused,
   placeholder,
   historyHint = "",
+  prompt = COMPOSER_PROMPT,
+  borderColor,
   width,
   rows,
   cursorRow,
@@ -2453,6 +2643,10 @@ function ChatInputRow({
   placeholder: string;
   /** Recall hint shown beside the first row (`""` hides it). */
   historyHint?: string;
+  /** Prompt glyph before the first row; search swaps `❯ ` for `find ❯ `. */
+  prompt?: string;
+  /** Forces the border colour (the search mode paints `THEME.warn`). */
+  borderColor?: string;
   /** Columns one draft row may occupy, caret included. */
   width: number;
   /** Every wrapped row of the draft. */
@@ -2464,11 +2658,10 @@ function ChatInputRow({
   /** Content rows the box shows (the composer's budget); the rest scroll. */
   visibleRows: number;
 }) {
-  const accent: string | undefined = !enabled
-    ? THEME.border
-    : isFocused
-      ? THEME.borderFocus
-      : THEME.executor;
+  const accent: string | undefined =
+    borderColor ??
+    (!enabled ? THEME.border : isFocused ? THEME.borderFocus : THEME.executor);
+  const continuation = " ".repeat(prompt.length);
   const contentRows = Math.max(1, visibleRows);
   const scroll = composerScroll(cursorRow, rows.length, contentRows);
   const window = rows.slice(scroll, scroll + contentRows);
@@ -2492,7 +2685,7 @@ function ChatInputRow({
             const row = scroll + index;
             return (
               <Box key={row} flexDirection="row" height={1}>
-                <Text bold color={accent}>{index === 0 ? "❯ " : "  "}</Text>
+                <Text bold color={accent}>{index === 0 ? prompt : continuation}</Text>
                 <CursorLine
                   line={line}
                   width={width}
@@ -2504,7 +2697,7 @@ function ChatInputRow({
           })
         ) : (
           <Box flexDirection="row" height={1}>
-            <Text bold color={accent}>{enabled ? "❯ " : "· "}</Text>
+            <Text bold color={accent}>{enabled ? prompt : "· "}</Text>
             <Text color={THEME.muted} wrap="truncate">
               {placeholder}
             </Text>

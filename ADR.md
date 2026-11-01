@@ -1998,3 +1998,64 @@ avoids. They are ordered by how central the decision is to the design.
     (so a card maximized for one phase cannot reappear maximized after the next turn starts), and the
     idle timer adds a `setTimeout` to the dashboard's render graph — its edges are pinned by
     `test/tui/liveLayout.test.ts`, including "an error that scrolled out does not disable the timer".
+
+## ADR-68: Transcript navigation, search and copy are pure policy behind a focus-aware dispatcher
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The live conversation is a wrapped terminal transcript inside an alternate screen:
+  the terminal's own scrollback and text selection are unavailable, a single message may paint
+  dozens of rows, and the row offsets move whenever the card is resized. Reading back a long answer,
+  finding where the agent said something, or copying its last message therefore had no keyboard
+  path at all. The keys that would carry those actions are already contested — `↑`/`↓` scroll the
+  focused card or recall the composer's history, `Tab` moves focus, `Esc` is the two-step abort, and
+  `j`/`k` filter the command palette — so the new surfaces had to be resolved by focus the same way
+  ADR-67 resolved the layout keys, and the search/copy policy had to be testable without mounting
+  the dashboard.
+- **Decision**:
+  1. **`g`/`G` jump the focused transcript.** From the conversation or the stream, `g` scrolls to the
+     first row and `G` to the last; from the composer they are ordinary letters. They are matched as
+     bare input (`!key.ctrl && !key.meta`), so `Ctrl+G` remains a chord instead of a jump.
+  2. **`Ctrl+F` opens search from any focus, including a busy turn.** The search branch sits before
+     the command palette and every focus/editing branch, so a query can never be typed into the
+     draft. The composer swaps its prompt for `find ❯ ` and paints its border with `THEME.warn`;
+     the draft is saved in `draftBeforeSearch` and restored by `Esc` or `Ctrl+F`. Search consumes
+     every key it sees and cancels an armed two-step `Esc`, so `Esc` → `Ctrl+F` → `Esc` → `Esc`
+     warns again instead of aborting.
+  3. **Matches are messages, not painted rows.** `src/tui/search.ts` owns the pure `findMatches`
+     (case-insensitive, trims the query, an empty or whitespace-only query matches nothing) and
+     `matchLabel` (`n/m`, clamped). The dashboard maps a match to its first painted row through
+     `messageStartRow`, which is derived from the same wrapped rows the card renders, so a hit
+     survives a resize. `↑`/`↓` wrap through the hits, Backspace rewinds the selection to the first
+     hit, Enter jumps to the selected message and closes (no hits closes without moving), and the
+     card title/footer print `match n/m` only when there are hits.
+  4. **Copy is best-effort OSC 52 from the caller's stream.** `src/tui/clipboard.ts` sanitizes the
+     payload through `sanitizeTerminalText`, rejects a raw payload above `CLIPBOARD_MAX_BYTES`
+     (100 000 UTF-8 bytes) before spending work on it, re-checks the sanitized size, and returns the
+     sequence to be written by `copyToTerminal(text, out)` — the caller passes Ink's stdout, never a
+     global `process.stdout`. From the conversation, `y` copies the newest assistant message; the
+     agent stream has nothing to copy, and the composer keeps `y` as draft text. The notice names
+     OSC 52 and its terminal caveat, or says the payload was too large; it never claims the system
+     clipboard changed.
+  5. **One dispatcher, two guards.** The keys live in `LiveDashboard`'s single `useInput` handler,
+     and the policy lives in the two pure modules; `test/tui/transcriptNavigation.test.ts` and
+     `test/tui/transcriptSearchColors.test.ts` drive the real keys, and `src/tui/search.test.ts` +
+     `src/tui/clipboard.test.ts` cover the helpers. `test/tui/helpModal.test.ts` keeps the `/help`
+     cheat sheet and the README shortcut table naming the same keys and behaviour.
+- **Alternatives rejected**: (a) search by wrapped row — the anchor moves on every resize and the
+  same query would point at a different place; (b) store the query in the draft — then `Esc` could
+  not restore the exact draft the user was writing; (c) open search in a modal — it would compete
+  with the decision modal for the frame and hide the transcript it is meant to search; (d) bind the
+  actions to `Ctrl+G`/`Ctrl+Y` only — neither is discoverable, and both collide with readline habits;
+  (e) add a native clipboard dependency — a TUI cannot guarantee one, and OSC 52 is the channel every
+  terminal already understands (or is free to ignore).
+- **Consequences**:
+  - *Positive*: the transcript is navigable, searchable and copyable entirely by keyboard; search
+    anchors to messages rather than row arithmetic; the OSC 52 sequence is sanitized and bounded
+    before it reaches the terminal; the policy is importable and tested without mounting a page; and
+    the conflict with the two-step abort is handled explicitly rather than by luck.
+  - *Negative*: the composer now has three modes (draft, palette, search) whose precedence must stay
+    in the dispatcher's order — a new key handler added above the search branch could steal a query
+    character; `y` is swallowed on the stream rather than advertised as a no-op; and OSC 52 support
+    varies by terminal (tmux needs `set-clipboard on`), so the copy is honestly reported as
+    best-effort instead of guaranteed.

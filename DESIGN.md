@@ -153,6 +153,8 @@ src/
     ├── decision.ts         decision modal's pure policy: exhaustive title, row specs, planner and `decisionModalHeight` (REQ-68 / REQ-69 / ADR-63 / ADR-64)
     ├── DecisionModal.tsx    decision modal's React row builders, windowed body and Ink component
     ├── Card.tsx           the one chrome-cost table (`CARD_CHROME`/`cardChrome`) and the `Card` primitive that draws exactly that chrome (REQ-70 / ADR-65)
+    ├── search.ts          transcript search policy: `findMatches`/`matchLabel` (REQ-72 / ADR-68)
+    ├── clipboard.ts       OSC 52 clipboard: sanitized, byte-capped sequence and a caller-owned sink (REQ-72 / ADR-68)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
     ├── feedback.ts         the one feedback voice: ✓/!/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
@@ -2871,3 +2873,29 @@ keys reuse that resolution instead of inspecting the draft:
 `src/tui/DecisionModal.tsx` maps the specs to Ink nodes (`decisionBodyRows`/`decisionKeyRows`) and owns
 the body scroll state and its reset on `req.id`. Both dashboards import `./DecisionModal` and
 `./decision`, so the live page no longer pulls the run page (and its engine graph) in for a modal.
+
+### 32.10 Transcript navigation, search and copy are pure helpers behind a focus-aware dispatcher (REQ-72 / ADR-68)
+
+The live transcript gained three keyboard surfaces without moving policy into the page module:
+
+- **`g`/`G` jump the focused transcript.** From the conversation or the stream, `g` scrolls to the
+  first row and `G` to the last; from the composer they are ordinary draft letters. The match is a
+  bare input (`!key.ctrl && !key.meta`), so `Ctrl+G` remains a chord.
+- **`Ctrl+F` searches by message.** `src/tui/search.ts` owns `findMatches` (case-insensitive, empty
+  query matches nothing) and `matchLabel` (`n/m`, clamped). The page derives `messageStartRow` from
+  the same wrapped rows the card paints, so a hit is anchored to a message and survives a resize.
+  The composer swaps its prompt for `find ❯ ` and paints `THEME.warn`; `↑`/`↓` wrap through the
+  hits, Backspace rewinds to the first, Enter jumps to the selected message and closes, and Esc or
+  `Ctrl+F` restores the draft saved on entry. Search consumes every key, which also cancels an
+  armed two-step Esc: `Esc` → `Ctrl+F` → `Esc` → `Esc` warns again instead of aborting.
+- **`y` copies the newest assistant message.** `src/tui/clipboard.ts` builds an OSC 52 sequence from
+  the sanitized payload and enforces `CLIPBOARD_MAX_BYTES` (100 000 UTF-8 bytes) on the raw input
+  before sanitizing, so an oversized answer is refused cheaply. `copyToTerminal` takes the caller's
+  output stream explicitly (the dashboard passes Ink's `useStdout().stdout`), never a global
+  `process.stdout`. A successful write emits one honest notice naming OSC 52 and its terminal
+  caveat; an oversized or assistant-less conversation emits a warning instead.
+- **Guards.** `src/tui/search.test.ts` and `src/tui/clipboard.test.ts` cover the pure helpers,
+  `test/tui/transcriptNavigation.test.ts` drives the real keys (including the draft restore, the
+  message jump, the copy path and the Esc/search interaction), and
+  `test/tui/transcriptSearchColors.test.ts` asserts the emitted warning border. The `/help` cheat
+  sheet and the README table are kept in sync by `test/tui/helpModal.test.ts`.

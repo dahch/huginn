@@ -27,6 +27,13 @@
   hidden entry in the footer, and only stays open for an error still present in its visible tail.
   `InfoPanel` groups its rows into `SESSION`, `REPO` and `MEMORY` sections (an empty section is
   omitted) and anchors the stage tip to the bottom of the column (REQ-71 / ADR-67).
+- **Transcript navigation, in-conversation search and clipboard copy.** From the conversation or
+  the agent stream, `g`/`G` jump to the start/end; `Ctrl+F` from any focus opens a `find ❯ `
+  composer that searches the transcript by message, walks hits with `↑`/`↓` and jumps with Enter,
+  while Esc or `Ctrl+F` restores the draft; `y` on the conversation copies the newest assistant
+  message through a sanitized, 100 KB-capped OSC 52 sequence and reports the channel honestly.
+  Search and clipboard policy live in the pure `src/tui/search.ts` / `src/tui/clipboard.ts`
+  modules, and an armed Esc abort is cancelled by every key search consumes (REQ-72).
 - **One chrome-cost table for the TUI's cards.** `src/tui/Card.tsx` exports `CARD_CHROME`,
   `cardChrome(tone)` and the `Card` primitive. `primary` is the round conversation box,
   `secondary` is the quieter single box used by the stream, pipeline and side panel, and

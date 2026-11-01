@@ -1270,6 +1270,43 @@ iteration and 6 afterwards** (down from 14).
   open while a stale one does not, the advertised count is the whole tail, and 100×30 keeps at least
   six conversation body rows with the logs collapsed.
 
+### REQ-72: The transcript is navigable, searchable and copyable from the keyboard
+- **AC-72.1 (`g`/`G` jump the focused transcript)**: from the conversation or the agent stream,
+  `g` scrolls to the first row and `G` to the last; from the composer they are ordinary draft
+  letters. The keys are matched as bare input (`!key.ctrl && !key.meta`), so a chord such as
+  `Ctrl+G` is never a jump.
+- **AC-72.2 (Search opens from any focus and preserves the draft)**: `Ctrl+F` opens transcript search
+  from any focus and while a turn is busy. The composer shows `find ❯ ` with the query instead of
+  the draft; `Esc` or `Ctrl+F` again closes search, restores the exact draft, and search mode keeps
+  the command palette from taking over. Every key search consumes also cancels an armed two-step
+  `Esc` abort, so `Esc` → `Ctrl+F` → `Esc` → `Esc` warns again instead of aborting. Query input is
+  sanitized and Ctrl/Meta chords never become query text.
+- **AC-72.3 (Matches are messages, and navigation is honest)**: `findMatches`/`matchLabel` in
+  `src/tui/search.ts` match case-insensitively by message (never by wrapped row); an empty or
+  whitespace-only query has no hits. `↑`/`↓` wrap through the hit list, Backspace rewinds the
+  selection to the first hit, and Enter jumps to the selected message's first painted row
+  (`messageStartRow`) and closes search; Enter with no hits closes without moving. The conversation
+  card's own title prints `match n/m` while a search has hits and prints no position when it has
+  none.
+- **AC-72.4 (Search mode is visible in the chrome)**: the search composer paints its border with
+  `THEME.warn`, the footer advertises the match count and the `↑/↓`, Enter and Esc keys, and the
+  ordinary focused composer keeps `THEME.borderFocus`. `test/tui/transcriptSearchColors.test.ts`
+  asserts the ANSI border Ink actually emits, not only the rendered text.
+- **AC-72.5 (Copy is best-effort OSC 52 with a sanitized, bounded payload)**: from the conversation
+  card, `y` copies the newest assistant message through OSC 52 and emits one honest notice naming
+  the channel and its limits; it copies nothing from the agent stream and stays ordinary draft text
+  in the composer. `src/tui/clipboard.ts` strips terminal control sequences before base64 encoding,
+  rejects a raw payload above `CLIPBOARD_MAX_BYTES` (100 000 UTF-8 bytes) before sanitizing it,
+  re-checks the sanitized size, and writes to the output stream passed by the caller rather than a
+  global `process.stdout`. An oversized message produces a "too large" warning, never a truncated
+  sequence.
+- **AC-72.6 (Drift guards and discoverability)**: `src/tui/search.test.ts` and
+  `src/tui/clipboard.test.ts` cover the pure match/label and OSC 52 helpers;
+  `test/tui/transcriptNavigation.test.ts` drives the real keys, the draft restoration, the
+  message jump, the copy path and the Esc/search interaction; `test/tui/helpModal.test.ts` keeps
+  `/help` and the README shortcut table naming the same keys and behaviour. `MODULE_MAP.md`,
+  `DESIGN.md`, `ADR.md` (ADR-68) and `AGENTS.md` document the navigation, search and copy surfaces.
+
 ---
 
 ## Appendix — module map

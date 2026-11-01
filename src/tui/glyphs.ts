@@ -61,6 +61,11 @@ export const DECISION_GLYPHS = {
 
 export type DecisionGlyph = (typeof DECISION_GLYPHS)[keyof typeof DECISION_GLYPHS];
 
+/** Compile-time proof that every {@link DecisionKind} has a glyph. */
+function assertNever(value: never): never {
+  throw new Error(`Unhandled decision kind: ${String(value)}`);
+}
+
 /** The decision glyph for a {@link DecisionKind} (permission/gate share `warn`). */
 export function decisionGlyph(kind: DecisionKind): DecisionGlyph {
   switch (kind) {
@@ -76,6 +81,8 @@ export function decisionGlyph(kind: DecisionKind): DecisionGlyph {
     case "scope-extraction":
     case "draft-format":
       return DECISION_GLYPHS.warn;
+    default:
+      return assertNever(kind);
   }
 }
 

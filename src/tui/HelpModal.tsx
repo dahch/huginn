@@ -43,7 +43,7 @@ export const NAVIGATION_SHORTCUTS: ShortcutItem[] = [
   {
     key: "↑ / ↓ or j / k",
     description:
-      "Composer: recall your submissions. Focused viewport: scroll it (or move the command palette while typing a /command)",
+      "Composer ↑/↓: recall your submissions. Focused card ↑/↓: scroll it. Command palette j/k: move the highlight while the draft is exactly /",
   },
   { key: "PageUp / PageDown", description: "Fast-scroll focused viewport (4 lines)" },
   {
@@ -53,6 +53,21 @@ export const NAVIGATION_SHORTCUTS: ShortcutItem[] = [
   {
     key: "Ctrl+↑ / Ctrl+↓",
     description: "Move the conversation/stream split (from a focused card)",
+  },
+  {
+    key: "g / G (card)",
+    description:
+      "Jump to the start / end of the focused transcript (in the composer they are ordinary letters)",
+  },
+  {
+    key: "Ctrl+F",
+    description:
+      "Search the conversation: type a query, ↑/↓ move matches, Enter jumps to one and closes, Esc restores your draft",
+  },
+  {
+    key: "y (chat)",
+    description:
+      "Copy the last assistant message with OSC 52 — some terminals ignore it",
   },
   {
     key: "L (card focus)",

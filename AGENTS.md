@@ -386,6 +386,10 @@ height per tone, the borderless log tail and the emitted border colours),
 `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
 composer or footer off an 18-/24-row frame, and the live layout keys — `z`, `Ctrl+↑`/`Ctrl+↓`, `L` —
 with the idle log tail and its advertised hidden count, on 100×30 frames),
+`test/tui/transcriptNavigation.test.ts` + `test/tui/transcriptSearchColors.test.ts` (the transcript
+keys, search/draft restoration, message jump, Esc/search interaction, OSC 52 copy and the warning
+border), `src/tui/search.test.ts` + `src/tui/clipboard.test.ts` (the pure match/label and clipboard
+helpers),
 `test/tui/infoPanel.test.ts` (the side panel's geometry, its `SESSION`/`REPO`/`MEMORY` sections, the
 bottom-anchored tip and the rows it must not invent), and
 `test/state/liveSession.test.ts` + `test/engine/liveSessionPersistence.test.ts` +
@@ -478,6 +482,17 @@ chat: a key with nothing to do must not append a line.
 draft text and the chord stays out of the terminal, which is the whole reason the guard is the focus
 state rather than the draft's emptiness. The split itself is the pure `liveCardHeights` (a maximized
 card takes every row, the other is not rendered), so the three layouts are testable without a frame.
+
+**The transcript keys follow the same focus contract (REQ-72 / ADR-68).** From the conversation or
+the agent stream, `g`/`G` jump to the start/end of the focused transcript; `y` copies the newest
+assistant message through OSC 52, but only from the conversation (the stream has nothing to copy,
+and the composer keeps `y` as draft text). `Ctrl+F` opens transcript search from any focus —
+including while a turn is busy — and swaps the composer to `find ❯ ` with a warning border:
+`↑`/`↓` walk the message hits, Enter jumps to the selected message and closes, and Esc or `Ctrl+F`
+restores the exact draft. Search consumes every key it sees and cancels any armed two-step Esc, so
+an abort confirmation can never survive into search mode. The helpers stay pure:
+`findMatches`/`matchLabel` live in `src/tui/search.ts`, OSC 52 lives in `src/tui/clipboard.ts`, and
+`copyToTerminal` writes to the render stream passed by the call site, not a global `process.stdout`.
 
 **The log tail is ephemeral.** `LOG_AUTO_COLLAPSE_MS` (60 s) without a new event collapses it and
 returns the rows to the conversation; a new log reopens it, an `error` still present in the visible
