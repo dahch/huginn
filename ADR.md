@@ -1495,7 +1495,7 @@ avoids. They are ordered by how central the decision is to the design.
 
 ## ADR-54: Iterations are verified increments, not prompt-shaped layers
 
-- **Date**: 2026-11-25
+- **Date**: 2026-10-28
 - **Status**: Accepted
 - **Context**: the plan format only required `## Iteration N — Title` plus an optional `modules:`
   line. The thinker could (and did) schedule “foundations only” layers, and the engine had no
@@ -1527,7 +1527,7 @@ avoids. They are ordered by how central the decision is to the design.
 
 ## ADR-55: Native runtimes report MCP through the port, not through a hardcoded empty report
 
-- **Date**: 2026-11-25
+- **Date**: 2026-10-28
 - **Status**: Accepted
 - **Context**: `getEngineRuntime("pi")` wraps the native in-process driver with
   `toLegacyRuntime`, whose `getMcpStatus()` returned an empty, unverified report. The badge therefore

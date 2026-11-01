@@ -147,7 +147,7 @@ Commands:
   live    interactive refinement + autonomous execution: chat-refine the idea
           (or extend an existing project), draft/update spec.md/adr.md/plan.md,
           approve, then run the build cycles in the same dashboard
-  setup   register Muninn MCP + rules with Cursor, Claude, OpenCode and Devin
+  setup   register Muninn MCP + rules with the 13 provisioning targets
   doctor  diagnose the local environment, providers and Muninn database
   check   verify TypeScript execution contracts and pre-emit diagnostics
   runtime show which runtimes can execute the cycle, and what each one promises
