@@ -385,6 +385,9 @@ title drift guard and the modal's row contract, including the ASCII/one-column r
 and their shared grid), `test/tui/liveStageAccent.test.ts` (the busy stage accent),
 `test/tui/card.test.ts` + `test/tui/cardColors.test.ts` (the `CARD_CHROME` cost table, the painted
 height per tone, the borderless log tail and the emitted border colours),
+`test/tui/markdown.test.ts` + `test/tui/markdownTable.test.ts` + `test/tui/liveMarkdownTable.test.ts`
+(width-aware rules and links, one aligned row per table row, truncation, the real dashboard frame and
+the live chat's painted table),
 `test/tui/liveLayout.test.ts` + `test/tui/dashboard.test.ts` (a tall decision never pushes the
 composer or footer off an 18-/24-row frame, the live layout keys — `z`, `Ctrl+↑`/`Ctrl+↓`, `L` —
 with the idle log tail and its advertised hidden count on 100×30 frames, the closed/open header budget
@@ -509,7 +512,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Six display conventions a TUI change must follow:
+Seven display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -522,6 +525,17 @@ Six display conventions a TUI change must follow:
   title row (`iter n/m`) and hangs the phases off one rail (`├─`, the last `└─`, a `FIX_*` round
   `   └─`), which is still one row per phase — a connector is drawn inside the row it already
   occupies.
+- **A table needs the whole block, and every rule needs the card's real width.** `MarkdownBlock`
+  (`src/tui/markdown.tsx`) is the only caller that may format a report or a stream buffer: it hands
+  each contiguous table block (header + `|---|` + rows, detected by `isTableHeader`/`tableBlockEnd`)
+  to the pure `tableBlock`, which returns exactly one styled row per source row — padded columns,
+  dim ` │ ` separators, bold header, `…`-truncated cells — and every other line to `MarkdownLine`.
+  `MarkdownLine`/`markdownSegments` take the body width the frame already paid for
+  (`cardChrome(...).columns`) and draw `---`/`***`/`___` and the code-fence header at exactly that
+  width (fallback 80, clamped to ≥1); a fixed-width rule is the old bug that wrapped into a second
+  row. Links render as an underlined label plus a dim ` ‹url›`, and a malformed link stays literal.
+  Table cells are plain text — inline markup inside a cell is not styled yet, and
+  `test/tui/markdownTable.test.ts` records that as a `todo` rather than a promise.
 - **Display glyphs come from `src/tui/glyphs.ts`** — single-width status/phase marks shared by
   the dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass,
   `!` warning, `✕` blocked, `–` skipped; phase kinds `?` SPEC_AUDIT, `>` EXECUTE, `=` VALIDATE_STEP,

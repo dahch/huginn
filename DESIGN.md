@@ -155,6 +155,7 @@ src/
     ├── Card.tsx           the one chrome-cost table (`CARD_CHROME`/`cardChrome`) and the `Card` primitive that draws exactly that chrome (REQ-70 / ADR-65)
     ├── search.ts          transcript search policy: `findMatches`/`matchLabel` (REQ-72 / ADR-68)
     ├── clipboard.ts       OSC 52 clipboard: sanitized, byte-capped sequence and a caller-owned sink (REQ-72 / ADR-68)
+    ├── markdown.tsx       width-aware markdown: inline segments (incl. links), `wrapSegments`, full-width rules, the pure `tableBlock` formatter and the `MarkdownLine`/`MarkdownBlock` renderers (ADR-61, REQ-74 / ADR-70)
     ├── CommandSuggestions.tsx inline `/` autocomplete overlay + bounded row window
     ├── composer.ts         composer text model: caret movement/editing, wrapping, `MAX_INPUT_ROWS` growth (REQ-46)
     ├── feedback.ts         the one feedback voice: ✓/!/… prefixes, next-step hints, empty-chat first-run hints, the run panel's idle phrases (REQ-31 / REQ-51)
@@ -604,8 +605,9 @@ treated like any other gate — fail closed to a human decision
   - Two parallel scrollable cards (`ScrollableChatCard` for human-thinker dialogue, `ScrollableStreamCard` for real-time thinking and reasoning tokens) rendered concurrently.
   - `[Tab]` toggles active card focus with visual border highlighting (`cyanBright` on the active panel) when both cards are mounted; if the agent-output card is collapsed (no stream content), it explains that and points at `PgUp`/`PgDn`, and the footer omits the `[Tab] Focus` hint.
   - `[PageUp]` / `[PageDown]` scrolls the focused card by 4 lines at any time without losing in-flight input; `[↑]` / `[↓]` recall previous composer submissions while the draft is empty, and scroll the focused agent-output card when it is shown and focused.
-  - Native terminal Markdown token rendering via `MarkdownLine` formats inline bold, italic, code backticks, headers, bullet points, numbered lists, and code blocks natively in Ink.
+  - Native terminal Markdown token rendering via `MarkdownLine` formats inline bold, italic, code backticks, headers, bullet points, numbered lists, code blocks, links and — through `MarkdownBlock` — tables natively in Ink.
   - **The conversation wraps before Ink lays it out** (ADR-61): `markdownSegments` parses a message line into styled segments (`markdownSegments` keeps the block prefix so the width math counts it) and `wrapSegments` splits them at the card's own column budget — between segments, so a `**bold**` or `` `code` `` span is never cut mid-markup — while `segmentsWidth` counts double-width glyphs. `ScrollableChatCard` renders each resulting row with `wrap="truncate"`, so one logical line is exactly one terminal row and the scroll offset counts what the user sees. A `wrap="wrap"` line inside the fixed-height card is the bug this rules out: Ink lets such a text node claim one row while painting several, over the following line and over the card's bottom border (REV-6201).
+  - **Tables and rules are block-shaped** (REQ-74 / ADR-70): `markdownSegments(text, color, width)` draws `---` and the code-fence header at the caller's body width (default 80, clamped to ≥1), and `MarkdownBlock` formats a contiguous `| … |` block with the pure `tableBlock` — one styled row per source row, padded columns, dim ` │ ` separators, bold header, `…`-truncated cells, never a wrapped row. A link renders as an underlined label plus a dim ` ‹url›`; a malformed link stays literal text. Cells are plain text: inline markup inside a table cell is still shown as source (`test/tui/markdownTable.test.ts` keeps that as a `todo`).
   - Post-execution continuous loop: after `cycle.run()` in `live` mode, a `post-cycle-live` decision modal reads the **outcome** — completed, aborted, or error with the preserved branch/backups — and prompts the user to either exit cleanly (`[c]` / `[a]`) or return to the live refinement loop (`[r]`) with state and thinker context preserved. A failed promotion can never render “Cycle completed!”. When a preserved branch exists the same prompt offers the recovery (ADR-62) through `DecisionRequest.choices`: `[t]` re-attempts the promotion deterministically (no model turn) and `[p]` diagnoses and repairs a `conflict` (thinker + executor, one attempt); after either the prompt returns with the new result instead of ending the session, and an option the request did not offer is a no-op in both keymaps and in headless mode.
 
 ## 9. Concurrency and event model
@@ -2618,7 +2620,7 @@ forbid the washed-out colour families by name.
   error instead of looking empty, and the summaries carry no colour — the TUI picks the token, which
   is what keeps `NO_COLOR` a presentation concern.
 
-## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-73)
+## 32. Phase 8 — Run integrity, honest surfaces & a coherent terminal language (REQ-49…REQ-74)
 
 This sub-phase opened by answering four things a real run exposed: a finished iteration whose sandbox
 could not be merged was *stranded* and reported as an abort; a Muninn command whose `--project`
@@ -2627,12 +2629,13 @@ stayed at `(waiting for agent stream / tool executions...)` for the whole run on
 runtime; and the phase grid was drawn with double-width emoji that broke the monospace grid. Later
 increments in the same sub-phase added sessions, profiles, the shared single-width decision alphabet,
 the card chrome hierarchy, the live layout keys, transcript navigation, and (REQ-73) the raven's moods
-with a frame that only pays for visible chrome. The implementation lives in
+with a frame that only pays for visible chrome, and (REQ-74) markdown rules, links and tables that
+respect the card they are drawn in. The implementation lives in
 `src/engine/worktree.ts`, `src/engine/cycle.ts`, `src/state/schema.ts`, `src/state/store.ts`,
 `@dahch/muninn`'s db client and memory service, `src/commands/doctor.ts`,
 `src/tui/glyphs.ts` (new), `src/tui/Card.tsx` (new), `src/tui/search.ts` (new),
 `src/tui/clipboard.ts` (new), `src/tui/Dashboard.tsx`, `src/tui/LiveDashboard.tsx`,
-`src/tui/RavenHeader.tsx`, `src/tui/LiveHero.tsx`, `src/tui/ProfilePickerModal.tsx` (new),
+`src/tui/markdown.tsx`, `src/tui/RavenHeader.tsx`, `src/tui/LiveHero.tsx`, `src/tui/ProfilePickerModal.tsx` (new),
 `src/tui/feedback.ts`, `src/brand.ts`, `src/engine/agent/types.ts` and `src/cli.ts`. The phase *engine*
 (`runPhase`/`runIteration`), the pipeline-as-data model, the sandbox *model* and the Muninn schema are
 untouched.
@@ -2949,3 +2952,52 @@ The raven stops being a fixed drawing, and the header stops paying for surfaces 
   `test/tui/liveStageAccent.test.ts` (the emitted busy accent border) and
   `test/tui/dashboard.test.ts` (`iter n/m` in the title, one connector per phase row, the fix round
   hanging off the rail).
+
+### 32.12 Markdown rules, links and tables live inside the card's body width (REQ-74 / ADR-70)
+
+The renderer gained a width parameter and a block-shaped path, without moving the one-row-per-line
+invariant (ADR-61):
+
+- **Width is threaded, not guessed.** `markdownSegments(text, color, width)` (and `MarkdownLine`'s
+  `width` prop) draws the `---`/`***`/`___` rule and the code-fence header at exactly that many
+  display columns. `DEFAULT_MARKDOWN_WIDTH` (80) covers an unknown width, and every value is
+  floored and clamped to ≥1, so a rule is never empty and never throws. `Dashboard` computes
+  `contentColumns = columns - VIEW_OUTER_INSET`, then
+  `streamWidth = floor(contentColumns * (verbose ? 0.65 : 0.58))`; `StreamCard` turns that into
+  `bodyColumns = width - cardChrome("secondary").columns`, and the live conversation uses
+  `cardsWidth - cardChrome("primary").columns` minus its `paddingLeft`. `test/tui/markdown.test.ts`
+  also runs a `<MarkdownLine` width scan over `Dashboard.tsx`, `LiveDashboard.tsx` and
+  `markdown.tsx`, so a new site in those files cannot silently fall back to 80.
+- **Links stay readable.** `inlineSegments` matches `[label](url)` ahead of the emphasis tokens and
+  emits `label` with `underline: true` plus ` ‹url›` with `dim`. `wrapSegments` clones segments when
+  it splits them (`{ ...segment, text }`), so the underline crosses a row boundary; the heading
+  helper maps `bold: true` over the label. A malformed link (`[a](b c)`, `[a]()`, `[no url]`) never
+  matches and is rendered verbatim.
+- **Tables are formatted from the whole block.** `isTableHeader(lines, i)` requires the next line to
+  be a `|---|` separator (`:---:`, rows without outer pipes included), `tableBlockEnd` walks the
+  contiguous pipe rows and stops at the first blank/non-pipe line, and `tableBlock(rows, width)` is
+  pure: it accepts raw strings or pre-split cells, pads each column to the widest cell of *every*
+  content row, draws ` │ ` dim and the header bold, renders the `|---|` row as `─`, truncates a cell
+  with `…` inside its column, clips the assembled segments to `width`, and still emits one clipped
+  row per input row when the budget cannot even hold the gaps (a stub of the separators, or an empty
+  row) — it never overflows the width. Every input row produces exactly one output row — the
+  reason a table can never wrap and break the card's row budget.
+- **`MarkdownBlock` is the only block-aware caller.** It walks a `lines` buffer, replaces each
+  contiguous table block with its `tableBlock` output, sends every other line through
+  `MarkdownLine` (with `colorFor(line, index)` for the stream's marker colours), and slices by
+  **rendered rows**, not source lines: `maxRows` keeps the last N post-formatting rows, so the
+  run dashboard's clipped report still ends with the tail of its table instead of a header whose
+  rows were sliced away. The live conversation formats its tables while building `ChatRow[]`
+  (`RefineView`), where the contiguous `formattedChatLines` are still in hand.
+- **Known limit, recorded rather than hidden.** Table cells are padded and truncated as plain text,
+  so `**bold**`, `` `code` `` or `[label](url)` inside a cell reaches the terminal as source.
+  Fixing it needs width-aware truncation across styled runs (`clipSegments` already exists for the
+  assembled row); until that is designed, `test/tui/markdownTable.test.ts` keeps it as an explicit
+  `it.todo` instead of asserting a behaviour the renderer does not have.
+- **Guards.** `test/tui/markdown.test.ts` covers width-aware rules, the code-fence header, links,
+  malformed links and the call-site width contract; `test/tui/markdownTable.test.ts` covers
+  detection, one-row-per-input at every width, alignment, truncation, double-width glyphs, ragged
+  rows, `MarkdownBlock`'s `maxRows`/colour contract, a 44-column `Card` and the real `Dashboard`
+  frame at 100 columns; `test/tui/liveMarkdownTable.test.ts` mounts `LiveApp` and asserts the live
+  chat paints one aligned row per table row with no `|---|`/`[label](url)` left in the frame and no
+  row wider than the conversation card.

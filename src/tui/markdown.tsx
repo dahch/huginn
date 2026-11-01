@@ -16,7 +16,15 @@ export interface MdSegment {
   bold?: boolean;
   italic?: boolean;
   dim?: boolean;
+  /** Links keep their label readable even when the URL is dimmed beside it. */
+  underline?: boolean;
 }
+
+/** The terminal width a rule falls back to when the caller does not know it. */
+const DEFAULT_MARKDOWN_WIDTH = 80;
+/** Columns a table spends between two cells: `" │ "`. */
+const TABLE_GAP = " │ ";
+const TABLE_GAP_WIDTH = stringWidth(TABLE_GAP);
 
 /**
  * Parses inline markdown tokens (`code`, **bold**, __bold__, *italic*, _italic_)
@@ -30,7 +38,9 @@ export function inlineSegments(
   defaultColor: string | undefined = THEME.text,
 ): MdSegment[] {
   const segments: MdSegment[] = [];
-  const regex = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
+  // A link is matched before the emphasis tokens so its label can be underlined
+  // and its URL kept as one dim run instead of being parsed as body text.
+  const regex = /(`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -39,8 +49,12 @@ export function inlineSegments(
       segments.push({ text: text.slice(lastIndex, match.index), color: defaultColor });
     }
     const raw = match[0];
+    const link = raw.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
     if (raw.startsWith("`") && raw.endsWith("`") && raw.length >= 2) {
       segments.push({ text: raw.slice(1, -1), color: THEME.accentStrong });
+    } else if (link && link[1] !== undefined && link[2] !== undefined) {
+      segments.push({ text: link[1], color: defaultColor, underline: true });
+      segments.push({ text: ` ‹${link[2]}›`, color: defaultColor, dim: true });
     } else if (
       ((raw.startsWith("**") && raw.endsWith("**")) || (raw.startsWith("__") && raw.endsWith("__"))) &&
       raw.length >= 4
@@ -72,6 +86,7 @@ export function renderSegments(segments: readonly MdSegment[], keyPrefix = "s"):
       color={segment.color}
       bold={segment.bold}
       italic={segment.italic}
+      underline={segment.underline === true}
       dimColor={THEME.colorEnabled && segment.dim === true}
     >
       {segment.text}
@@ -91,6 +106,20 @@ export function renderInlineSpans(
   return renderSegments(inlineSegments(text, defaultColor));
 }
 
+/** The display width a rule should occupy, with a bounded fallback. */
+function ruleColumns(width: number | undefined): number {
+  const requested = width === undefined || !Number.isFinite(width) ? DEFAULT_MARKDOWN_WIDTH : width;
+  return Math.max(1, Math.floor(requested));
+}
+
+/** A code-fence header exactly as wide as the card that will draw it. */
+function codeFenceHeader(lang: string, width: number): MdSegment[] {
+  const label = lang ? `[${lang}]` : "code";
+  const prefix = `─── ${label} `;
+  if (stringWidth(prefix) > width) return [{ text: "─".repeat(width), dim: true }];
+  return [{ text: `${prefix}${"─".repeat(width - stringWidth(prefix))}`, dim: true }];
+}
+
 /**
  * The styled runs of one markdown line, *including* its block prefix (heading
  * marker, bullet, quote bar) so the prefix keeps its column in the width math.
@@ -99,11 +128,14 @@ export function renderInlineSpans(
 export function markdownSegments(
   text: string,
   defaultColor: string | undefined = THEME.text,
+  width?: number,
 ): MdSegment[] {
+  const columns = ruleColumns(width);
+
   // Code fence
   if (/^```/.test(text)) {
     const lang = text.slice(3).trim();
-    return [{ text: `─── ${lang ? `[${lang}]` : "code"} ──────────────────────────────`, dim: true }];
+    return codeFenceHeader(lang, columns);
   }
 
   const heading = (prefix: string, color: string | undefined, body: string): MdSegment[] => [
@@ -151,7 +183,7 @@ export function markdownSegments(
 
   // Horizontal rule (---, ***, ___)
   if (/^(\*\*\*|---|___)$/.test(text.trim())) {
-    return [{ text: "────────────────────────────────────────", dim: true }];
+    return [{ text: "─".repeat(columns), dim: true }];
   }
 
   return inlineSegments(text, defaultColor);
@@ -176,6 +208,149 @@ function splitAtWidth(text: string, limit: number): [string, string] {
     width += charWidth;
   }
   return [head, text.slice(head.length)];
+}
+
+/** A table row as raw markdown text or as already-split cells. */
+export type TableRowInput = string | readonly string[];
+
+function parseTableRow(row: TableRowInput): string[] {
+  if (typeof row !== "string") return row.map((cell) => cell.trim());
+  const trimmed = row.trim();
+  if (trimmed === "") return [];
+  const withoutEdges = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  return withoutEdges.split("|").map((cell) => cell.trim());
+}
+
+function isSeparatorCells(cells: readonly string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
+}
+
+function isTableSeparatorRow(line: string): boolean {
+  return line.includes("|") && isSeparatorCells(parseTableRow(line));
+}
+
+/**
+ * True when `lines[index]` is the header of a contiguous markdown table: the
+ * next line must be a `|---|` separator. The block itself — not a single row —
+ * is what gets aligned, because column widths cannot be known before the whole
+ * table has been read.
+ */
+export function isTableHeader(lines: readonly string[], index: number): boolean {
+  const header = lines[index];
+  const separator = lines[index + 1];
+  if (header === undefined || separator === undefined) return false;
+  if (!header.includes("|")) return false;
+  return isTableSeparatorRow(separator);
+}
+
+/** Index just past the contiguous table block that starts at `index`. */
+export function tableBlockEnd(lines: readonly string[], index: number): number {
+  let end = index + 2;
+  while (end < lines.length) {
+    const line = lines[end];
+    if (line === undefined || line.trim() === "" || !line.includes("|")) break;
+    end += 1;
+  }
+  return end;
+}
+
+/** Append blanks until `text` occupies exactly `width` display columns. */
+function padToWidth(text: string, width: number): string {
+  const missing = width - stringWidth(text);
+  return missing > 0 ? `${text}${" ".repeat(missing)}` : text;
+}
+
+/** Cut a cell to `width` columns, keeping the ellipsis inside the budget. */
+function truncateCell(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (stringWidth(text) <= width) return text;
+  if (width === 1) return "…";
+  const [head] = splitAtWidth(text, width - 1);
+  return `${head}…`;
+}
+
+/** Keep at most `width` display columns, splitting a styled run only if needed. */
+function clipSegments(segments: readonly MdSegment[], width: number): MdSegment[] {
+  const clipped: MdSegment[] = [];
+  let remaining = width;
+  for (const segment of segments) {
+    if (remaining <= 0) break;
+    const segmentWidth = stringWidth(segment.text);
+    if (segmentWidth <= remaining) {
+      clipped.push(segment);
+      remaining -= segmentWidth;
+      continue;
+    }
+    const [head] = splitAtWidth(segment.text, remaining);
+    if (head !== "") clipped.push({ ...segment, text: head });
+    break;
+  }
+  while (clipped.length > 0 && clipped[clipped.length - 1]!.text.trim() === "") clipped.pop();
+  const last = clipped[clipped.length - 1];
+  if (last !== undefined) {
+    const trimmed = last.text.replace(/\s+$/, "");
+    if (trimmed !== last.text) clipped[clipped.length - 1] = { ...last, text: trimmed };
+  }
+  return clipped;
+}
+
+/**
+ * Formats a contiguous markdown table block for a terminal of `width` columns.
+ *
+ * Pure and block-shaped on purpose: every input row produces exactly one output
+ * row, the columns are padded to the widest cell they contain, the column
+ * separators are dim, and a row that cannot fit is truncated with `…` instead of
+ * being wrapped into a second row (which would corrupt the card's row budget).
+ * The function returns styled segments so the `│` separators can be dimmed
+ * without leaking ANSI codes into the width math.
+ */
+export function tableBlock(rows: readonly TableRowInput[], width: number): MdSegment[][] {
+  if (rows.length === 0) return [];
+  const limit = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
+  const parsed = rows.map(parseTableRow);
+  const separatorFlags = parsed.map((cells) => isSeparatorCells(cells));
+  const contentRows = parsed.filter((_row, index) => !separatorFlags[index]);
+  const columns = Math.max(1, ...parsed.map((row) => row.length));
+
+  const natural = Array.from({ length: columns }, (_unused, column) => {
+    let widest = 1;
+    for (const row of contentRows) {
+      widest = Math.max(widest, stringWidth(row[column] ?? ""));
+    }
+    return widest;
+  });
+
+  const gaps = TABLE_GAP_WIDTH * Math.max(0, columns - 1);
+  const available = Math.max(0, limit - gaps);
+  const widths = [...natural];
+  let excess = widths.reduce((total, cell) => total + cell, 0) - available;
+  while (excess > 0) {
+    let widest = -1;
+    for (let column = 0; column < widths.length; column++) {
+      if (widths[column]! <= 1) continue;
+      if (widest < 0 || widths[column]! > widths[widest]!) widest = column;
+    }
+    if (widest < 0) break;
+    widths[widest] = widths[widest]! - 1;
+    excess -= 1;
+  }
+  if (excess > 0) widths.fill(0);
+
+  return parsed.map((cells, rowIndex) => {
+    const isSeparator = separatorFlags[rowIndex] === true;
+    const segments: MdSegment[] = [];
+    for (let column = 0; column < columns; column++) {
+      if (column > 0) segments.push({ text: TABLE_GAP, dim: true });
+      const cellWidth = widths[column] ?? 0;
+      if (isSeparator) {
+        segments.push({ text: "─".repeat(cellWidth), dim: true });
+      } else {
+        const text = padToWidth(truncateCell(cells[column] ?? "", cellWidth), cellWidth);
+        segments.push({ text, ...(rowIndex === 0 ? { bold: true } : {}) });
+      }
+    }
+    return clipSegments(segments, limit);
+  });
 }
 
 /**
@@ -259,14 +434,76 @@ export function MarkdownLine({
   text,
   defaultColor = THEME.text,
   wrap = "wrap",
+  width,
 }: {
   text: string;
   defaultColor?: string | undefined;
   wrap?: "wrap" | "truncate" | "truncate-start" | "truncate-middle" | "truncate-end";
+  /** Display columns of the container; rules are drawn exactly this wide. */
+  width?: number;
 }) {
   return (
     <Text wrap={wrap}>
-      {renderSegments(markdownSegments(text, defaultColor))}
+      {renderSegments(markdownSegments(text, defaultColor, width))}
     </Text>
+  );
+}
+
+/**
+ * Renders a whole markdown block (a report, a stream buffer or a message body)
+ * at a known width. It is the only place that can align a table, because the
+ * column widths need every row of the contiguous block; normal lines are still
+ * handed to {@link MarkdownLine} one by one. `maxRows` keeps the last N rendered
+ * rows, so the caller can clip a report without cutting a table header off first.
+ */
+export function MarkdownBlock({
+  lines,
+  width,
+  colorFor = () => THEME.text,
+  wrap = "truncate",
+  maxRows,
+}: {
+  lines: readonly string[];
+  width: number;
+  colorFor?: (line: string, index: number) => string | undefined;
+  wrap?: "wrap" | "truncate" | "truncate-start" | "truncate-middle" | "truncate-end";
+  maxRows?: number;
+}): React.ReactElement {
+  type BlockRow =
+    | { kind: "line"; text: string; color: string | undefined }
+    | { kind: "table"; segments: MdSegment[] };
+  const rows: BlockRow[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (isTableHeader(lines, index)) {
+      const end = tableBlockEnd(lines, index);
+      for (const segments of tableBlock(lines.slice(index, end), width)) {
+        rows.push({ kind: "table", segments });
+      }
+      index = end - 1;
+      continue;
+    }
+    const text = lines[index] ?? "";
+    rows.push({ kind: "line", text, color: colorFor(text, index) });
+  }
+  const limit = maxRows === undefined ? rows.length : Math.max(0, Math.floor(maxRows));
+  const visible = maxRows === undefined ? rows : limit === 0 ? [] : rows.slice(-limit);
+  return (
+    <>
+      {visible.map((row, index) =>
+        row.kind === "table" ? (
+          <Text key={`t-${index}`} wrap={wrap}>
+            {renderSegments(row.segments, `t-${index}`)}
+          </Text>
+        ) : (
+          <MarkdownLine
+            key={`m-${index}`}
+            text={row.text || " "}
+            defaultColor={row.color}
+            wrap={wrap}
+            width={width}
+          />
+        ),
+      )}
+    </>
   );
 }

@@ -16,7 +16,16 @@ import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, LogsCard } from "./Dashboard";
 import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
 import { DecisionModal } from "./DecisionModal.js";
-import { MarkdownLine, markdownSegments, renderSegments, wrapSegments, type MdSegment } from "./markdown";
+import {
+  MarkdownBlock,
+  isTableHeader,
+  markdownSegments,
+  renderSegments,
+  tableBlock,
+  tableBlockEnd,
+  wrapSegments,
+  type MdSegment,
+} from "./markdown";
 import { Card, cardChrome } from "./Card.js";
 import { useTerminalSize } from "./useTerminalSize";
 import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
@@ -1704,7 +1713,9 @@ function RefineView({
   const chatBodyColumns = Math.max(1, cardsWidth - cardChrome("primary").columns);
   const chatRows = useMemo<ChatRow[]>(() => {
     const rows: ChatRow[] = [];
-    for (const line of formattedChatLines) {
+    const texts = formattedChatLines.map((line) => line.text);
+    for (let lineIndex = 0; lineIndex < formattedChatLines.length; lineIndex++) {
+      const line = formattedChatLines[lineIndex]!;
       if (line.type === "blank") {
         rows.push({ id: line.id, segments: [], paddingLeft: 0, messageIndex: line.messageIndex });
         continue;
@@ -1730,7 +1741,23 @@ function RefineView({
       const paddingLeft = line.type === "system" ? 0 : 2;
       const color = line.type === "system" ? THEME.system : THEME.text;
       const width = Math.max(1, chatBodyColumns - paddingLeft);
-      wrapSegments(markdownSegments(line.text, color), width).forEach((segments, index) => {
+      // A table needs its whole block to know its column widths: format it
+      // here, where the contiguous rows are still in hand, and emit one
+      // pre-wrapped row per source row.
+      if (isTableHeader(texts, lineIndex)) {
+        const end = tableBlockEnd(texts, lineIndex);
+        tableBlock(texts.slice(lineIndex, end), width).forEach((segments, index) => {
+          rows.push({
+            id: `${line.id}-t${index}`,
+            segments,
+            paddingLeft,
+            messageIndex: line.messageIndex,
+          });
+        });
+        lineIndex = end - 1;
+        continue;
+      }
+      wrapSegments(markdownSegments(line.text, color, width), width).forEach((segments, index) => {
         rows.push({ id: `${line.id}-w${index}`, segments, paddingLeft, messageIndex: line.messageIndex });
       });
     }
@@ -2641,14 +2668,14 @@ function ScrollableStreamCard({
           <Text color={THEME.muted}>Real-time thinking and agent output will stream here while the model runs.</Text>
         </Box>
       ) : (
-        lines.map((l, i) => (
-          <MarkdownLine
-            key={i}
-            text={l}
-            defaultColor={l.startsWith("⚡") ? THEME.warn : l.startsWith("✓") ? THEME.ok : THEME.muted}
-            wrap="truncate"
-          />
-        ))
+        <MarkdownBlock
+          lines={lines}
+          width={Math.max(1, width - cardChrome("secondary").columns)}
+          colorFor={(line) =>
+            line.startsWith("⚡") ? THEME.warn : line.startsWith("✓") ? THEME.ok : THEME.muted
+          }
+          wrap="truncate"
+        />
       )}
     </Card>
   );

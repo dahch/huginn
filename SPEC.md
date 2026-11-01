@@ -1349,6 +1349,48 @@ iteration and 6 afterwards** (down from 14).
   `MODULE_MAP.md`, `DESIGN.md` (§32.11), `ADR.md` (ADR-69) and `AGENTS.md` document the moods, the
   compact rung, the visible-chrome reservation and the pipeline rail.
 
+### REQ-74: Markdown renders tables, links and full-width rules inside the card
+- **AC-74.1 (Rules follow their container)**: `markdownSegments(text, color, width)` draws a
+  horizontal rule (`---`, `***`, `___`) and the code-fence header at exactly `width` display columns
+  instead of a fixed literal. An unknown or non-finite width falls back to `DEFAULT_MARKDOWN_WIDTH`
+  (80) and every width is clamped to at least one column, so a rule can neither be `repeat(0)` nor
+  throw. `MarkdownLine` forwards the `width` prop; `MarkdownBlock` passes it to the line it renders
+  and the dashboards hand that width down from `cardChrome`, so no renderer falls back to the
+  80-column default on a real surface.
+- **AC-74.2 (Links keep the label and name the URL)**: `inlineSegments` matches `[label](url)`
+  before the emphasis tokens and emits the label underlined plus a dim ` ‹url›`; a malformed link
+  (`[a](b c)`, `[a]()`, `[label](not a url)`, `[no url]`) stays literal text. The underline is a
+  segment flag, so `wrapSegments` keeps it across a wrap and a heading's bold does not drop it.
+- **AC-74.3 (Tables are formatted as one block)**: `isTableHeader(lines, i)` recognises a header
+  only when the next line is a `|---|` separator (alignment colons and rows without outer pipes
+  included); `tableBlockEnd` spans the contiguous pipe rows and stops at the first blank or non-pipe
+  line. `tableBlock(rows, width)` returns exactly one styled row per input row: columns are padded to
+  the widest cell of every content row, `" │ "` separators are dim, the header row is bold, the
+  `|---|` line is drawn as `─`, an overlong cell is truncated with `…` inside its column, and each
+  row is clipped to `width`. It accepts raw markdown strings or already-split cells, and a width
+  that cannot hold the column gaps still yields exactly one clipped row per input row (a stub of the
+  separators, or nothing at all) instead of overflowing. Table cells are plain text — inline markup
+  inside a cell is not styled yet (`test/tui/markdownTable.test.ts` records that as a `todo`, not as
+  behaviour).
+- **AC-74.4 (One renderer owns the block)**: `MarkdownBlock({ lines, width, colorFor?, wrap?,
+  maxRows? })` walks a buffer, hands every contiguous table block to `tableBlock` and every other
+  line to `MarkdownLine`, and keeps the last `maxRows` **rendered** rows, so clipping a report can no
+  longer cut a table header off before its rows. The run dashboard renders both the stream buffer
+  and the last-phase report through it; the live chat formats the contiguous tables in its
+  conversation at the card's body width, and its stream card uses the same block renderer.
+- **AC-74.5 (The width is the frame's, not a literal)**: `Dashboard` derives the stream column as
+  `floor((columns - VIEW_OUTER_INSET) * (verbose ? 0.65 : 0.58))`, `StreamCard` subtracts
+  `cardChrome("secondary").columns`, and the live conversation subtracts
+  `cardChrome("primary").columns` plus its body indent. A `---` in a report is therefore one row of
+  the card's exact body width at any terminal size, instead of a 40-column literal that either
+  floated short of the border or wrapped into a second row and corrupted the row budget.
+- **AC-74.6 (Drift guards)**: `test/tui/markdown.test.ts` (width-aware rules, links and malformed
+  links, plus the `<MarkdownLine` width scan over the renderer and both dashboards),
+  `test/tui/markdownTable.test.ts` (block detection, one row per input, alignment, truncation,
+  double-width glyphs, ragged rows, and the real `Dashboard` frame) and
+  `test/tui/liveMarkdownTable.test.ts` (the live chat paints aligned rows with no raw pipes, inside
+  the conversation card) hold the contract.
+
 ---
 
 ## Appendix — module map

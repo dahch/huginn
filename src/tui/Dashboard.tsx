@@ -5,7 +5,7 @@ import type { RunConfig } from "../config";
 import { events } from "../engine/engineEvents";
 import type { PhaseResult, DecisionRequest, DecisionChoice, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, formatUsage, verdictIcon, verdictToken } from "../format";
-import { MarkdownLine } from "./markdown";
+import { MarkdownBlock } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import type { PromotionRecord } from "../state/schema";
 import { phasesForProfile, type ProfileName } from "../engine/profiles";
@@ -438,6 +438,12 @@ export function Dashboard({
   const phaseElapsed = now - ui.phaseStartedAt;
   const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
 
+  // The stream column's real width: the outer `paddingX={1}` inset plus the
+  // same percentage share the layout below gives its Box. Markdown rules use
+  // this, so a `---` is one row at any terminal width.
+  const contentColumns = Math.max(1, terminalSize.columns - VIEW_OUTER_INSET);
+  const streamWidth = Math.max(1, Math.floor(contentColumns * (ui.verbose ? 0.65 : 0.58)));
+
   const streamStart = Math.max(0, streamLines.length - streamLinesCount - streamScroll);
   const visibleStreamLines = streamLines.slice(streamStart, streamStart + streamLinesCount);
 
@@ -491,6 +497,7 @@ export function Dashboard({
             report={ui.lastReport?.raw ?? ""}
             runtimeId={engine.runtime.id}
             streamsOutput={engine.runtime.capabilities?.streaming === true}
+            width={streamWidth}
           />
         </Box>
       </Box>
@@ -813,6 +820,7 @@ export function StreamCard({
   report = "",
   runtimeId,
   streamsOutput = true,
+  width,
 }: {
   lines?: string[];
   totalLines?: number;
@@ -828,9 +836,12 @@ export function StreamCard({
   runtimeId?: string;
   /** Whether the runtime can push incremental output (AC-51.3). */
   streamsOutput?: boolean;
+  /** Columns the card occupies; markdown rules and tables use its body width. */
+  width?: number;
 }) {
   const displayLines = lines;
   const bodyBudget = Math.max(1, (height ?? 10) - cardChrome("secondary").rows);
+  const bodyColumns = Math.max(1, (width ?? 84) - cardChrome("secondary").columns);
   // A buffer that only holds the empty string (a phase that emitted nothing) is
   // not a stream: treating it as one hid the last phase's report behind a blank
   // row (REQ-51 / AC-51.1). This matches the live view's `hasStreamContent`.
@@ -876,29 +887,34 @@ export function StreamCard({
       minHeight={6}
     >
       {hasStream ? (
-        displayLines.map((line, i) => {
-          const trimmed = line.trim();
-          const isTool = trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
-          const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
-          const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
-          const color: string | undefined = isTool
-            ? THEME.accentStrong
-            : isCmd
-              ? THEME.warn
-              : isThought
-                ? THEME.thinker
-                : THEME.text;
-
-          return (
-            <MarkdownLine key={i} text={line || " "} defaultColor={color} wrap="truncate" />
-          );
-        })
+        <MarkdownBlock
+          lines={displayLines}
+          width={bodyColumns}
+          colorFor={(line) => {
+            const trimmed = line.trim();
+            const isTool =
+              trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
+            const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
+            const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
+            return isTool
+              ? THEME.accentStrong
+              : isCmd
+                ? THEME.warn
+                : isThought
+                  ? THEME.thinker
+                  : THEME.text;
+          }}
+          wrap="truncate"
+        />
       ) : hasReport ? (
         // The runtime cannot stream: show the phase's real report rather than an
         // empty panel that looks broken (AC-51.1).
-        reportLines.slice(-bodyBudget).map((line, i) => (
-          <MarkdownLine key={i} text={line || " "} defaultColor={THEME.text} wrap="truncate" />
-        ))
+        <MarkdownBlock
+          lines={reportLines}
+          width={bodyColumns}
+          maxRows={bodyBudget}
+          wrap="truncate"
+        />
       ) : (
         <Box flexDirection="column" overflow="hidden">
           {idleRows.map((row, i) => (

@@ -2129,3 +2129,63 @@ avoids. They are ordered by how central the decision is to the design.
     be revisited if the art ever grows a row; and the run page now passes
     `iteration`/`totalIterations` into `PipelineCard`, so its state must keep those two fields current
     (they already do for the progress bar).
+
+## ADR-70: Markdown is rendered as a block, at the width of the card that draws it
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The markdown renderer was line-shaped: `markdownSegments` parsed one line at a time,
+  `MarkdownLine` asked Ink to wrap it, and every rule-like line drew a **fixed literal** (40 columns
+  for `---`, 39 for a code-fence header with a short language tag and 47 with a long one). A table
+  could not be aligned at all — each row reached the card as raw `| … |` pipes, because column widths
+  need the whole contiguous block and the renderer only ever saw one line. Links kept their markdown
+  (`[label](url)`). The two literals also
+  violated the card's own contract: a rule narrower than the body floated short of the border, and a
+  rule wider than the body was handed to Ink, which paints the extra columns as a second row inside a
+  fixed-height card (the class of defect ADR-61 rules out). `StreamCard`'s report path made the table
+  problem worse by slicing the raw buffer (`reportLines.slice(-bodyBudget)`) before any formatting,
+  so a clipped report could start in the middle of a table.
+- **Decision**:
+  1. **Width is a parameter, not a constant.** `markdownSegments(text, color, width)` draws the
+     horizontal rule and the code-fence header at exactly that width; an undefined/non-finite width
+     falls back to `DEFAULT_MARKDOWN_WIDTH` (80) and every width is clamped to at least one column, so
+     the function can neither emit `repeat(0)` nor throw. `MarkdownLine` gains a `width` prop and
+     `MarkdownBlock` passes it down, while both dashboards supply that width from the frame they
+     already laid out (`Dashboard`'s stream column, `cardChrome(...).columns`).
+  2. **Links name their target.** `inlineSegments` matches `[label](url)` before the emphasis tokens
+     and emits the label underlined plus a dim ` ‹url›`. A malformed link stays literal text, the
+     underline travels as a segment flag (so `wrapSegments` preserves it), and a heading's bold maps
+     over it rather than dropping it.
+  3. **Tables are one pure block function.** Because column widths depend on every row, `tableBlock`
+     takes the whole contiguous block (raw strings or pre-split cells) and returns one styled row per
+     input row: natural widths per column, dim `" │ "` separators, a bold header, the separator line
+     drawn as `─`, `…` truncation inside a cell, and a final clip to the width. `isTableHeader`
+     requires the following `|---|` row, and `tableBlockEnd` stops at the first blank/non-pipe line,
+     so prose that merely contains a pipe is not mistaken for a table. Truncation is deliberate: a
+     wrapped row would spend two terminal rows and break the one-row-per-line budget.
+  4. **A block renderer is the only caller that can align.** `MarkdownBlock` walks a report or stream
+     buffer, formats each contiguous table block whole, hands every other line to `MarkdownLine`, and
+     clips by **rendered rows** (`maxRows` keeps the last N), which is what lets `StreamCard` show the
+     tail of a report without cutting a table header off first. The live conversation formats its
+     tables while building `ChatRow[]`, where the contiguous rows are still in hand.
+- **Alternatives rejected**: (a) let `wrapSegments` wrap table rows — the separators would no longer
+  line up and every table row could cost two rows; (b) pad every column to a fixed width — the table
+  would overflow a narrow card or waste half a wide one; (c) build the table in Ink components and
+  measure after layout — Ink has no pre-paint measurement, and the row budget must be known before the
+  frame is composed (ADR-61's constraint); (d) render only the header row in the "table" style — the
+  table would still reach the user as raw pipes; (e) style inline markup inside table cells by
+  naively truncating the rendered string — truncation would cut ANSI/segment boundaries, so the
+  limitation is recorded as a todo instead of half-implemented.
+- **Consequences**:
+  - *Positive*: a markdown table in a phase report or a chat message renders as aligned, dim-separated
+    rows with a bold header; a `---` is one row of the card's exact body width at any terminal size;
+    a link shows its label and its URL instead of its source. The width contract is testable at the
+    pure level (`markdownSegments`, `tableBlock`) and at the frame level (the dashboard and live chat
+    tests render the real components and assert the painted rows stay inside the card).
+  - *Negative*: `tableBlock` is O(rows × columns) per render of a table (acceptable: reports are
+    bounded, and the live chat memoizes its wrapped rows on the message list and the card width), and
+    cells are plain text — a bold or linked value inside a table cell still shows its markup until
+    width-aware truncation across styled runs is designed (`test/tui/markdownTable.test.ts` keeps
+    that as a `todo`). Widening a table therefore truncates rather than reflows, and a caller that
+    forgets to pass `width` gets the documented 80-column fallback, which is exactly the old defect at
+    a different number.
