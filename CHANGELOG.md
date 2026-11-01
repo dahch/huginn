@@ -2,8 +2,8 @@
 
 ## 2.0.0-rc.5
 
-Thirty-eight commits since `2.0.0-rc.4`, 98 files: `src` +6362/−1518, `test` +1568/−358, docs
-+917/−404 (`ADR.md`, `AGENTS.md`, `CHANGELOG.md`, `DESIGN.md`, `README.md`, `SPEC.md`). The cycle
+Thirty-nine commits since `2.0.0-rc.4`, 99 files: `src` +6362/−1518, `test` +1568/−358, docs
++927/−404 (`ADR.md`, `AGENTS.md`, `CHANGELOG.md`, `DESIGN.md`, `README.md`, `SPEC.md`). The cycle
 moves onto one `RuntimePort` (native `opencode` driver included), the audit collapses to one
 increment report with an on-demand judge, `VERIFY` becomes a deterministic gate followed by an
 atomic checkpoint, and a failed promotion becomes recoverable (`huginn promote --retry|--repair`).
