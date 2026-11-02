@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { handleRuntimeCommand } from "../../src/commands/runtime.js";
-import type { RuntimeCapabilities, RuntimePort } from "../../src/engine/agent/port.js";
+import type { RuntimeCapabilities, RuntimeId, RuntimePort } from "../../src/engine/agent/port.js";
 
 const CAPS: RuntimeCapabilities = {
   inProcess: true, structuredEvents: false, streaming: false, permissions: "none",
@@ -30,7 +30,7 @@ describe("huginn runtime list", () => {
   });
 
   it("lists every runtime with its declared capabilities and never probes by default", async () => {
-    const getPort = vi.fn(() => port());
+    const getPort = vi.fn((_id: RuntimeId) => port());
     silent();
     await handleRuntimeCommand("list", {}, { getPort });
     expect(getPort).toHaveBeenCalledTimes(5);
