@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentTarget } from "../../../src/agents/integrator.js";
 import type { IAgentRuntime, McpStatusReport } from "../../../src/engine/agent/types.js";
 import {
   MCP_BADGE_REASON_WIDTH,
@@ -339,7 +340,7 @@ describe("MCP Status & Timeout Helper (AC-24.1, ADR-24)", () => {
 
   it("handles non-Error thrown values in fetchMcpStatusWithTimeout", async () => {
     const runtime: IAgentRuntime = {
-      id: "raw-throw",
+      id: "raw-throw" as AgentTarget,
       name: "Raw Throw",
       isAvailable: async () => true,
       getAvailableModels: async () => [],
@@ -611,8 +612,8 @@ describe("Project-level .huginn/mcp.json parsing (AC-24.3)", () => {
       expect(entry.id).toBe("InjectedServer");
       expect(entry.transport).toBe("stdio");
       expect(entry.error).toBe("Critical Error");
-      expect(entry.tools[0]?.name).toBe("exploitative_tool");
-      expect(entry.tools[0]?.description).toBe("A tool with escapes and control chars");
+      expect(entry.tools?.[0]?.name).toBe("exploitative_tool");
+      expect(entry.tools?.[0]?.description).toBe("A tool with escapes and control chars");
     });
   });
 
@@ -741,10 +742,10 @@ describe("Project-level .huginn/mcp.json parsing (AC-24.3)", () => {
         ],
       });
       expect(entry.toolsCount).toBe(4);
-      expect(entry.tools[0]).toEqual({ name: "42" });
-      expect(entry.tools[1]).toEqual({ name: "true" });
-      expect(entry.tools[2]).toEqual({ name: "good_tool", description: "desc" });
-      expect(entry.tools[3]).toEqual({ name: "no_desc_tool", description: undefined });
+      expect(entry.tools?.[0]).toEqual({ name: "42" });
+      expect(entry.tools?.[1]).toEqual({ name: "true" });
+      expect(entry.tools?.[2]).toEqual({ name: "good_tool", description: "desc" });
+      expect(entry.tools?.[3]).toEqual({ name: "no_desc_tool", description: undefined });
     });
 
     it("detects transport types correctly: stdio, sse, custom", () => {
@@ -789,7 +790,7 @@ describe("listing reports carry real tool counts and failures (REQ-32)", () => {
 
   it("falls back to config discovery when a slow listing outruns the poll", async () => {
     const runtime: IAgentRuntime = {
-      id: "slow-listing-test",
+      id: "slow-listing-test" as AgentTarget,
       name: "Slow listing",
       isAvailable: async () => true,
       getAvailableModels: async () => [],
