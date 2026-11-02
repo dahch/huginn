@@ -210,6 +210,52 @@ function configuredPiServers(options: PiPortOptions): McpStatusReport {
 }
 
 /**
+ * A config-file server expressed as a listing row, for merging into the CLI's
+ * own answer.
+ *
+ * The status mapping is the heart of the honesty rule: a declaration is never
+ * a liveness proof, so every non-error config state (`connected`/`disconnected`/
+ * `unknown`) becomes `unknown` here. Only an explicit `error` survives, because
+ * it means the file already records a real failure — the difference between
+ * "I do not know" and "it is broken".
+ */
+function configuredListing(server: McpServerStatus): McpServerListing {
+  const status: McpListingStatus = server.status === "error" ? "error" : "unknown";
+  return {
+    name: server.name,
+    transport: server.transport || undefined,
+    status,
+    detail: server.error ?? server.detail,
+    // A config declaration reports no probed tools; never invent a count.
+    toolsCount: 0,
+  };
+}
+
+/**
+ * Merges the config view into an agent's own listing without letting config
+ * override liveness.
+ *
+ * The listing stays the source of truth: a name it already mentions is kept
+ * verbatim (including a real `error`), and only servers it does **not** mention
+ * are appended as configured-but-unverified. That is what keeps a broken server
+ * from erasing a healthy one — or a configured one from disappearing entirely
+ * when the CLI cannot probe.
+ */
+export function mergePiConfiguredListings(
+  listings: McpServerListing[],
+  configured: McpStatusReport,
+): McpServerListing[] {
+  const merged = [...listings];
+  const seen = new Set(listings.map((listing) => listing.name));
+  for (const server of configured.servers) {
+    if (seen.has(server.name)) continue;
+    seen.add(server.name);
+    merged.push(configuredListing(server));
+  }
+  return merged;
+}
+
+/**
  * The in-process pi driver.
  *
  * Advertised capabilities are deliberately conservative for this first cut: the
@@ -228,6 +274,7 @@ export function createPiSdkPort(
     ...CAPABILITIES,
     mcpListing: Boolean(resolvedAdapter.listMcpServers || resolvedAdapter.getMcpStatus),
   };
+  const adapterList = resolvedAdapter.listMcpServers?.bind(resolvedAdapter);
   return {
     id: "pi",
     target: "pi",
@@ -266,8 +313,28 @@ export function createPiSdkPort(
         : { ok: false as const, reason: 'expected a "provider/model" reference (for example "anthropic/claude-opus-4-5")' };
     },
 
-    ...(resolvedAdapter.listMcpServers
-      ? { listMcpServers: () => resolvedAdapter.listMcpServers!() }
+    ...(adapterList
+      ? {
+          /**
+           * `pi mcp list --json` is the live answer, but it can fail or return
+           * nothing while servers are still configured (for example one server
+           * cannot start). The config files are therefore merged in as
+           * `unknown`/unverified rows for every name the listing did not mention,
+           * so the report never loses sight of what is configured — and never
+           * upgrades a declaration to a connection.
+           */
+          listMcpServers: async () => {
+            let listings: McpServerListing[] = [];
+            try {
+              const result = await adapterList();
+              listings = Array.isArray(result) ? result : [];
+            } catch {
+              // A failed listing is "nothing enumerated"; config below still
+              // tells the truth about what is configured.
+            }
+            return mergePiConfiguredListings(listings, configuredPiServers(options));
+          },
+        }
       : {}),
     ...(resolvedAdapter.getMcpStatus
       ? { mcpStatus: () => resolvedAdapter.getMcpStatus!() }

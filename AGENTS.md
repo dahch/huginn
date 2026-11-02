@@ -265,8 +265,12 @@ whether any generic-target CLI is installed; `createSession` there says it needs
 `pi` is the first driver implemented natively (`drivers/pi-sdk.ts`): it runs `createAgentSession()`
 in huginn's own process, resolves `provider/model` through the SDK's `ModelRuntime`, lists the real
 catalog and keeps a real session history. It also enumerates MCP: `listMcpServers` runs
-`pi mcp list --json` (bounded, 30 s, `cwd = project`), and `mcpStatus` reads
-`~/.pi/agent/mcp.json` + `<project>/.pi/mcp.json` as the fast, honest fallback. The default session
+`pi mcp list --json` (bounded, 30 s, `cwd = project`) and then **merges** in every server read from
+`~/.pi/agent/mcp.json` + `<project>/.pi/mcp.json` that the listing did not mention (project wins a
+name collision), as `unknown`/`unverified` — a config declaration is never liveness, but it is not
+nothing either. `mcpStatus` reads those same files as the honest probe, so a failed or empty listing
+reports `⚪ n configured` (and a listing row in `error` keeps its peers and names the failure)
+instead of `none`. The default session
 uses pi's `DefaultResourceLoader`, so pi's own MCP servers, skills (`~/.agents/skills`, `.pi/skills`)
 and `AGENTS.md` are already available to the phase prompt; huginn only reports them. Its events,
 permissions and resume are **not** wired yet, so it declares `streaming`, `structuredEvents` and

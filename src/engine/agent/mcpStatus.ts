@@ -117,6 +117,20 @@ export function reportFromListings(
     });
   }
 
+  // A failed row is a real failure, so the badge must be able to name it
+  // (`🟡 error — <reason>`) instead of a bare `🟡 error`. The failing server's
+  // own detail is the best available reason; its name is the honest fallback.
+  const failed = servers.filter((server) => server.status === "error");
+  const error =
+    failed.length > 0
+      ? failed
+          .map((server) => {
+            const detail = server.detail ?? server.error;
+            return detail ? `${server.name}: ${detail}` : `${server.name} failed`;
+          })
+          .join("; ")
+      : undefined;
+
   return {
     servers,
     totalTools: servers.reduce((sum, server) => sum + server.toolsCount, 0),
@@ -124,6 +138,7 @@ export function reportFromListings(
     // AC-32.4/AC-32.5: a listing that probed nothing is *configured*, not live.
     unverified: servers.some((s) => s.status === "unknown"),
     degraded: servers.some((s) => s.status === "error"),
+    ...(error ? { error } : {}),
   };
 }
 

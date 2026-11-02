@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **The MCP report no longer forgets configured servers when pi cannot probe them.** The native
+  `pi` driver now merges `~/.pi/agent/mcp.json` and `<project>/.pi/mcp.json` into its own listing:
+  the CLI's rows stay authoritative (a real `connected` or `error` is never overwritten), and every
+  name it did not mention is appended as `unknown`/`unverified`. With `rea` failing and `muninn`
+  healthy, the badge reads `MCP: ⚪ 2 configured · pi` instead of `none`, `/mcp` lists both, a
+  failed listing row produces `🟡 error — <reason>` while keeping its healthy peer, and a healthy
+  listing is unchanged (`🟢 n connected`). `totalTools` is never invented: config-only servers
+  report `0`. Covered by the four scenarios in `test/engine/agent/piMcp.test.ts`.
+
 - **Table cells keep their emphasis without losing the column grid.** `tableBlock` now parses each
   cell with `inlineSegments` and measures column widths on the visible text (`segmentsWidth`), so
   `**bold**` and `` `code` `` inside a report table paint styled, the header stays bold and the dim
