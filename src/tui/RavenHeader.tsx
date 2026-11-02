@@ -4,7 +4,7 @@ import stringWidth from "string-width";
 import { HUGINN_WORDMARK, RAVEN_MARK, artWidth, ravenMark, type RavenMood } from "../brand.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { useTerminalSize, type TerminalSize } from "./useTerminalSize.js";
-import { THEME } from "./theme.js";
+import { THEME, ravenMoodToken } from "./theme.js";
 
 /**
  * Shared TUI brand header (REQ-29 / ADR-29).
@@ -100,6 +100,7 @@ export interface RavenArtRow {
 export function buildRavenArtRows(
   variant: Exclude<RavenHeaderVariant, "text">,
   mood: RavenMood = "idle",
+  blink = false,
 ): RavenArtRow[] {
   // Compact is a single line: the raven's head, the art gap and the wordmark.
   // It is the last art rung before plain text, so it reuses the exact same
@@ -107,7 +108,7 @@ export function buildRavenArtRows(
   if (variant === "compact") {
     return [{ mark: `<(o${" ".repeat(RAVEN_ART_GAP)}`, wordmark: "HUGINN" }];
   }
-  const mark = ravenMark(mood);
+  const mark = ravenMark(mood, { blink });
   const rows: RavenArtRow[] = [];
   for (let index = 0; index < RAVEN_ART_ROWS; index += 1) {
     const wordmark = HUGINN_WORDMARK[index] ?? "";
@@ -240,6 +241,8 @@ export interface RavenHeaderProps {
   plan: RavenHeaderPlan;
   /** The raven's mood (defaults to `idle`); it changes only the beak glyph. */
   mood?: RavenMood;
+  /** The thinking animation's closed-eye frame (ignored for other moods). */
+  blink?: boolean;
   /**
    * Brand suffix shown by the plain-text fallback (`HUGINN LIVE`). The ASCII
    * wordmark already spells the brand in the art variants, so the suffix is a
@@ -260,10 +263,11 @@ export interface RavenHeaderProps {
  * {@link ravenHeaderPlan}, `plan.contentWidth` is the budget every row is
  * clamped to, and each row is clipped to one line.
  */
-export function RavenHeader({ plan, suffix = "", rows, mood = "idle" }: RavenHeaderProps): React.ReactElement {
+export function RavenHeader({ plan, suffix = "", rows, mood = "idle", blink = false }: RavenHeaderProps): React.ReactElement {
   const brand = suffix ? `HUGINN ${suffix}` : "HUGINN";
+  const markColor = THEME[ravenMoodToken(mood)];
   const artRows =
-    plan.artRows > 0 && plan.variant !== "text" ? buildRavenArtRows(plan.variant, mood) : [];
+    plan.artRows > 0 && plan.variant !== "text" ? buildRavenArtRows(plan.variant, mood, blink) : [];
 
   return (
     // flexShrink={0}: the header's row cost is exactly what the caller budgeted
@@ -274,7 +278,7 @@ export function RavenHeader({ plan, suffix = "", rows, mood = "idle" }: RavenHea
           {artRows.map((row, index) => (
             <Box key={`art-${index}`} height={1} flexDirection="row">
               {row.mark.length > 0 && (
-                <Text bold color={THEME.accentStrong} wrap="truncate">
+                <Text bold color={markColor} wrap="truncate">
                   {row.mark}
                 </Text>
               )}

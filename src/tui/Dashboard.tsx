@@ -11,7 +11,7 @@ import type { PromotionRecord } from "../state/schema";
 import { phasesForProfile, type ProfileName } from "../engine/profiles";
 import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
-import { TWO_RAVENS } from "../brand.js";
+import { TWO_RAVENS, ravenBlink, ravenMood, type RavenMood } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
 import { STATUS_GLYPHS } from "./glyphs.js";
 import { Card, cardChrome } from "./Card.js";
@@ -468,6 +468,8 @@ export function Dashboard({
         totalElapsed={totalElapsed}
         phaseElapsed={phaseElapsed}
         spinner={spinner}
+        busy={running}
+        spinnerIndex={spinnerIndex}
         cfg={cfg}
         mcpStatus={mcpStatus}
         agentId={engine.runtime.id}
@@ -544,6 +546,8 @@ function HeaderCard({
   totalElapsed,
   phaseElapsed,
   spinner,
+  busy,
+  spinnerIndex,
   cfg,
   mcpStatus,
   agentId,
@@ -558,6 +562,10 @@ function HeaderCard({
   totalElapsed: number;
   phaseElapsed: number;
   spinner: string;
+  /** A cycle is running: the raven opens its beak while thinking. */
+  busy: boolean;
+  /** The shared 80 ms tick the blink phase is derived from. */
+  spinnerIndex: number;
   cfg: RunConfig;
   mcpStatus?: McpStatusReport | null;
   /** Active agent target, so the MCP badge attributes its numbers (AC-32.4). */
@@ -566,6 +574,9 @@ function HeaderCard({
   const isFix = currentPhase.startsWith("FIX");
   const progressStr = renderProgressBar(iteration, Math.max(1, totalIterations));
   const mcpBadge = formatMcpBadge(mcpStatus, agentId);
+  /** Same precedence as the live header: busy > degraded > idle. */
+  const mood: RavenMood = ravenMood({ busy, degraded: mcpBadge.status === "degraded" });
+  const blink = ravenBlink(spinnerIndex);
   // The engine's badge speaks pictographs; the console paints the measured
   // alphabet instead (REQ-76), so every surface uses the mapped text.
   const mcpLabel = mcpBadgeText(mcpBadge);
@@ -680,7 +691,7 @@ function HeaderCard({
       : []),
   ]);
 
-  return <RavenHeader plan={plan} rows={rows} />;
+  return <RavenHeader plan={plan} rows={rows} mood={mood} blink={blink} />;
 }
 
 function PipelineCard({

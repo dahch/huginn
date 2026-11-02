@@ -3,8 +3,11 @@ import {
   RAVEN_MARK,
   RAVEN_MOODS,
   TWO_RAVENS,
+  RAVEN_BLINK_TICKS,
   artWidth,
+  ravenBlink,
   ravenMark,
+  ravenMood,
   type RavenMood,
 } from "./brand";
 
@@ -30,6 +33,51 @@ describe("Raven moods (REQ-73)", () => {
         expect(row.length, `${mood} row ${index}`).toBe(RAVEN_MARK[index]!.length);
       }
     }
+  });
+
+  it("blinks only while thinking, on the idle mark's exact grid", () => {
+    for (const mood of Object.keys(RAVEN_MOODS) as RavenMood[]) {
+      const open = ravenMark(mood);
+      const blinked = ravenMark(mood, { blink: true });
+      expect(blinked, mood).toHaveLength(open.length);
+      expect(artWidth(blinked), mood).toBe(artWidth(open));
+      for (const [index, row] of blinked.entries()) {
+        expect(row.length, `${mood} blink row ${index}`).toBe(open[index]!.length);
+        expect(row, `${mood} blink row ${index}`).toMatch(PRINTABLE_ASCII);
+      }
+    }
+    // Blink is the thinking cycle's closed-eye frame: the idle open-eye mark.
+    expect(ravenMark("thinking", { blink: true })).toBe(ravenMark("idle"));
+    expect(ravenMark("idle", { blink: true })).toBe(ravenMark("idle"));
+    expect(ravenMark("sleeping", { blink: true })).toBe(ravenMark("sleeping"));
+    // The beak still alternates the two documented glyphs, no new ones.
+    expect(ravenMark("thinking")[1]).toContain("O");
+    expect(ravenMark("thinking", { blink: true })[1]).toContain("o");
+  });
+
+  it("resolves the mood with busy > degraded > idle precedence", () => {
+    expect(ravenMood({ busy: true, degraded: true })).toBe("thinking");
+    expect(ravenMood({ busy: true, degraded: false })).toBe("thinking");
+    expect(ravenMood({ busy: false, degraded: true })).toBe("sleeping");
+    expect(ravenMood({ busy: false, degraded: false })).toBe("idle");
+    expect(ravenMood({})).toBe("idle");
+  });
+
+  it("derives the blink phase from the existing 80 ms spinner tick", () => {
+    expect(RAVEN_BLINK_TICKS).toBe(6);
+    for (const tick of [0, 1, 5, 6, 11, 12, 18, 24]) {
+      expect(ravenBlink(tick), String(tick)).toBe(Math.floor(tick / 6) % 2 === 1);
+    }
+    // Nonsense frames cannot throw or flip the phase unpredictably.
+    expect(ravenBlink(-1)).toBe(false);
+    expect(ravenBlink(Number.NaN)).toBe(false);
+    // Non-finite values collapse to frame 0 instead of producing `NaN`.
+    expect(ravenBlink(Number.POSITIVE_INFINITY)).toBe(false);
+    expect(ravenBlink(Number.NEGATIVE_INFINITY)).toBe(false);
+    // Fractional ticks floor to their frame, and a negative fraction clamps to 0.
+    expect(ravenBlink(5.9)).toBe(false);
+    expect(ravenBlink(6.9)).toBe(true);
+    expect(ravenBlink(-0.5)).toBe(false);
   });
 
   it("changes only the beak cell, so switching mood never reflows a row", () => {

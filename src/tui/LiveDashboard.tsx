@@ -11,6 +11,7 @@ import { saveUserConfig, saveGlobalUserConfig, getProjectConfigPath, getUserConf
 import { AGENT_TARGETS } from "../agents/integrator";
 import { isAgentTarget } from "../engine/agent/registry";
 import { events, type LiveStage } from "../engine/engineEvents";
+import { ravenBlink, ravenMood, type RavenMood } from "../brand.js";
 import { formatUsage } from "../format";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
 import { Dashboard, LogsCard } from "./Dashboard";
@@ -1692,6 +1693,9 @@ function RefineView({
     () => formatMcpBadge(mcpStatus, live.runtime.id),
     [mcpStatus, live.runtime],
   );
+  /** The raven's mood and blink phase, shared by the header and the hero. */
+  const mood = ravenMood({ busy, degraded: mcpBadge.status === "degraded" });
+  const blink = ravenBlink(spinnerIndex);
   /** The one reminder the panel and the hero's tip box show for this stage. */
   const tip = stageTip(stage);
   const panelData: PanelData = {
@@ -2240,7 +2244,8 @@ function RefineView({
         stage={stage}
         cfg={cfg}
         spinner={spinner}
-        busy={busy}
+        mood={mood}
+        blink={blink}
         thinker={currentThinker}
         executor={currentExecutor}
       />
@@ -2308,7 +2313,8 @@ function RefineView({
                 busy={busy}
                 spinner={spinner}
                 accentToken={busy ? STAGE_LABEL[stage].token : "accent"}
-                mood={busy ? "thinking" : "idle"}
+                mood={mood}
+                blink={blink}
                 height={chatHeight}
                 width={cardsWidth}
                 matchText={searchMatchText}
@@ -2398,7 +2404,8 @@ function LiveHeader({
   stage,
   cfg,
   spinner,
-  busy,
+  mood,
+  blink,
   thinker,
   executor,
 }: {
@@ -2406,8 +2413,10 @@ function LiveHeader({
   stage: LiveStage;
   cfg: RunConfig;
   spinner: string;
-  /** The arm's turn is in flight: the raven opens its beak while thinking. */
-  busy: boolean;
+  /** The raven's resolved mood (busy > degraded > idle). */
+  mood: RavenMood;
+  /** The thinking animation's closed-eye frame. */
+  blink: boolean;
   thinker: string;
   executor: string;
 }) {
@@ -2442,7 +2451,8 @@ function LiveHeader({
   return (
     <RavenHeader
       plan={plan}
-      mood={busy ? "thinking" : "idle"}
+      mood={mood}
+      blink={blink}
       suffix="LIVE"
       rows={[
         [
@@ -2490,6 +2500,7 @@ function ScrollableChatCard({
   spinner,
   accentToken,
   mood,
+  blink,
   height,
   width,
   matchText,
@@ -2505,7 +2516,9 @@ function ScrollableChatCard({
   /** The active stage's token while a turn is in flight; `accent` when idle. */
   accentToken: ThemeToken;
   /** The raven mood the empty-state hero draws. */
-  mood: "idle" | "thinking" | "sleeping";
+  mood: RavenMood;
+  /** The thinking animation's closed-eye frame, shared with the header. */
+  blink: boolean;
   height: number;
   /** Columns the card occupies (the panel takes the rest of the row). */
   width: number;
@@ -2551,7 +2564,7 @@ function ScrollableChatCard({
       minHeight={CARD_MIN_ROWS}
     >
       {rows.length === 0 ? (
-        <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} mood={mood} />
+        <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} mood={mood} blink={blink} />
       ) : (
         rows.map((row) => {
           if (row.segments.length === 0) {

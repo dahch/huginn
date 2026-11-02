@@ -1262,6 +1262,24 @@ describe("empty-state hero (REQ-12)", () => {
     expect(heroPlan({ rows: 20, columns: 74 }).artRows).toEqual(idle.artRows);
   });
 
+  it("blinks the thinking hero to the idle mark without reflowing the grid", () => {
+    const thinking = heroPlan({ rows: 20, columns: 74, mood: "thinking" });
+    const blinked = heroPlan({ rows: 20, columns: 74, mood: "thinking", blink: true });
+    const idle = heroPlan({ rows: 20, columns: 74, mood: "idle" });
+    // The hero and the header share the blink: the closed-eye frame is the idle
+    // mark, same rows, same widths, no new glyph.
+    expect(blinked.rows).toBe(thinking.rows);
+    expect(blinked.artRows).toHaveLength(thinking.artRows.length);
+    expect(blinked.artRows).toEqual(idle.artRows);
+    // `blink` is ignored for every mood other than `thinking`.
+    expect(heroPlan({ rows: 20, columns: 74, mood: "idle", blink: true }).artRows).toEqual(
+      idle.artRows,
+    );
+    expect(
+      heroPlan({ rows: 20, columns: 74, mood: "sleeping", blink: true }).artRows,
+    ).toEqual(heroPlan({ rows: 20, columns: 74, mood: "sleeping" }).artRows);
+  });
+
   it("draws nothing when the card body has no rows, and clamps nonsense", () => {
     const empty = heroPlan({ rows: 0, columns: 74 });
     expect(empty.rows).toBe(0);

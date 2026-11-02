@@ -30,6 +30,13 @@ import {
 import { LiveApp, VIEWPORT_RESERVED_ROWS_CLOSED } from "../../src/tui/LiveDashboard";
 import { Dashboard } from "../../src/tui/Dashboard";
 import { PANEL_TITLE } from "../../src/tui/InfoPanel.js";
+import { THEME, ravenMoodToken } from "../../src/tui/theme.js";
+
+// Chalk freezes its colour level when Ink is first imported, so the colour
+// assertions below must force it before this file's static imports resolve.
+vi.hoisted(() => {
+  process.env.FORCE_COLOR = "3";
+});
 
 /** The eagle code point, written as an escape so the glyph is nowhere in the tree (AC-29.1). */
 const EAGLE = /\u{1f985}/u;
@@ -283,6 +290,38 @@ describe("RavenHeader ASCII assets (REQ-29)", () => {
       buildRavenArtRows("compact", "idle"),
     );
   });
+
+  it("blinks the thinking art back to the idle mark without moving a column", () => {
+    const thinking = buildRavenArtRows("full", "thinking");
+    const blinked = buildRavenArtRows("full", "thinking", true);
+    const idle = buildRavenArtRows("full", "idle");
+    expect(blinked).toHaveLength(thinking.length);
+    expect(blinked).toEqual(idle);
+    // `blink` is ignored for every mood other than `thinking`.
+    expect(buildRavenArtRows("full", "idle", true)).toEqual(idle);
+    expect(buildRavenArtRows("full", "sleeping", true)).toEqual(
+      buildRavenArtRows("full", "sleeping"),
+    );
+    // Wordmark-only and compact rungs never draw a mark to blink.
+    expect(buildRavenArtRows("wordmark", "thinking", true)).toEqual(
+      buildRavenArtRows("wordmark", "thinking"),
+    );
+    expect(buildRavenArtRows("compact", "thinking", true)).toEqual(
+      buildRavenArtRows("compact", "thinking"),
+    );
+  });
+});
+
+describe("ravenMoodToken maps state to a theme role (REQ-73)", () => {
+  it("paints idle muted, thinking accent and sleeping danger", () => {
+    expect(ravenMoodToken("idle")).toBe("muted");
+    expect(ravenMoodToken("thinking")).toBe("accent");
+    expect(ravenMoodToken("sleeping")).toBe("danger");
+    // Every role really exists in the palette (no dangling token name).
+    for (const mood of ["idle", "thinking", "sleeping"] as const) {
+      expect(THEME[ravenMoodToken(mood)]).toBeDefined();
+    }
+  });
 });
 
 describe("ravenHeaderPlan degradation (AC-29.3)", () => {
@@ -482,8 +521,9 @@ describe("RavenHeader rendering (AC-29.1, AC-29.2, AC-29.3)", () => {
     const output = await capture(ravenHeader(plan), columns, 30);
 
     expect(plan.variant).toBe("compact");
-    expect(output).toContain(COMPACT_BRAND);
-    expect(output).not.toContain(HUGINN_WORDMARK[0]!.trim());
+    const plain = output.replace(ANSI, "");
+    expect(plain).toContain(COMPACT_BRAND);
+    expect(plain).not.toContain(HUGINN_WORDMARK[0]!.trim());
     expect(visibleLines(output).length).toBe(plan.height);
   });
 
@@ -661,6 +701,20 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     expect(output).toContain("PIPELINE PHASES");
   });
 
+  it("opens the raven's beak in the cycle header while the engine is running (REQ-73)", async () => {
+    // `isRunning` is the dashboard's own busy flag; the header derives the
+    // thinking mood from it and from its existing 80 ms spinner tick.
+    const engine = { ...createMockEngine(), isRunning: true } as unknown as CycleEngine;
+    const output = await capture(
+      React.createElement(Dashboard, { engine, cfg: mockCfg, autoExit: false }),
+      100,
+      32,
+    );
+    // The header draws the open-beak mark; the idle stream card may still draw
+    // its own two ravens, so only the thinking glyph is asserted.
+    expect(output).toContain("<(O");
+  });
+
   it("keeps the cycle dashboard inside 24 rows on an 80×24 terminal", async () => {
     const rows = 24;
     const columns = 80;
@@ -791,5 +845,86 @@ describe("source-wide eagle guard (AC-29.1)", () => {
     };
     walk(root);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("raven mark colour follows the mood (REQ-73)", () => {
+  afterEach(() => {
+    delete process.env.FORCE_COLOR;
+    delete process.env.HUGINN_THEME;
+    delete process.env.NO_COLOR;
+  });
+
+  /** Render the full header with colour forced on for this test file. */
+  function renderMood(
+    mood: "idle" | "thinking" | "sleeping",
+    options: { blink?: boolean; noColor?: boolean } = {},
+  ): string {
+    if (options.noColor) {
+      process.env.NO_COLOR = "1";
+    } else {
+      delete process.env.NO_COLOR;
+    }
+    process.env.HUGINN_THEME = "dark";
+
+    const plan = ravenHeaderPlan({ columns: 100, rows: 30, contextRows: 0, outerInset: 2 });
+    const stdout = new PassThrough() as PassThrough & { columns: number; rows: number };
+    stdout.columns = 100;
+    stdout.rows = 30;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const instance = render(
+      React.createElement(RavenHeader, { plan, rows: [], mood, blink: options.blink }),
+      { stdout, patchConsole: false },
+    );
+    instance.unmount();
+    return output;
+  }
+
+  it("paints idle with the muted token", () => {
+    const output = renderMood("idle");
+    // dark palette: muted = #9aa5b1 (truecolor), the quiet state.
+    expect(output).toContain("\u001b[38;2;154;165;177m");
+    expect(output).toContain("<(o");
+  });
+
+  it("paints thinking with the accent token, not the old fixed accentStrong", () => {
+    const output = renderMood("thinking");
+    // dark palette: accent = cyan, accentStrong = cyanBright.
+    expect(output).toContain("\u001b[36m");
+    expect(output).toContain("<(O");
+    // The mark may not keep the old `accentStrong` colour.
+    expect(output).not.toContain("\u001b[96m");
+  });
+
+  it("paints sleeping with the danger token", () => {
+    const output = renderMood("sleeping");
+    // dark palette: danger = red.
+    expect(output).toContain("\u001b[31m");
+    expect(output).toContain("<(- ");
+  });
+
+  it("keeps the glyph readable when NO_COLOR clears every token", () => {
+    const thinking = renderMood("thinking", { noColor: true });
+    const sleeping = renderMood("sleeping", { noColor: true });
+    for (const output of [thinking, sleeping]) {
+      expect(output).not.toContain("\u001b[36m");
+      expect(output).not.toContain("\u001b[31m");
+      expect(output).not.toContain("\u001b[38;2;154;165;177m");
+    }
+    // The beak alone still separates the states.
+    expect(thinking).toContain("<(O");
+    expect(sleeping).toContain("<(- ");
+  });
+
+  it("keeps the blink frame on the idle colour and glyph", () => {
+    const output = renderMood("thinking", { blink: true });
+    // Blink drops to the open-eye idle mark, but the mood (and its colour) is
+    // still thinking, so the in-flight turn remains visible.
+    expect(output).toContain("<(o");
+    expect(output).not.toContain("<(O");
+    expect(output).toContain("\u001b[36m");
   });
 });
