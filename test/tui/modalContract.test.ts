@@ -53,7 +53,17 @@ async function mount(
     output += chunk.toString();
   });
   const stdin = createMockStdin();
-  const instance = render(element, { stdout, stdin, patchConsole: false });
+  // Ink downgrades to a non-interactive writer whenever `CI` is set
+  // (`is-in-ci`), and that writer holds the frame until unmount — which is
+  // exactly what `output()` below cannot wait for. Pin the interactive path
+  // here: this harness already claims a TTY sink and TTY stdin, so the only
+  // thing `CI` would change is *when* the frame is painted.
+  const instance = render(element, {
+    stdout,
+    stdin,
+    patchConsole: false,
+    interactive: true,
+  });
   await tick(120);
   const press = async (key: string): Promise<void> => {
     stdin.write(key);
