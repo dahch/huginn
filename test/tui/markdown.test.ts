@@ -33,6 +33,27 @@ describe("markdown segments", () => {
     expect(markdownSegments("1. paso", undefined).map((segment) => segment.text).join("")).toBe("1. paso");
   });
 
+  it("recognises h1 and h3 headings and keeps their inline markup", () => {
+    const h1 = markdownSegments("# Titulo **fuerte**", undefined, 40);
+    expect(h1.map((segment) => segment.text).join("")).toBe("# Titulo fuerte");
+    expect(h1[0]?.text).toBe("# ");
+    expect(h1[0]?.bold).toBe(true);
+    expect(h1.find((segment) => segment.text === "fuerte")?.bold).toBe(true);
+
+    const h3 = markdownSegments("### Detalle", undefined, 40);
+    expect(h3.map((segment) => segment.text).join("")).toBe("### Detalle");
+    expect(h3[0]?.bold).toBe(true);
+  });
+
+  it("keeps the indentation of nested list items", () => {
+    expect(markdownSegments("  - item", undefined).map((segment) => segment.text).join("")).toBe(
+      "  • item",
+    );
+    expect(markdownSegments("  1. paso", undefined).map((segment) => segment.text).join("")).toBe(
+      "  1. paso",
+    );
+  });
+
   it("supports both emphasis spellings without leaving the markup behind", () => {
     const underscoreBold = inlineSegments("__fuerte__");
     expect(underscoreBold).toEqual([{ text: "fuerte", color: undefined, bold: true }]);

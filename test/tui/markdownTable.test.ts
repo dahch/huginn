@@ -249,6 +249,36 @@ describe("tableBlock: pure, one row in for one row out", () => {
     for (const row of output) expect(segmentsWidth(row)).toBeLessThanOrEqual(44);
   });
 
+  it("measures a styled cell on its visible text, not on its raw markup", () => {
+    const marked = ["| **Robustez** | ok |", "| --- | --- |", "| x | y |"];
+    const plain = ["| Robustez | ok |", "| --- | --- |", "| x | y |"];
+    const markedRows = rowTexts(tableBlock(marked, 40));
+
+    // A raw-markup width would reserve four extra columns for `**` and push the
+    // second cell right; the visible width keeps both tables identical.
+    expect(markedRows).toEqual(rowTexts(tableBlock(plain, 40)));
+    expect(markedRows[0]).toBe("Robustez │ ok");
+    expect(markedRows[2]).toBe(`${"x".padEnd("Robustez".length)} │ y`);
+    expect(markedRows[2]).not.toBe(`${"x".padEnd("**Robustez**".length)} │ y`);
+  });
+
+  it("never leaks a cut cell's style into its ellipsis", () => {
+    const rows = [
+      "| Fase | Resultado |",
+      "| --- | --- |",
+      "| **a bold value far too long for the cell** | ok |",
+    ];
+    const output = tableBlock(rows, 16);
+    const last = output[output.length - 1]!;
+
+    expect(rowText(last)).toContain("…");
+    const marker = last.find((segment) => segment.text.includes("…"));
+    expect(marker?.text).toBe("…");
+    expect(marker?.bold).toBeUndefined();
+    expect(marker?.italic).toBeUndefined();
+    expect(marker?.color).toBeUndefined();
+  });
+
   it("truncates a styled cell on one row and drops the style past the cut", () => {
     const rows = [
       "| Fase | Resultado |",
@@ -285,6 +315,15 @@ describe("tableBlock: pure, one row in for one row out", () => {
     expect(tableBlock(marked, 96)).toHaveLength(tableBlock(plain, 96).length);
     // At the real dashboard width the table still spends one row per source row.
     expect(rendered(marked, 96)).toBe(marked.length);
+
+    // ...and the 100×30 frame keeps the marked-up table aligned: every row
+    // meets at the same display column and no markup reaches the terminal.
+    const painted = renderNode(React.createElement(MarkdownBlock, { lines: marked, width: 96 }), 100, 30);
+    const separatorColumns = painted.map((line) => stringWidth(line.slice(0, line.indexOf("│"))));
+    expect(new Set(separatorColumns).size).toBe(1);
+    expect(separatorColumns[0]).toBeGreaterThan(0);
+    expect(painted.join("\n")).not.toContain("**");
+    expect(painted.join("\n")).not.toContain("`");
   });
 });
 
