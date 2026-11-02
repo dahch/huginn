@@ -14,8 +14,8 @@
     "build": "bun build src/cli.ts --target=bun --outdir=dist --minify --external @earendil-works/pi-coding-agent --external @openai/codex-sdk --external @anthropic-ai/claude-agent-sdk --external better-sqlite3 --external @dahch/muninn --external typescript",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
-    "test": "bun test src && vitest run",
-    "prepublishOnly": "bun run build && npm run test && bun run typecheck"
+    "test": "bun test src && vitest run && bun run typecheck:test",
+    "prepublishOnly": "bun run build && npm run test && bun run typecheck && bun run typecheck:test"
   },
   "dependencies": {
     "@dahch/muninn": "^0.1.0",
