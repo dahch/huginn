@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **Table cells keep their emphasis without losing the column grid.** `tableBlock` now parses each
+  cell with `inlineSegments` and measures column widths on the visible text (`segmentsWidth`), so
+  `**bold**` and `` `code` `` inside a report table paint styled, the header stays bold and the dim
+  ` │ ` separators stay aligned. Truncation cuts the visible cell at width−1 and appends `…`, dropping
+  the segments past the cut; a marked-up table occupies exactly the same terminal rows as its plain
+  twin, so the `it.todo` in `test/tui/markdownTable.test.ts` is now a real expectation (REQ-H-06).
+
 - **The output panel no longer hides text.** Both TUI output panels (the run dashboard's
   `StreamCard` and the live `ScrollableStreamCard`) now format through the new pure
   `markdownBlockRows(lines, width, colorFor?)`, which expands tables and wraps every line into

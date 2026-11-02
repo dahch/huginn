@@ -546,8 +546,11 @@ Ten display conventions a TUI change must follow:
   (`cardChrome(...).columns`) and draw `---`/`***`/`___` and the code-fence header at exactly that
   width (fallback 80, clamped to ≥1); a fixed-width rule is the old bug that wrapped into a second
   row. Links render as an underlined label plus a dim ` ‹url›`, and a malformed link stays literal.
-  Table cells are plain text — inline markup inside a cell is not styled yet, and
-  `test/tui/markdownTable.test.ts` records that as a `todo` rather than a promise.
+  Table cells keep their inline markup: each cell is parsed with `inlineSegments`, while its
+  column width is measured on the *visible* text (`segmentsWidth`), so `**bold**` and `code` paint
+  styled without moving a separator. A cell that does not fit is truncated on its visible text
+  (the cut drops every segment past it) and still occupies exactly one row;
+  `test/tui/markdownTable.test.ts` asserts the styles and the alignment.
 - **Display glyphs come from `src/tui/glyphs.ts`** — single-width status/phase marks shared by
   the dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass,
   `!` warning, `✕` blocked, `–` skipped; phase kinds `?` SPEC_AUDIT, `>` EXECUTE, `=` VALIDATE_STEP,

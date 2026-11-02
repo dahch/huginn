@@ -254,19 +254,18 @@ export function tableBlockEnd(lines: readonly string[], index: number): number {
   return end;
 }
 
-/** Append blanks until `text` occupies exactly `width` display columns. */
-function padToWidth(text: string, width: number): string {
-  const missing = width - stringWidth(text);
-  return missing > 0 ? `${text}${" ".repeat(missing)}` : text;
-}
-
-/** Cut a cell to `width` columns, keeping the ellipsis inside the budget. */
-function truncateCell(text: string, width: number): string {
-  if (width <= 0) return "";
-  if (stringWidth(text) <= width) return text;
-  if (width === 1) return "…";
-  const [head] = splitAtWidth(text, width - 1);
-  return `${head}…`;
+/**
+ * Cut a styled cell to `width` display columns, keeping the ellipsis inside the
+ * budget. The width is measured on the *visible* text the segments paint, not
+ * on the raw markdown, and a cut discards every segment after it: a `**bold**`
+ * run that starts beyond the budget must not leak its style into the ellipsis.
+ */
+function truncateCellSegments(segments: readonly MdSegment[], width: number): MdSegment[] {
+  if (width <= 0) return [];
+  if (segmentsWidth(segments) <= width) return [...segments];
+  if (width === 1) return [{ text: "…" }];
+  const head = clipSegments(segments, width - 1);
+  return [...head, { text: "…" }];
 }
 
 /** Keep at most `width` display columns, splitting a styled run only if needed. */
@@ -309,13 +308,23 @@ export function tableBlock(rows: readonly TableRowInput[], width: number): MdSeg
   const limit = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
   const parsed = rows.map(parseTableRow);
   const separatorFlags = parsed.map((cells) => isSeparatorCells(cells));
-  const contentRows = parsed.filter((_row, index) => !separatorFlags[index]);
   const columns = Math.max(1, ...parsed.map((row) => row.length));
+
+  // Parse each cell once: the column width is measured on the *visible* text
+  // (`**bold**` paints as `bold`), while the styled runs are what is rendered.
+  const styledCells = parsed.map((cells, rowIndex) =>
+    cells.map((cell) => {
+      const segments = inlineSegments(cell, THEME.text);
+      return rowIndex === 0 ? segments.map((segment) => ({ ...segment, bold: true })) : segments;
+    }),
+  );
 
   const natural = Array.from({ length: columns }, (_unused, column) => {
     let widest = 1;
-    for (const row of contentRows) {
-      widest = Math.max(widest, stringWidth(row[column] ?? ""));
+    for (let row = 0; row < parsed.length; row++) {
+      if (separatorFlags[row]) continue;
+      const cell = styledCells[row]?.[column];
+      if (cell !== undefined) widest = Math.max(widest, segmentsWidth(cell));
     }
     return widest;
   });
@@ -336,7 +345,7 @@ export function tableBlock(rows: readonly TableRowInput[], width: number): MdSeg
   }
   if (excess > 0) widths.fill(0);
 
-  return parsed.map((cells, rowIndex) => {
+  return parsed.map((_cells, rowIndex) => {
     const isSeparator = separatorFlags[rowIndex] === true;
     const segments: MdSegment[] = [];
     for (let column = 0; column < columns; column++) {
@@ -345,8 +354,10 @@ export function tableBlock(rows: readonly TableRowInput[], width: number): MdSeg
       if (isSeparator) {
         segments.push({ text: "─".repeat(cellWidth), dim: true });
       } else {
-        const text = padToWidth(truncateCell(cells[column] ?? "", cellWidth), cellWidth);
-        segments.push({ text, ...(rowIndex === 0 ? { bold: true } : {}) });
+        const cell = truncateCellSegments(styledCells[rowIndex]?.[column] ?? [], cellWidth);
+        segments.push(...cell);
+        const painted = segmentsWidth(cell);
+        if (painted < cellWidth) segments.push({ text: " ".repeat(cellWidth - painted) });
       }
     }
     return clipSegments(segments, limit);

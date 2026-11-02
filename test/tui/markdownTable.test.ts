@@ -215,13 +215,77 @@ describe("tableBlock: pure, one row in for one row out", () => {
     expect(tableBlock(TABLE, 40)).toEqual(tableBlock(TABLE, 40));
   });
 
-  // QA backlog (iteration 7): `tableBlock` pads each cell as plain text, so a
-  // cell that contains `**bold**`, `` `code` `` or `[label](url)` reaches the
-  // terminal as raw markup — a link inside a report table is not underline+dim
-  // URL like the same link in body text. Designing the fix needs width-aware
-  // truncation *across* styled runs (`clipSegments` already exists for that),
-  // so it is recorded rather than asserted against today's plain-text contract.
-  it.todo("renders inline markup (bold, code, links) inside table cells");
+  // Iteration 5: a cell's inline markup is parsed into styled segments while
+  // the column width is measured on the visible text, so the table stays
+  // aligned and `**bold**` / `` `code` `` reach the terminal as styles.
+  it("renders inline markup (bold, code) inside table cells without breaking alignment", () => {
+    const rows = [
+      "| Fase | Resultado |",
+      "| --- | --- |",
+      "| SECURE_CHECK | **Robustez** |",
+      "| TEST_MODULE | `npm audit` |",
+    ];
+    const output = tableBlock(rows, 44);
+    const text = rowTexts(output).join("\n");
+
+    // No raw markup survives the parse.
+    expect(text).not.toContain("**");
+    expect(text).not.toContain("`");
+    // The header is still bold and the body's emphasis is carried by segments.
+    expect(
+      output[0]!
+        .filter((segment) => segment.text.trim() !== "" && segment.dim !== true)
+        .every((segment) => segment.bold === true),
+    ).toBe(true);
+    const bold = output[2]!.find((segment) => segment.text === "Robustez");
+    expect(bold?.bold).toBe(true);
+    const code = output[3]!.find((segment) => segment.text === "npm audit");
+    expect(code?.color).toBeDefined();
+
+    // Column widths came from the visible text, so the separators still line up.
+    const separatorColumns = output.map(separatorColumn);
+    expect(new Set(separatorColumns).size).toBe(1);
+    expect(separatorColumns[0]).toBeGreaterThan(0);
+    for (const row of output) expect(segmentsWidth(row)).toBeLessThanOrEqual(44);
+  });
+
+  it("truncates a styled cell on one row and drops the style past the cut", () => {
+    const rows = [
+      "| Fase | Resultado |",
+      "| --- | --- |",
+      "| EXECUTE | **a bold value far too long for the cell** |",
+    ];
+    const output = tableBlock(rows, 20);
+    expect(output).toHaveLength(rows.length);
+    const last = output[output.length - 1]!;
+    expect(rowText(last)).toContain("…");
+    expect(rowText(last)).not.toContain("far too long for the cell");
+    expect(segmentsWidth(last)).toBeLessThanOrEqual(20);
+    expect(output.map(separatorColumn).every((column) => column === separatorColumn(output[0]!))).toBe(
+      true,
+    );
+  });
+
+  it("spends the same rows for a marked-up table as for its plain-text twin", () => {
+    const plain = [
+      "| Fase | Resultado | Robustez |",
+      "| --- | --- | --- |",
+      "| EXECUTE | ok | npm audit |",
+      "| VALIDATE_STEP | a cell that is much too long for a narrow table | fine |",
+    ];
+    const marked = [
+      "| **Fase** | Resultado | Robustez |",
+      "| --- | --- | --- |",
+      "| EXECUTE | `ok` | `npm audit` |",
+      "| VALIDATE_STEP | **a cell that is much too long for a narrow table** | fine |",
+    ];
+    const rendered = (rows: readonly string[], width: number): number =>
+      renderNode(React.createElement(MarkdownBlock, { lines: rows, width }), 100, 30).length;
+    expect(rendered(marked, 96)).toBe(rendered(plain, 96));
+    expect(tableBlock(marked, 96)).toHaveLength(tableBlock(plain, 96).length);
+    // At the real dashboard width the table still spends one row per source row.
+    expect(rendered(marked, 96)).toBe(marked.length);
+  });
 });
 
 describe("MarkdownBlock: contiguous tables in a report", () => {
