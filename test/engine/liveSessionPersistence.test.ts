@@ -502,7 +502,7 @@ describe("LiveEngine live-session persistence (Phase 4B)", () => {
 
       // the foreign directory was neither written to nor chmodded
       expect(existsSync(join(secrets, "sessions.json"))).toBe(false);
-      if (process.platform !== "win32") expect(statSync(secrets).mode & 0o777).toBe(0o755);
+      if (String(process.platform) !== "win32") expect(statSync(secrets).mode & 0o777).toBe(0o755);
       // and the failure is a warning, not a crash
       expect(messages.some((m) => m.includes("could not persist live session"))).toBe(true);
       expect(messages.some((m) => m.includes("refusing to persist live sessions"))).toBe(true);

@@ -10,11 +10,11 @@ import { promotionRepairEligibility } from "../../src/engine/promotionRepair.js"
 import type { RunConfig } from "../../src/config.js";
 import type { Iteration } from "../../src/plan/types.js";
 import type {
-  PromptResult,
   RuntimePort,
   RuntimePromptRequest,
   RuntimeSessionOptions,
 } from "../../src/engine/agent/port.js";
+import type { PromptResult } from "../../src/engine/agent/types.js";
 
 /**
  * ADR-62 — recovering a failed sandbox promotion.
