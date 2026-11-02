@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import type { RunConfig } from "../config";
 import { events } from "../engine/engineEvents";
 import type { PhaseResult, DecisionRequest, DecisionChoice, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, formatUsage, verdictIcon, verdictToken } from "../format";
-import { MarkdownBlock } from "./markdown";
+import { MarkdownBlock, markdownBlockRows, renderSegments, type MdSegment } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import type { PromotionRecord } from "../state/schema";
 import { phasesForProfile, type ProfileName } from "../engine/profiles";
@@ -31,6 +31,7 @@ import {
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
 import { mcpBadgeText } from "./sessionContext.js";
+import { copyToTerminal } from "./clipboard.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -48,6 +49,39 @@ const LOGS_MAX_ROWS = LOGS_MAX_ENTRIES + cardChrome("tertiary").rows;
 const REPORT_HEIGHT = 1;
 /** The promotion-failure notice row, shown only when an integration failed. */
 const PROMOTION_HEIGHT = 1;
+/**
+ * The stream buffer's hard row ceiling (ADR-74): wrap first, then keep the last
+ * 2 000 terminal rows so a runaway phase cannot grow the frame's work without
+ * bound. The scroll window is derived from this same array, so the cap never
+ * invents hidden rows past its end.
+ */
+export const MAX_STREAM_ROWS = 2_000;
+
+/** The stream's per-line colour token, shared by the memoised wrapper. */
+export function streamLineColor(line: string): string | undefined {
+  const trimmed = line.trim();
+  const isTool =
+    trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
+  const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
+  const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
+  return isTool
+    ? THEME.accentStrong
+    : isCmd
+      ? THEME.warn
+      : isThought
+        ? THEME.thinker
+        : THEME.text;
+}
+
+/** Keep only the newest `MAX_STREAM_ROWS` formatted rows. */
+export function capStreamRows(rows: MdSegment[][]): MdSegment[][] {
+  return rows.length > MAX_STREAM_ROWS ? rows.slice(-MAX_STREAM_ROWS) : rows;
+}
+
+/** `z` is a toggle: the same key maximizes the output panel and restores the split. */
+export function nextStreamMaximized(current: boolean): boolean {
+  return !current;
+}
 
 /**
  * Rows the header may not spend: the middle cards' floor, the footer, the
@@ -106,11 +140,14 @@ export function Dashboard({
   autoExit?: boolean;
 }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const terminalSize = useTerminalSize();
   const [spinnerIndex, setSpinnerIndex] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [streamScroll, setStreamScroll] = useState(0);
   const [streamLines, setStreamLines] = useState<string[]>([]);
+  /** `z`: the output panel hides the pipeline and owns the full content width. */
+  const [streamMaximized, setStreamMaximized] = useState(false);
 
   const [ui, setUi] = useState<UiState>(() => {
     const st = engine.getState();
@@ -202,10 +239,10 @@ export function Dashboard({
       lastFlushTime = Date.now();
       const allLines = streamBuf.current.split("\n");
       const lines =
-        allLines.length > 1000
-          ? allLines.slice(-1000)
+        allLines.length > MAX_STREAM_ROWS
+          ? allLines.slice(-MAX_STREAM_ROWS)
           : allLines;
-      if (allLines.length > 1000) {
+      if (allLines.length > MAX_STREAM_ROWS) {
         streamBuf.current = lines.join("\n");
       }
       setStreamLines(lines);
@@ -380,7 +417,30 @@ export function Dashboard({
       1,
   );
   const streamLinesCount = Math.max(1, middleHeight - cardChrome("secondary").rows);
-  const maxStreamScroll = Math.max(0, streamLines.length - streamLinesCount);
+
+  // The stream column's real width: the outer `paddingX={1}` inset plus the
+  // same percentage share the layout below gives its Box. Markdown rules use
+  // this, so a `---` is one row at any terminal width.
+  const contentColumns = Math.max(1, terminalSize.columns - VIEW_OUTER_INSET);
+  const streamWidth = streamMaximized
+    ? contentColumns
+    : Math.max(1, Math.floor(contentColumns * (ui.verbose ? 0.65 : 0.58)));
+  const streamBodyWidth = Math.max(1, streamWidth - cardChrome("secondary").columns);
+
+  // Wrapping is the expensive part, so it happens exactly when the text or the
+  // width changes — never once per spinner frame (ADR-74).
+  const streamRows = useMemo(
+    () => capStreamRows(markdownBlockRows(streamLines, streamBodyWidth, streamLineColor)),
+    [streamLines, streamBodyWidth],
+  );
+  const reportText = ui.lastReport?.raw?.trimEnd() ?? "";
+  const reportRows = useMemo(
+    () => (reportText ? capStreamRows(markdownBlockRows(reportText.split("\n"), streamBodyWidth)) : []),
+    [reportText, streamBodyWidth],
+  );
+  const hasStream = streamLines.some((line) => line.trim().length > 0);
+  const outputRows = hasStream ? streamRows : reportRows;
+  const maxStreamScroll = Math.max(0, outputRows.length - streamLinesCount);
 
   useInput((input, key) => {
     if (ui.decision) {
@@ -404,6 +464,22 @@ export function Dashboard({
         else if (c === "c") engine.resolveDecision("continue");
         else if (c === "a") engine.resolveDecision("abort");
       }
+      return;
+    }
+
+    // `z` gives the output panel the whole content row (and hides the pipeline)
+    // while a second press restores the split. It is a view key, so it never
+    // disturbs the run itself.
+    if (input === "z" && !key.ctrl && !key.meta) {
+      setStreamMaximized(nextStreamMaximized);
+      return;
+    }
+    // `y` copies the output — the original markdown, never the wrapped rows —
+    // through OSC 52. Exactly one sequence per press, and nothing when there is
+    // no report or stream to copy.
+    if (input === "y" && !key.ctrl && !key.meta) {
+      const text = hasStream ? streamLines.join("\n") : reportText;
+      if (text.trim().length > 0) copyToTerminal(text, stdout);
       return;
     }
 
@@ -440,14 +516,8 @@ export function Dashboard({
   const phaseElapsed = now - ui.phaseStartedAt;
   const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
 
-  // The stream column's real width: the outer `paddingX={1}` inset plus the
-  // same percentage share the layout below gives its Box. Markdown rules use
-  // this, so a `---` is one row at any terminal width.
-  const contentColumns = Math.max(1, terminalSize.columns - VIEW_OUTER_INSET);
-  const streamWidth = Math.max(1, Math.floor(contentColumns * (ui.verbose ? 0.65 : 0.58)));
-
-  const streamStart = Math.max(0, streamLines.length - streamLinesCount - streamScroll);
-  const visibleStreamLines = streamLines.slice(streamStart, streamStart + streamLinesCount);
+  const streamStart = Math.max(0, outputRows.length - streamLinesCount - streamScroll);
+  const visibleStreamRows = outputRows.slice(streamStart, streamStart + streamLinesCount);
 
   return (
     <Box
@@ -476,22 +546,24 @@ export function Dashboard({
       />
 
       <Box flexDirection="row" height={middleHeight} marginTop={0}>
-        <Box width={ui.verbose ? "35%" : "42%"} flexDirection="column" marginRight={1}>
-          <PipelineCard
-            phases={ui.phases}
-            currentPhase={ui.currentPhase}
-            phaseElapsed={phaseElapsed}
-            spinner={spinner}
-            height={middleHeight}
-            profile={cfg.profile}
-            iteration={ui.currentIteration}
-            totalIterations={ui.totalIterations}
-          />
-        </Box>
-        <Box width={ui.verbose ? "65%" : "58%"} flexDirection="column">
+        {!streamMaximized && (
+          <Box width={ui.verbose ? "35%" : "42%"} flexDirection="column" marginRight={1}>
+            <PipelineCard
+              phases={ui.phases}
+              currentPhase={ui.currentPhase}
+              phaseElapsed={phaseElapsed}
+              spinner={spinner}
+              height={middleHeight}
+              profile={cfg.profile}
+              iteration={ui.currentIteration}
+              totalIterations={ui.totalIterations}
+            />
+          </Box>
+        )}
+        <Box width={streamMaximized ? "100%" : ui.verbose ? "65%" : "58%"} flexDirection="column">
           <StreamCard
-            lines={visibleStreamLines}
-            totalLines={streamLines.length}
+            rows={visibleStreamRows}
+            totalLines={outputRows.length}
             scrollOffset={streamScroll}
             maxScroll={maxStreamScroll}
             chars={ui.streamTotalChars}
@@ -826,6 +898,7 @@ function PipelineCard({
  * the panel never claims to await output that will not arrive.
  */
 export function StreamCard({
+  rows,
   lines = [],
   totalLines,
   scrollOffset = 0,
@@ -839,6 +912,8 @@ export function StreamCard({
   streamsOutput = true,
   width,
 }: {
+  /** Pre-wrapped terminal rows from `markdownBlockRows` (one per painted row). */
+  rows?: MdSegment[][];
   lines?: string[];
   totalLines?: number;
   scrollOffset?: number;
@@ -859,12 +934,18 @@ export function StreamCard({
   const displayLines = lines;
   const bodyBudget = Math.max(1, (height ?? 10) - cardChrome("secondary").rows);
   const bodyColumns = Math.max(1, (width ?? 84) - cardChrome("secondary").columns);
+  // The Dashboard hands over already-wrapped rows; direct callers still get the
+  // same formatting through `MarkdownBlock` below, so no surface has a second
+  // wrapping implementation.
+  const rowsProvided = rows !== undefined;
   // A buffer that only holds the empty string (a phase that emitted nothing) is
   // not a stream: treating it as one hid the last phase's report behind a blank
   // row (REQ-51 / AC-51.1). This matches the live view's `hasStreamContent`.
-  const hasStream = displayLines.some((line) => line.trim().length > 0);
+  const hasStream = rowsProvided ? rows.length > 0 : displayLines.some((line) => line.trim().length > 0);
   const reportLines =
-    !hasStream && report.trim().length > 0 ? report.trimEnd().split("\n") : [];
+    !rowsProvided && !hasStream && report.trim().length > 0
+      ? report.trimEnd().split("\n")
+      : [];
   const hasReport = reportLines.length > 0;
 
   const idleRows: Array<{ text: string; art: boolean }> = !hasStream && !hasReport
@@ -904,25 +985,22 @@ export function StreamCard({
       minHeight={6}
     >
       {hasStream ? (
-        <MarkdownBlock
-          lines={displayLines}
-          width={bodyColumns}
-          colorFor={(line) => {
-            const trimmed = line.trim();
-            const isTool =
-              trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
-            const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
-            const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
-            return isTool
-              ? THEME.accentStrong
-              : isCmd
-                ? THEME.warn
-                : isThought
-                  ? THEME.thinker
-                  : THEME.text;
-          }}
-          wrap="truncate"
-        />
+        rowsProvided ? (
+          <Box flexDirection="column" overflow="hidden">
+            {rows.map((segments, index) => (
+              <Text key={`r-${index}`} wrap="truncate">
+                {segments.length === 0 ? " " : renderSegments(segments, `r-${index}`)}
+              </Text>
+            ))}
+          </Box>
+        ) : (
+          <MarkdownBlock
+            lines={displayLines}
+            width={bodyColumns}
+            colorFor={streamLineColor}
+            wrap="truncate"
+          />
+        )
       ) : hasReport ? (
         // The runtime cannot stream: show the phase's real report rather than an
         // empty panel that looks broken (AC-51.1).

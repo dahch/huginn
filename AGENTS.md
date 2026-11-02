@@ -606,6 +606,16 @@ Ten display conventions a TUI change must follow:
   the last finished phase's report, or the two-raven idle state, and keeps the `LIVE AGENT OUTPUT`
   title and waiting placeholder **only** for a runtime whose `RuntimeCapabilities.streaming` is `true`
   (`opencode`); everything else is titled `AGENT OUTPUT` and names itself (REQ-51).
+- **An output panel wraps before it scrolls (ADR-74).** `markdownBlockRows(lines, width, colorFor?)`
+  (`src/tui/markdown.tsx`) is the one formatter for a report, the run stream and the live stream: it
+  expands table blocks with `tableBlock` and wraps every other line with `wrapSegments`, returning
+  one `MdSegment[]` per terminal row. `MarkdownBlock` renders those rows unchanged, so no surface
+  relies on Ink's wrapping. Both dashboards `useMemo` the rows on `[text, bodyWidth]` only, derive
+  `maxScroll` from `rows.length - visibleRows`, slice **rows**, and clip the stream buffer to
+  `MAX_STREAM_ROWS` (2 000). In `huginn run`, `z` hides `PIPELINE` and gives the panel the full
+  content width (`z` again restores it), and `y` copies the original markdown through OSC 52 with
+  `copyToTerminal` — never the wrapped rows. The panel title carries the same `▲ +N` / `▼ bottom`
+  indicator as the conversation.
 - **The raven's presence follows the run, and chrome is paid for only while it is on screen.**
   `RAVEN_MOODS`/`ravenMark(mood)` (`src/brand.ts`) are the three moods (`idle` `o`, `thinking` `O`,
   `sleeping` `-`) and differ from `RAVEN_MARK` by one beak cell: never add a mood that changes the

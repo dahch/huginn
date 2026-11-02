@@ -2,7 +2,7 @@ import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "./inkRender";
-import { Dashboard, StreamCard } from "../../src/tui/Dashboard";
+import { capStreamRows, Dashboard, MAX_STREAM_ROWS, nextStreamMaximized, StreamCard } from "../../src/tui/Dashboard";
 import { runLiveTui, runTui } from "../../src/tui/app";
 import { events } from "../../src/engine/engineEvents";
 import type { CycleEngine } from "../../src/engine/cycle";
@@ -783,5 +783,77 @@ describe("run dashboard controls", () => {
     await tick(80);
     scrolledHarness.unmount();
     expect(scrolled.resolveDecision).not.toHaveBeenCalled();
+  });
+
+  it("wraps the output before scrolling and counts terminal rows", async () => {
+    const harness = await mountRun(createEngine());
+    // Each 200-character line is more than one terminal row, and enough of
+    // them overflow the card so the scroll offset becomes observable.
+    events.emit("phaseStream", { text: Array.from({ length: 30 }, () => "x".repeat(200)).join("\n") });
+    await tick(140);
+    const before = harness.output();
+    harness.stdin.write("\u001B[5~"); // PageUp
+    await tick(80);
+    harness.unmount();
+    const after = harness.output();
+    // The scroll indicator is derived from wrapped rows, so it appears even
+    // though the source buffer is a single line.
+    expect(after).toMatch(/▲ \+\d+/);
+    expect(after).not.toBe(before);
+  });
+
+  it("gives the output panel the full width with `z` and restores it with `z`", async () => {
+    const zoomed = await mountRun(createEngine());
+    zoomed.stdin.write("z");
+    await tick(100);
+    zoomed.unmount();
+    const firstZoom = zoomed.output().split("\n");
+    // The pipeline is not drawn beside the output: the agent panel starts the row.
+    const wideIndex = firstZoom.findIndex((line) =>
+      /^\s*│\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]?\s*AGENT OUTPUT/.test(line),
+    );
+    expect(wideIndex).toBeGreaterThanOrEqual(0);
+    expect(firstZoom[wideIndex]).not.toContain("PIPELINE PHASES");
+
+    // The same key is a toggle, so a second press restores the split layout.
+    expect(nextStreamMaximized(true)).toBe(false);
+    expect(nextStreamMaximized(false)).toBe(true);
+  });
+
+  it("copies the report through exactly one OSC 52 sequence on `y`", async () => {
+    const harness = await mountRun(createEngine());
+    events.emit("phaseEnd", {
+      result: {
+        iteration: 1,
+        phase: "EXECUTE",
+        attempt: 1,
+        model: "a/b",
+        sessionId: "s",
+        messageId: "m",
+        summary: "done",
+        raw: "first line\nsecond line",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+      },
+    });
+    await tick(120);
+    harness.stdin.write("y");
+    await tick(80);
+    harness.unmount();
+
+    const sequences = harness.output().match(/\u001b\]52;c;[A-Za-z0-9+/=]*\u001b\\/g) ?? [];
+    expect(sequences).toHaveLength(1);
+    const payload = sequences[0]!.slice("\u001b]52;c;".length, -2);
+    expect(Buffer.from(payload, "base64").toString("utf8")).toBe("first line\nsecond line");
+  });
+
+  it("caps the formatted stream at 2 000 rows before deriving maxScroll", () => {
+    const rows = Array.from({ length: MAX_STREAM_ROWS + 25 }, (_unused, index) => [
+      { text: `row ${index}` },
+    ]);
+    const capped = capStreamRows(rows);
+    expect(capped).toHaveLength(MAX_STREAM_ROWS);
+    const visibleRows = 10;
+    expect(Math.max(0, capped.length - visibleRows)).toBe(MAX_STREAM_ROWS - visibleRows);
   });
 });

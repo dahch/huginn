@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **The output panel no longer hides text.** Both TUI output panels (the run dashboard's
+  `StreamCard` and the live `ScrollableStreamCard`) now format through the new pure
+  `markdownBlockRows(lines, width, colorFor?)`, which expands tables and wraps every line into
+  terminal rows. Their scroll windows count those rows instead of source lines, the title shows
+  `▲ +N` / `▼ bottom` when content is hidden, and the stream buffer is capped at 2 000 rows.
+  In `huginn run`, `z` hides the pipeline and gives the panel the full width, and `y` copies the
+  original report through OSC 52 (ADR-74).
+
 - **Modal titles stop breaking the grid, and the smoke matrix covers them.** `src/tui/glyphs.ts`
   gains `MODAL_TITLE_GLYPHS` (`agent` `>`, `help` `?`, `inspector` `·`), and `AgentPickerModal`,
   `HelpModal` and `McpInspectorModal` compose their titles from it instead of embedding a

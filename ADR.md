@@ -2373,3 +2373,43 @@ avoids. They are ordered by how central the decision is to the design.
     panel's `git` row now yields branch columns to its state suffix; and the removed `PanelData`
     fields are a breaking change for any embedder constructing the panel directly (in-repo callers
     and tests were updated in the same commit).
+
+
+## ADR-74: The output panel wraps once, then scrolls by terminal rows
+
+- **Date**: 2026-11-02
+- **Status**: Accepted
+- **Context**: The run dashboard's output panel handed each source line to Ink with
+  `wrap="truncate"` and derived its scroll offset from `streamLines.length`, so a long report line
+  was cut with `…` and the hidden part could not be reached by any key. The live stream had the same
+  mismatch in a quieter form: its card wrapped lines, but its scroll count still used the unwrapped
+  buffer. Two surfaces, two row models, one bug.
+- **Decision**:
+  1. `markdownBlockRows(lines, width, colorFor?)` is the pure formatter for a whole block and returns
+     one `MdSegment[]` per terminal row. Contiguous tables are expanded through `tableBlock` (column
+     widths need the whole block); every other line is `wrapSegments(markdownSegments(line, color,
+     width), width)`, so a styled span is never cut mid-markup. `MarkdownBlock` is reimplemented on
+     top of it and has no wrapping path of its own.
+  2. Both dashboards `useMemo` those rows on the text and the body width only — never per spinner
+     frame — and derive `maxScroll` from `rows.length - visibleRows`. They slice rows, not source
+     lines, so the scroll indicator and the frame agree with what is painted.
+  3. The stream buffer keeps the newest `MAX_STREAM_ROWS` (2 000) formatted rows; the cap is applied
+     before `maxScroll`, so the end of a runaway phase is reachable and the scroll range never claims
+     rows the buffer no longer holds.
+  4. In the run dashboard `z` is a view toggle that hides `PIPELINE` and gives the output panel the
+     full content width; a second press restores the split. `y` copies the original markdown (the
+     report or the stream buffer, never the wrapped rows) through `copyToTerminal`, exactly one
+     OSC 52 sequence per press.
+- **Alternatives rejected**: (a) keep truncation and raise the line width — the text is still lost at
+  any finite width; (b) let Ink wrap and count source lines — that is the original bug, and a text
+  node claiming one row while painting several corrupts the card; (c) wrap inside `StreamCard` per
+  frame — a 60 KB report would be reformatted on every tick; (d) give the run dashboard a separate
+  scrolling implementation — the live and run panels would drift again; (e) copy the wrapped rows —
+  the clipboard would receive layout artefacts instead of the report.
+- **Consequences**:
+  - *Positive*: a long report is readable end to end, the scroll indicator is honest on both
+    surfaces, and `z`/`y` make the run panel usable without leaving the dashboard.
+  - *Negative*: the scroll offset is measured in painted rows, so a terminal resize can change the
+    row count under a saved offset (the clamp keeps the view in range); the 2 000-row cap drops the
+    oldest rows of an exceptionally long stream; and every new output surface must use
+    `markdownBlockRows` rather than introducing another wrapper.

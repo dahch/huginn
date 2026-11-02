@@ -450,11 +450,38 @@ export function MarkdownLine({
 }
 
 /**
+ * Formats a whole markdown block into **terminal rows**: one `MdSegment[]`
+ * entry per row the card will draw. Tables are expanded block-by-block (their
+ * column widths need every row in hand) and every other line is wrapped with
+ * {@link wrapSegments}. This is the single formatting route shared by the run
+ * panel, the live stream and the conversation, so the three surfaces cannot
+ * disagree about how many rows a piece of text occupies.
+ */
+export function markdownBlockRows(
+  lines: readonly string[],
+  width: number,
+  colorFor: (line: string, index: number) => string | undefined = () => THEME.text,
+): MdSegment[][] {
+  const columns = ruleColumns(width);
+  const rows: MdSegment[][] = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (isTableHeader(lines, index)) {
+      const end = tableBlockEnd(lines, index);
+      rows.push(...tableBlock(lines.slice(index, end), columns));
+      index = end - 1;
+      continue;
+    }
+    const text = lines[index] ?? "";
+    rows.push(...wrapSegments(markdownSegments(text, colorFor(text, index), columns), columns));
+  }
+  return rows;
+}
+
+/**
  * Renders a whole markdown block (a report, a stream buffer or a message body)
- * at a known width. It is the only place that can align a table, because the
- * column widths need every row of the contiguous block; normal lines are still
- * handed to {@link MarkdownLine} one by one. `maxRows` keeps the last N rendered
- * rows, so the caller can clip a report without cutting a table header off first.
+ * at a known width. Every row comes from {@link markdownBlockRows}, so the text
+ * is already wrapped and each rendered node is exactly one terminal row. The
+ * `maxRows` tail keeps the last N rows when the caller budgets a report.
  */
 export function MarkdownBlock({
   lines,
@@ -469,41 +496,16 @@ export function MarkdownBlock({
   wrap?: "wrap" | "truncate" | "truncate-start" | "truncate-middle" | "truncate-end";
   maxRows?: number;
 }): React.ReactElement {
-  type BlockRow =
-    | { kind: "line"; text: string; color: string | undefined }
-    | { kind: "table"; segments: MdSegment[] };
-  const rows: BlockRow[] = [];
-  for (let index = 0; index < lines.length; index++) {
-    if (isTableHeader(lines, index)) {
-      const end = tableBlockEnd(lines, index);
-      for (const segments of tableBlock(lines.slice(index, end), width)) {
-        rows.push({ kind: "table", segments });
-      }
-      index = end - 1;
-      continue;
-    }
-    const text = lines[index] ?? "";
-    rows.push({ kind: "line", text, color: colorFor(text, index) });
-  }
+  const rows = markdownBlockRows(lines, width, colorFor);
   const limit = maxRows === undefined ? rows.length : Math.max(0, Math.floor(maxRows));
   const visible = maxRows === undefined ? rows : limit === 0 ? [] : rows.slice(-limit);
   return (
     <>
-      {visible.map((row, index) =>
-        row.kind === "table" ? (
-          <Text key={`t-${index}`} wrap={wrap}>
-            {renderSegments(row.segments, `t-${index}`)}
-          </Text>
-        ) : (
-          <MarkdownLine
-            key={`m-${index}`}
-            text={row.text || " "}
-            defaultColor={row.color}
-            wrap={wrap}
-            width={width}
-          />
-        ),
-      )}
+      {visible.map((segments, index) => (
+        <Text key={`r-${index}`} wrap={wrap}>
+          {segments.length === 0 ? " " : renderSegments(segments, `r-${index}`)}
+        </Text>
+      ))}
     </>
   );
 }

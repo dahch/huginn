@@ -14,12 +14,12 @@ import { events, type LiveStage } from "../engine/engineEvents";
 import { ravenBlink, ravenMood, type RavenMood } from "../brand.js";
 import { formatUsage } from "../format";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
-import { Dashboard, LogsCard } from "./Dashboard";
+import { Dashboard, LogsCard, MAX_STREAM_ROWS, streamLineColor } from "./Dashboard";
 import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
 import { DecisionModal } from "./DecisionModal.js";
 import {
-  MarkdownBlock,
   isTableHeader,
+  markdownBlockRows,
   markdownSegments,
   renderSegments,
   tableBlock,
@@ -727,10 +727,10 @@ function RefineView({
     lastFlushTime.current = Date.now();
     const allLines = streamBuf.current.split("\n");
     const lines =
-      allLines.length > 1000
-        ? allLines.slice(-1000)
+      allLines.length > MAX_STREAM_ROWS
+        ? allLines.slice(-MAX_STREAM_ROWS)
         : allLines;
-    if (allLines.length > 1000) {
+    if (allLines.length > MAX_STREAM_ROWS) {
       streamBuf.current = lines.join("\n");
     }
     setStreamLines(lines);
@@ -1714,6 +1714,13 @@ function RefineView({
   // here, once, so one `ChatRow` is exactly one terminal row and the scroll
   // offset counts the rows the user actually sees.
   const chatBodyColumns = Math.max(1, cardsWidth - cardChrome("primary").columns);
+  // The stream gets the same treatment: wrap once per text/width change and let
+  // every scroll count terminal rows, exactly like the conversation (ADR-74).
+  const streamBodyColumns = Math.max(1, cardsWidth - cardChrome("secondary").columns);
+  const streamRows = useMemo(() => {
+    const formatted = markdownBlockRows(streamLines, streamBodyColumns, streamLineColor);
+    return formatted.length > MAX_STREAM_ROWS ? formatted.slice(-MAX_STREAM_ROWS) : formatted;
+  }, [streamLines, streamBodyColumns]);
   const chatRows = useMemo<ChatRow[]>(() => {
     const rows: ChatRow[] = [];
     const texts = formattedChatLines.map((line) => line.text);
@@ -1800,7 +1807,7 @@ function RefineView({
   const visibleStreamLinesCount = Math.max(1, streamHeight - cardChrome("secondary").rows);
 
   const maxChatScroll = Math.max(0, chatRows.length - visibleChatLinesCount);
-  const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
+  const maxStreamScroll = Math.max(0, streamRows.length - visibleStreamLinesCount);
 
   // ── Transcript search (Ctrl+F) and clipboard (y) ─────────────────────────
   // The query is matched against the messages, and the card title numbers the
@@ -2211,9 +2218,9 @@ function RefineView({
   const chatStart = Math.max(0, chatRows.length - visibleChatLinesCount - chatScroll);
   const visibleChatLines = chatRows.slice(chatStart, chatStart + visibleChatLinesCount);
 
-  // Slice visible lines for Stream
-  const streamStart = Math.max(0, streamLines.length - visibleStreamLinesCount - streamScroll);
-  const visibleStreamLines = streamLines.slice(streamStart, streamStart + visibleStreamLinesCount);
+  // Slice visible rows for Stream
+  const streamStart = Math.max(0, streamRows.length - visibleStreamLinesCount - streamScroll);
+  const visibleStreamRows = streamRows.slice(streamStart, streamStart + visibleStreamLinesCount);
 
   // One footer policy for both dashboards (H-13): the left cell belongs to the
   // focused surface, the right cell keeps the usage figure. The stage lives in
@@ -2327,9 +2334,10 @@ function RefineView({
 
             {showStreamPanel && streamHeight > 0 && (
               <ScrollableStreamCard
-                lines={visibleStreamLines}
-                totalLines={streamLines.length}
+                rows={visibleStreamRows}
+                totalRows={streamRows.length}
                 scrollOffset={streamScroll}
+                maxScroll={maxStreamScroll}
                 chars={streamChars}
                 isFocused={focus === "stream"}
                 spinner={spinner}
@@ -2584,9 +2592,10 @@ function ScrollableChatCard({
 }
 
 function ScrollableStreamCard({
-  lines,
-  totalLines,
+  rows,
+  totalRows,
   scrollOffset,
+  maxScroll,
   chars,
   isFocused,
   spinner,
@@ -2594,9 +2603,11 @@ function ScrollableStreamCard({
   height,
   width,
 }: {
-  lines: string[];
-  totalLines: number;
+  /** Pre-wrapped terminal rows (`markdownBlockRows`), one per painted row. */
+  rows: MdSegment[][];
+  totalRows: number;
   scrollOffset: number;
+  maxScroll: number;
   chars: number;
   isFocused: boolean;
   spinner: string;
@@ -2611,6 +2622,12 @@ function ScrollableStreamCard({
       title={`THINKING & LIVE AGENT STREAM ${isFocused ? "● [Focused]" : "○ [Tab to focus]"}`}
       titleRight={
         <>
+          {maxScroll > 0 && (
+            <Text color={THEME.muted} wrap="truncate">
+              {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
+              ({totalRows} lines){" "}
+            </Text>
+          )}
           {chars > 0 && (
             <Text color={THEME.muted} wrap="truncate">
               {(chars / 1024).toFixed(1)} KB{" "}
@@ -2624,19 +2641,18 @@ function ScrollableStreamCard({
       width={width}
       minHeight={CARD_MIN_ROWS}
     >
-      {lines.length === 0 ? (
+      {rows.length === 0 ? (
         <Box justifyContent="center" marginY={0}>
           <Text color={THEME.muted}>Real-time thinking and agent output will stream here while the model runs.</Text>
         </Box>
       ) : (
-        <MarkdownBlock
-          lines={lines}
-          width={Math.max(1, width - cardChrome("secondary").columns)}
-          colorFor={(line) =>
-            line.startsWith("⚡") ? THEME.warn : line.startsWith("✓") ? THEME.ok : THEME.muted
-          }
-          wrap="truncate"
-        />
+        <Box flexDirection="column" overflow="hidden">
+          {rows.map((segments, index) => (
+            <Text key={`s-${index}`} wrap="truncate">
+              {segments.length === 0 ? " " : renderSegments(segments, `s-${index}`)}
+            </Text>
+          ))}
+        </Box>
       )}
     </Card>
   );
