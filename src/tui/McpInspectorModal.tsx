@@ -11,6 +11,7 @@ import { events } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text.js";
 import { FEEDBACK_WARN, NEXT_STEP, warnFeedback } from "./feedback.js";
 import { Modal } from "./Modal.js";
+import { MODAL_TITLE_GLYPHS } from "./glyphs.js";
 import { THEME } from "./theme.js";
 
 const MAX_VISIBLE_TOOLS = 10;
@@ -223,7 +224,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
 
   return (
     <Modal
-      title="🔌 MCP SERVER INSPECTOR"
+      title={`${MODAL_TITLE_GLYPHS.inspector} MCP SERVER INSPECTOR`}
       subtitle={
         <>
           <Text bold color={statusColor}>{statusSummary}</Text>
@@ -302,7 +303,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                 <Box key={server.id || idx} justifyContent="space-between" marginBottom={0}>
                   <Box>
                     <Text color={isSelected ? THEME.accent : THEME.muted}>
-                      {isSelected ? "▶ " : "  "}
+                      {isSelected ? "> " : "  "}
                     </Text>
                     <Text bold={isSelected} color={THEME.text}>
                       {sanitizeTerminalText(server.name)}
@@ -376,7 +377,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                       <Box key={tool.name ? `${tool.name}-${actualIndex}` : actualIndex} flexDirection="column" marginBottom={1}>
                         <Box>
                           <Text color={isToolSelected ? THEME.accentStrong : THEME.muted}>
-                            {isToolSelected ? "▶ " : "  "}
+                            {isToolSelected ? "> " : "  "}
                           </Text>
                           <Text bold color={THEME.accentStrong}>
                             {sanitizeTerminalText(tool.name)}

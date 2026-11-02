@@ -8,6 +8,7 @@ import {
 } from "./commandRegistry.js";
 import { THEME } from "./theme.js";
 import { Modal } from "./Modal.js";
+import { MODAL_TITLE_GLYPHS } from "./glyphs.js";
 
 export interface CommandCheatSheet {
   command: string;
@@ -115,7 +116,7 @@ export const HelpModal = React.memo(function HelpModal({
 
   return (
     <Modal
-      title="📖 HUGINN LIVE CHEAT SHEET"
+      title={`${MODAL_TITLE_GLYPHS.help} HUGINN LIVE CHEAT SHEET`}
       hint="Press Esc or q to close cheat sheet"
     >
       {/* Active Config Banner */}
@@ -159,7 +160,7 @@ export const HelpModal = React.memo(function HelpModal({
       {/* Navigation Shortcuts */}
       <Box flexDirection="column" marginTop={1}>
         <Text bold color={THEME.warn}>
-          ⌨ Navigation & Shortcuts:
+          Keys · Navigation & Shortcuts:
         </Text>
         {NAVIGATION_SHORTCUTS.map((s) => (
           <Box key={s.key} marginY={0}>

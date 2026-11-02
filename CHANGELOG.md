@@ -2,20 +2,30 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Modal titles stop breaking the grid, and the smoke matrix covers them.** `src/tui/glyphs.ts`
+  gains `MODAL_TITLE_GLYPHS` (`agent` `>`, `help` `?`, `inspector` `·`), and `AgentPickerModal`,
+  `HelpModal` and `McpInspectorModal` compose their titles from it instead of embedding a
+  double-width pictograph in the JSX. `test/tui/smokeMatrix.test.ts` now mounts all seven modal
+  surfaces (`AgentPickerModal`, `HelpModal`, `McpInspectorModal`, `ModelPickerModal`,
+  `ProfilePickerModal`, `SkillsModal`, `DecisionModal`) at 80×24, 100×30 and 120×40, checking
+  display-column width, row count, no double-width pictograph and a title row that occupies
+  exactly one line (REQ-76 / ADR-72).
+
 ### Added
 
 - **The visual pass is now a test matrix.** `test/tui/smokeMatrix.test.ts` mounts the live console
   (`LiveApp` in refine) and the run dashboard (initial state) at 80×24, 100×30, 120×40 and 160×50,
   with colour on,  under `NO_COLOR=1` and with `HUGINN_THEME=dark`. Every painted frame is checked in display columns
   with `string-width`: no row exceeds `columns`, no frame exceeds `rows`, no row carries a
-  `\p{Extended_Pictographic}` glyph, and the `NO_COLOR` frames emit no colour SGR. Failures name
+  double-width pictograph, and the `NO_COLOR` frames emit no colour SGR. Failures name
   the surface, the size and the offending row; the README's «Validación visual» section records the
   matrix and the single-file command. The matrix found no layout regression, so no production code
   changed for it. The inspector cannot pass vacuously: 13 tests exercise its failure branches
   (display width, extra rows, empty frame, pictograph, 256-/true-colour SGR) and prove `paint()`
   restores the terminal size even when rendering throws, and 3 `test/tui/inkRender.test.ts` cases pin
-  the render seam (injected stdout, a plain `PassThrough` stdin, idempotent unmount). Modal frames
-  are not mounted by the matrix yet.
+  the render seam (injected stdout, a plain `PassThrough` stdin, idempotent unmount).
 
 - **Each live-session fact has one home.** The live header is now identity and ephemeral state: row 1
   is `[<spinner> <STAGE>]` plus the project path, row 2 is the two models, and the MCP badge, runtime

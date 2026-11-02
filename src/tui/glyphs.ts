@@ -61,6 +61,18 @@ export const DECISION_GLYPHS = {
 
 export type DecisionGlyph = (typeof DECISION_GLYPHS)[keyof typeof DECISION_GLYPHS];
 
+/**
+ * The glyph each modal title starts with. A double-width pictograph in a title
+ * adds two columns nobody budgeted for and can wrap the one-row heading over
+ * the body (REQ-76 / ADR-72). These marks are the same measured alphabet the
+ * rest of the console paints: one column each, and no emoji.
+ */
+export const MODAL_TITLE_GLYPHS = {
+  agent: ">",
+  help: "?",
+  inspector: "·",
+} as const;
+
 /** Compile-time proof that every {@link DecisionKind} has a glyph. */
 function assertNever(value: never): never {
   throw new Error(`Unhandled decision kind: ${String(value)}`);

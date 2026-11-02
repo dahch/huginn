@@ -79,7 +79,7 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
       expect(output).toContain(`(${id})`);
     }
     // Availability is explicit both ways, and the list says it is bounded.
-    expect(output).toContain("✔");
+    expect(output).toContain("✓");
     expect(output).toContain("not installed");
     expect(output).toContain("more below");
     // The active runtime is called out, its resolved path is shown, and switching
@@ -87,6 +87,40 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
     expect(output).toContain("● active");
     expect(output).toContain(`/usr/local/bin/${AGENT_TARGETS[0]}`);
     expect(output).toContain("Muninn memory is project-scoped");
+  });
+
+  it("fails closed when the availability probe rejects: every row reads unavailable", async () => {
+    const stdout = new PassThrough() as any;
+    stdout.columns = 100;
+    stdout.rows = 30;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const stdin = createMockStdin();
+    const onSelect = vi.fn();
+    const instance = render(
+      React.createElement(AgentPickerModal, {
+        currentAgentId: "opencode",
+        onSelect,
+        onCancel: vi.fn(),
+        detect: async () => {
+          throw new Error("PATH probe failed");
+        },
+      }),
+      { stdout, stdin, patchConsole: false },
+    );
+    await tick(120);
+
+    // Detection failure is not fatal: the list still renders, and no entry is
+    // claimed available. Enter selects the first row rather than exploding.
+    stdin.write("\r");
+    await tick(30);
+    instance.unmount();
+    expect(output).toContain("SELECT AGENT RUNTIME");
+    expect(output).toContain("not installed");
+    expect(output).not.toContain("Detecting installed agent CLIs");
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
   it("switches on Enter and cancels on Esc", async () => {

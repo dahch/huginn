@@ -1651,8 +1651,8 @@ Mounted via the `/mcp` slash command in `LiveDashboard`, `McpInspectorModal` ren
 ```
 ┌─ 🔌 MCP SERVER INSPECTOR ── 2/2 active ── 12 tools ─────────── Runtime: opencode ─┐
 │ ┌─ Servers (2) ──────────────────────────┐ ┌─ Tools for git ───────────────────┐ │
-│ │ ▶ git           [connected] [stdio] 5ms│ │   ▲ ... 2 more above              │ │
-│ │   memory        [connected] [stdio] 1ms│ │ ▶ git_status                      │ │
+│ │ > git           [connected] [stdio] 5ms│ │   ▲ ... 2 more above              │ │
+│ │   memory        [connected] [stdio] 1ms│ │ > git_status                      │ │
 │ │                                        │ │     Show current working tree ... │ │
 │ │                                        │ │   git_diff                        │ │
 │ │                                        │ │     Inspect diff between commits  │ │
@@ -1834,7 +1834,7 @@ Because skills are read from the repository, the loader treats discovery and rea
 | Command | Behaviour |
 |---|---|
 | `/help` | Mounts `HelpModal` — command cheat sheet, navigation shortcuts, and the active agent/thinker/executor/project banner. `Esc`, `q` or `Enter` closes. |
-| `/agent` | Opens the interactive `AgentPickerModal` (REQ-33): every `AGENT_TARGETS` row with an availability marker (`✔` / `— not installed`), the active one marked, and the highlighted entry's detected path; `↑`/`↓`/`j`/`k` move, `Enter` switches (a failed switch keeps the modal open), `Esc` cancels. |
+| `/agent` | Opens the interactive `AgentPickerModal` (REQ-33): every `AGENT_TARGETS` row with an availability marker (`✓` / `— not installed`), the active one marked, and the highlighted entry's detected path; `↑`/`↓`/`j`/`k` move, `Enter` switches (a failed switch keeps the modal open), `Esc` cancels. |
 | `/agent <id>` | Hot-switches the runtime via `LiveEngine.switchRuntime(id)`; an unknown id is rejected with the available-target list. |
 | `/models`, `/model` | Mounts the interactive `ModelPickerModal`. |
 | `/model <thinker> [executor]` (also `/models …`) | Validates `provider/model` syntax for both values (executor defaults to the current one), rejects extra args or malformed values, then calls `LiveEngine.updateModels(...)` for the session. |
@@ -1919,7 +1919,7 @@ returned `InitReport`:
 |---|---|---|
 | 1. Repository | `isGitRepo(project)` (`git rev-parse --is-inside-work-tree` — a subdirectory, a linked worktree or a symlinked checkout counts) — informational only; a missing work tree prints a `git init` tip and never fails | `src/engine/diff.ts` |
 | 2. Package manager | `detectPackageManager(projectPath)`: `bun.lock`/`bun.lockb` → `bun`, `pnpm-lock.yaml` → `pnpm`, `yarn.lock` → `yarn`, `package-lock.json` → `npm`, a lone `package.json` → `npm`, nothing → `unknown` (bun wins when lockfiles coexist) | `detectPackageManager` |
-| 3. Agent CLIs | `detectAvailableAgents(env.PATH)`, printed primary-first (`PRIMARY_AGENT_CLIS` = `opencode`, `claude`, `codex`, `omp`) then the remaining `AGENT_TARGETS` in registry order; available entries show a green `✔` and their path, unavailable ones are dimmed | `src/engine/agent/registry.ts` |
+| 3. Agent CLIs | `detectAvailableAgents(env.PATH)`, printed primary-first (`PRIMARY_AGENT_CLIS` = `opencode`, `claude`, `codex`, `omp`) then the remaining `AGENT_TARGETS` in registry order; available entries show a green `✓` and their path, unavailable ones are dimmed | `src/engine/agent/registry.ts` |
 | 4. Agent & models | TTY-only prompts, else the flags/defaults; the default agent is the first `available: true` entry of the *same* printed list, falling back to `DEFAULT_AGENT` (`opencode`). The models come from a **numbered picker fed by the chosen runtime's catalog** (`discoverModelCatalog` → `getModelCatalog()`), with a plain-text fallback plus the sanitized `reason` when the runtime lists nothing (§ 30) | `promptChoiceDefault` / `promptTextDefault` / `promptModelChoice` |
 | 5. Muninn MCP | delegates to `handleSetupCommand({ "--agent", "--project", "--home"[, "--opencode-config-dir", "--force"] })`; `--skip-setup` skips it | `src/commands/setup.ts` |
 | 6. Project config | `saveUserConfig(projectPath, { agent, thinker, executor })` → `<project>/.huginn/config.json` (atomic, unknown keys preserved); overwrite prompt on a TTY unless `--force` | `src/config.ts` |

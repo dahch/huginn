@@ -6,6 +6,10 @@ import type { CycleEngine } from "../../src/engine/cycle";
 import type { DiagnosticsInfo, LiveEngine } from "../../src/engine/liveMode";
 import type { RunConfig } from "../../src/config";
 import type { HarnessState } from "../../src/state/schema";
+import type { AgentTarget } from "../../src/agents/integrator";
+import type { McpStatusSource, ModelCatalogSource } from "../../src/engine/agent/port";
+import type { McpStatusReport } from "../../src/engine/agent/types";
+import type { DecisionRequest } from "../../src/engine/types";
 
 /**
  * REQ-21 / REQ-76 (ADR-72) — the visual pass is a test, not a screenshot.
@@ -41,14 +45,27 @@ const ANSI = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/g;
 /** Colour-bearing SGR only: bold (`1`/`22`) is not colour and stays allowed. */
 const COLOR_SGR = /\u001B\[(?:3[0-9]|9[0-9])m|\u001B\[(?:38|48);/g;
 
-/** An emoji (or any other double-width pictograph) inside console chrome. */
+/**
+ * Console chrome never paints a pictograph, not even one that happens to fit in
+ * a single text-presentation column (REQ-76 / ADR-72). The producer's own stream
+ * markers and the gate literals are excluded by only scanning painted frames of
+ * the TUI surfaces.
+ */
 const PICTOGRAPH = /\p{Extended_Pictographic}/u;
 
 interface TuiModules {
   React: typeof import("react");
+  Box: typeof import("ink").Box;
   render: typeof import("./inkRender").render;
   LiveApp: typeof import("../../src/tui/LiveDashboard").LiveApp;
   Dashboard: typeof import("../../src/tui/Dashboard").Dashboard;
+  AgentPickerModal: typeof import("../../src/tui/AgentPickerModal").AgentPickerModal;
+  HelpModal: typeof import("../../src/tui/HelpModal").HelpModal;
+  McpInspectorModal: typeof import("../../src/tui/McpInspectorModal").McpInspectorModal;
+  ModelPickerModal: typeof import("../../src/tui/ModelPickerModal").ModelPickerModal;
+  ProfilePickerModal: typeof import("../../src/tui/ProfilePickerModal").ProfilePickerModal;
+  SkillsModal: typeof import("../../src/tui/SkillsModal").SkillsModal;
+  DecisionModal: typeof import("../../src/tui/DecisionModal").DecisionModal;
 }
 
 const mockCfg = {
@@ -180,7 +197,7 @@ function frameProblems(surface: string, columns: number, rows: number, output: s
     }
     if (PICTOGRAPH.test(line)) {
       problems.push(
-        `${where}: row ${row} contains a double-width pictograph: ${JSON.stringify(line)}`,
+        `${where}: row ${row} contains a pictograph: ${JSON.stringify(line)}`,
       );
     }
   });
@@ -202,10 +219,31 @@ function colorProblems(surface: string, columns: number, rows: number, output: s
 /** Load Ink *after* the environment is pinned, so chalk's level is the real one. */
 async function loadModules(): Promise<TuiModules> {
   const React = (await import("react")).default;
+  const { Box } = await import("ink");
   const { render } = await import("./inkRender");
   const { LiveApp } = await import("../../src/tui/LiveDashboard");
   const { Dashboard } = await import("../../src/tui/Dashboard");
-  return { React, render, LiveApp, Dashboard };
+  const { AgentPickerModal } = await import("../../src/tui/AgentPickerModal");
+  const { HelpModal } = await import("../../src/tui/HelpModal");
+  const { McpInspectorModal } = await import("../../src/tui/McpInspectorModal");
+  const { ModelPickerModal } = await import("../../src/tui/ModelPickerModal");
+  const { ProfilePickerModal } = await import("../../src/tui/ProfilePickerModal");
+  const { SkillsModal } = await import("../../src/tui/SkillsModal");
+  const { DecisionModal } = await import("../../src/tui/DecisionModal");
+  return {
+    React,
+    Box,
+    render,
+    LiveApp,
+    Dashboard,
+    AgentPickerModal,
+    HelpModal,
+    McpInspectorModal,
+    ModelPickerModal,
+    ProfilePickerModal,
+    SkillsModal,
+    DecisionModal,
+  };
 }
 
 function createStdout(columns: number, rows: number): PassThrough & {
@@ -341,6 +379,226 @@ describe.each(ENVIRONMENTS)("visual smoke matrix — $name", ({ env, colorSuppre
 });
 
 /**
+ * The seven modal surfaces are part of the same grid (REQ-76 / ADR-72). The
+ * fixtures are the ones the per-modal suites already use: an injected
+ * availability probe, a fake runtime with a discovery catalog and an MCP
+ * report, the sample skills, and the base decision request.
+ */
+const MODAL_SIZES = [
+  [80, 24],
+  [100, 30],
+  [120, 40],
+] as const;
+
+const MODAL_MCP_REPORT: McpStatusReport = {
+  servers: [
+    {
+      id: "muninn",
+      name: "muninn",
+      status: "connected",
+      transport: "stdio",
+      toolsCount: 2,
+      latencyMs: 8,
+      tools: [
+        { name: "memory_search", description: "Search long-term memory graph" },
+        { name: "memory_save", description: "Save durable observation" },
+      ],
+    },
+  ],
+  totalTools: 2,
+  healthy: true,
+};
+
+const MODAL_SKILLS = [
+  {
+    id: "audit",
+    name: "Audit Code",
+    description: "Run code audits and security/quality checks.",
+    triggers: ["audit", "security"],
+    body: "Please audit recently modified files in this project.",
+    filePath: "builtin:audit",
+    builtin: true,
+  },
+  {
+    id: "custom-perf",
+    name: "Performance Check",
+    description: "Benchmark query latency and bottlenecks.",
+    triggers: ["perf", "bench"],
+    body: "Analyze latency hotspots across database queries.",
+    filePath: "/proj/.huginn/skills/perf.md",
+    builtin: false,
+  },
+];
+
+function modalRuntime(): McpStatusSource & ModelCatalogSource {
+  return {
+    id: "opencode",
+    name: "OpenCode Engine",
+    getAvailableModels: async () => [
+      {
+        id: "anthropic/claude-3-7-sonnet",
+        name: "Claude 3.7 Sonnet",
+        provider: "Anthropic",
+        description: "Reasoning and coding model",
+      },
+      {
+        id: "opencode/gpt-5.1-codex",
+        name: "GPT-5.1 Codex",
+        provider: "OpenAI",
+        description: "Fast code model",
+      },
+    ],
+    getMcpStatus: async () => MODAL_MCP_REPORT,
+  };
+}
+
+const MODAL_DECISION: DecisionRequest = {
+  id: "d1",
+  kind: "gate-blocked",
+  iteration: 3,
+  phase: "EXECUTE",
+  attempt: 1,
+  message: "A decision is required.",
+};
+
+interface ModalCase {
+  surface: string;
+  title: string;
+  element: (modules: TuiModules) => Parameters<TuiModules["render"]>[0];
+}
+
+const MODAL_CASES: ModalCase[] = [
+  {
+    surface: "AgentPickerModal",
+    title: "> SELECT AGENT RUNTIME",
+    element: ({ React, AgentPickerModal }) =>
+      React.createElement(AgentPickerModal, {
+        currentAgentId: "opencode",
+        onSelect: () => undefined,
+        onCancel: () => undefined,
+        detect: async (): Promise<Array<{ id: AgentTarget; available: boolean; path?: string }>> => [
+          { id: "opencode", available: true, path: "/usr/local/bin/opencode" },
+        ],
+      }),
+  },
+  {
+    surface: "HelpModal",
+    title: "? HUGINN LIVE CHEAT SHEET",
+    element: ({ React, HelpModal }) =>
+      React.createElement(HelpModal, {
+        runtimeName: "OpenCode CLI",
+        thinker: "anthropic/claude-opus-4-5",
+        executor: "opencode/gpt-5.1-codex",
+        projectPath: "/path/to/project",
+        onClose: () => undefined,
+      }),
+  },
+  {
+    surface: "McpInspectorModal",
+    title: "· MCP SERVER INSPECTOR",
+    element: ({ React, McpInspectorModal }) =>
+      React.createElement(McpInspectorModal, {
+        runtime: modalRuntime(),
+        onClose: () => undefined,
+        initialReport: MODAL_MCP_REPORT,
+      }),
+  },
+  {
+    surface: "ModelPickerModal",
+    title: "MODEL SELECTOR · Step 1/3: Choose Thinker (Architect & Fixes)",
+    element: ({ React, ModelPickerModal }) =>
+      React.createElement(ModelPickerModal, {
+        runtime: modalRuntime(),
+        onSelect: () => undefined,
+        onCancel: () => undefined,
+      }),
+  },
+  {
+    surface: "ProfilePickerModal",
+    title: "SELECT METHODOLOGY PROFILE",
+    element: ({ React, ProfilePickerModal }) =>
+      React.createElement(ProfilePickerModal, {
+        currentProfileId: "huginn",
+        onSelect: () => undefined,
+        onCancel: () => undefined,
+      }),
+  },
+  {
+    surface: "SkillsModal",
+    title: "PROJECT SKILLS BROWSER",
+    element: ({ React, SkillsModal }) =>
+      React.createElement(SkillsModal, {
+        skills: MODAL_SKILLS,
+        onSelect: () => undefined,
+        onClose: () => undefined,
+      }),
+  },
+  {
+    surface: "DecisionModal",
+    title: "! DECISION · Gate EXECUTE · iteration 3",
+    element: ({ React, DecisionModal }) =>
+      React.createElement(DecisionModal, { req: MODAL_DECISION }),
+  },
+];
+
+/** A painted frame plus the checks a modal adds on top of the shared inspector. */
+function modalProblems(
+  surface: string,
+  title: string,
+  columns: number,
+  rows: number,
+  output: string,
+): string[] {
+  const problems = frameProblems(surface, columns, rows, output);
+  const where = `${surface} at ${columns}x${rows}`;
+  const titleRows = displayLines(output).filter((line) => line.includes(title));
+  if (titleRows.length !== 1) {
+    problems.push(
+      `${where}: the title ${JSON.stringify(title)} occupies ${titleRows.length} rows, expected exactly 1`,
+    );
+  }
+  return problems;
+}
+
+describe("visual smoke matrix — modal surfaces", () => {
+  it("paints all seven modals inside the canonical terminal sizes", async () => {
+    vi.resetModules();
+    const modules = await loadModules();
+    const problems: string[] = [];
+
+    for (const [columns, rows] of MODAL_SIZES) {
+      for (const modal of MODAL_CASES) {
+        const output = await paint(
+          modules,
+          columns,
+          rows,
+          modules.React.createElement(
+            modules.Box,
+            {
+              flexDirection: "column",
+              width: columns,
+              height: rows,
+              overflow: "hidden",
+            },
+            modal.element(modules),
+          ),
+          createMockStdin(),
+        );
+        problems.push(...modalProblems(modal.surface, modal.title, columns, rows, output));
+      }
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  it("names a title that wrapped over more than one row", () => {
+    const output = "? HUGINN LIVE CHEAT SHEET\n? HUGINN LIVE CHEAT SHEET\n";
+    const problems = modalProblems("HelpModal", "? HUGINN LIVE CHEAT SHEET", 40, 24, output);
+    expect(problems.join("\n")).toContain("occupies 2 rows, expected exactly 1");
+  });
+});
+
+/**
  * The matrix is only as good as the checks that inspect a frame: a validator
  * that silently accepts a wide row or a pictograph would let the whole suite
  * go green while the console wraps. These exercise the inspector directly,
@@ -397,7 +655,18 @@ describe("frame inspection", () => {
 
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("run dashboard at 10x1");
-    expect(problems[0]).toContain("double-width pictograph");
+    expect(problems[0]).toContain("pictograph");
+  });
+
+  it("rejects a single-column text-presentation pictograph too", () => {
+    // `✔` paints one column, but it is still Extended_Pictographic: console
+    // chrome uses the measured alphabet instead, so a modal cannot smuggle one
+    // into a body row now that the titles are clean.
+    const problems = frameProblems("AgentPickerModal", 20, 1, "opencode ✔ active");
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("AgentPickerModal at 20x1");
+    expect(problems[0]).toContain("pictograph");
   });
 });
 

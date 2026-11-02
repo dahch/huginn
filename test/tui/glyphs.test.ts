@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import stringWidth from "string-width";
 import {
   DECISION_GLYPHS,
+  MODAL_TITLE_GLYPHS,
   STATUS_GLYPHS,
   decisionGlyph,
   phaseGlyph,
@@ -98,6 +99,38 @@ describe("semantic glyph table (REQ-52)", () => {
     const members = new Set<string>(Object.values(DECISION_GLYPHS));
     for (const kind of kinds) {
       expect(members.has(decisionGlyph(kind))).toBe(true);
+    }
+  });
+
+  it("keeps every modal title glyph on the measured, emoji-free grid (REQ-76)", () => {
+    for (const [surface, glyph] of Object.entries(MODAL_TITLE_GLYPHS)) {
+      expect(glyph, surface).not.toMatch(EMOJI);
+      expect([...glyph], surface).toHaveLength(1);
+      expect(stringWidth(glyph), surface).toBe(1);
+    }
+    // The three names are the API the modal titles compose from, not ad-hoc
+    // characters in the JSX.
+    expect(MODAL_TITLE_GLYPHS).toEqual({ agent: ">", help: "?", inspector: "·" });
+    // Only the inspector spends the middle dot; the other two are ASCII.
+    expect(MODAL_TITLE_GLYPHS.agent.codePointAt(0)).toBeLessThan(0x80);
+    expect(MODAL_TITLE_GLYPHS.help.codePointAt(0)).toBeLessThan(0x80);
+  });
+
+  it("composes the three modal titles from the table, never an embedded glyph (REQ-76)", () => {
+    const repo = REPO_ROOT;
+    const surfaces = [
+      ["src/tui/AgentPickerModal.tsx", "agent", "SELECT AGENT RUNTIME"],
+      ["src/tui/HelpModal.tsx", "help", "HUGINN LIVE CHEAT SHEET"],
+      ["src/tui/McpInspectorModal.tsx", "inspector", "MCP SERVER INSPECTOR"],
+    ] as const;
+
+    for (const [file, key, title] of surfaces) {
+      const source = readFileSync(join(repo, file), "utf8");
+      // The title is a template over the table, so changing the glyph is a
+      // one-line edit in `glyphs.ts` and can never drift per surface.
+      expect(source, file).toContain(`title={\`\${MODAL_TITLE_GLYPHS.${key}} ${title}\`}`);
+      // No modal source carries a pictograph of its own.
+      expect(source, file).not.toMatch(EMOJI);
     }
   });
 

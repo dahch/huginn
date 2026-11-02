@@ -399,7 +399,8 @@ composer or footer off an 18-/24-row frame, the live layout keys — `z`, `Ctrl+
 with the idle log tail and its advertised hidden count on 100×30 frames, the closed/open header budget
 and the `iter n/m` pipeline rail), `test/tui/smokeMatrix.test.ts` (both surfaces at 80×24, 100×30,
 120×40 and 160×50, with colour on, `NO_COLOR=1` and `HUGINN_THEME=dark`: display-column width, row
-count, no pictograph and no colour SGR — plus the inspector's own failure branches, including the
+count, no double-width pictograph and no colour SGR — plus all seven modal surfaces at 80×24, 100×30
+and 120×40, each with a one-row title; and the inspector's own failure branches, including the
 empty frame, a double-width glyph and terminal-size restoration after a render throws),
 `test/tui/inkRender.test.ts` (the render seam writes to the injected stream, accepts a plain
 `PassThrough` stdin and unmounts idempotently),
@@ -640,8 +641,10 @@ Ten display conventions a TUI change must follow:
   `MCP: ✓ 2 connected · pi` in the run dashboard header and in `InfoPanel` (the live header no
   longer carries it, ADR-73). Never change `formatMcpBadge` to
   fix a TUI width bug, and never add a pictograph to console chrome (REQ-76 / ADR-72). The modal
-  titles in `HelpModal`, `AgentPickerModal` and `McpInspectorModal` still carry one each; that is
-  recorded debt, not a precedent.
+  titles compose their leading mark from `MODAL_TITLE_GLYPHS` (`>`, `?`, `·`) in
+  `src/tui/glyphs.ts` — `AgentPickerModal`, `HelpModal` and `McpInspectorModal` no longer embed a
+  pictograph in their JSX, and the smoke matrix now covers all seven modal surfaces so the gap that
+  let one through cannot reopen.
   `SIDE_PANEL_WIDTH` is 36 columns so the value column is 23 columns, and `memoryStat` formats its
   counters with `formatCount`; the 100-column threshold still leaves 44 columns for the
   conversation. Guards: `test/tui/sessionContext.test.ts`, `test/tui/ravenHeader.test.ts`,
