@@ -60,8 +60,12 @@ jobs:
         if: steps.on-npm.outputs.exists != 'true'
         run: |
           version="$(node -p "require('./package.json').version")"
+          # A release candidate is the product right now, so it ships on the
+          # `latest` dist-tag: `npm i -g @dahch/huginn` must install the console
+          # people are actually running. If a future candidate is a pure preview,
+          # pass `--tag next` for that tag instead of changing this branch.
           if [[ "$version" == *-* ]]; then
-            npm publish --provenance --tag next
+            npm publish --provenance --tag latest
           else
             npm publish --provenance
           fi

@@ -1,41 +1,33 @@
 # Changelog
 
-## Unreleased
+## 3.0.0-rc.2
 
-### Fixed
+> Renumbered from `2.0.0-rc.6` before publishing. `3.0.0-rc.1` is already on npm (published on 21
+> October and tagged), so a 2.x candidate would sort *below* a release that already exists. The
+> content is identical; only the number continues the line that is actually published.
 
-- **The MCP report no longer forgets configured servers when pi cannot probe them.** The native
-  `pi` driver now merges `~/.pi/agent/mcp.json` and `<project>/.pi/mcp.json` into its own listing:
-  the CLI's rows stay authoritative (a real `connected` or `error` is never overwritten), and every
-  name it did not mention is appended as `unknown`/`unverified`. With `rea` failing and `muninn`
-  healthy, the badge reads `MCP: ⚪ 2 configured · pi` instead of `none`, `/mcp` lists both, a
-  failed listing row produces `🟡 error — <reason>` while keeping its healthy peer, and a healthy
-  listing is unchanged (`🟢 n connected`). `totalTools` is never invented: config-only servers
-  report `0`. Covered by the four scenarios in `test/engine/agent/piMcp.test.ts`.
+Thirty-six commits since `2.0.0-rc.5`, 93 files: `src` +3635/−861, `test` +8644/−163 — more than
+twice the source it covers — and docs +2376/−123 across six new decisions (`ADR-69`…`ADR-74`). The
+cycle itself is untouched; this candidate is entirely about the surface you live in while it runs.
 
-- **Table cells keep their emphasis without losing the column grid.** `tableBlock` now parses each
-  cell with `inlineSegments` and measures column widths on the visible text (`segmentsWidth`), so
-  `**bold**` and `` `code` `` inside a report table paint styled, the header stays bold and the dim
-  ` │ ` separators stay aligned. Truncation cuts the visible cell at width−1 and appends `…`, dropping
-  the segments past the cut; a marked-up table occupies exactly the same terminal rows as its plain
-  twin, so the `it.todo` in `test/tui/markdownTable.test.ts` is now a real expectation (REQ-H-06).
+The console stopped being a log viewer and became an instrument. Its chrome is a declared cost
+table (`primary`/`secondary`/`tertiary`), so a card can no longer guess its height; the decision
+modal buys only the rows it can pay for and windows the rest; and the conversation, the stream and a
+phase report share one wrapping formatter, so scrolling counts terminal rows and no text stays
+unreachable behind a `…`. The live view gained the controls it was missing — maximise a card, move
+the split, pin the logs, search the transcript, copy a message — a sectioned side panel that answers
+"what am I actually running", and a raven whose beak now reflects the run (`o` idle, `O` thinking,
+`-` sleeping) in colour, at no cost in rows.
 
-- **The output panel no longer hides text.** Both TUI output panels (the run dashboard's
-  `StreamCard` and the live `ScrollableStreamCard`) now format through the new pure
-  `markdownBlockRows(lines, width, colorFor?)`, which expands tables and wraps every line into
-  terminal rows. Their scroll windows count those rows instead of source lines, the title shows
-  `▲ +N` / `▼ bottom` when content is hidden, and the stream buffer is capped at 2 000 rows.
-  In `huginn run`, `z` hides the pipeline and gives the panel the full width, and `y` copies the
-  original report through OSC 52 (ADR-74).
+The honesty went deeper than the pixels. A failed MCP server no longer erases the ones that answer:
+`pi` merges its own configuration into the listing, so a broken `rea` reports `2 configured` (or
+names the failure) instead of `none`. A clamped value announces its cut with `…` in display columns
+and never splits a double-width glyph. And the visual pass became a test: `smokeMatrix` renders both
+surfaces at 80×24 through 160×50 — with colour, under `NO_COLOR` and in the dark theme — refusing
+a pictograph, one column too many or one row too few, plus all seven modal surfaces.
 
-- **Modal titles stop breaking the grid, and the smoke matrix covers them.** `src/tui/glyphs.ts`
-  gains `MODAL_TITLE_GLYPHS` (`agent` `>`, `help` `?`, `inspector` `·`), and `AgentPickerModal`,
-  `HelpModal` and `McpInspectorModal` compose their titles from it instead of embedding a
-  double-width pictograph in the JSX. `test/tui/smokeMatrix.test.ts` now mounts all seven modal
-  surfaces (`AgentPickerModal`, `HelpModal`, `McpInspectorModal`, `ModelPickerModal`,
-  `ProfilePickerModal`, `SkillsModal`, `DecisionModal`) at 80×24, 100×30 and 120×40, checking
-  display-column width, row count, no double-width pictograph and a title row that occupies
-  exactly one line (REQ-76 / ADR-72).
+`test/` now compiles under the strict typechecker (`bun run typecheck:test`, wired into `test` and
+`prepublishOnly`), so a type error in a test is a build failure instead of a surprise inside a gate.
 
 ### Added
 
@@ -136,6 +128,41 @@
   gate literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`), the producer markers
   (`⚡ ✓ ✗ 💭`) and every engine/CLI warning output (the `⚠️ REVIEW REQUESTED` handoff line, its
   parsers and the fail-closed judge fallback) are unchanged.
+
+### Fixed
+
+- **The MCP report no longer forgets configured servers when pi cannot probe them.** The native
+  `pi` driver now merges `~/.pi/agent/mcp.json` and `<project>/.pi/mcp.json` into its own listing:
+  the CLI's rows stay authoritative (a real `connected` or `error` is never overwritten), and every
+  name it did not mention is appended as `unknown`/`unverified`. With `rea` failing and `muninn`
+  healthy, the badge reads `MCP: ⚪ 2 configured · pi` instead of `none`, `/mcp` lists both, a
+  failed listing row produces `🟡 error — <reason>` while keeping its healthy peer, and a healthy
+  listing is unchanged (`🟢 n connected`). `totalTools` is never invented: config-only servers
+  report `0`. Covered by the four scenarios in `test/engine/agent/piMcp.test.ts`.
+
+- **Table cells keep their emphasis without losing the column grid.** `tableBlock` now parses each
+  cell with `inlineSegments` and measures column widths on the visible text (`segmentsWidth`), so
+  `**bold**` and `` `code` `` inside a report table paint styled, the header stays bold and the dim
+  ` │ ` separators stay aligned. Truncation cuts the visible cell at width−1 and appends `…`, dropping
+  the segments past the cut; a marked-up table occupies exactly the same terminal rows as its plain
+  twin, so the `it.todo` in `test/tui/markdownTable.test.ts` is now a real expectation (REQ-H-06).
+
+- **The output panel no longer hides text.** Both TUI output panels (the run dashboard's
+  `StreamCard` and the live `ScrollableStreamCard`) now format through the new pure
+  `markdownBlockRows(lines, width, colorFor?)`, which expands tables and wraps every line into
+  terminal rows. Their scroll windows count those rows instead of source lines, the title shows
+  `▲ +N` / `▼ bottom` when content is hidden, and the stream buffer is capped at 2 000 rows.
+  In `huginn run`, `z` hides the pipeline and gives the panel the full width, and `y` copies the
+  original report through OSC 52 (ADR-74).
+
+- **Modal titles stop breaking the grid, and the smoke matrix covers them.** `src/tui/glyphs.ts`
+  gains `MODAL_TITLE_GLYPHS` (`agent` `>`, `help` `?`, `inspector` `·`), and `AgentPickerModal`,
+  `HelpModal` and `McpInspectorModal` compose their titles from it instead of embedding a
+  double-width pictograph in the JSX. `test/tui/smokeMatrix.test.ts` now mounts all seven modal
+  surfaces (`AgentPickerModal`, `HelpModal`, `McpInspectorModal`, `ModelPickerModal`,
+  `ProfilePickerModal`, `SkillsModal`, `DecisionModal`) at 80×24, 100×30 and 120×40, checking
+  display-column width, row count, no double-width pictograph and a title row that occupies
+  exactly one line (REQ-76 / ADR-72).
 
 ## 2.0.0-rc.5
 
