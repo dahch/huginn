@@ -33,6 +33,86 @@ export const RAVEN_MARK: readonly string[] = [
   "   \\__/   \\_\\",
 ];
 
+/** The three moods the raven can express (REQ-73 / ADR-69). */
+export type RavenMood = "idle" | "thinking" | "sleeping";
+
+/** Options for {@link ravenMark}. */
+export interface RavenMarkOptions {
+  /**
+   * The blink phase of the thinking animation. It only has an effect for
+   * `thinking`; every other mood ignores it.
+   */
+  blink?: boolean;
+}
+
+/**
+ * The mood the raven should show, with a fixed precedence: an in-flight turn
+ * (`busy`) always wins, then a degraded MCP connection (`degraded`), otherwise
+ * the raven is idle. Pure and exported so both dashboards resolve the same way.
+ */
+export function ravenMood({ busy = false, degraded = false }: {
+  busy?: boolean;
+  degraded?: boolean;
+}): RavenMood {
+  if (busy) return "thinking";
+  if (degraded) return "sleeping";
+  return "idle";
+}
+
+/** Ticks of the shared 80 ms spinner that make up one ~500 ms blink phase. */
+export const RAVEN_BLINK_TICKS = 6;
+
+/**
+ * Whether the raven's eyes are closed on this spinner tick. Derived from the
+ * existing `spinnerIndex`, so the animation adds no timer of its own.
+ */
+export function ravenBlink(spinnerIndex: number): boolean {
+  const frame = Number.isFinite(spinnerIndex) ? Math.max(0, Math.floor(spinnerIndex)) : 0;
+  return Math.floor(frame / RAVEN_BLINK_TICKS) % 2 === 1;
+}
+
+/**
+ * The raven's mood variants.
+ *
+ * The mood is carried by the raven's beak/mouth glyph (`o`): `thinking` opens it
+ * into an `O` and `sleeping` closes it into a `-`. Everything else — the same
+ * three rows, the same columns, the same leading spaces — is byte-for-byte
+ * identical to {@link RAVEN_MARK}, so switching mood costs the layout table
+ * exactly zero rows and zero columns and no caller has to re-measure anything.
+ */
+export const RAVEN_MOODS: Readonly<Record<RavenMood, readonly string[]>> = {
+  idle: RAVEN_MARK,
+  thinking: [
+    "    ___",
+    "  <(O  \\___",
+    "   \\__/   \\_\\",
+  ],
+  sleeping: [
+    "    ___",
+    "  <(-  \\___",
+    "   \\__/   \\_\\",
+  ],
+};
+
+/**
+ * The raven mark for a mood, in the exact same grid as {@link RAVEN_MARK}.
+ *
+ * `blink` is the thinking animation's closed-eye frame: it drops back to the
+ * `idle` mark (the open `o` eye), so the cycle alternates `<(O` ↔ `<(o` without
+ * inventing a glyph or changing the grid. That closed-eye frame is what a user
+ * who is not looking at the animation sees — a paused recording, a dropped
+ * frame or a screen reader gets a complete, legible raven rather than a blank
+ * cell — and it is deliberately indistinguishable from `idle` on its own: only
+ * the persistent `thinking` colour says the turn is still in flight.
+ */
+export function ravenMark(
+  mood: RavenMood,
+  options: RavenMarkOptions = {},
+): readonly string[] {
+  if (mood === "thinking" && options.blink === true) return RAVEN_MOODS.idle;
+  return RAVEN_MOODS[mood];
+}
+
 /**
  * The two ravens perched side by side — Huginn (thought) and Muninn (memory) —
  * for the run panel's idle state (REQ-51 / AC-51.2). Printable ASCII only, like

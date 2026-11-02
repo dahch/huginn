@@ -232,7 +232,8 @@ describe("GenericSubprocessRuntimeAdapter & Session Execution", () => {
 
     const session = await adapter.createSession({ title: "DoS test" });
     const result = await session.prompt("go");
-    expect(result.raw.stdout.length).toBeLessThanOrEqual(10 * 1024 * 1024);
+    const raw = result.raw as { stdout: string };
+    expect(raw.stdout.length).toBeLessThanOrEqual(10 * 1024 * 1024);
   });
 
   it("returns an empty catalog when neither models nor modelListCommand is provided (REQ-27)", async () => {

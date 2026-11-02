@@ -1,8 +1,19 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { Box, render } from "ink";
-import { DecisionModal } from "../../src/tui/Dashboard";
+import { Box } from "ink";
+import { render } from "./inkRender";
+import stringWidth from "string-width";
+import {
+  DecisionModal,
+  decisionBodyRows,
+  decisionKeyRows,
+} from "../../src/tui/DecisionModal";
+import {
+  DECISION_MIN_ROWS,
+  decisionModalHeight,
+  decisionTitle,
+} from "../../src/tui/decision";
 import type { DecisionRequest } from "../../src/engine/types";
 
 type MockStdin = PassThrough & { isTTY: boolean; setRawMode: () => MockStdin; ref: () => MockStdin; unref: () => MockStdin };
@@ -61,6 +72,120 @@ async function renderInFrame(req: DecisionRequest, rows = 30): Promise<string> {
   instance.unmount();
   return output;
 }
+
+const EMOJI = /\p{Extended_Pictographic}/u;
+const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
+
+const baseRequest: DecisionRequest = {
+  id: "d1",
+  kind: "gate-blocked",
+  iteration: 3,
+  phase: "EXECUTE",
+  attempt: 1,
+  message: "A decision is required.",
+};
+
+/** The rendered title row, with Ink's colour/cursor sequences stripped. */
+function titleRow(output: string, title: string): string | undefined {
+  return output
+    .replace(ANSI, "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .find((line) => line.includes(title));
+}
+
+/** REQ-68 / ADR-63 — the decision modal speaks the product's single-width alphabet. */
+describe("DecisionModal — decision alphabet (REQ-68)", () => {
+  const cases: Array<[string, DecisionRequest, string]> = [
+    [
+      "approve-draft",
+      { ...baseRequest, kind: "approve-draft", phase: "LIVE", iteration: 0 },
+      "+ DECISION · Approve drafted docs",
+    ],
+    [
+      "scope-extraction",
+      { ...baseRequest, kind: "scope-extraction", phase: "LIVE", iteration: 0 },
+      "! DECISION · Scope extraction failed",
+    ],
+    [
+      "draft-format",
+      { ...baseRequest, kind: "draft-format", phase: "LIVE", iteration: 0 },
+      "! DECISION · Draft format violated",
+    ],
+    [
+      "post-cycle-live",
+      { ...baseRequest, kind: "post-cycle-live", phase: "LIVE", iteration: 1 },
+      "* CYCLE FINISHED · Next action",
+    ],
+    [
+      "question",
+      {
+        ...baseRequest,
+        kind: "question",
+        phase: "LIVE",
+        iteration: 0,
+        questionIndex: 1,
+        questionTotal: 3,
+      },
+      "? QUESTION FROM AGENT · Input required (2/3)",
+    ],
+    [
+      "permission",
+      { ...baseRequest, kind: "permission", phase: "EXECUTE", iteration: 3 },
+      "! PERMISSION REQUESTED · EXECUTE · iteration 3",
+    ],
+    [
+      "spec-deviation",
+      { ...baseRequest, kind: "spec-deviation", phase: "VALIDATE_STEP", iteration: 2 },
+      "! SPEC DEVIATION · VALIDATE_STEP · iteration 2",
+    ],
+    ["gate-blocked", baseRequest, "! DECISION · Gate EXECUTE · iteration 3"],
+  ];
+
+  it("renders every title kind as a single-width, emoji-free line", async () => {
+    for (const [kind, req, expected] of cases) {
+      expect(decisionTitle(req), kind).toBe(expected);
+      const output = await renderModal(req);
+      const row = titleRow(output, expected);
+      expect(row, `${kind} must render its title: ${JSON.stringify(output)}`).toBeDefined();
+      expect(row).not.toMatch(EMOJI);
+      // One terminal row, one column per code point: no double-width glyph.
+      expect(stringWidth(row!)).toBe(row!.length);
+    }
+  });
+
+  it("resolves every DecisionKind through the shared table", () => {
+    const kinds: DecisionRequest["kind"][] = [
+      "gate-blocked",
+      "permission",
+      "question",
+      "spec-deviation",
+      "approve-draft",
+      "scope-extraction",
+      "draft-format",
+      "post-cycle-live",
+    ];
+    for (const kind of kinds) {
+      const title = decisionTitle({ ...baseRequest, kind });
+      expect(title).not.toMatch(EMOJI);
+      expect(stringWidth(title)).toBe(title.length);
+    }
+  });
+
+  it("renders the permission branch with its allow/deny keys and the shared warn mark", async () => {
+    // The permission prompt is the one decision that can run arbitrary work, so
+    // its keys must stay visible and its title must use the same measured mark.
+    const req: DecisionRequest = { ...baseRequest, kind: "permission", message: "Run `rm -rf build`?" };
+    const title = decisionTitle(req);
+    const output = await renderModal(req);
+
+    expect(title).toBe("! PERMISSION REQUESTED · EXECUTE · iteration 3");
+    expect(titleRow(output, title)).toBeDefined();
+    expect(output).toContain("Allow Always");
+    expect(output).toContain("Allow Once");
+    expect(output).toContain("Deny");
+  });
+});
 
 const question = (overrides: Partial<DecisionRequest> = {}): DecisionRequest => ({
   id: "q1",
@@ -161,5 +286,272 @@ describe("DecisionModal — clarifying questions (REQ-37 / AC-37.3)", () => {
     );
     expect(output).toContain("Second?");
     expect(output).toContain("B");
+  });
+});
+
+// ── the modal's row contract (REQ-69) ───────────────────────────────────────
+
+/** The rendered frame's lines, trailing blanks dropped (Ink rewrites in place). */
+function frameLines(output: string): string[] {
+  const lines = output.replace(ANSI, "").split("\n").map((line) => line.replace(/\s+$/, ""));
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/** Renders the modal capped at `maxRows`, keeping stdin so keys can be sent. */
+async function renderCapped(
+  req: DecisionRequest,
+  maxRows?: number,
+): Promise<{
+  output: () => string;
+  stdin: MockStdin;
+  /** Drops the frames written so far, so a test can read only the next one. */
+  resetOutput: () => void;
+  unmount: () => void;
+}> {
+  const stdout = new PassThrough() as PassThrough & { columns: number; rows: number };
+  stdout.columns = 100;
+  stdout.rows = 40;
+  let output = "";
+  stdout.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  const stdin = createMockStdin();
+  const instance = render(
+    React.createElement(DecisionModal, { req, maxRows }),
+    { stdout, stdin, patchConsole: false },
+  );
+  await new Promise((r) => setTimeout(r, 80));
+  return {
+    output: () => output,
+    stdin,
+    resetOutput: () => {
+      output = "";
+    },
+    unmount: () => instance.unmount(),
+  };
+}
+
+/** A question with descriptions and two follow-up questions — the tall case. */
+const tallQuestion = (): DecisionRequest =>
+  question({
+    message: "Which database should I use?\nPick one to continue.",
+    questionItems: [
+      {
+        question: "Which database should I use?",
+        options: [
+          { label: "Postgres", description: "production-ready" },
+          { label: "SQLite", description: "zero-config" },
+          { label: "DuckDB", description: "analytics-first" },
+        ],
+      },
+      { question: "Which migration tool?", options: [{ label: "Prisma" }, { label: "Drizzle" }] },
+      { question: "Where do backups go?", options: [{ label: "S3" }, { label: "Local" }] },
+    ],
+  });
+
+describe("decisionModalHeight — the modal pays only what it occupies (REQ-69)", () => {
+  it("is the exact number of rows Ink draws, border included", async () => {
+    const requests: DecisionRequest[] = [
+      baseRequest,
+      { ...baseRequest, kind: "permission" },
+      { ...baseRequest, kind: "approve-draft" },
+      { ...baseRequest, kind: "post-cycle-live", choices: ["retry-promotion", "repair"] },
+      question(),
+      tallQuestion(),
+    ];
+    for (const req of requests) {
+      const rendered = await renderCapped(req);
+      rendered.unmount();
+      const expected = decisionModalHeight(req);
+      expect(frameLines(rendered.output()).length, `${req.kind} natural height`).toBe(expected);
+      // The double border is the alert signal and always costs its two rows.
+      expect(expected).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  it("never draws more than maxRows and keeps the title and the key footer", async () => {
+    const req = tallQuestion();
+    const natural = decisionModalHeight(req);
+    expect(natural).toBeGreaterThan(13);
+
+    for (const maxRows of [6, 7, 8, 10, 12, natural - 1]) {
+      const rendered = await renderCapped(req, maxRows);
+      rendered.unmount();
+      const lines = frameLines(rendered.output());
+      // Windowed: the modal spends its whole budget, never a row more.
+      expect(lines.length, `maxRows=${maxRows}`).toBe(maxRows);
+      expect(lines.length, `maxRows=${maxRows}`).toBe(decisionModalHeight(req, maxRows));
+      // The title, the key footer and the alert border survive the window.
+      expect(rendered.output()).toContain(decisionTitle(req));
+      expect(rendered.output()).toContain("[1-9/Enter]");
+      expect(rendered.output()).toContain("Reject / skip question");
+      expect(lines[0]).toMatch(/^╔/);
+      expect(lines[lines.length - 1]).toMatch(/^╚/);
+      // The indicator names how many body rows the window hides, in one column.
+      expect(rendered.output()).toContain("… +");
+      expect(stringWidth("…")).toBe(1);
+    }
+  });
+
+  it("does not window a request that already fits, and never invents rows", async () => {
+    const req = baseRequest;
+    const natural = decisionModalHeight(req);
+    expect(decisionModalHeight(req, natural)).toBe(natural);
+    expect(decisionModalHeight(req, natural + 10)).toBe(natural);
+  });
+
+  it("draws nothing below its documented minimum row floor", () => {
+    // A capped budget below DECISION_MIN_ROWS cannot pay for the title, one body
+    // row and the key footer together, so it draws nothing rather than a title
+    // that never says what to press.
+    for (const maxRows of [1, 2, 3, 4]) {
+      expect(decisionModalHeight(question(), maxRows), `maxRows=${maxRows}`).toBe(0);
+    }
+    expect(decisionModalHeight(question(), DECISION_MIN_ROWS)).toBe(DECISION_MIN_ROWS);
+    for (const maxRows of [DECISION_MIN_ROWS, 6, 7, 8]) {
+      expect(decisionModalHeight(question(), maxRows)).toBeLessThanOrEqual(maxRows);
+    }
+  });
+
+  it("reports the structural floor when no request exists yet", () => {
+    // The run dashboard's header reserves this before a decision is pending.
+    expect(decisionModalHeight()).toBe(DECISION_MIN_ROWS);
+  });
+
+  it("counts the whole body even when it must window it", () => {
+    const tall = tallQuestion();
+    // Six body rows (question + 3 options + 2 follow-ups + note) at least; the
+    // height stays bounded by the budget no matter how tall the body is.
+    for (const maxRows of [6, 9, 14, 18]) {
+      expect(decisionModalHeight(tall, maxRows)).toBeLessThanOrEqual(maxRows);
+    }
+  });
+
+  it("counts every message line as its own row, so a newline cannot steal a row", async () => {
+    // A question without question items falls back to the raw message. Its
+    // newlines must be body rows the budget knows about, not rows Ink invents.
+    const multiline: DecisionRequest = {
+      ...baseRequest,
+      kind: "question",
+      message: "First line\nSecond line\nThird line",
+      questionItems: undefined,
+    };
+    expect(decisionBodyRows(multiline)).toHaveLength(3);
+
+    const rendered = await renderCapped(multiline);
+    rendered.unmount();
+    const lines = frameLines(rendered.output());
+    expect(lines.length).toBe(decisionModalHeight(multiline));
+    expect(rendered.output()).toContain("First line");
+    expect(rendered.output()).toContain("Third line");
+    // The key footer still owns its row: it is paid for before the body.
+    expect(rendered.output()).toContain("[1-9/Enter]");
+  });
+
+  it("pays only the recovery key rows the request actually offers", async () => {
+    const postCycle = (choices?: DecisionRequest["choices"]): DecisionRequest => ({
+      ...baseRequest,
+      kind: "post-cycle-live",
+      phase: "LIVE",
+      iteration: 0,
+      ...(choices ? { choices } : {}),
+    });
+
+    // The base keys row is always paid; the recovery row only when offered.
+    expect(decisionKeyRows(postCycle(["retry", "continue", "abort"]))).toHaveLength(1);
+    expect(decisionKeyRows(postCycle(["retry-promotion"]))).toHaveLength(2);
+    expect(decisionKeyRows(postCycle(["retry-promotion", "repair"]))).toHaveLength(2);
+
+    const offered = await renderCapped(postCycle(["retry-promotion", "repair"]));
+    offered.unmount();
+    expect(offered.output()).toContain("[t]");
+    expect(offered.output()).toContain("[p]");
+    expect(frameLines(offered.output()).length).toBe(
+      decisionModalHeight(postCycle(["retry-promotion", "repair"])),
+    );
+
+    const plain = await renderCapped(postCycle(["retry", "continue", "abort"]));
+    plain.unmount();
+    expect(plain.output()).toContain("Return to Live mode");
+    expect(plain.output()).not.toContain("[t] ");
+    expect(plain.output()).not.toContain("[p] ");
+  });
+
+  it("draws nothing below its structural floor instead of a title without keys", async () => {
+    const req = question();
+    const below = await renderCapped(req, DECISION_MIN_ROWS - 1);
+    below.unmount();
+    expect(frameLines(below.output())).toHaveLength(0);
+    expect(below.output()).not.toContain(decisionTitle(req));
+    expect(below.output()).not.toContain("[1-9/Enter]");
+
+    // At the floor the title, a body row and the key footer all survive.
+    const floor = await renderCapped(req, DECISION_MIN_ROWS);
+    floor.unmount();
+    const lines = frameLines(floor.output());
+    expect(lines).toHaveLength(DECISION_MIN_ROWS);
+    expect(floor.output()).toContain(decisionTitle(req));
+    expect(floor.output()).toContain("[1-9/Enter]");
+  });
+});
+
+describe("DecisionModal window — hidden body rows stay reachable (REQ-69)", () => {
+  const eightOptions = (): DecisionRequest =>
+    question({
+      questionItems: [
+        {
+          question: "Pick one",
+          options: Array.from({ length: 8 }, (_, index) => ({ label: `Option-${index + 1}` })),
+        },
+      ],
+    });
+
+  it("windows a body it cannot fit and hides the tail behind the indicator", async () => {
+    const req = eightOptions();
+    const rendered = await renderCapped(req, 8);
+    rendered.unmount();
+    const output = rendered.output();
+
+    expect(output).toContain("Option-1");
+    expect(output).not.toContain("Option-8");
+    expect(output).toContain("… +6");
+  });
+
+  it("scrolls the body with ↓ so an option past the window becomes reachable", async () => {
+    const req = eightOptions();
+    const rendered = await renderCapped(req, 8);
+    // Six ↓ presses walk the window to the bottom of the body.
+    for (let index = 0; index < 6; index += 1) {
+      rendered.stdin.write("\u001B[B");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await new Promise((r) => setTimeout(r, 80));
+    rendered.unmount();
+    const output = rendered.output();
+
+    expect(output).toContain("Option-8");
+    expect(output).toContain("[1-9/Enter]");
+    // The window really moved: the first option is now above it.
+    expect(frameLines(output).join("\n")).not.toContain("Option-1");
+  });
+
+  it("scrolls back with ↑ so the window is never stuck at the tail", async () => {
+    const req = eightOptions();
+    const rendered = await renderCapped(req, 8);
+    for (let index = 0; index < 6; index += 1) {
+      rendered.stdin.write("\u001B[B");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    // Read only the frame the ↑ produces, not the tail frames before it.
+    rendered.resetOutput();
+    rendered.stdin.write("\u001B[A");
+    await new Promise((r) => setTimeout(r, 80));
+    rendered.unmount();
+    const output = rendered.output();
+
+    expect(output).toContain("Option-5");
+    expect(output).toContain("Option-7");
+    expect(output).not.toContain("Option-8");
   });
 });

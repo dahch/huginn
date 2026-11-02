@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AGENT_TARGETS } from "../../../src/agents/integrator.js";
+import { AGENT_TARGETS, type AgentTarget } from "../../../src/agents/integrator.js";
 import {
   detectAvailableAgents,
   getAgentRuntime,
@@ -614,6 +614,7 @@ describe("CycleEngine with IAgentRuntime", () => {
             title: "Test Iteration",
             prompt: "build feature",
             modules: [],
+            startLine: 1,
           },
         ],
       };

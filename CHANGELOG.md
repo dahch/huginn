@@ -1,5 +1,133 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Table cells keep their emphasis without losing the column grid.** `tableBlock` now parses each
+  cell with `inlineSegments` and measures column widths on the visible text (`segmentsWidth`), so
+  `**bold**` and `` `code` `` inside a report table paint styled, the header stays bold and the dim
+  ` │ ` separators stay aligned. Truncation cuts the visible cell at width−1 and appends `…`, dropping
+  the segments past the cut; a marked-up table occupies exactly the same terminal rows as its plain
+  twin, so the `it.todo` in `test/tui/markdownTable.test.ts` is now a real expectation (REQ-H-06).
+
+- **The output panel no longer hides text.** Both TUI output panels (the run dashboard's
+  `StreamCard` and the live `ScrollableStreamCard`) now format through the new pure
+  `markdownBlockRows(lines, width, colorFor?)`, which expands tables and wraps every line into
+  terminal rows. Their scroll windows count those rows instead of source lines, the title shows
+  `▲ +N` / `▼ bottom` when content is hidden, and the stream buffer is capped at 2 000 rows.
+  In `huginn run`, `z` hides the pipeline and gives the panel the full width, and `y` copies the
+  original report through OSC 52 (ADR-74).
+
+- **Modal titles stop breaking the grid, and the smoke matrix covers them.** `src/tui/glyphs.ts`
+  gains `MODAL_TITLE_GLYPHS` (`agent` `>`, `help` `?`, `inspector` `·`), and `AgentPickerModal`,
+  `HelpModal` and `McpInspectorModal` compose their titles from it instead of embedding a
+  double-width pictograph in the JSX. `test/tui/smokeMatrix.test.ts` now mounts all seven modal
+  surfaces (`AgentPickerModal`, `HelpModal`, `McpInspectorModal`, `ModelPickerModal`,
+  `ProfilePickerModal`, `SkillsModal`, `DecisionModal`) at 80×24, 100×30 and 120×40, checking
+  display-column width, row count, no double-width pictograph and a title row that occupies
+  exactly one line (REQ-76 / ADR-72).
+
+### Added
+
+- **The visual pass is now a test matrix.** `test/tui/smokeMatrix.test.ts` mounts the live console
+  (`LiveApp` in refine) and the run dashboard (initial state) at 80×24, 100×30, 120×40 and 160×50,
+  with colour on,  under `NO_COLOR=1` and with `HUGINN_THEME=dark`. Every painted frame is checked in display columns
+  with `string-width`: no row exceeds `columns`, no frame exceeds `rows`, no row carries a
+  double-width pictograph, and the `NO_COLOR` frames emit no colour SGR. Failures name
+  the surface, the size and the offending row; the README's «Validación visual» section records the
+  matrix and the single-file command. The matrix found no layout regression, so no production code
+  changed for it. The inspector cannot pass vacuously: 13 tests exercise its failure branches
+  (display width, extra rows, empty frame, pictograph, 256-/true-colour SGR) and prove `paint()`
+  restores the terminal size even when rendering throws, and 3 `test/tui/inkRender.test.ts` cases pin
+  the render seam (injected stdout, a plain `PassThrough` stdin, idempotent unmount).
+
+- **Each live-session fact has one home.** The live header is now identity and ephemeral state: row 1
+  is `[<spinner> <STAGE>]` plus the project path, row 2 is the two models, and the MCP badge, runtime
+  name, git, sandbox and context counter left it for the side panel. The panel no longer repeats the
+  stage, and the footer no longer appends `stage: <LABEL>`; it keeps the focused surface's keys and
+  `usage`. `LIVE_HEADER_CONTEXT_ROWS` stays `2`, so the header height and every budget derived from
+  it are unchanged, and the project path inherits the columns the badge/runtime spent (a 100×30 path
+  is now painted whole). `gitStat(git, maxWidth?)` reserves the `clean`/`dirty` suffix before it
+  clamps the branch, because the panel is the only surface that reports the working-tree state;
+  `sessionStat` had no caller left and is gone with its test (REQ-77 / ADR-73).
+
+- **Console chrome speaks one measured alphabet.** The MCP badge no longer reaches the console as
+  the engine's double-width pictographs: `mcpBadgeText` (`src/tui/sessionContext.ts`) strips them and
+  re-inserts one mark from `MCP_STATUS_GLYPHS` (`healthy` ✓, `degraded` !, `unknown` ·, all from
+  `STATUS_GLYPHS`), so the run header and `InfoPanel` paint `MCP: ✓ 2 connected · pi` while
+  `formatMcpBadge` and its engine test stay untouched. `headerValue` now clamps in display columns
+  and spends the last one on `…`, so a truncated header, panel or footer value announces the cut
+  instead of cropping silently (and a double-width glyph is never split). The side panel widens to
+  36 columns, giving its value column 23 columns for the values it really reports, and `memoryStat`
+  formats both Muninn counters through `formatCount` (`2.3k entities · 76 obs`). REQ-76 / ADR-72.
+
+- **A decision alphabet that matches the rest of the TUI.** `src/tui/glyphs.ts` gains
+  `DECISION_GLYPHS` (`approve` `+`, `question` `?`, `warn` `!`, `done` `*`) and `decisionGlyph(kind)`,
+  and `DecisionModal` now composes its title with the pure exported `decisionTitle(req)` in
+  `src/tui/decision.ts` instead of inline pictographs. The mapping is exhaustive, and `permission`
+  and `spec-deviation` get their own titles rather than borrowing the gate wording. The decision
+  modal, the feedback channel and the dashboard share one printable, single-column, ASCII alphabet
+  (REQ-68 / ADR-63).
+- **A drift guard for the decision surface.** `test/tui/decisionModal.test.ts` renders every title
+  kind and fails on any `\p{Extended_Pictographic}` code point or a display width that disagrees
+  with the string length; `test/tui/glyphs.test.ts` covers the new table, including its ASCII
+  requirement.
+- **The decision modal never outgrows the frame.** Its body and key footer are modelled one terminal
+  row per entry (`decisionBodyRows`/`decisionKeyRows`) and a pure planner (`decisionModalHeight`)
+  computes the exact height. Both dashboards pass the rows their own chrome leaves as `maxRows`, so
+  a tall question windows its body behind a `… +N · ↑/↓` indicator (scrolled with `↑`/`↓`) instead
+  of pushing the composer and footer off an 18- or 24-row terminal (REQ-69 / ADR-64).
+- **Live console layout controls and a sectioned context panel.** From a focused card, `z`
+  maximizes it and restores the remembered split, `Ctrl+↑`/`Ctrl+↓` move the conversation/stream
+  split, and `L` pins or reopens the log tail. `L` is card-only, so typing it in the composer stays
+  draft text. The idle log tail collapses after a minute, reopens on the next event, advertises every
+  hidden entry in the footer, and only stays open for an error still present in its visible tail.
+  `InfoPanel` groups its rows into `SESSION`, `REPO` and `MEMORY` sections (an empty section is
+  omitted) and anchors the stage tip to the bottom of the column (REQ-71 / ADR-67).
+- **Transcript navigation, in-conversation search and clipboard copy.** From the conversation or
+  the agent stream, `g`/`G` jump to the start/end; `Ctrl+F` from any focus opens a `find ❯ `
+  composer that searches the transcript by message, walks hits with `↑`/`↓` and jumps with Enter,
+  while Esc or `Ctrl+F` restores the draft; `y` on the conversation copies the newest assistant
+  message through a sanitized, 100 KB-capped OSC 52 sequence and reports the channel honestly.
+  Search and clipboard policy live in the pure `src/tui/search.ts` / `src/tui/clipboard.ts`
+  modules, and an armed Esc abort is cancelled by every key search consumes (REQ-72).
+- **One chrome-cost table for the TUI's cards.** `src/tui/Card.tsx` exports `CARD_CHROME`,
+  `cardChrome(tone)` and the `Card` primitive. `primary` is the round conversation box,
+  `secondary` is the quieter single box used by the stream, pipeline and side panel, and
+  `tertiary` is a borderless title-plus-`│ ` list for the logs. `LogsCard` costs
+  `visibleLogs.length + 1` instead of `+ 3`, and both dashboards import that cost from
+  `cardChrome("tertiary")` instead of a literal. The tail itself now spends two fewer rows (a
+  five-entry tail costs six instead of eight). The table, the painted heights, the surface→tone
+  mapping and the emitted border colours are guarded by `test/tui/card.test.ts` and
+  `test/tui/cardColors.test.ts` (REQ-70 / ADR-65).
+
+### Changed
+
+- **The live console no longer duplicates state.** The header stopped rendering MCP, the runtime name,
+  git, the sandbox and the context counter; `PanelData`/`panelLines` stopped rendering the `stage`
+  row (and the four fields only it consumed); and `footerHints` stopped accepting a `stage`. The TUI
+  tests that pinned the duplication were rewritten to the one-home rule — a single `⎇` in the panel
+  and none on the header's models row, the conversation counter exactly once, no `stage:` in any
+  footer — and `test/tui/liveLayout.test.ts` holds the 100×30 long-path regression (REQ-77 /
+  ADR-73).
+
+- **The TUI's framed surfaces now read as a hierarchy.** The conversation keeps the round accent
+  box, the stream and pipeline step back to a quiet `single` border, and the log tail loses its box
+  and its mid-line `│` in favour of a leading `│ ` rule. This also removes `StreamCard`'s
+  verbose-only accent border; the `[VERBOSE]` marker still carries that state, and focus is still
+  signalled by `borderFocus` and the card title (REQ-70 / ADR-65). Both dashboards now derive every
+  card body and scroll budget from `cardChrome(...).rows`, so no `- 3` chrome literal remains.
+- **The decision modal is split into focused modules.** The pure title, row specs, planner and
+  height live in `src/tui/decision.ts`, and the React row builders and modal live in
+  `src/tui/DecisionModal.tsx`; neither dashboard imports the other's page module. A capped budget
+  below `DECISION_MIN_ROWS` now draws nothing, so the modal never shows a title without its key
+  footer (REQ-69 / ADR-66).
+- **Feedback speaks `!`:** `FEEDBACK_WARN` is `!` (alongside `✓` and `…`). This is TUI-only: the
+  gate literals (`### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`), the producer markers
+  (`⚡ ✓ ✗ 💭`) and every engine/CLI warning output (the `⚠️ REVIEW REQUESTED` handoff line, its
+  parsers and the fail-closed judge fallback) are unchanged.
+
 ## 2.0.0-rc.5
 
 Thirty-nine commits since `2.0.0-rc.4`, 99 files: `src` +6362/−1518, `test` +1568/−358, docs

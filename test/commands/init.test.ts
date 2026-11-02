@@ -517,7 +517,7 @@ describe("huginn init wizard — non-interactive", () => {
 
   it("forwards env.PATH to the agent detector and labels a pathless install", async () => {
     const env = makeEnv();
-    const detector = vi.fn(async () => [
+    const detector = vi.fn(async (_path?: string) => [
       { id: "opencode" as const, available: true },
       { id: "claude" as const, available: false },
     ]);
@@ -540,7 +540,7 @@ describe("huginn init wizard — non-interactive", () => {
     const previousPath = process.env.PATH;
     delete process.env.PATH;
     try {
-      const detector = vi.fn(async () => []);
+      const detector = vi.fn(async (_path?: string) => []);
       await runInit(env, { "--yes": true }, { detectAgents: detector });
 
       expect(detector).toHaveBeenCalledTimes(1);

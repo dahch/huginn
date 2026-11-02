@@ -1,5 +1,14 @@
 # Spec: Muninn Engine — Persistent Semantic and Symbol Memory
 
+> **Scope note (Muninn extraction).** REQ-1…REQ-13 describe the memory engine, its MCP server,
+the AST indexer and the compiler-contract verifier. Those now ship in the
+[`@dahch/muninn`](https://github.com/dahch/muninn) package (published on npm as `0.1.0`, consumed as
+`^0.1.0`): the paths `src/muninn/**`, `src/contracts/**`, `test/muninn/**` and `test/contracts/**`
+below name **that package's** tree, not this repository. `huginn memory`, `huginn check` and
+`huginn mcp run` remain thin wrappers over the same library, so the CLI surface and the
+`.huginn/muninn.db` location are unchanged. Every other requirement in this file is implemented
+here, and its paths are current.
+
 ## 1. Executive Summary
 
 Muninn is the persistent semantic and code-symbol memory subsystem for Huginn and modern AI coding agents (Claude Code, Cursor, Devin, OpenCode). While Huginn represents thought and orchestration, Muninn represents memory. Muninn records developer decisions, conventions, discoveries, bug fixes, and architectural notes in an embedded SQLite database enhanced with full-text search (FTS5) and code entity graph linkage. It exposes a native Model Context Protocol (MCP) server over stdio, providing agents with deterministic, topological context retrieval without relying on remote embedding APIs or external servers.
@@ -174,7 +183,7 @@ The subsystem must have full unit and integration test coverage under `test/muni
 - **AC-10.2**: Unit tests verify `saveObservation`, BM25 `search`, `getContext`, `linkSymbol`, `getStats`, and JSONL sync/import in `test/muninn/service.test.ts`.
 - **AC-10.3**: Integration tests verify MCP tool handlers, schema validation, argument normalization, and JSON-RPC dispatch in `test/muninn/mcp.test.ts`.
 - **AC-10.4**: Integration and CLI unit tests verify argument parsing, multi-positional extraction, subcommand routing, search formatting, sync import/export, error exit codes, and signal teardown in `test/muninn/commands.test.ts`.
-- **AC-10.5**: All test suites pass cleanly via `npm test` (`bun test && vitest run`), enforced during package publishing via `prepublishOnly` (`bun run build && npm run test && bun run typecheck`).
+- **AC-10.5**: All test suites pass cleanly via `npm test` (`bun test src && vitest run`), enforced during package publishing via `prepublishOnly` (`bun run build && npm run test && bun run typecheck`).
 
 ### REQ-11: Verified Execution Contracts via TypeScript Compiler API
 The system must provide static typecheck and compiler diagnostic verification for affected files during the execution cycle and on demand.
@@ -349,16 +358,17 @@ Huginn must discover available models from the active runtime and provide intera
 
 ### REQ-24: Unified Multi-MCP Monitoring & Inspector
 Huginn must monitor and display the status of all connected Model Context Protocol (MCP) servers and their tools.
-- **AC-24.1 (Header Status Badge & Non-Blocking Polling)**: The TUI header displays a live MCP indicator:
+- **AC-24.1 (MCP Status Badge & Non-Blocking Polling)**: The TUI displays a live MCP indicator (the run dashboard's header and, in the live console, the side panel — AC-77.1):
   - `MCP: 🟢 <count> active (<tools> tools)` when all servers are connected.
   - `MCP: 🟡 degraded` when any server reports error or degraded status.
   - `MCP: 🟡 timeout` when polling exceeds deadline.
   - `MCP: ⚪ 0 active` when no servers are registered or report is null.
+  - *(Superseded by AC-32.4 / AC-76.1: the current badge says `<n> connected`, `<n> configured` or `none` and attributes the agent; the console paints `✓` / `!` / `·` instead of the pictographs.)*
   - Periodic polling (15s intervals) in `Dashboard` and `LiveDashboard` is bounded by a strict 1500 ms non-blocking timeout via `Promise.race` in `fetchMcpStatusWithTimeout`, protecting the Ink render loop from slow, hanging, or disconnected MCP servers.
 - **AC-24.2 (Interactive `/mcp` Inspector Modal (`McpInspectorModal`))**: In Live mode, typing `/mcp` opens an interactive two-pane inspector modal:
   - *Left Pane (Servers)*: Lists connected MCP servers with connection status (`[connected]`, `[error]`, `[disconnected]`), transport (`[stdio]`, `[sse]`, `[file]`), and roundtrip latency in ms.
   - *Right Pane (Tools Detail)*: Lists exposed tools for the selected server with tool names and descriptions. Implements paginated windowing (10 visible tools with `▲ ... more above` and `▼ ... more below` scroll markers) to prevent modal height overflow.
-  - *Keyboard Navigation & State Bridge*: `[↑/↓]` or `[k/j]` navigates items, `[Tab]` or `[Enter]` toggles focus between servers and tools panes, and `[Esc]` closes the modal. Uses `stateRef` bridge pattern to guarantee fresh state references in `useInput` under React 19 / Ink.
+  - *Keyboard Navigation & State Bridge*: `[↑/↓]` or `[k/j]` navigates items, `[Tab]` or `[Enter]` toggles focus between servers and tools panes, and `[Esc]` closes the modal. *(Amended by AC-75.2: `Enter` is a selector-only key and no longer moves this inspector's focus; `Tab` remains its pane switch.)* Uses `stateRef` bridge pattern to guarantee fresh state references in `useInput` under React 19 / Ink.
   - *Terminal Sanitization (`SEC-001`)*: Sanitizes all server names, tool descriptions, and error strings via `sanitizeTerminalText` to strip ANSI escape sequences and non-printable control characters, mitigating terminal injection and cursor hijacking.
 - **AC-24.3 (Project-Level MCP Declaration & Safe Auto-Discovery)**: Huginn automatically discovers and loads `<project>/.huginn/mcp.json` alongside target agent configuration paths:
   - Supports `mcpServers`, `mcp`, and `servers` configuration sections.
@@ -387,6 +397,12 @@ The CLI must offer clear, structured commands and a frictionless initialization 
   - Prompts developer to choose default agent and preferred models.
   - Registers Muninn MCP (`huginn setup`) and creates initial `.huginn/config.json`.
 - **AC-26.2 (Streamlined Help)**: `huginn --help` presents a concise, visually grouped summary (Core commands: `live`, `run`, `init`, `setup`, `doctor`). Advanced technical options are cleanly categorized or surfaced via `huginn --help --all`.
+- **AC-26.3 (Every subcommand owns its help)**: `huginn <cmd> --help` answers with that
+  subcommand's usage instead of the global overview — `init` prints the wizard's flags and steps,
+  `setup`, `doctor`, `memory`, `mcp`, `runtime`, `config` and `check` print their own usage,
+  `promote` prints its recovery flags, and `run`, `live`, `plan` and `install` print the full
+  `usage()` reference. The global interception answers only a bare `--help`/`-h`, `huginn help`,
+  `huginn init --help` and an unknown command; every help surface prints the banner and exits 0.
 
 ---
 
@@ -436,11 +452,11 @@ The interface must read as Huginn the raven, with real brand presence.
 - **AC-29.1 (no eagle)**: no eagle emoji (`🦅`) may remain anywhere in the source; the top-left header of both `LiveDashboard` and `Dashboard` renders an ASCII raven/wordmark treatment instead.
 - **AC-29.2 (shared brand component)**: a single reusable component (`src/tui/RavenHeader` or equivalent) renders the raven mark plus the wordmark, and is used by both dashboards so the two headers cannot diverge.
 - **AC-29.3 (non-blocking across sizes)**: the ASCII mark degrades gracefully on narrow terminals (wordmark-only fallback) and never consumes so many rows that the chat/stream viewport collapses.
-- **AC-29.4 (presence, not decoration)**: the header additionally surfaces live, useful context (active runtime, thinker/executor, project, and — see REQ-30 — a truthful MCP badge), so the personality comes from meaningful feedback rather than a lone glyph.
+- **AC-29.4 (presence, not decoration)**: the header additionally surfaces live, useful context (the live stage, thinker/executor and the project), so the personality comes from meaningful feedback rather than a lone glyph. *(Amended by AC-77.1: the runtime name and the MCP badge moved to the side panel; the header is identity plus ephemeral state.)*
 
 ### REQ-30: Honest MCP/Muninn Liveness & Recovery
 MCP status must reflect reality and survive transient failure.
-- **AC-30.1 (no fabricated status)**: `GenericSubprocessRuntimeAdapter.getMcpStatus()` must stop reporting `status: "connected"` for servers it merely found in a config file. Discovered-but-unprobed servers are reported as `unknown` (rendered distinctly as `MCP: ⚪ n unverified`, and the report is `healthy: false` / `unverified: true`), and a real probe is used where the runtime offers one (opencode).
+- **AC-30.1 (no fabricated status)**: `GenericSubprocessRuntimeAdapter.getMcpStatus()` must stop reporting `status: "connected"` for servers it merely found in a config file. Discovered-but-unprobed servers are reported as `unknown` (rendered distinctly as `MCP: ⚪ n configured` by `formatMcpBadge`, and the report is `healthy: false` / `unverified: true`), and a real probe is used where the runtime offers one (opencode).
 - **AC-30.2 (error propagation)**: when `runtime.getMcpStatus()` throws, the report must carry `degraded: true` and the error message (sanitized) so `formatMcpBadge` renders `MCP: 🟡 error`, not an ambiguous `⚪ 0 active`.
 - **AC-30.3 (stdio lifecycle hardening)**: `huginn mcp run` must (i) install a `process.stdout` `'error'` handler so an EPIPE from a closed parent pipe cannot crash the server, (ii) bridge stdin `'end'`/`'close'` to `transport.onclose` so the process exits when the parent goes away, (iii) assign `server.onerror` to log protocol failures instead of discarding them, and (iv) bound `send()` so a broken pipe fails a pending request instead of hanging forever.
 - **AC-30.4 (daemon supervision)**: `startServer` (opencode) must supervise the child after the initial health check — if it exits mid-session, the failure is logged and the runtime reports a recoverable error; where feasible a restart is attempted, and the TUI is notified.
@@ -491,7 +507,7 @@ The MCP surface must name the active agent's servers, attribute them to it, and 
 - **AC-32.1 (CLI enumeration)**: `IAgentRuntime` gains `listMcpServers(): Promise<McpServerListing[]>` where `McpServerListing = { name: string; transport?: string; status: "connected" | "enabled" | "disabled" | "pending" | "unknown"; detail?: string }`. Runtimes with a listing command use it — `opencode mcp list`, `claude mcp list`, `qwen mcp list`, `agy mcp list`, `commandcode mcp list`, `codex mcp list --json`, `devin mcp list`, `mimo mcp list` (verified formats; parsers exported and fixture-tested). Runtimes without one (`omp`, `kimi`, `pi`, `cursor`, `mcode`) fall back to config-file discovery with `status: "unknown"`.
 - **AC-32.2 (honest status mapping)**: a status reported by the CLI maps to its true meaning — `connected`/`Connected`/`✔` → `connected` (probed); `enabled`/`configured`/`➜` → `enabled` (configured, **not** probed); `disabled` → `disabled`; `pending approval` → `pending`; anything unrecognised → `unknown`. `connected` is the only status that may be described as live.
 - **AC-32.3 (attribution & expectation management)**: the `/mcp` panel must state which agent the list came from and that Huginn only observes it ("servers come from **&lt;agent&gt;** — add or change them with the agent's own config/CLI"). It must name Muninn explicitly when present, and when absent show the exact command that registers it (`huginn setup --agent <id>`).
-- **AC-32.4 (no bare numbers, no `undefined`)**: the header badge must always be self-describing and attribute its source (e.g. `MCP: 🟢 3 connected · opencode`, `MCP: ⚪ 5 configured · agy`, `MCP: ⚪ none · claude`). Every numeric field is nullish-coalesced; the literal string `undefined`/`NaN` must be impossible in any MCP surface (guarded by a test).
+- **AC-32.4 (no bare numbers, no `undefined`)**: the MCP badge must always be self-describing and attribute its source (e.g. `MCP: 🟢 3 connected · opencode`, `MCP: ⚪ 5 configured · agy`, `MCP: ⚪ none · claude`; the TUI paints those marks through `mcpBadgeText` as `✓`/`!`/`·`, REQ-76). *(Amended by AC-77.1: the badge's live-console home is the side panel, not the header.)* Every numeric field is nullish-coalesced; the literal string `undefined`/`NaN` must be impossible in any MCP surface (guarded by a test).
 - **AC-32.5 (deeper truth where possible)**: where a CLI exposes per-server detail (`commandcode mcp list` shows scope/auth; `claude`/`qwen` health-check), that detail is shown; where it cannot be known, the UI says so explicitly ("status not reported by &lt;agent&gt;") rather than implying health.
 
 ### REQ-33: Interactive Runtime Picker
@@ -522,7 +538,7 @@ The execution cycle must be choosable, with the built-in cycle as the default.
   - `odd` — minimal: execute → test-module → commit-all (no heavy gates; for small daily changes).
   - `rdd` — receipt-driven: execute → test-module → validate-step producing a frozen *receipt* artifact whose `headCommit` and `treeHash` pin the commit range, → commit-all.
   - `strict-tdd` — tests first: a failing-test step before execute, then execute, then the test/validate gates, with a **frozen worktree snapshot** recorded as evidence so a claim of "tests passed" cannot be hallucinated.
-- **AC-36.5 (announced)**: the active profile is shown in the TUI header/`/status` and in the CLI banner, so the user always knows which methodology is running.
+- **AC-36.5 (announced)**: the active profile is shown in `/status` and in the CLI/run banner, so the user always knows which methodology is running. *(Amended by AC-77.1: the live header carries the stage, the project and the models, not the profile.)*
 - **AC-36.6 (no silent degradation)**: a profile that cannot run (missing template/prompt) fails closed with an actionable message rather than silently falling back to `huginn`.
 
 ### REQ-37: Agent-Agnostic Question Protocol
@@ -783,18 +799,24 @@ A subprocess runtime closes stdin after the prompt, so it can never consult hugi
   `COLORFGBG` when present), and a non-empty `NO_COLOR` clears every token and gates `dimColor`.
 - **AC-47.2 (Live context panel)**: `src/tui/InfoPanel.tsx` renders a compact **LIVE CONTEXT** column
   beside the conversation on wide terminals (≥ 100 columns, ≥ 8 spare rows, leaving the cards at least
-  44 columns) with the stage, agent + models, the per-agent MCP enumeration, the git branch/tree state,
-  the worktree sandbox, Muninn's counts and the size of the conversation, plus one stage-appropriate
-  tip. It lives inside the region the cards already own, so it can never push the composer, palette or
-  footer off the frame; narrower terminals do not render it at all.
+  44 columns). Its rows are grouped into `SESSION` (agent, MCP badge, conversation size),
+  `REPO` (git branch/tree state and worktree sandbox) and `MEMORY` (Muninn counts) sections, plus one
+  stage-appropriate tip anchored to the bottom of the box by a flexible spacer. A section with no data
+  is not drawn at all — `slicePanelLines` keeps a header only while a row follows it — so no heading
+  is left over an empty group. It lives inside the region the cards already own, so it can never push
+  the composer, palette or footer off the frame; narrower terminals do not render it at all.
+  `test/tui/infoPanel.test.ts` covers the geometry, the section order, the anchored tip, the clipping
+  of a hostile value and the rows the panel must not invent (AC-30.5). *(Amended by AC-77.2: the
+  live stage is no longer a panel row; it lives in the header badge.)*
 - **AC-47.3 (Empty-state hero)**: `src/tui/LiveHero.tsx` renders the raven brand plus the first-run
   guidance inside the conversation card when the conversation is empty, sharing the header's art
   (`buildRavenArtRows`, REQ-29) and the console's hint list (`EMPTY_CHAT_HINTS`), sliced to the rows
   the card really has.
-- **AC-47.4 (Session summaries, no fabrication)**: `src/tui/sessionContext.ts` derives the header's and
-  the panel's shared strings from what the engine reported — a counter with nothing to count renders
+- **AC-47.4 (Session summaries, no fabrication)**: `src/tui/sessionContext.ts` derives the panel's
+  environment strings from what the engine reported — a counter with nothing to count renders
   `""` rather than `0`, and an unreadable Muninn database reports its sanitized error instead of
-  looking empty (AC-30.5). The summaries carry no colour; the TUI picks the token.
+  looking empty (AC-30.5). The summaries carry no colour; the TUI picks the token. *(Amended by
+  AC-77.2: the header no longer repeats these summaries.)*
 
 ### REQ-48: Containment of repository-controlled input (plan item 10)
 
@@ -857,6 +879,8 @@ makes every surface tell the truth.
 - The run dashboard never shows a dead panel: a runtime that cannot stream shows the phase's real
   report, and an idle raven state otherwise.
 - One semantic, single-width glyph language for phase status across the TUI and `.harness/PROGRESS.md`.
+- The raven's presence follows the run — a mood, a one-row brand rung and a stage-tinted conversation
+  — and the frame never reserves rows for chrome that is not on screen.
 - Sessions and methodology profiles are discoverable and selectable in-session.
 
 ### Non-Goals
@@ -1144,6 +1168,342 @@ iteration and 6 afterwards** (down from 14).
 - **AC-67.5 (No reverse bridge)**: `toLegacyRuntime`/`getEngineRuntime` are gone;
   `getRuntimePort`/`getEnginePort` is what executes and `getAgentRuntime` remains the CLI-shaped
   provisioning/argv view. `legacyCapabilities` never claims streaming or structured events.
+
+### REQ-68: The decision modal and feedback channel share the single-width alphabet
+- **AC-68.1 (One decision table)**: `DECISION_GLYPHS` (`approve` `+`, `question` `?`, `warn` `!`,
+  `done` `*`) lives in `src/tui/glyphs.ts`, and `decisionGlyph(kind)` resolves every `DecisionKind`
+  to one of its marks. Each entry is a single printable, single-column, **ASCII** code point
+  (code point ≤ `0x7f`) and is covered by the same guardian test as `STATUS_GLYPHS`. The marks are
+  deliberately non-letter characters, so they cannot collide with the modal's `[a]`/`[d]` hints.
+- **AC-68.2 (Pure title)**: `DecisionModal` composes its title with the exported pure function
+  `decisionTitle(req: DecisionRequest): string` in `src/tui/decision.ts`; every `DecisionKind`
+  (approve, scope failure, draft format, cycle finished, question, permission, spec deviation,
+  gate) has an explicit title in an exhaustive `switch`, so a new kind cannot inherit the gate
+  wording. All title kinds render without an emoji code point.
+- **AC-68.3 (One feedback voice)**: `FEEDBACK_WARN` is `!`, `FEEDBACK_OK` is `✓` and `FEEDBACK_BUSY`
+  is `…`; the feedback channel no longer uses a double-width warning sign anywhere in `src/tui/`,
+  `test/tui/`, or the TUI interface sections of `README.md` and `DESIGN.md`.
+- **AC-68.4 (Drift guard)**: a render test mounts `DecisionModal` for every title kind and fails if
+  the title line contains `\p{Extended_Pictographic}` or if `stringWidth(line) !== line.length`.
+- **AC-68.5 (Contracts untouched)**: the `### Overall gate:`/`### Overall fidelity:` literals, the
+  producer stream markers (`⚡ ✓ ✗ 💭`), the engine/CLI warning outputs (including the
+  `⚠️ REVIEW REQUESTED` handoff line, `HANDOFF_LINE_RE`, both verdict parsers and their fail-closed
+  fallback) are all unchanged. Only huginn's own TUI display and feedback glyphs move.
+
+### REQ-69: The decision modal buys only the rows it can pay for
+- **AC-69.1 (Exact height)**: the modal's policy lives in `src/tui/decision.ts`:
+  `decisionModalHeight(req?, maxRows?)` returns the exact number of rows `DecisionModal` paints,
+  double border included, and `DECISION_MIN_ROWS` (5 = two border rows + one title + one body row +
+  one key row) is the structural floor a dashboard reserves before a decision exists.
+  `decisionBodyRowSpecs` and `decisionKeyRowSpecs` expose one plain entry per terminal row (rendered
+  by `decisionBodyRows`/`decisionKeyRows` in `src/tui/DecisionModal.tsx`), so a newline in a message
+  cannot steal a row the layout did not count. Neither dashboard imports the other's page module for
+  the modal.
+- **AC-69.2 (Frame budget)**: both dashboards derive `decisionMaxRows` from the rows left after
+  their own fixed chrome (header, composer/footer, log tail, open palette, card floor) and pass it
+  to the modal. The modal never paints more than that budget: it pays the double border, the title
+  and the key footer first, buys the `… +N · ↑/↓` indicator only while a body row still fits, and
+  windows the rest. A capped budget below `DECISION_MIN_ROWS` paints nothing at all — a title without
+  the key footer would say what happened but not what to press.
+- **AC-69.3 (Hidden rows are reachable)**: a windowed body scrolls with `↑`/`↓`, and the indicator
+  names how many body rows are hidden. The live dashboard consumes those keys while a decision is
+  open, so a scroll never resolves the decision or echoes "press a number"; a digit still answers
+  the first question verbatim after scrolling.
+- **AC-69.4 (Footer survives)**: a pending decision no longer pushes the composer or the footer off
+  a short terminal. `test/tui/liveLayout.test.ts` and `test/tui/dashboard.test.ts` mount a tall
+  question on 18- and 24-row frames and assert the frame's row count, the modal title and the key
+  footer.
+- **AC-69.5 (Drift guard)**: `test/tui/decisionModal.test.ts` compares `decisionModalHeight` with
+  the rows Ink actually paints for every decision kind — a request that fits, one that must window,
+  and budgets below the documented floor (which must draw nothing) — so a height literal can never
+  drift from the real cost.
+
+### REQ-70: Cards declare one chrome hierarchy and its exact cost
+- **AC-70.1 (One cost table)**: `CARD_CHROME` and `cardChrome(tone)` live in `src/tui/Card.tsx`.
+  `primary` and `secondary` each spend two border rows, one title row and four columns (a border
+  plus `paddingX={1}` on each side); `tertiary` spends one title row and two columns for its `│ `
+  rule, with no box at all. `rows` includes the title row, so a card that renders no title
+  (`InfoPanel`) reserves `borderRows`, not `rows` — the declared cost is exact only when the card
+  draws the title it paid for. The table is scoped to the card surfaces: the decision modal's
+  double border now comes from the shared modal frame's `alert` tone (`Modal.tsx`), while the
+  composer, palette and header borders keep their own labelled constants.
+- **AC-70.2 (Card draws chrome only)**: `<Card tone title titleRight focused height width minHeight
+  accentToken>` renders the border style its tone declares (`round`, `single` or none), exactly one
+  clipped title row (both cells `wrap="truncate"`, `overflow="hidden"`) and a clipped body. It
+  never scrolls, measures children or computes a height; the caller has already paid through
+  `cardChrome(tone)`.
+- **AC-70.3 (Tone map)**: the conversation is `primary`; the live stream, `InfoPanel`,
+  `PipelineCard` and `StreamCard` are `secondary`; the log tail (`LogsCard`) is `tertiary`.
+  `test/tui/card.test.ts` asserts each surface's declared tone.
+- **AC-70.4 (Log tail is cheap)**: `LogsCard` costs `visibleLogs.length + 1` rows (title plus one
+  line per entry) instead of `+ 3`, and both dashboards derive that budget from
+  `cardChrome("tertiary").rows`, never a literal. The old five-row expectations move to three
+  because the box is gone; the commit records that as an improvement, not a relaxed assertion.
+- **AC-70.5 (Colour follows the hierarchy)**: an unfocused `primary` border uses `THEME.accent`
+  (or the stage's `accentToken`); a focused card uses `THEME.borderFocus` whatever its tone; an
+  unfocused `secondary` uses `THEME.border`; `tertiary` paints no border. Focus is also signalled in
+  the title, so colour is never the only cue.
+- **AC-70.6 (Drift guards)**: `test/tui/card.test.ts` pins the table, the exact painted height per
+  tone, the borderless tertiary card, `LogsCard`'s row cost and the six surface→tone mappings;
+  `test/tui/cardColors.test.ts` renders with colour forced on and asserts the border escape Ink
+  actually emits for the accent, `borderFocus`, quiet-border and borderless cases.
+
+### REQ-71: The live console's layout is a keyboard surface and the idle log tail gives its rows back
+- **AC-71.1 (Layout keys belong to the focused card)**: `LiveDashboard` resolves `z`, `Ctrl+↑`,
+  `Ctrl+↓` and `L` only while a card owns the focus, never from the composer — there `z` and `L` are
+  ordinary draft text and the chord stays out of the terminal, so typing can never rearrange the
+  frame. `z` maximizes the focused card and `z` again restores the remembered split;
+  `Ctrl+↑`/`Ctrl+↓` move that split by `SPLIT_RATIO_STEP` (0.08) through the pure
+  `adjustSplitRatio`/`clampSplitRatio`, clamped to `[SPLIT_RATIO_MIN 0.30, SPLIT_RATIO_MAX 0.80]`
+  around `DEFAULT_SPLIT_RATIO` (0.58).
+- **AC-71.2 (A maximized card is the only card)**: the pure `liveCardHeights` gives a maximized card
+  every available row and zero to the other one, which is then not rendered; releasing the maximized
+  state restores the exact ratio in force before it. `nextFocus` walks only visible surfaces (a
+  collapsed stream, a maximized-away conversation), so `Tab` never lands on a card the layout hid.
+- **AC-71.3 (The log tail is ephemeral and pinnable)**: after `LOG_AUTO_COLLAPSE_MS` (60 s) without a
+  new event the tail collapses and returns its rows to the conversation; a new log reopens it, an
+  `error` still present in the visible tail keeps it open, and an error that has scrolled out does
+  not disable the timer for the rest of the session. `[L]` (card focus only) pins the tail open and
+  disables the timer; releasing the pin starts a fresh minute instead of collapsing the same instant.
+- **AC-71.4 (Hidden state is announced)**: the footer advertises the collapsed tail as
+  `[L] logs · N (card focus)`, where `N` counts **every** hidden entry (`logsCollapsed ?
+  logs.length : 0`), not just the visible window. A visible tail still costs
+  `visibleLogs.length + cardChrome("tertiary").rows` (AC-70.4).
+- **AC-71.5 (Drift guards)**: `test/tui/liveLayout.test.ts` drives the real keyboard path — `z` typed
+  into the composer stays text, `z`/`Ctrl+↑`/`Ctrl+↓`/`L` from a card change the layout, one step up
+  and one down return the same ratio, the idle timer collapses the tail and `L` reopens it, a pinned
+  tail outlives every timeout and collapses again one minute after release, a visible error keeps it
+  open while a stale one does not, the advertised count is the whole tail, and 100×30 keeps at least
+  six conversation body rows with the logs collapsed.
+
+### REQ-72: The transcript is navigable, searchable and copyable from the keyboard
+- **AC-72.1 (`g`/`G` jump the focused transcript)**: from the conversation or the agent stream,
+  `g` scrolls to the first row and `G` to the last; from the composer they are ordinary draft
+  letters. The keys are matched as bare input (`!key.ctrl && !key.meta`), so a chord such as
+  `Ctrl+G` is never a jump.
+- **AC-72.2 (Search opens from any focus and preserves the draft)**: `Ctrl+F` opens transcript search
+  from any focus and while a turn is busy. The composer shows `find ❯ ` with the query instead of
+  the draft; `Esc` or `Ctrl+F` again closes search, restores the exact draft, and search mode keeps
+  the command palette from taking over. Every key search consumes also cancels an armed two-step
+  `Esc` abort, so `Esc` → `Ctrl+F` → `Esc` → `Esc` warns again instead of aborting. Query input is
+  sanitized and Ctrl/Meta chords never become query text.
+- **AC-72.3 (Matches are messages, and navigation is honest)**: `findMatches`/`matchLabel` in
+  `src/tui/search.ts` match case-insensitively by message (never by wrapped row); an empty or
+  whitespace-only query has no hits. `↑`/`↓` wrap through the hit list, Backspace rewinds the
+  selection to the first hit, and Enter jumps to the selected message's first painted row
+  (`messageStartRow`) and closes search; Enter with no hits closes without moving. The conversation
+  card's own title prints `match n/m` while a search has hits and prints no position when it has
+  none.
+- **AC-72.4 (Search mode is visible in the chrome)**: the search composer paints its border with
+  `THEME.warn`, the footer advertises the match count and the `↑/↓`, Enter and Esc keys, and the
+  ordinary focused composer keeps `THEME.borderFocus`. `test/tui/transcriptSearchColors.test.ts`
+  asserts the ANSI border Ink actually emits, not only the rendered text.
+- **AC-72.5 (Copy is best-effort OSC 52 with a sanitized, bounded payload)**: from the conversation
+  card, `y` copies the newest assistant message through OSC 52 and emits one honest notice naming
+  the channel and its limits; it copies nothing from the agent stream and stays ordinary draft text
+  in the composer. `src/tui/clipboard.ts` strips terminal control sequences before base64 encoding,
+  rejects a raw payload above `CLIPBOARD_MAX_BYTES` (100 000 UTF-8 bytes) before sanitizing it,
+  re-checks the sanitized size, and writes to the output stream passed by the caller rather than a
+  global `process.stdout`. An oversized message produces a "too large" warning, never a truncated
+  sequence.
+- **AC-72.6 (Drift guards and discoverability)**: `src/tui/search.test.ts` and
+  `src/tui/clipboard.test.ts` cover the pure match/label and OSC 52 helpers;
+  `test/tui/transcriptNavigation.test.ts` drives the real keys, the draft restoration, the
+  message jump, the copy path and the Esc/search interaction; `test/tui/helpModal.test.ts` keeps
+  `/help` and the README shortcut table naming the same keys and behaviour. `MODULE_MAP.md`,
+  `DESIGN.md`, `ADR.md` (ADR-68) and `AGENTS.md` document the navigation, search and copy surfaces.
+
+### REQ-73: The raven carries the run's state and the frame pays only for what is on screen
+- **AC-73.1 (Moods share the mark's grid)**: `RAVEN_MOODS` and `ravenMark(mood)`
+  (`src/brand.ts`) expose exactly `idle` (`o`), `thinking` (`O`) and `sleeping` (`-`). Every mood has
+  the idle mark's rows, leading spaces, width and printable-ASCII alphabet, and only the beak cell
+  differs, so switching mood reflows nothing. `RavenHeader`/`buildRavenArtRows` and
+  `LiveHero`/`heroPlan` accept the optional mood (default `idle`); the live console draws `thinking`
+  while a turn is in flight and `idle` otherwise. The one-row compact brand is fixed at the idle
+  head — a narrow frame cannot claim a mood it has no row to draw.
+- **AC-73.2 (A one-row rung before plain text)**: `COMPACT_BRAND` (`<(o  HUGINN`) and
+  `COMPACT_BRAND_WIDTH` (`src/tui/RavenHeader.tsx`) sit between the wordmark and the plain-text
+  fallback in both `ravenHeaderPlan` and `heroPlan`. The five-row art still needs
+  `reservedRows + HEADER_BORDER_ROWS + RAVEN_ART_ROWS + contextRows`; the compact rung needs only
+  `HEADER_BORDER_ROWS + 1 + contextRows` and spends one row, and plain `HUGINN` text remains the
+  fallback when even that does not fit. The hero uses the same order and steps from full/wordmark to
+  compact when the art would starve the first-run guidance, so a short card keeps both its brand and
+  its advice.
+- **AC-73.3 (Only on-screen chrome is reserved)**: `LiveDashboard` exports
+  `VIEWPORT_RESERVED_ROWS_CLOSED` (`CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT`) and
+  `VIEWPORT_RESERVED_ROWS_OPEN` (closed plus `MAX_SUGGESTION_ROWS` and `PALETTE_BORDER_ROWS`), and
+  adds `MODAL_COMPACT_RESERVE_ROWS` (`RAVEN_ART_ROWS - 1`) while a full-screen modal is open. The
+  header plan is derived from the figure in force, so opening the palette may shrink the header and
+  closing it returns the art; no surface charges rows for a state the user cannot see.
+- **AC-73.4 (The active stage owns the conversation's accent)**: while a turn is in flight the live
+  conversation card's `primary` border uses the stage's `STAGE_LABEL` token (`accent` refine, `warn`
+  draft, `thinker` approve, `executor` execute) through `Card`'s `accentToken`; at idle it returns to
+  `accent`. Focus still wins: a focused card uses `THEME.borderFocus`.
+- **AC-73.5 (The pipeline is a rail that names the increment)**: the run dashboard's `PipelineCard`
+  prints `iter n/m` in its title row via `Card`'s `titleRight`, never as a body row, and draws one
+  connector per phase (`├─`, the last one `└─`, a `FIX_*` round `   └─` under the phase it repairs).
+  The status glyph stays before the connector, so the current phase keeps its spinner and a finished
+  one its verdict mark, and the card's height is unchanged by the rail.
+- **AC-73.6 (Drift guards)**: `src/brand.test.ts` pins the three moods, their shared grid and the
+  single changed cell; `test/tui/glyphs.test.ts` keeps every mood single-width and emoji-free;
+  `test/tui/ravenHeader.test.ts` covers the compact rung and the mood rendering;
+  `test/tui/liveLayout.test.ts` covers the compact hero, the mood plumbing, the closed/open
+  reservation and the 80×24/80×28 header plans; `test/tui/liveStageAccent.test.ts` asserts the busy
+  stage accent's ANSI border; `test/tui/dashboard.test.ts` asserts the `iter n/m` title and the rail.
+  `MODULE_MAP.md`, `DESIGN.md` (§32.11), `ADR.md` (ADR-69) and `AGENTS.md` document the moods, the
+  compact rung, the visible-chrome reservation and the pipeline rail.
+
+### REQ-74: Markdown renders tables, links and full-width rules inside the card
+- **AC-74.1 (Rules follow their container)**: `markdownSegments(text, color, width)` draws a
+  horizontal rule (`---`, `***`, `___`) and the code-fence header at exactly `width` display columns
+  instead of a fixed literal. An unknown or non-finite width falls back to `DEFAULT_MARKDOWN_WIDTH`
+  (80) and every width is clamped to at least one column, so a rule can neither be `repeat(0)` nor
+  throw. `MarkdownLine` forwards the `width` prop; `MarkdownBlock` passes it to the line it renders
+  and the dashboards hand that width down from `cardChrome`, so no renderer falls back to the
+  80-column default on a real surface.
+- **AC-74.2 (Links keep the label and name the URL)**: `inlineSegments` matches `[label](url)`
+  before the emphasis tokens and emits the label underlined plus a dim ` ‹url›`; a malformed link
+  (`[a](b c)`, `[a]()`, `[label](not a url)`, `[no url]`) stays literal text. The underline is a
+  segment flag, so `wrapSegments` keeps it across a wrap and a heading's bold does not drop it.
+- **AC-74.3 (Tables are formatted as one block)**: `isTableHeader(lines, i)` recognises a header
+  only when the next line is a `|---|` separator (alignment colons and rows without outer pipes
+  included); `tableBlockEnd` spans the contiguous pipe rows and stops at the first blank or non-pipe
+  line. `tableBlock(rows, width)` returns exactly one styled row per input row: columns are padded to
+  the widest cell of every content row, `" │ "` separators are dim, the header row is bold, the
+  `|---|` line is drawn as `─`, an overlong cell is truncated with `…` inside its column, and each
+  row is clipped to `width`. It accepts raw markdown strings or already-split cells, and a width
+  that cannot hold the column gaps still yields exactly one clipped row per input row (a stub of the
+  separators, or nothing at all) instead of overflowing. Table cells are plain text — inline markup
+  inside a cell is not styled yet (`test/tui/markdownTable.test.ts` records that as a `todo`, not as
+  behaviour).
+- **AC-74.4 (One renderer owns the block)**: `MarkdownBlock({ lines, width, colorFor?, wrap?,
+  maxRows? })` walks a buffer, hands every contiguous table block to `tableBlock` and every other
+  line to `MarkdownLine`, and keeps the last `maxRows` **rendered** rows, so clipping a report can no
+  longer cut a table header off before its rows. The run dashboard renders both the stream buffer
+  and the last-phase report through it; the live chat formats the contiguous tables in its
+  conversation at the card's body width, and its stream card uses the same block renderer.
+- **AC-74.5 (The width is the frame's, not a literal)**: `Dashboard` derives the stream column as
+  `floor((columns - VIEW_OUTER_INSET) * (verbose ? 0.65 : 0.58))`, `StreamCard` subtracts
+  `cardChrome("secondary").columns`, and the live conversation subtracts
+  `cardChrome("primary").columns` plus its body indent. A `---` in a report is therefore one row of
+  the card's exact body width at any terminal size, instead of a 40-column literal that either
+  floated short of the border or wrapped into a second row and corrupted the row budget.
+- **AC-74.6 (Drift guards)**: `test/tui/markdown.test.ts` (width-aware rules, links and malformed
+  links, plus the `<MarkdownLine` width scan over the renderer and both dashboards),
+  `test/tui/markdownTable.test.ts` (block detection, one row per input, alignment, truncation,
+  double-width glyphs, ragged rows, and the real `Dashboard` frame) and
+  `test/tui/liveMarkdownTable.test.ts` (the live chat paints aligned rows with no raw pipes, inside
+  the conversation card) hold the contract.
+
+### REQ-75: The console modals share one frame and one key grammar, and the footer names the focused surface
+- **AC-75.1 (One frame)**: `src/tui/Modal.tsx` is the only console modal frame. Every
+  `*Modal.tsx` renders through `<Modal>` and none of them owns a `borderStyle`. `tone="alert"`
+  draws the single `double` border with `THEME.warn`; every other tone draws a `round` box with
+  `THEME.accent` unless the caller overrides `borderColor`. The frame owns exactly one clipped
+  bold title row, an optional muted subtitle row and a `hint` key footer (one muted clipped row
+  for the console modals; a `ReactNode` hint keeps the decision surface's own row specs and
+  colours), fixes `paddingX={1}`, `flexShrink={0}` and `overflow="hidden"`, and leaves `height`,
+  `width`, `minHeight`, `paddingY` and the children to the caller. It never calls `useInput`.
+- **AC-75.2 (One key grammar)**: `MODAL_KEY_CONTRACT` exports the literals the handlers use:
+  `close: "Esc"`, `quickClose: ["HelpModal", "SkillsModal"]`,
+  `confirm: ["AgentPickerModal", "ProfilePickerModal", "ModelPickerModal"]`, `move: "↑/↓"` and
+  `vimMove: "k/j"`. `Esc` closes all six console modals without exception; `q` closes only
+  `HelpModal` and `SkillsModal`; `Enter` confirms/selects only in the three selectors and never
+  closes a modal (`SkillsModal` may use it for its own execute action, which is not a generic
+  confirm); `Tab` switches panes only in `SkillsModal` and `McpInspectorModal` (`Enter`
+  deliberately does not move the inspector's focus); `p`/`g` persist only in
+  `ProfilePickerModal`; `k`/`j` move only where they already did, and `ModelPickerModal` keeps
+  them as filter text on its search steps. The decision surface shares the frame and its `alert`
+  tone but keeps its own answer keys and body windowing.
+- **AC-75.3 (The footer speaks for the focused surface)**: `footerHints(input)` in
+  `src/tui/footer.ts` is pure and returns `{ left, right }`; `src/tui/footerHints.ts` re-exports
+  the same implementation. `left` carries the keys of the **focused** surface (`FooterFocus` =
+  `composer`, `chat`, `stream` or `run`): composer history/send, conversation and stream
+  scroll/search/jump, conversation-only `[y] Copy`, and the run dashboard's `[Space]` pause/resume,
+  `[q/Esc]` abort, `[v]` verbose and page/arrow scrolling. The palette replaces the left cell;
+  transcript search replaces it with the find prompt, match count and Enter/Esc keys; a busy turn
+  appends `[Esc] Abort`; a maximized card flips Maximize/Restore; a collapsed log tail prefixes
+  `[L] logs · N (card focus)`. `right` keeps token usage — or the run
+  dashboard's decision notice; the live stage is the header badge's fact and is never a footer
+  value (AC-77.3). Neither dashboard may re-inline these literals.
+- **AC-75.4 (The footer never exceeds the terminal)**: when `columns` is finite and positive,
+  `footerHints` clamps the right cell first through `headerValue` (so the usage figure survives),
+  spends one column for the separator only when the right cell is non-empty, and gives the left
+  cell the remaining budget. A negative/fractional hit count is floored to zero, a fractional
+  width is floored rather than sliced, and a right cell that fills the terminal leaves the left
+  with no negative budget. `src/tui/footer.test.ts` asserts the 100-column case.
+- **AC-75.5 (Drift guards)**: `test/tui/modalContract.test.ts` mounts all six console modals and
+  proves the `Esc` footer and close, the `q` quick-close set, the `Enter` selector set, the
+  inspector's Tab-only pane switch, `k`/`j` only where they were accepted, the absence of a
+  modal-owned `borderStyle`, the one-title/one-footer row contract, and the README/DESIGN
+  paragraphs that name the same grammar. `src/tui/footer.test.ts` covers the focus-specific keys,
+  search, hidden-log count, run keys, clamping and purity.
+
+### REQ-76: Console chrome speaks one measured alphabet, and a clamped value says so
+The console must never paint a double-width pictograph or silently crop a value it could not fit.
+- **AC-76.1 (MCP badge mapping)**: `mcpBadgeText(badge)` (`src/tui/sessionContext.ts`) is the TUI's
+  presentation of the engine's `formatMcpBadge` output. It strips pictographs and variation
+  selectors, collapses the whitespace they leave behind, and re-inserts one measured status mark
+  right after `MCP: ` through `MCP_STATUS_GLYPHS` (`healthy` → `STATUS_GLYPHS.pass` `✓`, `degraded`
+  → `STATUS_GLYPHS.warning` `!`, `unknown` → `STATUS_GLYPHS.pending` `·`), so the engine's
+  `MCP: 🟢 2 connected · pi` is painted as `MCP: ✓ 2 connected · pi`. `formatMcpBadge` and its
+  engine contract are untouched; the run header and `InfoPanel` pass the mapped text (the live
+  header no longer carries the badge, AC-77.1).
+- **AC-76.2 (a badge always names itself)**: a badge carrying only a mark still renders its label
+  (`MCP: 🟢` → `MCP: ✓`; an empty report → `MCP: ·`), a badge the engine sent without the label is
+  repaired to `MCP: <mark> …`, and an unknown status falls back to `pending` rather than dropping
+  the mark.
+- **AC-76.3 (truncation is announced and measured)**: `headerValue(value, maxWidth)`
+  (`src/tui/RavenHeader.tsx`) sanitizes and collapses whitespace, then clamps in **display
+  columns** (`stringWidth`), never code units. A value that fits is returned intact; a value that
+  does not keeps its head and spends its last column on `TRUNCATION_ELLIPSIS` (`…`); a value cut
+  in a one-column budget is the mark alone; a zero, negative, fractional-below-one or `NaN` budget
+  returns `""`; and `Infinity` keeps the value whole. A double-width glyph is never split, so the
+  result never paints wider than the budget it was given. The footer inherits the contract, so a
+  clamped left or right cell ends in `…` instead of a silent crop.
+- **AC-76.4 (the side panel pays for its values)**: `SIDE_PANEL_WIDTH` = 36 columns
+  (`src/tui/InfoPanel.tsx`), so at the 100-column threshold the panel's value column is
+  `36 − cardChrome("secondary").columns (4) − PANEL_LABEL_COLUMNS (9) = 23` columns — wide enough
+  for the longest real values (`⎇ upgrade/ui-ux · dirty`, `2.3k entities · 76 obs`) to paint whole.
+  `memoryStat` formats both Muninn counters through `formatCount` (`840`, `1.4k`, `12k`). The
+  threshold still leaves the conversation its floor: `36 + 1 gap + 44 = 81 ≤ 100 − 2` inset.
+- **AC-76.5 (drift guards)**: `test/tui/sessionContext.test.ts` covers the badge mapping and
+  `formatCount`; `test/tui/ravenHeader.test.ts` covers intact values, the ellipsis, the degenerate
+  budgets, `Infinity`, double-width glyphs and a frame scan of both dashboards that fails on a
+  pictograph or a double-width row;
+  `test/tui/infoPanel.test.ts` and `test/tui/liveLayout.test.ts` pin the panel width and the
+  23-column value budget; `src/tui/footer.test.ts` proves a clamped footer cell ends in `…`.
+
+### REQ-77: One home per fact — header identity, panel environment, footer keys
+Every live-session fact must appear on exactly one surface, so the header, the panel and the footer
+cannot disagree or spend each other's columns.
+- **AC-77.1 (the header is identity and ephemeral state)**: `LiveHeader` row 1 is
+  `[<spinner> <STAGE>]` plus the project path; row 2 is the two active models and nothing else. It
+  does not render the MCP badge, the runtime name, git, the worktree sandbox or the conversation
+  counter. `LIVE_HEADER_CONTEXT_ROWS` stays `2`, so the header's height and every budget derived
+  from it (`VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN`, card heights, the decision modal) do not move;
+  the project path inherits the columns the badge and the runtime used to spend, and a 100×30 test
+  proves a long path is painted whole instead of shortened.
+- **AC-77.2 (the panel is the environment)**: `PanelData`/`panelLines` no longer render a `stage`
+  row (and drop the `stageLabel`/`stageToken`/`busy`/`spinner` fields only it consumed). The panel
+  keeps `agent`, the attributed mapped MCP badge, `git`, `sandbox`, `muninn`, `ctx` and the
+  bottom-anchored `TIP`. `gitStat(git, maxWidth?)` pays for the `clean`/`dirty` suffix before it
+  clamps the branch, because the panel is the only surface that reports the working-tree state;
+  without `maxWidth` its historic `GIT_BRANCH_COLUMNS` cap is unchanged. When the budget cannot pay
+  for `⎇ … · dirty` at all, `gitStat` returns `""` and the row is dropped rather than printed
+  without the fact it reports.
+- **AC-77.3 (the footer is the keys)**: `FooterHintInput` no longer accepts `stage`; `footerHints`
+  returns the focused surface's keys on the left and `usage` on the right (the run dashboard keeps
+  its decision notice there). No live footer renders `stage: <LABEL>`: the stage is the header
+  badge's fact. `sessionStat` — the header-only join — is deleted with its test rather than left as
+  dead code.
+- **AC-77.4 (the tests state the new rule)**: the two `test/tui/liveLayout.test.ts` assertions that
+  fixed the old duplication are rewritten, not deleted or relaxed: one asserts a single `⎇`
+  occurrence in the panel and none on the header's models row; the other asserts the conversation
+  counter appears exactly once, in the panel. The footer assertions in the TUI suites assert the
+  header's `[<spinner> <STAGE>]` badge and the absence of `stage:`. `src/tui/footer.test.ts` and
+  `test/tui/infoPanel.test.ts` pin the new policy, and `test/tui/liveLayout.test.ts` holds the
+  100×30 project-path regression.
 
 ---
 

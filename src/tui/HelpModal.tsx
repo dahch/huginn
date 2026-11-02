@@ -7,6 +7,8 @@ import {
   describeCommand,
 } from "./commandRegistry.js";
 import { THEME } from "./theme.js";
+import { Modal } from "./Modal.js";
+import { MODAL_TITLE_GLYPHS } from "./glyphs.js";
 
 export interface CommandCheatSheet {
   command: string;
@@ -43,9 +45,37 @@ export const NAVIGATION_SHORTCUTS: ShortcutItem[] = [
   {
     key: "↑ / ↓ or j / k",
     description:
-      "Composer: recall your submissions. Focused viewport: scroll it (or move the command palette while typing a /command)",
+      "Composer ↑/↓: recall your submissions. Focused card ↑/↓: scroll it. Command palette j/k: move the highlight while the draft is exactly /",
   },
   { key: "PageUp / PageDown", description: "Fast-scroll focused viewport (4 lines)" },
+  {
+    key: "z (card focus)",
+    description: "Maximize the focused card; press z again to restore the split",
+  },
+  {
+    key: "Ctrl+↑ / Ctrl+↓",
+    description: "Move the conversation/stream split (from a focused card)",
+  },
+  {
+    key: "g / G (card)",
+    description:
+      "Jump to the start / end of the focused transcript (in the composer they are ordinary letters)",
+  },
+  {
+    key: "Ctrl+F",
+    description:
+      "Search the conversation: type a query, ↑/↓ move matches, Enter jumps to one and closes, Esc restores your draft",
+  },
+  {
+    key: "y (chat)",
+    description:
+      "Copy the last assistant message with OSC 52 — some terminals ignore it",
+  },
+  {
+    key: "L (card focus)",
+    description:
+      "Pin/reopen the log tail; an idle tail collapses after a minute, unless its visible tail holds an error",
+  },
   { key: "Esc or q", description: "Close modal / cancel current view" },
   { key: "Enter", description: "Submit command or prompt" },
 ];
@@ -77,40 +107,20 @@ export const HelpModal = React.memo(function HelpModal({
 
   useInput((input, key) => {
     const cur = stateRef.current;
-    if (key.escape || input === "q" || key.return) {
+    // Esc always closes; `q` is this browser's own quick-close. Enter is not a
+    // confirm key outside the three selectors (see `Modal`'s key grammar).
+    if (key.escape || input === "q") {
       cur.onClose();
     }
   });
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={THEME.accent}
-      paddingX={1}
-      paddingY={0}
-      width="100%"
+    <Modal
+      title={`${MODAL_TITLE_GLYPHS.help} HUGINN LIVE CHEAT SHEET`}
+      hint="Press Esc or q to close cheat sheet"
     >
-      {/* Banner */}
-      <Box justifyContent="space-between" marginBottom={0}>
-        <Text bold color={THEME.accent}>
-          📖 HUGINN LIVE CHEAT SHEET
-        </Text>
-        <Text color={THEME.muted}>Esc or q to close</Text>
-      </Box>
-
       {/* Active Config Banner */}
-      <Box
-        borderStyle="single"
-        borderTop={true}
-        borderBottom={true}
-        borderLeft={false}
-        borderRight={false}
-        borderColor={THEME.border}
-        paddingY={0}
-        marginY={0}
-        flexDirection="column"
-      >
+      <Box paddingY={0} marginY={0} flexDirection="column">
         <Box justifyContent="space-between">
           <Text>
             <Text bold color={THEME.muted}>Agent: </Text>
@@ -150,7 +160,7 @@ export const HelpModal = React.memo(function HelpModal({
       {/* Navigation Shortcuts */}
       <Box flexDirection="column" marginTop={1}>
         <Text bold color={THEME.warn}>
-          ⌨ Navigation & Shortcuts:
+          Keys · Navigation & Shortcuts:
         </Text>
         {NAVIGATION_SHORTCUTS.map((s) => (
           <Box key={s.key} marginY={0}>
@@ -161,23 +171,6 @@ export const HelpModal = React.memo(function HelpModal({
           </Box>
         ))}
       </Box>
-
-      {/* Footer */}
-      <Box
-        borderStyle="single"
-        borderTop={true}
-        borderBottom={false}
-        borderLeft={false}
-        borderRight={false}
-        borderColor={THEME.border}
-        paddingTop={0}
-        marginTop={1}
-        justifyContent="space-between"
-      >
-        <Text color={THEME.muted}>
-          Press Esc, q, or Enter to close cheat sheet
-        </Text>
-      </Box>
-    </Box>
+    </Modal>
   );
 });

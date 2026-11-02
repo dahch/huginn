@@ -11,7 +11,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { LiveApp, isHydratedReplay } from "../../src/tui/LiveDashboard";
 import { EMPTY_CHAT_HINTS } from "../../src/tui/feedback.js";
 import { events } from "../../src/engine/engineEvents";
@@ -273,7 +273,7 @@ describe("Live conversation rehydration (Phase 4D / REQ-2.3)", () => {
     // engine notice that is never recorded as a turn at all.
     transcript.push({ role: "user", text: "second question" });
     events.emit("liveChat", { role: "user", text: "second question" });
-    events.emit("liveChat", { role: "system", text: "⚠ a notice that is not a turn" });
+    events.emit("liveChat", { role: "system", text: "! a notice that is not a turn" });
     await tick();
 
     harness.unmount();

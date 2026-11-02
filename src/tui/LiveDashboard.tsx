@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import {
   LiveAbortError,
@@ -11,10 +11,23 @@ import { saveUserConfig, saveGlobalUserConfig, getProjectConfigPath, getUserConf
 import { AGENT_TARGETS } from "../agents/integrator";
 import { isAgentTarget } from "../engine/agent/registry";
 import { events, type LiveStage } from "../engine/engineEvents";
+import { ravenBlink, ravenMood, type RavenMood } from "../brand.js";
 import { formatUsage } from "../format";
 import type { DecisionChoice, DecisionRequest } from "../engine/types";
-import { Dashboard, DecisionModal, LogsCard } from "./Dashboard";
-import { MarkdownLine, markdownSegments, renderSegments, wrapSegments, type MdSegment } from "./markdown";
+import { Dashboard, LogsCard, MAX_STREAM_ROWS, streamLineColor } from "./Dashboard";
+import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
+import { DecisionModal } from "./DecisionModal.js";
+import {
+  isTableHeader,
+  markdownBlockRows,
+  markdownSegments,
+  renderSegments,
+  tableBlock,
+  tableBlockEnd,
+  wrapSegments,
+  type MdSegment,
+} from "./markdown";
+import { Card, cardChrome } from "./Card.js";
 import { useTerminalSize } from "./useTerminalSize";
 import { THEME, mcpStatusToken, type ThemeToken } from "./theme.js";
 import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
@@ -69,10 +82,12 @@ import {
   fetchMcpStatusWithTimeout,
   formatMcpBadge,
   MCP_STATUS_POLL_TIMEOUT_MS,
-  type McpBadge,
 } from "../engine/agent/mcpStatus.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { copyToTerminal, formatCharCount } from "./clipboard.js";
+import { findMatches, matchLabel } from "./search.js";
 import {
+  RAVEN_ART_ROWS,
   RavenHeader,
   headerValue,
   ravenHeaderPlan,
@@ -80,13 +95,15 @@ import {
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
 import { InfoPanel, sidePanelPlan, type PanelData } from "./InfoPanel.js";
+import { footerHints } from "./footer.js";
 import { LiveHero } from "./LiveHero.js";
 import {
-  sessionStat,
+  mcpBadgeText,
   stageTip,
   type ContextStat,
   type GitSummary,
 } from "./sessionContext.js";
+
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -95,8 +112,16 @@ const STATUS_VALUE_WIDTH = 35;
 const STATUS_LINE_WIDTH = STATUS_LABEL_WIDTH + STATUS_VALUE_WIDTH + 4;
 const STATUS_TITLE = "System Diagnostics";
 
-/** Live context rows rendered by `LiveHeader` (stage/badge + models). */
-const LIVE_HEADER_CONTEXT_ROWS = 2;
+/**
+ * Live context rows rendered by `LiveHeader` (stage badge + models).
+ *
+ * Exported because it is a layout contract, not an implementation detail: the
+ * header's height, and therefore every budget derived from it
+ * (`VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN`, the card heights and the decision
+ * modal's rows), moves with it. `test/tui/liveLayout.test.ts` asserts the value
+ * and that the painted header spends exactly that many context rows (ADR-73).
+ */
+export const LIVE_HEADER_CONTEXT_ROWS = 2;
 /**
  * Columns the live view's outer `paddingX={1}` spends: around the header and
  * around the main row (cards + side panel) below it.
@@ -104,16 +129,6 @@ const LIVE_HEADER_CONTEXT_ROWS = 2;
 const LIVE_VIEW_OUTER_INSET = 2;
 /** `minHeight` both scrollable cards keep so their title row is never clipped. */
 const CARD_MIN_ROWS = 4;
-/** Rows a card's rounded border spends (top + bottom). */
-const CARD_BORDER_ROWS = 2;
-/** Columns a card's rounded border spends (left + right). */
-const CARD_BORDER_COLUMNS = 2;
-/** Columns a card's `paddingX={1}` spends. */
-const CARD_PADDING_COLUMNS = 2;
-/** Everything a card spends around its body, horizontally. */
-const CARD_HORIZONTAL_CHROME = CARD_BORDER_COLUMNS + CARD_PADDING_COLUMNS;
-/** The card's own title row, above the body. */
-const CARD_TITLE_ROWS = 1;
 /** Rows the composer's `marginTop={1}` spends. */
 const INPUT_MARGIN_ROWS = 1;
 /** Rows the composer's rounded border spends (top + bottom). */
@@ -122,12 +137,18 @@ const INPUT_BORDER_ROWS = 2;
 const INPUT_CHROME_ROWS = INPUT_MARGIN_ROWS + INPUT_BORDER_ROWS;
 /** The composer's footprint with a single content line — its budget floor. */
 const INPUT_HEIGHT = INPUT_CHROME_ROWS + 1;
+/** The composer's normal prompt glyph (`COMPOSER_PROMPT` starts every draft row). */
+const COMPOSER_PROMPT = "❯ ";
 /**
  * Columns the composer spends before the draft text itself: this view's own
- * `paddingX={1}` (2), the composer's border (2) and `paddingX={1}` (2), and the
- * `❯ ` prompt glyph (2). A row may never widen past these (REV-3201).
+ * `paddingX={1}` (2), the composer's border (2), `paddingX={1}` (2) and the
+ * normal prompt glyph. A row may never widen past these (REV-3201).
  */
-const COMPOSER_TEXT_INSET = 8;
+const COMPOSER_TEXT_INSET = 6 + COMPOSER_PROMPT.length;
+/** The composer's prompt while transcript search is open (`Ctrl+F`). */
+const SEARCH_PROMPT = `find ${COMPOSER_PROMPT}`;
+/** Extra columns the longer search prompt spends over the normal prompt. */
+const SEARCH_PROMPT_EXTRA_COLUMNS = SEARCH_PROMPT.length - COMPOSER_PROMPT.length;
 /** Submitted prompts kept for ↑/↓ recall (REQ-34 / AC-34.1). */
 const INPUT_HISTORY_LIMIT = 50;
 const FOOTER_HEIGHT = 1;
@@ -135,17 +156,31 @@ const FOOTER_HEIGHT = 1;
 const PALETTE_BORDER_ROWS = 2;
 
 /**
- * Rows the header may not spend: the card floors, the input row, the footer and
- * the tallest command palette (6 content rows + border). The header's own row
- * cost is added on top when the plan is derived, so the art can never squeeze
- * the viewport (AC-29.3 / AC-28.4).
+ * Rows the header may not spend with the command palette closed: the card
+ * floors, the input row and the footer. The palette is *not* reserved here —
+ * charging the header for a surface that is not on screen made it give up its
+ * art for rows nobody was using (REQ-73).
  *
- * The side panel is deliberately absent from this figure: it shares the cards'
- * row rather than claiming one of its own, so it can never take a row from the
- * composer, the palette or the footer (REQ-12).
+ * The side panel is deliberately absent from this figure too: it shares the
+ * cards' row rather than claiming one of its own, so it can never take a row
+ * from the composer, the palette or the footer (REQ-12).
  */
-const VIEWPORT_RESERVED_ROWS =
-  CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT + MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS;
+export const VIEWPORT_RESERVED_ROWS_CLOSED =
+  CARD_MIN_ROWS * 2 + INPUT_HEIGHT + FOOTER_HEIGHT;
+/**
+ * Rows the header may not spend while the palette is open: the closed floor plus
+ * the tallest palette (6 content rows + its own border). The plan is re-derived
+ * when the palette opens, so the header may shrink — and grow back on close.
+ */
+export const VIEWPORT_RESERVED_ROWS_OPEN =
+  VIEWPORT_RESERVED_ROWS_CLOSED + MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS;
+/**
+ * Extra floor a full-screen modal (help, skills, model/MCP/agent/profile
+ * pickers) claims. It is enough to price the five-row art out of the header
+ * while still leaving the one-row compact brand affordable, so the modal gets
+ * the rows the bird was using (REQ-73).
+ */
+const MODAL_COMPACT_RESERVE_ROWS = RAVEN_ART_ROWS - 1;
 
 /**
  * How long a diagnostics probe stays good (Phase 7B / REQ-12). The side panel and
@@ -161,10 +196,76 @@ const DIAGNOSTICS_TTL_MS = 3_000;
  * `git status` on the project.
  */
 const DIAGNOSTICS_POLL_MS = 15_000;
-/** Share of the header's second row the git/sandbox/context summary may claim. */
-const HEADER_STATUS_SHARE = 0.4;
-/** Columns the header keeps for the models before it shows that summary at all. */
-const HEADER_MIN_MODEL_COLUMNS = 30;
+/** Share of the cards row the conversation gets before the split is moved. */
+export const DEFAULT_SPLIT_RATIO = 0.58;
+/** One Ctrl+↑/↓ press moves the split by this much. */
+export const SPLIT_RATIO_STEP = 0.08;
+/** The narrowest and widest the conversation share may become. */
+export const SPLIT_RATIO_MIN = 0.3;
+export const SPLIT_RATIO_MAX = 0.8;
+/** Idle time after which the log tail collapses itself out of the frame. */
+export const LOG_AUTO_COLLAPSE_MS = 60_000;
+
+/** Which card currently owns the whole cards row, if any. */
+export type MaximizedCard = "chat" | "stream" | null;
+
+/** Clamp a card split ratio to the range the keyboard shortcuts may reach. */
+export function clampSplitRatio(ratio: number): number {
+  if (!Number.isFinite(ratio)) return DEFAULT_SPLIT_RATIO;
+  return Math.min(SPLIT_RATIO_MAX, Math.max(SPLIT_RATIO_MIN, ratio));
+}
+
+/**
+ * Move the card split by `delta`, keeping it inside its range.
+ *
+ * The result is rounded to the two decimals the step and its range live in:
+ * binary floating point makes `0.58 - 0.08` equal `0.49999999999999994`, which
+ * `Math.floor` then turns into one row less than the user asked for, and the
+ * ± steps stop being reversible (Ctrl+↑ then Ctrl+↓ would not come back to the
+ * same split).
+ */
+export function adjustSplitRatio(ratio: number, delta: number): number {
+  const moved = clampSplitRatio(ratio) + delta;
+  return clampSplitRatio(Math.round(moved * 100) / 100);
+}
+
+/** The two card heights for one layout request. */
+export interface LiveCardHeights {
+  chatHeight: number;
+  streamHeight: number;
+}
+
+/**
+ * Split the cards row between the conversation and the stream. Pure, so the
+ * three layouts (conversation only, the remembered split, and either card
+ * maximized) are testable without rendering a frame.
+ *
+ * A maximized card owns every row and the other card is not rendered at all;
+ * otherwise the conversation keeps `splitRatio` of the row (clamped to the
+ * keyboard's range) and the stream takes the remainder. With no stream content
+ * the conversation owns the row whatever the remembered ratio or maximized card.
+ */
+export function liveCardHeights({
+  availableHeight,
+  splitRatio,
+  maximized,
+  showStream,
+}: {
+  availableHeight: number;
+  splitRatio: number;
+  maximized?: MaximizedCard;
+  showStream: boolean;
+}): LiveCardHeights {
+  const available = Number.isFinite(availableHeight) ? Math.max(0, Math.floor(availableHeight)) : 0;
+  if (!showStream || available === 0) return { chatHeight: available, streamHeight: 0 };
+  if (maximized === "chat") return { chatHeight: available, streamHeight: 0 };
+  if (maximized === "stream") return { chatHeight: 0, streamHeight: available };
+  const chatHeight =
+    available < 2
+      ? available
+      : Math.max(1, Math.min(available - 1, Math.floor(available * clampSplitRatio(splitRatio))));
+  return { chatHeight, streamHeight: available - chatHeight };
+}
 
 function statusRow(label: string, value: string): string {
   return `│ ${label.padEnd(STATUS_LABEL_WIDTH)} ${value.padEnd(STATUS_VALUE_WIDTH)}│`;
@@ -181,14 +282,21 @@ export type FocusTarget = "composer" | "chat" | "stream";
 /**
  * Tab order for the live console: composer → conversation → agent stream →
  * composer (reversed for Shift+Tab). A collapsed stream card is skipped rather
- * than announced, so Tab always lands somewhere the user can see.
+ * than announced, so Tab always lands somewhere the user can see. `hasChat` is
+ * optional so a maximized stream card can hand the chat's turn back to the
+ * composer instead of focusing a card the layout hid.
  */
 export function nextFocus(
   current: FocusTarget,
   hasStream: boolean,
   backwards = false,
+  hasChat = true,
 ): FocusTarget {
-  const order: FocusTarget[] = hasStream ? ["composer", "chat", "stream"] : ["composer", "chat"];
+  const order: FocusTarget[] = [
+    "composer",
+    ...(hasChat ? (["chat"] as FocusTarget[]) : []),
+    ...(hasStream ? (["stream"] as FocusTarget[]) : []),
+  ];
   const index = Math.max(0, order.indexOf(current));
   const step = backwards ? -1 : 1;
   return order[(index + step + order.length) % order.length] ?? "composer";
@@ -252,6 +360,8 @@ interface FormattedLine {
   id: string;
   type: "system" | "user_header" | "user_body" | "assistant_header" | "assistant_body" | "blank";
   text: string;
+  /** Index into the conversation's `messages` — what transcript search returns. */
+  messageIndex: number;
 }
 
 /**
@@ -265,6 +375,8 @@ interface ChatRow {
   segments: MdSegment[];
   /** Columns the body indent spends, already subtracted from the wrap width. */
   paddingLeft: number;
+  /** The message this row belongs to, so a search hit can scroll to it. */
+  messageIndex: number;
 }
 
 /**
@@ -448,6 +560,7 @@ function RefineView({
   initialShowModelPicker?: boolean;
 }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const terminalSize = useTerminalSize();
   /**
    * The composer's draft and the caret into it (Phase 6 / REQ-6). They live in
@@ -463,6 +576,14 @@ function RefineView({
   });
   const draftInput = draft.text;
   const cursor = draft.cursor;
+  /**
+   * Transcript search mode (Ctrl+F). `query` is what the composer shows instead of
+   * the draft while searching; `index` is the position in the derived match list.
+   * The draft itself is never edited, and `draftBeforeSearch` is what Esc puts
+   * back (the same object, in case a future edit path does touch it).
+   */
+  const [search, setSearch] = useState<{ query: string; index: number } | null>(null);
+  const draftBeforeSearch = useRef<{ text: string; cursor: number }>({ text: "", cursor: 0 });
   /** Submitted prompts of this session, oldest first (REQ-34 / AC-34.1). */
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   /** Position while recalling: `null` means "not recalling". */
@@ -531,6 +652,16 @@ function RefineView({
   const [currentThinker, setCurrentThinker] = useState(cfg.thinker);
   const [currentExecutor, setCurrentExecutor] = useState(cfg.executor);
   const [focus, setFocus] = useState<FocusTarget>("composer");
+  /** Remembered conversation/stream share (Ctrl+↑/↓); `0.58` is the old fixed split. */
+  const [splitRatio, setSplitRatio] = useState(DEFAULT_SPLIT_RATIO);
+  /** A card the user maximized with `z`, or `null` for the split layout. */
+  const [maximized, setMaximized] = useState<MaximizedCard>(null);
+  /** `L` pins the log tail open and disables the idle auto-collapse. */
+  const [logsPinned, setLogsPinned] = useState(false);
+  /** True once the idle timer hid the log tail; a new log (or `L`) opens it again. */
+  const [logsCollapsed, setLogsCollapsed] = useState(false);
+  /** When the newest log entry arrived — the auto-collapse timer's anchor. */
+  const [lastLogAt, setLastLogAt] = useState(() => Date.now());
   const [chatScroll, setChatScroll] = useState(0);
   const [streamScroll, setStreamScroll] = useState(0);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -596,10 +727,10 @@ function RefineView({
     lastFlushTime.current = Date.now();
     const allLines = streamBuf.current.split("\n");
     const lines =
-      allLines.length > 1000
-        ? allLines.slice(-1000)
+      allLines.length > MAX_STREAM_ROWS
+        ? allLines.slice(-MAX_STREAM_ROWS)
         : allLines;
-    if (allLines.length > 1000) {
+    if (allLines.length > MAX_STREAM_ROWS) {
       streamBuf.current = lines.join("\n");
     }
     setStreamLines(lines);
@@ -654,22 +785,22 @@ function RefineView({
     const lines: FormattedLine[] = [];
     messages.forEach((m, mIdx) => {
       if (m.role === "system") {
-        lines.push({ id: `sys-${mIdx}`, type: "system", text: `─ ${m.text}` });
+        lines.push({ id: `sys-${mIdx}`, type: "system", text: `─ ${m.text}`, messageIndex: mIdx });
         return;
       }
       if (m.role === "user") {
-        lines.push({ id: `u-h-${mIdx}`, type: "user_header", text: "you »" });
+        lines.push({ id: `u-h-${mIdx}`, type: "user_header", text: "you »", messageIndex: mIdx });
         m.text.split("\n").forEach((l, lIdx) => {
-          lines.push({ id: `u-b-${mIdx}-${lIdx}`, type: "user_body", text: l });
+          lines.push({ id: `u-b-${mIdx}-${lIdx}`, type: "user_body", text: l, messageIndex: mIdx });
         });
-        lines.push({ id: `u-sp-${mIdx}`, type: "blank", text: "" });
+        lines.push({ id: `u-sp-${mIdx}`, type: "blank", text: "", messageIndex: mIdx });
         return;
       }
-      lines.push({ id: `a-h-${mIdx}`, type: "assistant_header", text: "thinker »" });
+      lines.push({ id: `a-h-${mIdx}`, type: "assistant_header", text: "thinker »", messageIndex: mIdx });
       m.text.split("\n").forEach((l, lIdx) => {
-        lines.push({ id: `a-b-${mIdx}-${lIdx}`, type: "assistant_body", text: l });
+        lines.push({ id: `a-b-${mIdx}-${lIdx}`, type: "assistant_body", text: l, messageIndex: mIdx });
       });
-      lines.push({ id: `a-sp-${mIdx}`, type: "blank", text: "" });
+      lines.push({ id: `a-sp-${mIdx}`, type: "blank", text: "", messageIndex: mIdx });
     });
     return lines;
   }, [messages]);
@@ -709,6 +840,9 @@ function RefineView({
           { level: e.level, message: e.message, timestamp: time },
         ];
         setLogs(logBuf.current);
+        // A new event is news: show the tail again and restart the idle clock.
+        setLogsCollapsed(false);
+        setLastLogAt(Date.now());
       }),
       events.on("usage", (e) => setUsage(formatUsage(e.total))),
       events.on("decision", (req) => setDecision(req)),
@@ -748,6 +882,7 @@ function RefineView({
     suggestionQuery !== null &&
     !suggestionsDismissed &&
     inputEnabled &&
+    search === null &&
     suggestionMatches.length > 0;
 
   // ── Frame budget (REQ-6 / REV-6001) ──────────────────────────────────────
@@ -756,10 +891,6 @@ function RefineView({
   // the composer, which is the part that has to give. That is what keeps the
   // input row and the footer on screen at any terminal size, with no line ever
   // spilling over it.
-  // The decision modal's own frame, reserved before the composer so a pending
-  // decision can never be the reason the input row scrolls away.
-  const decisionHeight = decision ? 6 : 0;
-
   let maxLogsAllowed = 0;
   if (terminalSize.rows >= 36) maxLogsAllowed = 4;
   else if (terminalSize.rows >= 30) maxLogsAllowed = 3;
@@ -768,12 +899,62 @@ function RefineView({
   // While the palette, the agent picker or a decision is open it owns the row
   // budget: the log tail steps aside so none of them can push the input row or
   // the frame off-screen (AC-28.4 / REV-303). A decision especially needs the
-  // rows, since the modal keeps its natural height instead of clipping options.
+  // rows: its frame is reserved in full before the composer (REQ-69).
   if (decision || suggestionsOpen || showAgentPicker || showProfilePicker) maxLogsAllowed = 0;
 
   const visibleLogs = logs.slice(-maxLogsAllowed);
-  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+  /** The visible/recent tail holds an error: it must stay visible instead of collapsing. */
+  const logsHaveError = visibleLogs.some((entry) => entry.level === "error");
+  /** Entries the footer advertises so `[L]` can bring them back. */
+  const hiddenLogs = logsCollapsed ? logs.length : 0;
+  const logsHeight =
+    !logsCollapsed && visibleLogs.length > 0
+      ? visibleLogs.length + cardChrome("tertiary").rows
+      : 0;
 
+  // Idle logs are ephemeral: after a minute without a new event the tail gives
+  // its rows back to the conversation. `L` pins it open (and disables this
+  // timer); an error in the visible/recent tail is not something the user can
+  // miss, so it keeps the tail open too. A stale error that has scrolled out of
+  // the tail does not disable auto-collapse for the rest of the session. A new
+  // log restarts both the clock and the visible tail through the event handler
+  // above.
+  useEffect(() => {
+    if (logsPinned || logsCollapsed || logs.length === 0 || logsHaveError) return;
+    const idleFor = Date.now() - lastLogAt;
+    const timer = setTimeout(
+      () => setLogsCollapsed(true),
+      Math.max(0, LOG_AUTO_COLLAPSE_MS - idleFor),
+    );
+    return () => clearTimeout(timer);
+  }, [logsPinned, logsCollapsed, logs, logsHaveError, lastLogAt]);
+
+  /** `L`: pin the tail open, or release it back to the idle timer. */
+  const toggleLogs = (): void => {
+    if (logsPinned) {
+      setLogsPinned(false);
+      // Releasing the pin starts a fresh minute instead of hiding the tail the
+      // same instant because the last event is already older than the timeout.
+      setLastLogAt(Date.now());
+      return;
+    }
+    setLogsPinned(true);
+    setLogsCollapsed(false);
+  };
+
+  // The palette is only reserved while it is actually open: opening it is what
+  // makes the header re-derive its plan (and possibly shrink), and closing it
+  // gives the art back (REQ-73).
+  const fullScreenModalOpen =
+    showModelPicker ||
+    showMcpInspector ||
+    showHelp ||
+    showSkills ||
+    showAgentPicker ||
+    showProfilePicker;
+  const viewportReservedRows =
+    (suggestionsOpen ? VIEWPORT_RESERVED_ROWS_OPEN : VIEWPORT_RESERVED_ROWS_CLOSED) +
+    (fullScreenModalOpen ? MODAL_COMPACT_RESERVE_ROWS : 0);
   // The header's own cost with the composer at its floor. Growing the composer
   // only ever *raises* the reserved-rows figure the art has to fit under, so the
   // header can only get shorter — this is the worst case the composer pays for.
@@ -783,10 +964,10 @@ function RefineView({
         columns: terminalSize.columns,
         rows: terminalSize.rows,
         contextRows: LIVE_HEADER_CONTEXT_ROWS,
-        reservedRows: VIEWPORT_RESERVED_ROWS,
+        reservedRows: viewportReservedRows,
         outerInset: LIVE_VIEW_OUTER_INSET,
       }).height,
-    [terminalSize.columns, terminalSize.rows],
+    [terminalSize.columns, terminalSize.rows, viewportReservedRows],
   );
   // The palette's tallest possible cost while it is open. It is reserved in full
   // so the composer can never claim rows the palette needs: the palette's own
@@ -795,6 +976,26 @@ function RefineView({
   const paletteReservedWhileOpen = suggestionsOpen
     ? MAX_SUGGESTION_ROWS + PALETTE_BORDER_ROWS
     : 0;
+  /**
+   * Rows the decision modal may claim: everything the frame has left once the
+   * header floor, the composer's floor, the footer, the log tail, the open
+   * palette and the conversation's own `CARD_MIN_ROWS` floor are paid for.
+   *
+   * The modal charges before the composer, but it can never charge more than
+   * what exists — `decisionModalHeight` turns this budget into the exact rows it
+   * will draw, windowing the body if it does not fit (REQ-69).
+   */
+  const decisionMaxRows = Math.max(
+    DECISION_MIN_ROWS,
+    terminalSize.rows -
+      headerFloorHeight -
+      INPUT_HEIGHT -
+      FOOTER_HEIGHT -
+      logsHeight -
+      paletteReservedWhileOpen -
+      CARD_MIN_ROWS,
+  );
+  const decisionHeight = decision ? decisionModalHeight(decision, decisionMaxRows) : 0;
   /**
    * Rows the frame needs however tall the composer gets: the header, the
    * composer's chrome (margin + border), the footer, the visible log tail, a
@@ -832,7 +1033,7 @@ function RefineView({
   // degrading instead of squeezing the conversation (AC-29.3).
   const headerPlan = useRavenHeaderPlan(
     LIVE_HEADER_CONTEXT_ROWS,
-    VIEWPORT_RESERVED_ROWS + (composerRows - 1),
+    viewportReservedRows + (composerRows - 1),
     terminalSize,
     LIVE_VIEW_OUTER_INSET,
   );
@@ -1017,7 +1218,7 @@ function RefineView({
 
   /**
    * Switch the active runtime (REQ-33). Shared by `/agent <id>` and the picker so
-   * both report the same busy/✓/⚠ feedback and never crash the view on failure.
+   * both report the same busy/✓/! feedback and never crash the view on failure.
    */
   const switchAgent = async (id: string): Promise<boolean> => {
     if (id === live.runtime.id) {
@@ -1358,7 +1559,7 @@ function RefineView({
       } catch (err) {
         const hint = configSaveStep(targetPath);
         emitSystem(failureFeedback("Model settings were not saved", hint, err));
-        // The modal stays open and shows its own ⚠ row with the same copy.
+        // The modal stays open and shows its own ! row with the same copy.
         throw new Error(failureHeadline("Model settings were not saved", hint));
       }
 
@@ -1416,10 +1617,12 @@ function RefineView({
   // nor does "work in flight", so the panel is never an empty box.
   const hasStreamContent = streamLines.some((line) => line.trim().length > 0);
   const showStreamPanel = hasStreamContent;
-  const chatHeight = showStreamPanel
-    ? Math.max(1, Math.floor(availableHeight * 0.58))
-    : Math.max(1, availableHeight);
-  const streamHeight = showStreamPanel ? Math.max(1, availableHeight - chatHeight) : 0;
+  const { chatHeight, streamHeight } = liveCardHeights({
+    availableHeight,
+    splitRatio,
+    maximized,
+    showStream: showStreamPanel,
+  });
 
   // ── Side panel (REQ-12) ──────────────────────────────────────────────────
   // The panel shares the row the cards live in, so it changes no frame budget: the
@@ -1490,15 +1693,14 @@ function RefineView({
     () => formatMcpBadge(mcpStatus, live.runtime.id),
     [mcpStatus, live.runtime],
   );
+  /** The raven's mood and blink phase, shared by the header and the hero. */
+  const mood = ravenMood({ busy, degraded: mcpBadge.status === "degraded" });
+  const blink = ravenBlink(spinnerIndex);
   /** The one reminder the panel and the hero's tip box show for this stage. */
   const tip = stageTip(stage);
   const panelData: PanelData = {
-    stageLabel: STAGE_LABEL[stage].label,
-    stageToken: STAGE_LABEL[stage].token,
-    busy,
-    spinner,
     agentName: currentRuntimeName,
-    mcpText: mcpBadge.text,
+    mcpText: mcpBadgeText(mcpBadge),
     mcpToken: mcpStatusToken(mcpBadge.status),
     git: gitSummary,
     memory: diagnostics?.memoryStats ?? null,
@@ -1511,16 +1713,30 @@ function RefineView({
   // The conversation's real width budget. Every message line is wrapped to it
   // here, once, so one `ChatRow` is exactly one terminal row and the scroll
   // offset counts the rows the user actually sees.
-  const chatBodyColumns = Math.max(1, cardsWidth - CARD_HORIZONTAL_CHROME);
+  const chatBodyColumns = Math.max(1, cardsWidth - cardChrome("primary").columns);
+  // The stream gets the same treatment: wrap once per text/width change and let
+  // every scroll count terminal rows, exactly like the conversation (ADR-74).
+  const streamBodyColumns = Math.max(1, cardsWidth - cardChrome("secondary").columns);
+  const streamRows = useMemo(() => {
+    const formatted = markdownBlockRows(streamLines, streamBodyColumns, streamLineColor);
+    return formatted.length > MAX_STREAM_ROWS ? formatted.slice(-MAX_STREAM_ROWS) : formatted;
+  }, [streamLines, streamBodyColumns]);
   const chatRows = useMemo<ChatRow[]>(() => {
     const rows: ChatRow[] = [];
-    for (const line of formattedChatLines) {
+    const texts = formattedChatLines.map((line) => line.text);
+    for (let lineIndex = 0; lineIndex < formattedChatLines.length; lineIndex++) {
+      const line = formattedChatLines[lineIndex]!;
       if (line.type === "blank") {
-        rows.push({ id: line.id, segments: [], paddingLeft: 0 });
+        rows.push({ id: line.id, segments: [], paddingLeft: 0, messageIndex: line.messageIndex });
         continue;
       }
       if (line.type === "user_header") {
-        rows.push({ id: line.id, segments: [{ text: "you »", color: THEME.ok, bold: true }], paddingLeft: 0 });
+        rows.push({
+          id: line.id,
+          segments: [{ text: "you »", color: THEME.ok, bold: true }],
+          paddingLeft: 0,
+          messageIndex: line.messageIndex,
+        });
         continue;
       }
       if (line.type === "assistant_header") {
@@ -1528,29 +1744,120 @@ function RefineView({
           id: line.id,
           segments: [{ text: "thinker »", color: THEME.accentStrong, bold: true }],
           paddingLeft: 0,
+          messageIndex: line.messageIndex,
         });
         continue;
       }
       const paddingLeft = line.type === "system" ? 0 : 2;
       const color = line.type === "system" ? THEME.system : THEME.text;
       const width = Math.max(1, chatBodyColumns - paddingLeft);
-      wrapSegments(markdownSegments(line.text, color), width).forEach((segments, index) => {
-        rows.push({ id: `${line.id}-w${index}`, segments, paddingLeft });
+      // A table needs its whole block to know its column widths: format it
+      // here, where the contiguous rows are still in hand, and emit one
+      // pre-wrapped row per source row.
+      if (isTableHeader(texts, lineIndex)) {
+        const end = tableBlockEnd(texts, lineIndex);
+        tableBlock(texts.slice(lineIndex, end), width).forEach((segments, index) => {
+          rows.push({
+            id: `${line.id}-t${index}`,
+            segments,
+            paddingLeft,
+            messageIndex: line.messageIndex,
+          });
+        });
+        lineIndex = end - 1;
+        continue;
+      }
+      wrapSegments(markdownSegments(line.text, color, width), width).forEach((segments, index) => {
+        rows.push({ id: `${line.id}-w${index}`, segments, paddingLeft, messageIndex: line.messageIndex });
       });
     }
     return rows;
   }, [formattedChatLines, chatBodyColumns]);
 
-  // Never leave focus on a card that is not rendered.
-  useEffect(() => {
-    if (!showStreamPanel && focus === "stream") setFocus("chat");
-  }, [showStreamPanel, focus]);
+  /**
+   * First terminal row of every message (REQ-72 / AC-72.3). Search jumps by
+   * message, never by wrapped row: a message is the unit the user typed or read,
+   * and its first row is the only stable anchor across card resizes.
+   */
+  const messageStartRow = useMemo<number[]>(() => {
+    const starts: number[] = [];
+    chatRows.forEach((row, index) => {
+      if (row.messageIndex < 0 || starts[row.messageIndex] !== undefined) return;
+      starts[row.messageIndex] = index;
+    });
+    return starts;
+  }, [chatRows]);
 
-  const visibleChatLinesCount = Math.max(1, chatHeight - 3);
-  const visibleStreamLinesCount = Math.max(1, streamHeight - 3);
+  // Never leave focus on a card the layout hid: a maximized card owns the row,
+  // and a stream that disappeared entirely hands focus back to the conversation.
+  // A remembered maximized card is released when its stream content is gone, so
+  // it cannot reappear maximized after the next turn starts.
+  useEffect(() => {
+    if (!showStreamPanel && maximized !== null) setMaximized(null);
+  }, [showStreamPanel, maximized]);
+  useEffect(() => {
+    if (streamHeight <= 0 && focus === "stream") {
+      setFocus(chatHeight > 0 ? "chat" : "composer");
+    } else if (chatHeight <= 0 && focus === "chat") {
+      setFocus(streamHeight > 0 ? "stream" : "composer");
+    }
+  }, [streamHeight, chatHeight, focus]);
+
+  const visibleChatLinesCount = Math.max(1, chatHeight - cardChrome("primary").rows);
+  const visibleStreamLinesCount = Math.max(1, streamHeight - cardChrome("secondary").rows);
 
   const maxChatScroll = Math.max(0, chatRows.length - visibleChatLinesCount);
-  const maxStreamScroll = Math.max(0, streamLines.length - visibleStreamLinesCount);
+  const maxStreamScroll = Math.max(0, streamRows.length - visibleStreamLinesCount);
+
+  // ── Transcript search (Ctrl+F) and clipboard (y) ─────────────────────────
+  // The query is matched against the messages, and the card title numbers the
+  // hits; Enter maps the selected message back to its first painted row.
+  const searchMatches = useMemo(
+    () => findMatches(messages, search?.query ?? ""),
+    [messages, search?.query],
+  );
+  const searchIndex =
+    searchMatches.length === 0 ? 0 : Math.min(search?.index ?? 0, searchMatches.length - 1);
+  const searchMatchText = search === null ? "" : matchLabel(searchIndex, searchMatches.length);
+  const searchTextWidth = Math.max(
+    1,
+    terminalSize.columns - COMPOSER_TEXT_INSET - SEARCH_PROMPT_EXTRA_COLUMNS,
+  );
+  const searchLayout = useMemo(
+    () => layoutComposer(search?.query ?? "", (search?.query ?? "").length, searchTextWidth),
+    [search?.query, searchTextWidth],
+  );
+
+  /** Scroll the conversation so `messageIndex`'s first row is at the top. */
+  const jumpToMessage = (messageIndex: number): void => {
+    if (messageIndex < 0) return;
+    const row = messageStartRow[messageIndex];
+    if (row === undefined) return;
+    setChatScroll(Math.min(maxChatScroll, Math.max(0, maxChatScroll - row)));
+  };
+
+  /**
+   * `y` on the conversation: copy the newest assistant message through OSC 52.
+   * One system message reports the channel and its limits — never a claim that
+   * the clipboard changed, because a terminal is free to ignore the sequence.
+   */
+  const copyLastAssistant = (): void => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (message.role !== "assistant") continue;
+      if (copyToTerminal(message.text, stdout)) {
+        emitSystem(
+          okFeedback(
+            `Copied ${formatCharCount(message.text.length)} chars (OSC 52 — some terminals ignore it)`,
+          ),
+        );
+      } else {
+        emitSystem(warnFeedback("Clipboard payload too large — 100 KB max"));
+      }
+      return;
+    }
+    emitSystem(warnFeedback("Nothing to copy yet — no assistant message in the conversation."));
+  };
 
   useInput((input, key) => {
     if (
@@ -1564,6 +1871,9 @@ function RefineView({
       return;
     }
     if (decision) {
+      // The modal owns ↑/↓ while its body is windowed: a scroll key must reach it
+      // instead of being echoed back as "press a number" (REQ-69).
+      if (key.upArrow || key.downArrow || key.pageUp || key.pageDown) return;
       const resolved = resolveDecisionKey(input, key);
       if (resolved) {
         live.resolveDecision(resolved.choice, resolved.answers);
@@ -1578,6 +1888,66 @@ function RefineView({
               : "Press Enter to accept, or d to skip this question.",
         });
       }
+      return;
+    }
+
+    // Transcript search owns the keyboard while it is open (Ctrl+F). Esc puts
+    // the draft back, Enter jumps to the selected message and closes; ↑/↓ walk
+    // the hit list. It is handled before the palette and before any focus or
+    // editing branch, so a search query can never be typed into the draft.
+    if (search !== null) {
+      // Every key the search branch consumes is "another key" for the two-step
+      // abort: an arming from before search must not survive it.
+      if (confirmEsc) setConfirmEsc(false);
+      if (key.ctrl && input.toLowerCase() === "f") {
+        setDraft(draftBeforeSearch.current);
+        setSearch(null);
+        return;
+      }
+      if (key.escape) {
+        setDraft(draftBeforeSearch.current);
+        setSearch(null);
+        return;
+      }
+      if (key.return) {
+        const match = searchMatches[searchIndex];
+        if (match !== undefined) jumpToMessage(match);
+        setSearch(null);
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const delta = key.upArrow ? -1 : 1;
+        setSearch((current) => {
+          if (current === null) return current;
+          const size = searchMatches.length;
+          if (size === 0) return current;
+          const at = Math.min(current.index, size - 1);
+          return { ...current, index: (at + delta + size) % size };
+        });
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setSearch((current) =>
+          current === null ? current : { query: current.query.slice(0, -1), index: 0 },
+        );
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+      const typed = sanitizeComposerInput(input);
+      if (typed.length > 0) {
+        setSearch((current) =>
+          current === null ? current : { query: current.query + typed, index: 0 },
+        );
+      }
+      return;
+    }
+
+    // Ctrl+F opens transcript search from any focus — and while a turn is busy —
+    // so it deliberately sits before the Ctrl/Meta guard further below.
+    if (key.ctrl && input.toLowerCase() === "f") {
+      if (confirmEsc) setConfirmEsc(false);
+      draftBeforeSearch.current = draft;
+      setSearch({ query: "", index: 0 });
       return;
     }
 
@@ -1645,12 +2015,34 @@ function RefineView({
       return;
     }
     if (confirmEsc) setConfirmEsc(false);
+    // `L` pins/releases the log tail, but only from a focused card: in the
+    // composer it is ordinary text (uppercase on purpose, because `[L]` is the
+    // hint the footer advertises). Tab first, then `L`.
+    if (input === "L" && focus !== "composer") {
+      toggleLogs();
+      return;
+    }
+    // `g`/`G` jump to the start/end of the focused transcript. From a card only:
+    // in the composer they are ordinary letters and must be typed as such.
+    if ((input === "g" || input === "G") && focus !== "composer" && !key.ctrl && !key.meta) {
+      if (focus === "stream") setStreamScroll(input === "g" ? maxStreamScroll : 0);
+      else setChatScroll(input === "g" ? maxChatScroll : 0);
+      return;
+    }
+    // `y` copies the newest assistant message with OSC 52. It is a card key too:
+    // in the composer it stays draft text, and the agent stream has nothing to
+    // copy, so it is swallowed rather than echoing a stray letter into the draft.
+    if (input === "y" && focus !== "composer" && !key.ctrl && !key.meta) {
+      if (focus === "chat") copyLastAssistant();
+      return;
+    }
     if (key.tab) {
       // Tab moves focus and nothing else: composer → conversation → stream →
-      // composer (Shift+Tab reverses). A collapsed stream card is skipped, so the
-      // key always lands somewhere visible. It must never append a notice to the
-      // chat: one press, one line is how a "helpful" hint becomes a wall of text.
-      setFocus((current) => nextFocus(current, showStreamPanel, key.shift));
+      // composer (Shift+Tab reverses). A collapsed (or maximized-away) card is
+      // skipped, so the key always lands somewhere visible. It must never append
+      // a notice to the chat: one press, one line is how a "helpful" hint becomes
+      // a wall of text.
+      setFocus((current) => nextFocus(current, streamHeight > 0, key.shift, chatHeight > 0));
       return;
     }
 
@@ -1664,6 +2056,14 @@ function RefineView({
     if (key.pageDown) {
       if (focus === "stream") setStreamScroll((s) => Math.max(s - 4, 0));
       else setChatScroll((s) => Math.max(s - 4, 0));
+      return;
+    }
+
+    // Ctrl+↑/↓ move the card split, but only from a focused card: in the
+    // composer those chords must stay out of the draft (and the terminal).
+    if (key.ctrl && (key.upArrow || key.downArrow) && focus !== "composer") {
+      const delta = key.upArrow ? SPLIT_RATIO_STEP : -SPLIT_RATIO_STEP;
+      setSplitRatio((current) => adjustSplitRatio(current, delta));
       return;
     }
 
@@ -1721,6 +2121,14 @@ function RefineView({
         live.requestAbort();
         failSession(new LiveAbortError());
       }
+      return;
+    }
+
+    // `z` maximizes the focused card and `z` again restores the split. It only
+    // fires from a card: in the composer it is ordinary text (and must be
+    // inserted as such), which is why it sits after the input guard above.
+    if (focus !== "composer" && input === "z" && !key.ctrl && !key.meta) {
+      setMaximized((current) => (current === focus ? null : focus));
       return;
     }
 
@@ -1810,9 +2218,25 @@ function RefineView({
   const chatStart = Math.max(0, chatRows.length - visibleChatLinesCount - chatScroll);
   const visibleChatLines = chatRows.slice(chatStart, chatStart + visibleChatLinesCount);
 
-  // Slice visible lines for Stream
-  const streamStart = Math.max(0, streamLines.length - visibleStreamLinesCount - streamScroll);
-  const visibleStreamLines = streamLines.slice(streamStart, streamStart + visibleStreamLinesCount);
+  // Slice visible rows for Stream
+  const streamStart = Math.max(0, streamRows.length - visibleStreamLinesCount - streamScroll);
+  const visibleStreamRows = streamRows.slice(streamStart, streamStart + visibleStreamLinesCount);
+
+  // One footer policy for both dashboards (H-13): the left cell belongs to the
+  // focused surface, the right cell keeps the usage figure. The stage lives in
+  // the header badge, so the footer does not repeat it.
+  const footer = footerHints({
+    focus,
+    paletteOpen: suggestionsOpen,
+    busy,
+    maximized,
+    usage,
+    hiddenLogs,
+    search: search !== null,
+    searchMatches: searchMatches.length,
+    searchMatchText,
+    columns: terminalSize.columns - LIVE_VIEW_OUTER_INSET,
+  });
 
   return (
     <Box
@@ -1827,12 +2251,10 @@ function RefineView({
         stage={stage}
         cfg={cfg}
         spinner={spinner}
-        runtimeName={currentRuntimeName}
+        mood={mood}
+        blink={blink}
         thinker={currentThinker}
         executor={currentExecutor}
-        mcpBadge={mcpBadge}
-        git={gitSummary}
-        context={sessionContext}
       />
 
       {showModelPicker ? (
@@ -1888,27 +2310,34 @@ function RefineView({
         // width, so this row is pixel-for-pixel what the column used to be.
         <Box flexDirection="row" width={terminalSize.columns - LIVE_VIEW_OUTER_INSET}>
           <Box flexDirection="column" width={cardsWidth}>
-            <ScrollableChatCard
-              rows={visibleChatLines}
-              totalRows={chatRows.length}
-              scrollOffset={chatScroll}
-              maxScroll={maxChatScroll}
-              isFocused={focus === "chat"}
-              busy={busy}
-              spinner={spinner}
-              height={chatHeight}
-              width={cardsWidth}
-              // One home per tip: the panel already carries it on a wide
-              // terminal, so the hero's tip box only fills that role when there
-              // is no panel beside the conversation.
-              tip={panelPlan.visible ? "" : tip}
-            />
+            {chatHeight > 0 && (
+              <ScrollableChatCard
+                rows={visibleChatLines}
+                totalRows={chatRows.length}
+                scrollOffset={chatScroll}
+                maxScroll={maxChatScroll}
+                isFocused={focus === "chat"}
+                busy={busy}
+                spinner={spinner}
+                accentToken={busy ? STAGE_LABEL[stage].token : "accent"}
+                mood={mood}
+                blink={blink}
+                height={chatHeight}
+                width={cardsWidth}
+                matchText={searchMatchText}
+                // One home per tip: the panel already carries it on a wide
+                // terminal, so the hero's tip box only fills that role when there
+                // is no panel beside the conversation.
+                tip={panelPlan.visible ? "" : tip}
+              />
+            )}
 
-            {showStreamPanel && (
+            {showStreamPanel && streamHeight > 0 && (
               <ScrollableStreamCard
-                lines={visibleStreamLines}
-                totalLines={streamLines.length}
+                rows={visibleStreamRows}
+                totalRows={streamRows.length}
                 scrollOffset={streamScroll}
+                maxScroll={maxStreamScroll}
                 chars={streamChars}
                 isFocused={focus === "stream"}
                 spinner={spinner}
@@ -1923,9 +2352,9 @@ function RefineView({
         </Box>
       )}
 
-      {visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
+      {!logsCollapsed && visibleLogs.length > 0 && <LogsCard logs={visibleLogs} />}
 
-      {decision ? <DecisionModal req={decision} /> : null}
+      {decision ? <DecisionModal req={decision} maxRows={decisionMaxRows} /> : null}
 
       {!showModelPicker &&
         !showMcpInspector &&
@@ -1935,15 +2364,21 @@ function RefineView({
         !showProfilePicker && (
         <>
           <ChatInputRow
-            value={draftInput}
-            enabled={inputEnabled}
-            isFocused={focus === "composer"}
-            placeholder="Message...  type / for commands · /draft when ready · /mcp to inspect"
-            historyHint={historyHint}
-            width={composerTextWidth}
-            rows={composerLayout.rows}
-            cursorRow={composerLayout.cursorRow}
-            cursorCol={composerLayout.cursorCol}
+            value={search ? search.query : draftInput}
+            enabled={search ? true : inputEnabled}
+            isFocused={search ? true : focus === "composer"}
+            placeholder={
+              search
+                ? "search the conversation…"
+                : "Message...  type / for commands · /draft when ready · /mcp to inspect"
+            }
+            historyHint={search ? "" : historyHint}
+            prompt={search ? SEARCH_PROMPT : COMPOSER_PROMPT}
+            borderColor={search ? THEME.warn : undefined}
+            width={search ? searchTextWidth : composerTextWidth}
+            rows={search ? searchLayout.rows : composerLayout.rows}
+            cursorRow={search ? searchLayout.cursorRow : composerLayout.cursorRow}
+            cursorCol={search ? searchLayout.cursorCol : composerLayout.cursorCol}
             visibleRows={composerRows}
           />
           {suggestionsOpen && (
@@ -1953,26 +2388,18 @@ function RefineView({
               maxRows={suggestionRowCap}
             />
           )}
-          {/* Single-line footer (AC-28.4): the hint must never wrap, or it costs
-              a row the layout budget did not reserve and pushes the frame off
-              screen. The stage label never shrinks; the hint truncates. */}
+          {/* Single-line footer (AC-28.4 / H-13): `footerHints` already clamped
+              both cells to the frame width through `headerValue`, so the hint
+              never wraps into a row the layout budget did not reserve. */}
           <Box justifyContent="space-between" height={FOOTER_HEIGHT} overflow="hidden" flexDirection="row">
-            <Box flexShrink={1} overflow="hidden">
-              {suggestionsOpen ? (
-                <Text color={THEME.muted} wrap="truncate">[↑/↓] Select · [Tab] Accept · [Enter] Run · [Esc] Dismiss</Text>
-              ) : (
-                <Text color={THEME.muted} wrap="truncate">
-                  {`[Tab] Focus: ${focus === "composer" ? "input" : focus} · [↑/↓] ${
-                    focus === "composer" ? "History" : "Scroll"
-                  } · [PgUp/Dn] Scroll · [Enter] Send · / commands`}
-                </Text>
-              )}
-            </Box>
-            <Box flexShrink={0}>
+            <Text color={search ? THEME.warn : THEME.muted} wrap="truncate">
+              {footer.left}
+            </Text>
+            {footer.right ? (
               <Text color={THEME.muted} wrap="truncate">
-                {usage ? `${usage} · ` : ""}stage: {STAGE_LABEL[stage].label}
+                {footer.right}
               </Text>
-            </Box>
+            ) : null}
           </Box>
         </>
       )}
@@ -1985,69 +2412,46 @@ function LiveHeader({
   stage,
   cfg,
   spinner,
-  runtimeName,
+  mood,
+  blink,
   thinker,
   executor,
-  mcpBadge,
-  git,
-  context,
 }: {
   plan: RavenHeaderPlan;
   stage: LiveStage;
   cfg: RunConfig;
   spinner: string;
-  runtimeName: string;
+  /** The raven's resolved mood (busy > degraded > idle). */
+  mood: RavenMood;
+  /** The thinking animation's closed-eye frame. */
+  blink: boolean;
   thinker: string;
   executor: string;
-  /** The attributed MCP badge (already resolved by the caller, AC-32.4). */
-  mcpBadge: McpBadge;
-  /** The working tree as last probed, or `null` while nothing is known. */
-  git: GitSummary | null;
-  /** The conversation's own size, for the header's context counter. */
-  context: ContextStat;
 }) {
   const s = STAGE_LABEL[stage];
-  // Presence over decoration (AC-29.4): the raven brand is followed by the live
-  // stage, a (truthful) MCP badge, the active runtime, the project path and the
-  // active models. Every dynamic value is sanitized and clamped to the columns
-  // actually left over, and detail that no longer fits is dropped rather than
-  // wrapped, so each row costs exactly the one line the budget reserved (AC-29.3).
+  // Identity and ephemeral state only (ADR-73): row 1 is the live stage badge
+  // and the project the session runs on; row 2 is the two active models. The
+  // environment (agent, MCP, git, sandbox, Muninn, context size) has one home in
+  // the side panel, so the header stops repeating it. Every dynamic value is
+  // sanitized and clamped to the columns actually left over, and detail that no
+  // longer fits is dropped rather than wrapped, so each row costs exactly the
+  // one line the budget reserved (AC-29.3).
   const rowWidth = plan.contentWidth;
   const gap = 2;
   const sep = " · ";
   const stageBadge = `[${spinner} ${s.label}]`;
 
-  // Row 1: right cell, left to right — MCP badge → runtime → project path. The
-  // badge attributes its source agent, so it gets a wider budget, clamped to the
-  // columns the right cell actually has (AC-29.3) before the rest is laid out.
-  const rightBudget = Math.max(0, rowWidth - stageBadge.length - gap - 2);
-  const mcpText = headerValue(mcpBadge.text, Math.max(0, Math.min(40, rightBudget)));
-  const runtimeLabel = `${sep}runtime: `;
-  const runtimeBudget = Math.max(6, Math.min(24, Math.floor(rightBudget * 0.25)));
-  const runtimeValue =
-    rightBudget - mcpText.length - runtimeLabel.length >= runtimeBudget
-      ? headerValue(runtimeName, runtimeBudget)
-      : "";
-  const projectRoom =
-    rightBudget - mcpText.length - (runtimeValue ? runtimeLabel.length + runtimeValue.length : 0) - sep.length;
-  const projectValue = projectRoom >= 10 ? headerValue(cfg.projectPath, projectRoom) : "";
+  // Row 1: the stage badge on the left, the project path on the right. With the
+  // MCP badge and the runtime name gone from this row, the path gets every
+  // column the badge does not need; `gap` keeps the two cells from touching and
+  // `sep` is the ` · ` prefix the project cell draws.
+  const projectBudget = Math.max(0, rowWidth - stageBadge.length - gap - sep.length);
+  const projectValue = headerValue(cfg.projectPath, projectBudget);
 
-  // Row 2 (REQ-12): the models on the left, the session's own status on the
-  // right — branch and whether the tree is dirty, the worktree sandbox, and the
-  // conversation counter. The status cell is whole-or-nothing: it only claims
-  // columns while the models keep `HEADER_MIN_MODEL_COLUMNS` of their own, so a
-  // squeezed row loses the summary rather than the model names, and it is
-  // clamped to its share of the row so it can never wrap.
-  const statusRoom = Math.min(
-    Math.max(0, rowWidth - HEADER_MIN_MODEL_COLUMNS),
-    Math.floor(rowWidth * HEADER_STATUS_SHARE),
-  );
-  const statusText = statusRoom > 0 ? sessionStat(git, context, statusRoom) : "";
-  const modelsWidth = rowWidth - (statusText.length > 0 ? statusText.length + gap : 0);
-  const modelLabels = "thinker: ".length + "executor: ".length;
-  const modelRoom = modelsWidth - gap - modelLabels - 2;
+  // Row 2 (REQ-12): the models, and nothing else.
+  const modelRoom = rowWidth - gap - "thinker: ".length - "executor: ".length - 2;
   const bothModels = modelRoom >= 16;
-  const thinkerBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : modelsWidth - "thinker: ".length - gap);
+  const thinkerBudget = Math.max(4, bothModels ? Math.ceil(modelRoom / 2) : rowWidth - "thinker: ".length - gap);
   const safeThinker = headerValue(thinker, thinkerBudget);
   const executorBudget = modelRoom - safeThinker.length;
   const safeExecutor = bothModels && executorBudget >= 4 ? headerValue(executor, executorBudget) : "";
@@ -2055,6 +2459,8 @@ function LiveHeader({
   return (
     <RavenHeader
       plan={plan}
+      mood={mood}
+      blink={blink}
       suffix="LIVE"
       rows={[
         [
@@ -2062,19 +2468,6 @@ function LiveHeader({
             {stageBadge}
           </Text>,
           <>
-            <Text key="mcp" color={mcpStatusToken(mcpBadge.status)} wrap="truncate">
-              {mcpText}
-            </Text>
-            {runtimeValue ? (
-              <>
-                <Text key="runtime-label" color={THEME.muted} wrap="truncate">
-                  {runtimeLabel}
-                </Text>
-                <Text key="runtime" color={THEME.warn} wrap="truncate">
-                  {runtimeValue}
-                </Text>
-              </>
-            ) : null}
             {projectValue ? (
               <Text key="project" color={THEME.muted} wrap="truncate">
                 {`${sep}${projectValue}`}
@@ -2099,13 +2492,6 @@ function LiveHeader({
                 </>,
               ]
             : []),
-          ...(statusText
-            ? [
-                <Text key="status" color={THEME.muted} wrap="truncate">
-                  {statusText}
-                </Text>,
-              ]
-            : []),
         ],
       ]}
     />
@@ -2120,8 +2506,12 @@ function ScrollableChatCard({
   isFocused,
   busy,
   spinner,
+  accentToken,
+  mood,
+  blink,
   height,
   width,
+  matchText,
   tip,
 }: {
   rows: ChatRow[];
@@ -2131,9 +2521,17 @@ function ScrollableChatCard({
   isFocused: boolean;
   busy: boolean;
   spinner: string;
+  /** The active stage's token while a turn is in flight; `accent` when idle. */
+  accentToken: ThemeToken;
+  /** The raven mood the empty-state hero draws. */
+  mood: RavenMood;
+  /** The thinking animation's closed-eye frame, shared with the header. */
+  blink: boolean;
   height: number;
   /** Columns the card occupies (the panel takes the rest of the row). */
   width: number;
+  /** `n/m` while transcript search is open and has hits (`""` otherwise). */
+  matchText?: string;
   /** The stage's reminder, shown in the hero's tip box while the card is empty. */
   tip: string;
 }) {
@@ -2143,32 +2541,21 @@ function ScrollableChatCard({
   // terminal height on a short terminal (AC-31.3).
   const bodyRows = Math.max(
     0,
-    Math.max(height, CARD_MIN_ROWS) - CARD_BORDER_ROWS - CARD_TITLE_ROWS,
+    Math.max(height, CARD_MIN_ROWS) - cardChrome("primary").rows,
   );
   /** Columns the body really has — the hero's own width budget (REQ-12). */
-  const bodyColumns = Math.max(0, width - CARD_HORIZONTAL_CHROME);
+  const bodyColumns = Math.max(0, width - cardChrome("primary").columns);
   return (
-    <Box
-      borderStyle="round"
-      borderColor={isFocused ? THEME.borderFocus : THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      height={height}
-      width={width}
-      minHeight={CARD_MIN_ROWS}
-      // The rows are pre-wrapped to this card's width, so nothing should ever
-      // overflow; clipping is the last line of defence against a stray glyph
-      // painting over the composer below the card.
-      overflow="hidden"
-    >
-      {/* The title row is exactly one clipped row: with the side panel beside it
-          the card can be much narrower than the terminal, and a wrapped title
-          would cost a body row the layout never reserved (REV-6001). */}
-      <Box justifyContent="space-between" height={CARD_TITLE_ROWS} overflow="hidden">
-        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent} wrap="truncate">
-          Conversation {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
-        </Text>
-        <Box flexShrink={1} overflow="hidden">
+    <Card
+      tone="primary"
+      title={`Conversation ${isFocused ? "● [Focused]" : "○ [Tab to focus]"}`}
+      titleRight={
+        <>
+          {matchText && (
+            <Text color={THEME.warn} wrap="truncate">
+              {`match ${matchText} `}
+            </Text>
+          )}
           {maxScroll > 0 && (
             <Text color={THEME.muted} wrap="truncate">
               {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
@@ -2176,10 +2563,16 @@ function ScrollableChatCard({
             </Text>
           )}
           {busy && <Text color={THEME.warn} wrap="truncate">{spinner} thinking...</Text>}
-        </Box>
-      </Box>
+        </>
+      }
+      focused={isFocused}
+      accentToken={accentToken}
+      height={height}
+      width={width}
+      minHeight={CARD_MIN_ROWS}
+    >
       {rows.length === 0 ? (
-        <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} />
+        <LiveHero rows={bodyRows} columns={bodyColumns} tip={tip} mood={mood} blink={blink} />
       ) : (
         rows.map((row) => {
           if (row.segments.length === 0) {
@@ -2194,14 +2587,15 @@ function ScrollableChatCard({
           );
         })
       )}
-    </Box>
+    </Card>
   );
 }
 
 function ScrollableStreamCard({
-  lines,
-  totalLines,
+  rows,
+  totalRows,
   scrollOffset,
+  maxScroll,
   chars,
   isFocused,
   spinner,
@@ -2209,9 +2603,11 @@ function ScrollableStreamCard({
   height,
   width,
 }: {
-  lines: string[];
-  totalLines: number;
+  /** Pre-wrapped terminal rows (`markdownBlockRows`), one per painted row. */
+  rows: MdSegment[][];
+  totalRows: number;
   scrollOffset: number;
+  maxScroll: number;
   chars: number;
   isFocused: boolean;
   spinner: string;
@@ -2221,46 +2617,44 @@ function ScrollableStreamCard({
   width: number;
 }) {
   return (
-    <Box
-      borderStyle="round"
-      borderColor={isFocused ? THEME.borderFocus : THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      height={height}
-      width={width}
-      minHeight={CARD_MIN_ROWS}
-    >
-      {/* One clipped title row, exactly like the conversation card: beside the
-          side panel the card is narrower than the terminal and a wrapped title
-          would steal a body row from the stream. */}
-      <Box justifyContent="space-between" height={CARD_TITLE_ROWS} overflow="hidden">
-        <Text bold color={isFocused ? THEME.borderFocus : THEME.accent} wrap="truncate">
-          THINKING & LIVE AGENT STREAM {isFocused ? "● [Focused]" : "○ [Tab to focus]"}
-        </Text>
-        <Box flexShrink={1} overflow="hidden">
+    <Card
+      tone="secondary"
+      title={`THINKING & LIVE AGENT STREAM ${isFocused ? "● [Focused]" : "○ [Tab to focus]"}`}
+      titleRight={
+        <>
+          {maxScroll > 0 && (
+            <Text color={THEME.muted} wrap="truncate">
+              {scrollOffset > 0 ? `▲ +${scrollOffset} up ` : "▼ bottom "}
+              ({totalRows} lines){" "}
+            </Text>
+          )}
           {chars > 0 && (
             <Text color={THEME.muted} wrap="truncate">
               {(chars / 1024).toFixed(1)} KB{" "}
             </Text>
           )}
           {busy && <Text color={THEME.warn} wrap="truncate">{spinner} streaming </Text>}
-        </Box>
-      </Box>
-      {lines.length === 0 ? (
+        </>
+      }
+      focused={isFocused}
+      height={height}
+      width={width}
+      minHeight={CARD_MIN_ROWS}
+    >
+      {rows.length === 0 ? (
         <Box justifyContent="center" marginY={0}>
           <Text color={THEME.muted}>Real-time thinking and agent output will stream here while the model runs.</Text>
         </Box>
       ) : (
-        lines.map((l, i) => (
-          <MarkdownLine
-            key={i}
-            text={l}
-            defaultColor={l.startsWith("⚡") ? THEME.warn : l.startsWith("✓") ? THEME.ok : THEME.muted}
-            wrap="truncate"
-          />
-        ))
+        <Box flexDirection="column" overflow="hidden">
+          {rows.map((segments, index) => (
+            <Text key={`s-${index}`} wrap="truncate">
+              {segments.length === 0 ? " " : renderSegments(segments, `s-${index}`)}
+            </Text>
+          ))}
+        </Box>
       )}
-    </Box>
+    </Card>
   );
 }
 
@@ -2280,6 +2674,8 @@ function ChatInputRow({
   isFocused,
   placeholder,
   historyHint = "",
+  prompt = COMPOSER_PROMPT,
+  borderColor,
   width,
   rows,
   cursorRow,
@@ -2293,6 +2689,10 @@ function ChatInputRow({
   placeholder: string;
   /** Recall hint shown beside the first row (`""` hides it). */
   historyHint?: string;
+  /** Prompt glyph before the first row; search swaps `❯ ` for `find ❯ `. */
+  prompt?: string;
+  /** Forces the border colour (the search mode paints `THEME.warn`). */
+  borderColor?: string;
   /** Columns one draft row may occupy, caret included. */
   width: number;
   /** Every wrapped row of the draft. */
@@ -2304,11 +2704,10 @@ function ChatInputRow({
   /** Content rows the box shows (the composer's budget); the rest scroll. */
   visibleRows: number;
 }) {
-  const accent: string | undefined = !enabled
-    ? THEME.border
-    : isFocused
-      ? THEME.borderFocus
-      : THEME.executor;
+  const accent: string | undefined =
+    borderColor ??
+    (!enabled ? THEME.border : isFocused ? THEME.borderFocus : THEME.executor);
+  const continuation = " ".repeat(prompt.length);
   const contentRows = Math.max(1, visibleRows);
   const scroll = composerScroll(cursorRow, rows.length, contentRows);
   const window = rows.slice(scroll, scroll + contentRows);
@@ -2332,7 +2731,7 @@ function ChatInputRow({
             const row = scroll + index;
             return (
               <Box key={row} flexDirection="row" height={1}>
-                <Text bold color={accent}>{index === 0 ? "❯ " : "  "}</Text>
+                <Text bold color={accent}>{index === 0 ? prompt : continuation}</Text>
                 <CursorLine
                   line={line}
                   width={width}
@@ -2344,7 +2743,7 @@ function ChatInputRow({
           })
         ) : (
           <Box flexDirection="row" height={1}>
-            <Text bold color={accent}>{enabled ? "❯ " : "· "}</Text>
+            <Text bold color={accent}>{enabled ? prompt : "· "}</Text>
             <Text color={THEME.muted} wrap="truncate">
               {placeholder}
             </Text>

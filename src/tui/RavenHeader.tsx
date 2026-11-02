@@ -1,9 +1,10 @@
 import React, { useMemo } from "react";
 import { Box, Text } from "ink";
-import { HUGINN_WORDMARK, RAVEN_MARK, artWidth } from "../brand.js";
+import stringWidth from "string-width";
+import { HUGINN_WORDMARK, RAVEN_MARK, artWidth, ravenMark, type RavenMood } from "../brand.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { useTerminalSize, type TerminalSize } from "./useTerminalSize.js";
-import { THEME } from "./theme.js";
+import { THEME, ravenMoodToken } from "./theme.js";
 
 /**
  * Shared TUI brand header (REQ-29 / ADR-29).
@@ -30,6 +31,11 @@ export const RAVEN_ART_GAP = 2;
  */
 export const RAVEN_FULL_MIN_COLUMNS = 72;
 
+/** The one-row brand fallback: the raven's head beside the wordmark. */
+export const COMPACT_BRAND = "<(o  HUGINN";
+/** Visible width of {@link COMPACT_BRAND}; the narrowest art the header will draw. */
+export const COMPACT_BRAND_WIDTH = COMPACT_BRAND.length;
+
 export const RAVEN_MARK_ROWS = RAVEN_MARK.length;
 export const RAVEN_MARK_WIDTH = artWidth(RAVEN_MARK);
 export const WORDMARK_ROWS = HUGINN_WORDMARK.length;
@@ -51,7 +57,7 @@ export const RAVEN_VIEWPORT_RESERVED_ROWS = 21;
 /** Rows of vertical offset applied to the mark inside the wordmark block. */
 const MARK_TOP_OFFSET = Math.floor((RAVEN_ART_ROWS - RAVEN_MARK_ROWS) / 2);
 
-export type RavenHeaderVariant = "full" | "wordmark" | "text";
+export type RavenHeaderVariant = "full" | "wordmark" | "compact" | "text";
 
 export interface RavenHeaderSizing {
   /** Terminal width in columns. */
@@ -91,7 +97,18 @@ export interface RavenArtRow {
 }
 
 /** One row of the composed art block, ready to render as two adjacent `Text`s. */
-export function buildRavenArtRows(variant: Exclude<RavenHeaderVariant, "text">): RavenArtRow[] {
+export function buildRavenArtRows(
+  variant: Exclude<RavenHeaderVariant, "text">,
+  mood: RavenMood = "idle",
+  blink = false,
+): RavenArtRow[] {
+  // Compact is a single line: the raven's head, the art gap and the wordmark.
+  // It is the last art rung before plain text, so it reuses the exact same
+  // composition (`mark` + `wordmark`) every other variant renders.
+  if (variant === "compact") {
+    return [{ mark: `<(o${" ".repeat(RAVEN_ART_GAP)}`, wordmark: "HUGINN" }];
+  }
+  const mark = ravenMark(mood, { blink });
   const rows: RavenArtRow[] = [];
   for (let index = 0; index < RAVEN_ART_ROWS; index += 1) {
     const wordmark = HUGINN_WORDMARK[index] ?? "";
@@ -100,7 +117,7 @@ export function buildRavenArtRows(variant: Exclude<RavenHeaderVariant, "text">):
       continue;
     }
     const markIndex = index - MARK_TOP_OFFSET;
-    const markRow = markIndex >= 0 && markIndex < RAVEN_MARK_ROWS ? RAVEN_MARK[markIndex] ?? "" : "";
+    const markRow = markIndex >= 0 && markIndex < RAVEN_MARK_ROWS ? mark[markIndex] ?? "" : "";
     rows.push({ mark: markRow.padEnd(RAVEN_MARK_WIDTH) + " ".repeat(RAVEN_ART_GAP), wordmark });
   }
   return rows;
@@ -109,10 +126,11 @@ export function buildRavenArtRows(variant: Exclude<RavenHeaderVariant, "text">):
 /**
  * Derive the header's variant and exact row cost for a terminal size.
  *
- * Degradation is width-first — mark + wordmark → wordmark only → plain
- * `HUGINN` — and the art is additionally dropped when the terminal is too short
- * to afford it without eating into `reservedRows` (the viewport floor), which is
- * what keeps AC-28.4 true on an 80×24 terminal.
+ * Degradation is width-first — mark + wordmark → wordmark only → the one-row
+ * `<(o  HUGINN` → plain `HUGINN` — and the taller rungs are additionally
+ * dropped when the terminal is too short to afford them without eating into
+ * `reservedRows` (the viewport floor). The compact rung exists exactly for the
+ * middle case: five rows of art do not fit, one row still does.
  */
 export function ravenHeaderPlan(sizing: RavenHeaderSizing): RavenHeaderPlan {
   const columns = Math.max(0, Math.floor(sizing.columns));
@@ -126,22 +144,36 @@ export function ravenHeaderPlan(sizing: RavenHeaderSizing): RavenHeaderPlan {
   const contentWidth = Math.max(0, columns - outerInset - HEADER_HORIZONTAL_CHROME);
   const artFitsRows =
     rows >= reservedRows + HEADER_BORDER_ROWS + RAVEN_ART_ROWS + contextRows;
+  // The one-row rung costs `HEADER_BORDER_ROWS + 1 + contextRows`; it is the
+  // reason an 80×24 frame keeps a bird on screen instead of plain text.
+  const compactFitsRows =
+    rows >= reservedRows + HEADER_BORDER_ROWS + 1 + contextRows;
 
   let variant: RavenHeaderVariant = "text";
   if (artFitsRows && columns >= RAVEN_FULL_MIN_COLUMNS && contentWidth >= RAVEN_ART_WIDTH) {
     variant = "full";
   } else if (artFitsRows && contentWidth >= WORDMARK_WIDTH) {
     variant = "wordmark";
+  } else if (compactFitsRows && contentWidth >= COMPACT_BRAND_WIDTH) {
+    variant = "compact";
   }
 
-  const artRows = variant === "text" ? 0 : RAVEN_ART_ROWS;
+  const artRows =
+    variant === "text" ? 0 : variant === "compact" ? 1 : RAVEN_ART_ROWS;
   return {
     variant,
     artRows,
     contextRows,
     height:
       HEADER_BORDER_ROWS + artRows + contextRows + (variant === "text" ? HEADER_TEXT_BRAND_ROWS : 0),
-    artWidth: variant === "full" ? RAVEN_ART_WIDTH : variant === "wordmark" ? WORDMARK_WIDTH : 0,
+    artWidth:
+      variant === "full"
+        ? RAVEN_ART_WIDTH
+        : variant === "wordmark"
+          ? WORDMARK_WIDTH
+          : variant === "compact"
+            ? COMPACT_BRAND_WIDTH
+            : 0,
     contentWidth,
     columns,
     rows,
@@ -167,19 +199,50 @@ export function useRavenHeaderPlan(
   );
 }
 
+/** The one-column mark that says a value was cut, never a silent crop (REQ-76). */
+export const TRUNCATION_ELLIPSIS = "…";
+
 /**
  * Sanitize and width-clamp a dynamic header value (runtime name, project path,
  * model ids…) so it can never widen a header row past the terminal (AC-29.3).
  * Also normalizes tabs/newlines, which would otherwise forge extra rows.
+ *
+ * A value that does not fit is never cut silently: it loses its last columns to
+ * {@link TRUNCATION_ELLIPSIS}, so the row still measures exactly `maxWidth`
+ * columns and a reader can tell the text continues (REQ-76). The budget is in
+ * **display columns**, not code units, so a wide glyph can never push the row
+ * past the width the caller laid out.
  */
 export function headerValue(value: string | null | undefined, maxWidth: number): string {
   const clean = sanitizeTerminalText(value ?? "").replace(/\s+/g, " ").trim();
-  return clean.slice(0, Math.max(0, Math.floor(maxWidth)));
+  // `NaN` cannot be compared with a width, so it clamps to nothing; `Infinity`
+  // means "no clamp" and keeps the value whole, exactly as before.
+  if (Number.isNaN(maxWidth)) return "";
+  const budget = Math.max(0, Math.floor(maxWidth));
+  if (budget === 0) return "";
+  if (stringWidth(clean) <= budget) return clean;
+  // Explicit branches: one column can only hold the mark itself, never a
+  // negative `slice` that would take the value from the end.
+  if (budget === 1) return TRUNCATION_ELLIPSIS;
+  const keep = budget - stringWidth(TRUNCATION_ELLIPSIS);
+  let head = "";
+  let used = 0;
+  for (const char of clean) {
+    const width = stringWidth(char);
+    if (used + width > keep) break;
+    head += char;
+    used += width;
+  }
+  return `${head.trimEnd()}${TRUNCATION_ELLIPSIS}`;
 }
 
 export interface RavenHeaderProps {
   /** Layout plan from {@link ravenHeaderPlan} / {@link useRavenHeaderPlan}. */
   plan: RavenHeaderPlan;
+  /** The raven's mood (defaults to `idle`); it changes only the beak glyph. */
+  mood?: RavenMood;
+  /** The thinking animation's closed-eye frame (ignored for other moods). */
+  blink?: boolean;
   /**
    * Brand suffix shown by the plain-text fallback (`HUGINN LIVE`). The ASCII
    * wordmark already spells the brand in the art variants, so the suffix is a
@@ -200,9 +263,11 @@ export interface RavenHeaderProps {
  * {@link ravenHeaderPlan}, `plan.contentWidth` is the budget every row is
  * clamped to, and each row is clipped to one line.
  */
-export function RavenHeader({ plan, suffix = "", rows }: RavenHeaderProps): React.ReactElement {
+export function RavenHeader({ plan, suffix = "", rows, mood = "idle", blink = false }: RavenHeaderProps): React.ReactElement {
   const brand = suffix ? `HUGINN ${suffix}` : "HUGINN";
-  const artRows = plan.artRows > 0 ? buildRavenArtRows(plan.variant === "wordmark" ? "wordmark" : "full") : [];
+  const markColor = THEME[ravenMoodToken(mood)];
+  const artRows =
+    plan.artRows > 0 && plan.variant !== "text" ? buildRavenArtRows(plan.variant, mood, blink) : [];
 
   return (
     // flexShrink={0}: the header's row cost is exactly what the caller budgeted
@@ -213,7 +278,7 @@ export function RavenHeader({ plan, suffix = "", rows }: RavenHeaderProps): Reac
           {artRows.map((row, index) => (
             <Box key={`art-${index}`} height={1} flexDirection="row">
               {row.mark.length > 0 && (
-                <Text bold color={THEME.accentStrong} wrap="truncate">
+                <Text bold color={markColor} wrap="truncate">
                   {row.mark}
                 </Text>
               )}

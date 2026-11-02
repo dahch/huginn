@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { PROFILES, PROFILE_NAMES, type ProfileName } from "../engine/profiles.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { Modal } from "./Modal.js";
 import { THEME } from "./theme.js";
 
 /** Rows the list window may occupy before it scrolls (REQ-54 / AC-54.1). */
@@ -92,14 +93,10 @@ export function ProfilePickerModal({
   const visible = rows.slice(offset, offset + limit);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={THEME.accent} paddingX={1} width="100%">
-      <Box justifyContent="space-between" marginBottom={1}>
-        <Text bold color={THEME.accent}>
-          SELECT METHODOLOGY PROFILE
-        </Text>
-        <Text color={THEME.muted}>↑/↓ move · Enter session · p project · g global · Esc cancel</Text>
-      </Box>
-
+    <Modal
+      title="SELECT METHODOLOGY PROFILE"
+      hint="↑/↓ or k/j move · Enter session · p project · g global · Esc cancel"
+    >
       <Box flexDirection="column">
         {offset > 0 && <Text color={THEME.muted}>▲ {offset} more above</Text>}
         {visible.map((row, index) => {
@@ -128,6 +125,6 @@ export function ProfilePickerModal({
           The pipeline is chosen when a cycle starts: a change applies to the next cycle.
         </Text>
       </Box>
-    </Box>
+    </Modal>
   );
 }

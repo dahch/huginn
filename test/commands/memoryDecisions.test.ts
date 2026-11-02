@@ -34,7 +34,7 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function output(log: ReturnType<typeof vi.spyOn>): string {
+function output(log: { mock: { calls: unknown[][] } }): string {
   return log.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
 }
 

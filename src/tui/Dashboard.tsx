@@ -1,19 +1,23 @@
-import { useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { CycleEngine } from "../engine/cycle";
 import type { RunConfig } from "../config";
 import { events } from "../engine/engineEvents";
 import type { PhaseResult, DecisionRequest, DecisionChoice, Verdict } from "../engine/types";
 import { formatDurationSec, formatDurationTerse, formatUsage, verdictIcon, verdictToken } from "../format";
-import { MarkdownLine } from "./markdown";
+import { MarkdownBlock, markdownBlockRows, renderSegments, type MdSegment } from "./markdown";
 import { useTerminalSize } from "./useTerminalSize";
 import type { PromotionRecord } from "../state/schema";
 import { phasesForProfile, type ProfileName } from "../engine/profiles";
 import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
-import { TWO_RAVENS } from "../brand.js";
+import { TWO_RAVENS, ravenBlink, ravenMood, type RavenMood } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
 import { STATUS_GLYPHS } from "./glyphs.js";
+import { Card, cardChrome } from "./Card.js";
+import { footerHints } from "./footer.js";
+import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
+import { DecisionModal } from "./DecisionModal.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
   MCP_STATUS_POLL_TIMEOUT_MS,
@@ -26,6 +30,8 @@ import {
   useRavenHeaderPlan,
   type RavenHeaderPlan,
 } from "./RavenHeader.js";
+import { mcpBadgeText } from "./sessionContext.js";
+import { copyToTerminal } from "./clipboard.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -35,13 +41,47 @@ const FOOTER_HEIGHT = 1;
 const VIEW_OUTER_INSET = 2;
 /** The pipeline/stream cards' floor, so their title row is never clipped. */
 const MIDDLE_MIN_ROWS = 6;
-/** Tallest log tail the dashboard renders (5 entries + border). */
-const LOGS_MAX_ROWS = 5;
-/** The decision modal, and the last-report pill. */
-const DECISION_HEIGHT = 7;
+/** Tallest log tail the dashboard renders, before its tertiary title row. */
+const LOGS_MAX_ENTRIES = 5;
+/** The log tail's full row cost, imported from the one chrome table. */
+const LOGS_MAX_ROWS = LOGS_MAX_ENTRIES + cardChrome("tertiary").rows;
+/** The last-report pill. */
 const REPORT_HEIGHT = 1;
 /** The promotion-failure notice row, shown only when an integration failed. */
 const PROMOTION_HEIGHT = 1;
+/**
+ * The stream buffer's hard row ceiling (ADR-74): wrap first, then keep the last
+ * 2 000 terminal rows so a runaway phase cannot grow the frame's work without
+ * bound. The scroll window is derived from this same array, so the cap never
+ * invents hidden rows past its end.
+ */
+export const MAX_STREAM_ROWS = 2_000;
+
+/** The stream's per-line colour token, shared by the memoised wrapper. */
+export function streamLineColor(line: string): string | undefined {
+  const trimmed = line.trim();
+  const isTool =
+    trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
+  const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
+  const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
+  return isTool
+    ? THEME.accentStrong
+    : isCmd
+      ? THEME.warn
+      : isThought
+        ? THEME.thinker
+        : THEME.text;
+}
+
+/** Keep only the newest `MAX_STREAM_ROWS` formatted rows. */
+export function capStreamRows(rows: MdSegment[][]): MdSegment[][] {
+  return rows.length > MAX_STREAM_ROWS ? rows.slice(-MAX_STREAM_ROWS) : rows;
+}
+
+/** `z` is a toggle: the same key maximizes the output panel and restores the split. */
+export function nextStreamMaximized(current: boolean): boolean {
+  return !current;
+}
 
 /**
  * Rows the header may not spend: the middle cards' floor, the footer, the
@@ -52,7 +92,7 @@ const VIEWPORT_RESERVED_ROWS =
   MIDDLE_MIN_ROWS +
   FOOTER_HEIGHT +
   LOGS_MAX_ROWS +
-  DECISION_HEIGHT +
+  decisionModalHeight() +
   REPORT_HEIGHT +
   PROMOTION_HEIGHT;
 
@@ -100,11 +140,14 @@ export function Dashboard({
   autoExit?: boolean;
 }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const terminalSize = useTerminalSize();
   const [spinnerIndex, setSpinnerIndex] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [streamScroll, setStreamScroll] = useState(0);
   const [streamLines, setStreamLines] = useState<string[]>([]);
+  /** `z`: the output panel hides the pipeline and owns the full content width. */
+  const [streamMaximized, setStreamMaximized] = useState(false);
 
   const [ui, setUi] = useState<UiState>(() => {
     const st = engine.getState();
@@ -196,10 +239,10 @@ export function Dashboard({
       lastFlushTime = Date.now();
       const allLines = streamBuf.current.split("\n");
       const lines =
-        allLines.length > 1000
-          ? allLines.slice(-1000)
+        allLines.length > MAX_STREAM_ROWS
+          ? allLines.slice(-MAX_STREAM_ROWS)
           : allLines;
-      if (allLines.length > 1000) {
+      if (allLines.length > MAX_STREAM_ROWS) {
         streamBuf.current = lines.join("\n");
       }
       setStreamLines(lines);
@@ -328,7 +371,6 @@ export function Dashboard({
   const headerHeight = headerPlan.height;
   const footerHeight = FOOTER_HEIGHT;
   const reportHeight = ui.lastReport && !ui.decision ? REPORT_HEIGHT : 0;
-  const decisionHeight = ui.decision ? DECISION_HEIGHT : 0;
   const promotionFailed =
     ui.promotion?.status === "conflict" || ui.promotion?.status === "failed";
   const promotionHeight = promotionFailed && !ui.decision ? PROMOTION_HEIGHT : 0;
@@ -341,7 +383,27 @@ export function Dashboard({
   else if (terminalSize.rows >= 20) maxLogsAllowed = 1;
 
   const visibleLogs = ui.logs.slice(-maxLogsAllowed);
-  const logsHeight = visibleLogs.length > 0 ? visibleLogs.length + 3 : 0;
+  const logsHeight =
+    visibleLogs.length > 0 ? visibleLogs.length + cardChrome("tertiary").rows : 0;
+
+  // The decision modal charges before the middle cards, but it can never charge
+  // more than the frame has: this is everything left once the header, the middle
+  // floor, the log tail, the report pill, the notice and the footer are paid for
+  // (REQ-69). `decisionModalHeight` turns that budget into the exact row cost.
+  const decisionMaxRows = Math.max(
+    DECISION_MIN_ROWS,
+    terminalSize.rows -
+      headerHeight -
+      footerHeight -
+      MIDDLE_MIN_ROWS -
+      logsHeight -
+      reportHeight -
+      promotionHeight -
+      1,
+  );
+  const decisionHeight = ui.decision
+    ? decisionModalHeight(ui.decision, decisionMaxRows)
+    : 0;
 
   const middleHeight = Math.max(
     MIDDLE_MIN_ROWS,
@@ -354,8 +416,31 @@ export function Dashboard({
       promotionHeight -
       1,
   );
-  const streamLinesCount = Math.max(1, middleHeight - 3);
-  const maxStreamScroll = Math.max(0, streamLines.length - streamLinesCount);
+  const streamLinesCount = Math.max(1, middleHeight - cardChrome("secondary").rows);
+
+  // The stream column's real width: the outer `paddingX={1}` inset plus the
+  // same percentage share the layout below gives its Box. Markdown rules use
+  // this, so a `---` is one row at any terminal width.
+  const contentColumns = Math.max(1, terminalSize.columns - VIEW_OUTER_INSET);
+  const streamWidth = streamMaximized
+    ? contentColumns
+    : Math.max(1, Math.floor(contentColumns * (ui.verbose ? 0.65 : 0.58)));
+  const streamBodyWidth = Math.max(1, streamWidth - cardChrome("secondary").columns);
+
+  // Wrapping is the expensive part, so it happens exactly when the text or the
+  // width changes — never once per spinner frame (ADR-74).
+  const streamRows = useMemo(
+    () => capStreamRows(markdownBlockRows(streamLines, streamBodyWidth, streamLineColor)),
+    [streamLines, streamBodyWidth],
+  );
+  const reportText = ui.lastReport?.raw?.trimEnd() ?? "";
+  const reportRows = useMemo(
+    () => (reportText ? capStreamRows(markdownBlockRows(reportText.split("\n"), streamBodyWidth)) : []),
+    [reportText, streamBodyWidth],
+  );
+  const hasStream = streamLines.some((line) => line.trim().length > 0);
+  const outputRows = hasStream ? streamRows : reportRows;
+  const maxStreamScroll = Math.max(0, outputRows.length - streamLinesCount);
 
   useInput((input, key) => {
     if (ui.decision) {
@@ -379,6 +464,22 @@ export function Dashboard({
         else if (c === "c") engine.resolveDecision("continue");
         else if (c === "a") engine.resolveDecision("abort");
       }
+      return;
+    }
+
+    // `z` gives the output panel the whole content row (and hides the pipeline)
+    // while a second press restores the split. It is a view key, so it never
+    // disturbs the run itself.
+    if (input === "z" && !key.ctrl && !key.meta) {
+      setStreamMaximized(nextStreamMaximized);
+      return;
+    }
+    // `y` copies the output — the original markdown, never the wrapped rows —
+    // through OSC 52. Exactly one sequence per press, and nothing when there is
+    // no report or stream to copy.
+    if (input === "y" && !key.ctrl && !key.meta) {
+      const text = hasStream ? streamLines.join("\n") : reportText;
+      if (text.trim().length > 0) copyToTerminal(text, stdout);
       return;
     }
 
@@ -415,8 +516,8 @@ export function Dashboard({
   const phaseElapsed = now - ui.phaseStartedAt;
   const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
 
-  const streamStart = Math.max(0, streamLines.length - streamLinesCount - streamScroll);
-  const visibleStreamLines = streamLines.slice(streamStart, streamStart + streamLinesCount);
+  const streamStart = Math.max(0, outputRows.length - streamLinesCount - streamScroll);
+  const visibleStreamRows = outputRows.slice(streamStart, streamStart + streamLinesCount);
 
   return (
     <Box
@@ -437,26 +538,32 @@ export function Dashboard({
         totalElapsed={totalElapsed}
         phaseElapsed={phaseElapsed}
         spinner={spinner}
+        busy={running}
+        spinnerIndex={spinnerIndex}
         cfg={cfg}
         mcpStatus={mcpStatus}
         agentId={engine.runtime.id}
       />
 
       <Box flexDirection="row" height={middleHeight} marginTop={0}>
-        <Box width={ui.verbose ? "35%" : "42%"} flexDirection="column" marginRight={1}>
-          <PipelineCard
-            phases={ui.phases}
-            currentPhase={ui.currentPhase}
-            phaseElapsed={phaseElapsed}
-            spinner={spinner}
-            height={middleHeight}
-            profile={cfg.profile}
-          />
-        </Box>
-        <Box width={ui.verbose ? "65%" : "58%"} flexDirection="column">
+        {!streamMaximized && (
+          <Box width={ui.verbose ? "35%" : "42%"} flexDirection="column" marginRight={1}>
+            <PipelineCard
+              phases={ui.phases}
+              currentPhase={ui.currentPhase}
+              phaseElapsed={phaseElapsed}
+              spinner={spinner}
+              height={middleHeight}
+              profile={cfg.profile}
+              iteration={ui.currentIteration}
+              totalIterations={ui.totalIterations}
+            />
+          </Box>
+        )}
+        <Box width={streamMaximized ? "100%" : ui.verbose ? "65%" : "58%"} flexDirection="column">
           <StreamCard
-            lines={visibleStreamLines}
-            totalLines={streamLines.length}
+            rows={visibleStreamRows}
+            totalLines={outputRows.length}
             scrollOffset={streamScroll}
             maxScroll={maxStreamScroll}
             chars={ui.streamTotalChars}
@@ -466,6 +573,7 @@ export function Dashboard({
             report={ui.lastReport?.raw ?? ""}
             runtimeId={engine.runtime.id}
             streamsOutput={engine.runtime.capabilities?.streaming === true}
+            width={streamWidth}
           />
         </Box>
       </Box>
@@ -484,7 +592,7 @@ export function Dashboard({
         </Box>
       ) : null}
 
-      {ui.decision ? <DecisionModal req={ui.decision} /> : null}
+      {ui.decision ? <DecisionModal req={ui.decision} maxRows={decisionMaxRows} /> : null}
 
       {ui.lastReport && !ui.decision && <ReportPill report={ui.lastReport} />}
 
@@ -493,6 +601,7 @@ export function Dashboard({
         verbose={ui.verbose}
         hasDecision={Boolean(ui.decision)}
         usage={formatUsage(engine?.getState().usage)}
+        columns={contentColumns}
       />
     </Box>
   );
@@ -509,6 +618,8 @@ function HeaderCard({
   totalElapsed,
   phaseElapsed,
   spinner,
+  busy,
+  spinnerIndex,
   cfg,
   mcpStatus,
   agentId,
@@ -523,6 +634,10 @@ function HeaderCard({
   totalElapsed: number;
   phaseElapsed: number;
   spinner: string;
+  /** A cycle is running: the raven opens its beak while thinking. */
+  busy: boolean;
+  /** The shared 80 ms tick the blink phase is derived from. */
+  spinnerIndex: number;
   cfg: RunConfig;
   mcpStatus?: McpStatusReport | null;
   /** Active agent target, so the MCP badge attributes its numbers (AC-32.4). */
@@ -531,6 +646,12 @@ function HeaderCard({
   const isFix = currentPhase.startsWith("FIX");
   const progressStr = renderProgressBar(iteration, Math.max(1, totalIterations));
   const mcpBadge = formatMcpBadge(mcpStatus, agentId);
+  /** Same precedence as the live header: busy > degraded > idle. */
+  const mood: RavenMood = ravenMood({ busy, degraded: mcpBadge.status === "degraded" });
+  const blink = ravenBlink(spinnerIndex);
+  // The engine's badge speaks pictographs; the console paints the measured
+  // alphabet instead (REQ-76), so every surface uses the mapped text.
+  const mcpLabel = mcpBadgeText(mcpBadge);
   // The raven brand is followed by meaningful run context (AC-29.4). Every
   // dynamic value is sanitized and clamped to the columns actually left over,
   // and detail that no longer fits is dropped instead of wrapped, so each row
@@ -546,7 +667,7 @@ function HeaderCard({
   const mcpRoom = rowWidth - usedStatus - elapsedLabel.length - gap - 2;
   // The badge now carries its source agent (`· opencode`), so it gets a wider
   // budget — still clamped to the room actually left on the row (AC-29.3).
-  const mcpText = mcpRoom >= 10 ? headerValue(mcpBadge.text, Math.min(40, mcpRoom)) : "";
+  const mcpText = mcpRoom >= 10 ? headerValue(mcpLabel, Math.min(40, mcpRoom)) : "";
 
   const iterLabel = `Iter ${iteration}/${totalIterations}: `;
   const titleRoom = rowWidth - iterLabel.length - progressStr.length - gap - 2;
@@ -642,7 +763,7 @@ function HeaderCard({
       : []),
   ]);
 
-  return <RavenHeader plan={plan} rows={rows} />;
+  return <RavenHeader plan={plan} rows={rows} mood={mood} blink={blink} />;
 }
 
 function PipelineCard({
@@ -652,6 +773,8 @@ function PipelineCard({
   spinner,
   height,
   profile,
+  iteration,
+  totalIterations,
 }: {
   phases: Record<string, PhaseStatus>;
   currentPhase: string;
@@ -660,6 +783,9 @@ function PipelineCard({
   height?: number;
   /** The active methodology profile — it owns the order, not this panel. */
   profile?: ProfileName;
+  /** The increment being run, printed in the title as `iter n/m`. */
+  iteration: number;
+  totalIterations: number;
 }) {
   // The panel lists the phases the *active profile* runs, in the order it runs
   // them. The registry order would show `VERIFY` last while the Huginn Cycle
@@ -687,7 +813,7 @@ function PipelineCard({
   }
 
   // Constrain visible phase items to available card height
-  const maxItems = height ? Math.max(2, height - 3) : displayPhases.length;
+  const maxItems = height ? Math.max(2, height - cardChrome("secondary").rows) : displayPhases.length;
   let itemsToRender = displayPhases;
   if (displayPhases.length > maxItems) {
     const curIdx = displayPhases.indexOf(currentPhase);
@@ -696,16 +822,18 @@ function PipelineCard({
   }
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={THEME.border}
-      flexDirection="column"
-      paddingX={1}
+    <Card
+      tone="secondary"
+      title="PIPELINE PHASES"
+      titleRight={
+        <Text color={THEME.muted} wrap="truncate">
+          {`iter ${iteration}/${Math.max(1, totalIterations)}`}
+        </Text>
+      }
       height={height}
       minHeight={6}
     >
-      <Text bold color={THEME.accent}>PIPELINE PHASES</Text>
-      {itemsToRender.map((name) => {
+      {itemsToRender.map((name, index) => {
         const st = phases[name];
         const isCurrent = name === currentPhase;
         const isFix = name.startsWith("FIX");
@@ -733,12 +861,16 @@ function PipelineCard({
                   : "skip";
         }
 
-        const indent = isFix ? " └─ " : " ";
+        // The pipeline reads as a journey, not a list: every phase hangs off the
+        // same rail, the last one closes it with `└─`, and the current node keeps
+        // the status glyph (the spinner) that says where the run actually is.
+        const isLast = index === itemsToRender.length - 1;
+        const rail = isFix ? "   └─ " : ` ${isLast ? "└─" : "├─"} `;
         return (
           <Box key={name} justifyContent="space-between">
-            <Text color={color}>
+            <Text color={color} wrap="truncate">
               {icon}
-              {indent}
+              {rail}
               <Text bold={isCurrent}>{name.padEnd(14)}</Text>
             </Text>
             <Text dimColor={THEME.colorEnabled && !isCurrent} color={color}>
@@ -748,7 +880,7 @@ function PipelineCard({
           </Box>
         );
       })}
-    </Box>
+    </Card>
   );
 }
 
@@ -766,6 +898,7 @@ function PipelineCard({
  * the panel never claims to await output that will not arrive.
  */
 export function StreamCard({
+  rows,
   lines = [],
   totalLines,
   scrollOffset = 0,
@@ -777,7 +910,10 @@ export function StreamCard({
   report = "",
   runtimeId,
   streamsOutput = true,
+  width,
 }: {
+  /** Pre-wrapped terminal rows from `markdownBlockRows` (one per painted row). */
+  rows?: MdSegment[][];
   lines?: string[];
   totalLines?: number;
   scrollOffset?: number;
@@ -792,15 +928,24 @@ export function StreamCard({
   runtimeId?: string;
   /** Whether the runtime can push incremental output (AC-51.3). */
   streamsOutput?: boolean;
+  /** Columns the card occupies; markdown rules and tables use its body width. */
+  width?: number;
 }) {
   const displayLines = lines;
-  const bodyBudget = Math.max(1, (height ?? 10) - 3);
+  const bodyBudget = Math.max(1, (height ?? 10) - cardChrome("secondary").rows);
+  const bodyColumns = Math.max(1, (width ?? 84) - cardChrome("secondary").columns);
+  // The Dashboard hands over already-wrapped rows; direct callers still get the
+  // same formatting through `MarkdownBlock` below, so no surface has a second
+  // wrapping implementation.
+  const rowsProvided = rows !== undefined;
   // A buffer that only holds the empty string (a phase that emitted nothing) is
   // not a stream: treating it as one hid the last phase's report behind a blank
   // row (REQ-51 / AC-51.1). This matches the live view's `hasStreamContent`.
-  const hasStream = displayLines.some((line) => line.trim().length > 0);
+  const hasStream = rowsProvided ? rows.length > 0 : displayLines.some((line) => line.trim().length > 0);
   const reportLines =
-    !hasStream && report.trim().length > 0 ? report.trimEnd().split("\n") : [];
+    !rowsProvided && !hasStream && report.trim().length > 0
+      ? report.trimEnd().split("\n")
+      : [];
   const hasReport = reportLines.length > 0;
 
   const idleRows: Array<{ text: string; art: boolean }> = !hasStream && !hasReport
@@ -817,19 +962,15 @@ export function StreamCard({
     : [];
 
   return (
-    <Box
-      borderStyle="round"
-      borderColor={verbose ? THEME.accent : THEME.border}
-      flexDirection="column"
-      paddingX={1}
-      height={height}
-      minHeight={6}
-    >
-      <Box justifyContent="space-between">
-        <Text bold color={THEME.accent}>
+    <Card
+      tone="secondary"
+      title={
+        <>
           {spinner} {streamsOutput ? "LIVE AGENT OUTPUT" : "AGENT OUTPUT"}{" "}
           {verbose ? <Text color={THEME.ok}>[VERBOSE]</Text> : null}
-        </Text>
+        </>
+      }
+      titleRight={
         <Box>
           {maxScroll > 0 && (
             <Text color={THEME.muted}>
@@ -839,31 +980,36 @@ export function StreamCard({
           )}
           <Text color={THEME.muted}>{chars > 0 ? `${(chars / 1024).toFixed(1)} KB` : ""}</Text>
         </Box>
-      </Box>
+      }
+      height={height}
+      minHeight={6}
+    >
       {hasStream ? (
-        displayLines.map((line, i) => {
-          const trimmed = line.trim();
-          const isTool = trimmed.startsWith("⚡") || trimmed.startsWith("✓") || trimmed.startsWith("✗");
-          const isCmd = trimmed.startsWith(">") || trimmed.startsWith("$");
-          const isThought = trimmed.startsWith("💭") || trimmed.startsWith("Thinking:");
-          const color: string | undefined = isTool
-            ? THEME.accentStrong
-            : isCmd
-              ? THEME.warn
-              : isThought
-                ? THEME.thinker
-                : THEME.text;
-
-          return (
-            <MarkdownLine key={i} text={line || " "} defaultColor={color} wrap="truncate" />
-          );
-        })
+        rowsProvided ? (
+          <Box flexDirection="column" overflow="hidden">
+            {rows.map((segments, index) => (
+              <Text key={`r-${index}`} wrap="truncate">
+                {segments.length === 0 ? " " : renderSegments(segments, `r-${index}`)}
+              </Text>
+            ))}
+          </Box>
+        ) : (
+          <MarkdownBlock
+            lines={displayLines}
+            width={bodyColumns}
+            colorFor={streamLineColor}
+            wrap="truncate"
+          />
+        )
       ) : hasReport ? (
         // The runtime cannot stream: show the phase's real report rather than an
         // empty panel that looks broken (AC-51.1).
-        reportLines.slice(-bodyBudget).map((line, i) => (
-          <MarkdownLine key={i} text={line || " "} defaultColor={THEME.text} wrap="truncate" />
-        ))
+        <MarkdownBlock
+          lines={reportLines}
+          width={bodyColumns}
+          maxRows={bodyBudget}
+          wrap="truncate"
+        />
       ) : (
         <Box flexDirection="column" overflow="hidden">
           {idleRows.map((row, i) => (
@@ -873,7 +1019,7 @@ export function StreamCard({
           ))}
         </Box>
       )}
-    </Box>
+    </Card>
   );
 }
 
@@ -884,15 +1030,15 @@ export function LogsCard({
 }) {
   if (logs.length === 0) return null;
   return (
-    <Box borderStyle="round" borderColor={THEME.border} flexDirection="column" paddingX={1} marginTop={0}>
-      <Text bold color={THEME.accent}>SYSTEM LOGS</Text>
+    <Card tone="tertiary" title="SYSTEM LOGS">
       {logs.map((l, i) => {
         const levelColor = l.level === "error" ? THEME.danger : l.level === "warn" ? THEME.warn : THEME.accent;
         return (
           <Box key={i}>
+            <Text color={THEME.border}>│ </Text>
             <Text color={THEME.muted}>[{l.timestamp}] </Text>
             <Text bold color={levelColor}>
-              {l.level.toUpperCase().padEnd(5)} │{" "}
+              {l.level.toUpperCase().padEnd(5)}{" "}
             </Text>
             <Text wrap="truncate" color={THEME.text}>
               {l.message}
@@ -900,7 +1046,7 @@ export function LogsCard({
           </Box>
         );
       })}
-    </Box>
+    </Card>
   );
 }
 
@@ -918,186 +1064,40 @@ function ReportPill({ report }: { report: PhaseResult }) {
   );
 }
 
-export function DecisionModal({ req }: { req: DecisionRequest }) {
-  const isPerm = req.kind === "permission";
-  const isQuestion = req.kind === "question";
-  const title =
-    req.kind === "approve-draft"
-      ? "📋 DECISION REQUIRED · Approve drafted docs"
-      : req.kind === "scope-extraction"
-        ? "⚠️ DECISION REQUIRED · Scope extraction failed"
-        : req.kind === "draft-format"
-          ? "⚠️ DECISION REQUIRED · Draft format violated"
-          : req.kind === "post-cycle-live"
-            ? "CYCLE FINISHED · Next Action"
-            : isQuestion
-              ? `❓ QUESTION FROM AGENT · Input required${
-                  req.questionTotal && req.questionTotal > 1
-                    ? ` (${(req.questionIndex ?? 0) + 1}/${req.questionTotal})`
-                    : ""
-                }`
-              : `⚠️ DECISION REQUIRED · Gate ${req.phase} (Iteration ${req.iteration})`;
-  const keys =
-    req.kind === "approve-draft" ? (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Re-draft with latest chat   </Text>
-        <Text bold color={THEME.ok}>[c] </Text>
-        <Text>OK — commit & execute   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort</Text>
-      </>
-    ) : req.kind === "scope-extraction" ? (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Retry extraction   </Text>
-        <Text bold color={THEME.warn}>[c] </Text>
-        <Text>Use my last message   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort</Text>
-      </>
-    ) : req.kind === "draft-format" ? (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Retry with contract   </Text>
-        <Text bold color={THEME.warn}>[c] </Text>
-        <Text>Accept as-is   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort</Text>
-      </>
-    ) : req.kind === "post-cycle-live" ? (
-      <>
-        {(!req.choices ||
-          req.choices.includes("retry-promotion") ||
-          req.choices.includes("repair")) && (
-          <Text>
-            {(!req.choices || req.choices.includes("retry-promotion")) && (
-              <>
-                <Text bold color={THEME.accent}>[t] </Text>
-                <Text>Retry promotion (no model)   </Text>
-              </>
-            )}
-            {(!req.choices || req.choices.includes("repair")) && (
-              <>
-                <Text bold color={THEME.thinker}>[p] </Text>
-                <Text>Repair promotion (thinker + executor)</Text>
-              </>
-            )}
-          </Text>
-        )}
-        <Text>
-          <Text bold color={THEME.ok}>[c] </Text>
-          <Text>Exit / Finish   </Text>
-          <Text bold color={THEME.accent}>[r] </Text>
-          <Text>Return to Live mode   </Text>
-          <Text bold color={THEME.danger}>[a] </Text>
-          <Text>Exit</Text>
-        </Text>
-      </>
-    ) : isPerm ? (
-      <>
-        <Text bold color={THEME.accent}>[a] </Text>
-        <Text>Allow Always   </Text>
-        <Text bold color={THEME.accent}>[o] </Text>
-        <Text>Allow Once   </Text>
-        <Text bold color={THEME.danger}>[d] </Text>
-        <Text>Deny</Text>
-      </>
-    ) : isQuestion ? (
-      <>
-        {/* Real options (AC-37.3): a digit picks that answer verbatim instead of
-            only "accept the recommended one". Only the first question is
-            selectable, so it is the only one whose options are numbered. */}
-        <Text color={THEME.text}>
-          {req.questionItems?.[0] ? req.questionItems[0].question : req.message}
-        </Text>
-        {(req.questionItems?.[0]?.options ?? []).map((option, optionIndex) => (
-          <Box key={`opt-${optionIndex}`}>
-            <Text bold color={THEME.ok}>{`  [${optionIndex + 1}] `}</Text>
-            <Text>{option.label}</Text>
-            {option.description ? <Text color={THEME.muted}> — {option.description}</Text> : null}
-          </Box>
-        ))}
-        {req.questionItems && req.questionItems.length > 1 ? (
-          <>
-            {/* A block that arrived whole (opencode's native channel) still only
-                lets one question be answered, but the rest stay visible instead
-                of collapsing into an unreadable "+N more". */}
-            {req.questionItems.slice(1).map((item, index) => (
-              <Box key={`more-${index}`} flexDirection="column">
-                <Text color={THEME.muted}>• {item.question}</Text>
-                {(item.options ?? []).map((option, optionIndex) => (
-                  <Text key={`more-${index}-${optionIndex}`} color={THEME.muted}>
-                    {`    (${optionIndex + 1}) ${option.label}`}
-                  </Text>
-                ))}
-              </Box>
-            ))}
-            <Text color={THEME.muted}>
-              + {req.questionItems.length - 1} more question(s) — answer the first, the rest follow.
-            </Text>
-          </>
-        ) : null}
-        <Text>
-          <Text bold color={THEME.ok}>[1-9/Enter] </Text>
-          <Text>Pick an option   </Text>
-          <Text bold color={THEME.danger}>[d] </Text>
-          <Text>Reject / skip question</Text>
-        </Text>
-      </>
-    ) : (
-      <>
-        <Text bold color={THEME.accent}>[r] </Text>
-        <Text>Retry with Thinker   </Text>
-        <Text bold color={THEME.warn}>[c] </Text>
-        <Text>Force Continue   </Text>
-        <Text bold color={THEME.danger}>[a] </Text>
-        <Text>Abort Run</Text>
-      </>
-    );
-  return (
-    <Box
-      marginTop={0}
-      borderStyle="double"
-      borderColor={THEME.warn}
-      paddingX={1}
-      flexDirection="column"
-      flexShrink={0}
-    >
-      <Text bold color={THEME.warn}>
-        {title}
-      </Text>
-      {/* A question already renders its own text below, so repeating the
-          request's message there would show the same sentence twice. */}
-      {!(isQuestion && req.questionItems?.[0]) && (
-        <Text color={THEME.text} bold>
-          {req.message}
-        </Text>
-      )}
-      {/* A column, not a <Text>: Ink does not render a <Box> subtree inside a
-          <Text>, which made the question options invisible (REV-001). */}
-      <Box marginTop={1} flexDirection="column">{keys}</Box>
-    </Box>
-  );
-}
-
 function FooterBar({
   paused,
   verbose,
   hasDecision,
   usage,
+  columns,
 }: {
   paused: boolean;
   verbose: boolean;
   hasDecision: boolean;
   usage?: string;
+  columns: number;
 }) {
+  // The run dashboard has no focusable cards: its "surface" is the run itself,
+  // so it asks the same pure policy for the run keys. The right cell keeps the
+  // usage figure and says when a decision owns the keyboard (H-13).
+  const hints = footerHints({
+    focus: "run",
+    paused,
+    verbose,
+    hasDecision,
+    usage,
+    columns,
+  });
   return (
-    <Box marginTop={0} justifyContent="space-between">
-      <Text color={THEME.muted}>
-        {usage ? `${usage}   ` : ""}[Space] {paused ? "Resume" : "Pause"}   [q/Esc] Abort   [v] Verbose {verbose ? <Text color={THEME.ok}>(ON)</Text> : <Text color={THEME.muted}>(OFF)</Text>}   [PageUp/Down, ↑/↓] Scroll
+    <Box marginTop={0} justifyContent="space-between" height={FOOTER_HEIGHT} overflow="hidden">
+      <Text color={THEME.muted} wrap="truncate">
+        {hints.left}
       </Text>
-      {hasDecision && <Text bold color={THEME.warn}>Interactive decision input active</Text>}
+      {hints.right ? (
+        <Text bold={hasDecision} color={hasDecision ? THEME.warn : THEME.muted} wrap="truncate">
+          {hints.right}
+        </Text>
+      ) : null}
     </Box>
   );
 }

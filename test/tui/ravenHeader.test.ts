@@ -3,13 +3,17 @@ import { PassThrough } from "node:stream";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Text, render } from "ink";
+import { Text } from "ink";
+import stringWidth from "string-width";
+import { render } from "./inkRender";
 import type { CycleEngine } from "../../src/engine/cycle";
 import type { RunConfig } from "../../src/config";
-import { HUGINN_WORDMARK, RAVEN_MARK, artWidth } from "../../src/brand.js";
+import { HUGINN_WORDMARK, RAVEN_MARK, RAVEN_MOODS, artWidth, ravenMark } from "../../src/brand.js";
 import { events } from "../../src/engine/engineEvents";
 import type { LiveEngine } from "../../src/engine/liveMode";
 import {
+  COMPACT_BRAND,
+  COMPACT_BRAND_WIDTH,
   HEADER_BORDER_ROWS,
   HEADER_TEXT_BRAND_ROWS,
   RAVEN_ART_ROWS,
@@ -23,8 +27,16 @@ import {
   headerValue,
   ravenHeaderPlan,
 } from "../../src/tui/RavenHeader.js";
-import { LiveApp } from "../../src/tui/LiveDashboard";
+import { LiveApp, VIEWPORT_RESERVED_ROWS_CLOSED } from "../../src/tui/LiveDashboard";
 import { Dashboard } from "../../src/tui/Dashboard";
+import { PANEL_TITLE } from "../../src/tui/InfoPanel.js";
+import { THEME, ravenMoodToken } from "../../src/tui/theme.js";
+
+// Chalk freezes its colour level when Ink is first imported, so the colour
+// assertions below must force it before this file's static imports resolve.
+vi.hoisted(() => {
+  process.env.FORCE_COLOR = "3";
+});
 
 /** The eagle code point, written as an escape so the glyph is nowhere in the tree (AC-29.1). */
 const EAGLE = /\u{1f985}/u;
@@ -177,6 +189,24 @@ describe("RavenHeader ASCII assets (REQ-29)", () => {
     expect(RAVEN_MARK.length).toBeLessThanOrEqual(3);
   });
 
+  it("keeps every raven mood on the idle mark's exact grid (REQ-73)", () => {
+    const idle = ravenMark("idle");
+    expect(idle).toBe(RAVEN_MARK);
+    for (const mood of ["idle", "thinking", "sleeping"] as const) {
+      const mark = RAVEN_MOODS[mood];
+      expect(mark).toHaveLength(RAVEN_MARK.length);
+      expect(artWidth(mark)).toBe(artWidth(RAVEN_MARK));
+      for (const [index, row] of mark.entries()) {
+        // Same grid: changing mood never reflows a row.
+        expect(row.length, `${mood} row ${index}`).toBe(RAVEN_MARK[index]!.length);
+        expect(row).toMatch(/^[\x20-\x7e]*$/);
+      }
+    }
+    // The mood is the beak glyph: only those cells differ.
+    expect(ravenMark("thinking")[1]).toContain("O");
+    expect(ravenMark("sleeping")[1]).toContain("-");
+  });
+
   it("renders the mark centred beside the wordmark and never wider than the composed art", () => {
     const rows = buildRavenArtRows("full");
     expect(rows).toHaveLength(RAVEN_ART_ROWS);
@@ -195,11 +225,102 @@ describe("RavenHeader ASCII assets (REQ-29)", () => {
   });
 
   it("clamps dynamic values, collapsing newlines so they cannot forge rows", () => {
-    expect(headerValue("opencode", 4)).toBe("open");
+    expect(headerValue("opencode", 4)).toBe("ope…");
     expect(headerValue("\u001b[31mred\u001b[0m", 20)).toBe("red");
     expect(headerValue("a\nb\tc", 20)).toBe("a b c");
     expect(headerValue(undefined, 10)).toBe("");
+    expect(headerValue(null, 10)).toBe("");
     expect(headerValue("long", 0)).toBe("");
+    // Fractional budgets floor instead of slicing mid-column; negative ones clamp.
+    expect(headerValue("abcdef", 3.9)).toBe("ab…");
+    expect(headerValue("abcdef", -2)).toBe("");
+  });
+
+  it("cuts a value with a one-column ellipsis instead of cropping it silently (REQ-76)", () => {
+    // A value that fits is left byte-for-byte intact, ellipsis and all.
+    expect(headerValue("main", 4)).toBe("main");
+    expect(headerValue("main", 40)).toBe("main");
+    // A value that does not fit keeps its head and spends the last column on `…`.
+    expect(headerValue("abcdef", 4)).toBe("abc…");
+    expect(headerValue("abcdef", 2)).toBe("a…");
+    // The degenerate budgets have their own branches: nothing, then the mark only.
+    for (const budget of [0, -1, 0.9, Number.NaN]) {
+      expect(headerValue("abcdef", budget), String(budget)).toBe("");
+    }
+    // Infinity means "no clamp" (the old contract); it never eats the value.
+    expect(headerValue("abcdef", Number.POSITIVE_INFINITY)).toBe("abcdef");
+    expect(headerValue("abcdef", Number.NEGATIVE_INFINITY)).toBe("");
+    expect(headerValue("abcdef", 1)).toBe("…");
+    expect(headerValue("abcdef", 1.9)).toBe("…");
+    // The budget is in display columns, so a wide glyph is never split and the
+    // result can never paint wider than the columns the layout reserved.
+    expect(headerValue("日本語abc", 4)).toBe("日…");
+    expect(headerValue("日本語abc", 5)).toBe("日本…");
+    for (const [value, budget] of [
+      ["abcdef", 4],
+      ["日本語abc", 4],
+      ["日本語abc", 5],
+      ["日本語abc", 2],
+      ["abc", 1],
+    ] as const) {
+      expect(stringWidth(headerValue(value, budget)), `${value}/${budget}`).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it("carries the raven's mood into the composed rows without changing the grid", () => {
+    const idle = buildRavenArtRows("full", "idle");
+    const thinking = buildRavenArtRows("full", "thinking");
+    const sleeping = buildRavenArtRows("full", "sleeping");
+    expect(thinking).toHaveLength(idle.length);
+    expect(sleeping).toHaveLength(idle.length);
+    for (const [index, row] of idle.entries()) {
+      // The wordmark column never depends on the mood.
+      expect(thinking[index]?.wordmark).toBe(row.wordmark);
+      expect(sleeping[index]?.wordmark).toBe(row.wordmark);
+      // Only the beak cell differs, so switching mood cannot reflow the block.
+      expect(thinking[index]?.mark.length).toBe(row.mark.length);
+      expect(sleeping[index]?.mark.length).toBe(row.mark.length);
+    }
+    expect(idle[2]?.mark).toContain("o");
+    expect(thinking[2]?.mark).toContain("(");
+    expect(thinking[2]?.mark).toContain("O");
+    expect(sleeping[2]?.mark).toContain("-");
+    // Compact is a single fixed row: the mood cannot make it taller.
+    expect(buildRavenArtRows("compact", "thinking")).toEqual(
+      buildRavenArtRows("compact", "idle"),
+    );
+  });
+
+  it("blinks the thinking art back to the idle mark without moving a column", () => {
+    const thinking = buildRavenArtRows("full", "thinking");
+    const blinked = buildRavenArtRows("full", "thinking", true);
+    const idle = buildRavenArtRows("full", "idle");
+    expect(blinked).toHaveLength(thinking.length);
+    expect(blinked).toEqual(idle);
+    // `blink` is ignored for every mood other than `thinking`.
+    expect(buildRavenArtRows("full", "idle", true)).toEqual(idle);
+    expect(buildRavenArtRows("full", "sleeping", true)).toEqual(
+      buildRavenArtRows("full", "sleeping"),
+    );
+    // Wordmark-only and compact rungs never draw a mark to blink.
+    expect(buildRavenArtRows("wordmark", "thinking", true)).toEqual(
+      buildRavenArtRows("wordmark", "thinking"),
+    );
+    expect(buildRavenArtRows("compact", "thinking", true)).toEqual(
+      buildRavenArtRows("compact", "thinking"),
+    );
+  });
+});
+
+describe("ravenMoodToken maps state to a theme role (REQ-73)", () => {
+  it("paints idle muted, thinking accent and sleeping danger", () => {
+    expect(ravenMoodToken("idle")).toBe("muted");
+    expect(ravenMoodToken("thinking")).toBe("accent");
+    expect(ravenMoodToken("sleeping")).toBe("danger");
+    // Every role really exists in the palette (no dangling token name).
+    for (const mood of ["idle", "thinking", "sleeping"] as const) {
+      expect(THEME[ravenMoodToken(mood)]).toBeDefined();
+    }
   });
 });
 
@@ -221,30 +342,113 @@ describe("ravenHeaderPlan degradation (AC-29.3)", () => {
     expect(at.height).toBe(HEADER_BORDER_ROWS + RAVEN_ART_ROWS + 2);
   });
 
-  it("falls back to plain text when even the wordmark does not fit", () => {
+  it("falls back to the compact one-row brand when even the wordmark does not fit", () => {
     const plan = ravenHeaderPlan({ columns: 30, rows: 30, contextRows: 2, outerInset: 2 });
+    expect(plan.variant).toBe("compact");
+    expect(plan.artRows).toBe(1);
+    expect(plan.artWidth).toBe(COMPACT_BRAND_WIDTH);
+    expect(plan.contentWidth).toBe(30 - 2 - 4);
+    expect(plan.height).toBe(HEADER_BORDER_ROWS + 1 + 2);
+    expect(buildRavenArtRows("compact").map((row) => `${row.mark}${row.wordmark}`)).toEqual([
+      COMPACT_BRAND,
+    ]);
+  });
+
+  it("falls back to plain text when even the compact brand does not fit", () => {
+    const plan = ravenHeaderPlan({ columns: 14, rows: 30, contextRows: 2, outerInset: 2 });
+    expect(plan.contentWidth).toBeLessThan(COMPACT_BRAND_WIDTH);
     expect(plan.variant).toBe("text");
     expect(plan.artRows).toBe(0);
     expect(plan.artWidth).toBe(0);
-    expect(plan.contentWidth).toBe(30 - 2 - 4);
     expect(plan.height).toBe(HEADER_BORDER_ROWS + HEADER_TEXT_BRAND_ROWS + 2);
   });
 
-  it("drops the art entirely when the terminal is too short to afford it", () => {
-    // The art is only spent when the viewport floor (RAVEN_VIEWPORT_RESERVED_ROWS)
-    // still fits underneath: 19 + border 2 + art 5 + context 2 = 28.
+  it("steps down to the one-row compact brand when the five-row art is too tall", () => {
+    // The five-row art is only spent when the viewport floor
+    // (RAVEN_VIEWPORT_RESERVED_ROWS) still fits underneath: 21 + border 2 +
+    // art 5 + context 2 = 30. One row below that, compact still fits.
     const minimum = RAVEN_VIEWPORT_RESERVED_ROWS + HEADER_BORDER_ROWS + RAVEN_ART_ROWS + 2;
     const short = ravenHeaderPlan({ columns: 120, rows: minimum - 1, contextRows: 2, outerInset: 2 });
     const tall = ravenHeaderPlan({ columns: 120, rows: minimum, contextRows: 2, outerInset: 2 });
-    expect(short.variant).toBe("text");
+    expect(short.variant).toBe("compact");
+    expect(short.artRows).toBe(1);
     expect(tall.variant).toBe("full");
     expect(short.height).toBeLessThan(tall.height);
-    // On the canonical 80×24 terminal the art cannot be afforded, so the header
-    // costs border + brand + context rows — the budget the palette depends on
-    // (AC-28.4), one row more than the pre-raven header.
-    expect(ravenHeaderPlan({ columns: 80, rows: 24, contextRows: 2, outerInset: 2 }).height).toBe(
-      HEADER_BORDER_ROWS + HEADER_TEXT_BRAND_ROWS + 2,
-    );
+    // Even lower, the compact row no longer fits either.
+    const text = ravenHeaderPlan({
+      columns: 120,
+      rows: RAVEN_VIEWPORT_RESERVED_ROWS + HEADER_BORDER_ROWS + 1 + 2 - 1,
+      contextRows: 2,
+      outerInset: 2,
+    });
+    expect(text.variant).toBe("text");
+    expect(text.height).toBe(HEADER_BORDER_ROWS + HEADER_TEXT_BRAND_ROWS + 2);
+  });
+
+  it("renders raven art on the canonical 80×24 terminal when the palette is closed", () => {
+    const plan = ravenHeaderPlan({
+      columns: 80,
+      rows: 24,
+      contextRows: 2,
+      outerInset: 2,
+      reservedRows: VIEWPORT_RESERVED_ROWS_CLOSED,
+    });
+    // 80 columns clear RAVEN_FULL_MIN_COLUMNS, and 24 rows pay for 13 reserved +
+    // 2 border + 5 art + 2 context = 22, so the full mark is affordable.
+    expect(plan.variant).toBe("full");
+    expect(plan.artRows).toBe(RAVEN_ART_ROWS);
+  });
+
+  it("clamps negative sizes, floors fractions and defaults the optional budgets", () => {
+    const clamped = ravenHeaderPlan({ columns: -10, rows: -4, contextRows: -3 });
+    expect(clamped.columns).toBe(0);
+    expect(clamped.rows).toBe(0);
+    expect(clamped.contextRows).toBe(0);
+    expect(clamped.contentWidth).toBe(0);
+    expect(clamped.variant).toBe("text");
+    expect(clamped.height).toBe(HEADER_BORDER_ROWS + HEADER_TEXT_BRAND_ROWS);
+    // The omitted budgets fall back to the live defaults instead of `NaN`.
+    expect(clamped.reservedRows).toBe(RAVEN_VIEWPORT_RESERVED_ROWS);
+
+    const fractional = ravenHeaderPlan({
+      columns: 100.9,
+      rows: 30.9,
+      contextRows: 2.9,
+      reservedRows: 0.9,
+      outerInset: 2.9,
+    });
+    expect(fractional.columns).toBe(100);
+    expect(fractional.rows).toBe(30);
+    expect(fractional.contextRows).toBe(2);
+    expect(fractional.reservedRows).toBe(0);
+    expect(fractional.contentWidth).toBe(100 - 2 - 4);
+    expect(fractional.variant).toBe("full");
+  });
+
+  it("measures the width budget after the caller's inset, not the raw columns", () => {
+    // Wide enough in columns for the full treatment, but the caller's own
+    // padding eats the content box: 100 - 60 - 4 = 36 columns, enough for the
+    // compact row only, even though full would otherwise fit.
+    const compact = ravenHeaderPlan({
+      columns: 100,
+      rows: 40,
+      contextRows: 2,
+      reservedRows: 0,
+      outerInset: 60,
+    });
+    expect(compact.contentWidth).toBe(36);
+    expect(compact.variant).toBe("compact");
+
+    // One inset step narrower and the wordmark is still affordable.
+    const wordmark = ravenHeaderPlan({
+      columns: 100,
+      rows: 40,
+      contextRows: 2,
+      reservedRows: 0,
+      outerInset: 56,
+    });
+    expect(wordmark.contentWidth).toBe(40);
+    expect(wordmark.variant).toBe("wordmark");
   });
 
   it("never claims an art block wider than the header's content box", () => {
@@ -253,7 +457,11 @@ describe("ravenHeaderPlan degradation (AC-29.3)", () => {
         const plan = ravenHeaderPlan({ columns, rows, contextRows: 2, outerInset: 2 });
         if (plan.variant !== "text") {
           expect(plan.artWidth).toBeLessThanOrEqual(plan.contentWidth);
-          expect(plan.height).toBe(HEADER_BORDER_ROWS + RAVEN_ART_ROWS + plan.contextRows);
+          expect(plan.height).toBe(
+            HEADER_BORDER_ROWS +
+              (plan.variant === "compact" ? 1 : RAVEN_ART_ROWS) +
+              plan.contextRows,
+          );
         } else {
           expect(plan.height).toBe(HEADER_BORDER_ROWS + HEADER_TEXT_BRAND_ROWS + plan.contextRows);
         }
@@ -307,16 +515,60 @@ describe("RavenHeader rendering (AC-29.1, AC-29.2, AC-29.3)", () => {
     expect(visibleLines(output).length).toBe(plan.height);
   });
 
-  it("falls back to plain HUGINN text on a terminal too narrow for the art", async () => {
+  it("renders the compact one-row brand when the wordmark does not fit", async () => {
     const columns = 30;
     const plan = ravenHeaderPlan({ columns, rows: 30, contextRows: 2, outerInset: 2 });
     const output = await capture(ravenHeader(plan), columns, 30);
 
+    expect(plan.variant).toBe("compact");
+    const plain = output.replace(ANSI, "");
+    expect(plain).toContain(COMPACT_BRAND);
+    expect(plain).not.toContain(HUGINN_WORDMARK[0]!.trim());
+    expect(visibleLines(output).length).toBe(plan.height);
+  });
+
+  it("falls back to plain HUGINN text on a terminal too narrow for even the compact art", async () => {
+    const columns = 14;
+    const plan = ravenHeaderPlan({ columns, rows: 30, contextRows: 2, outerInset: 2 });
+    const output = await capture(ravenHeader(plan), columns, 30);
+
     expect(plan.variant).toBe("text");
-    expect(output).toContain("HUGINN LIVE");
+    expect(output).toContain("HUGINN");
     expect(output).not.toContain("<(o");
     expect(output).not.toContain(HUGINN_WORDMARK[0]!.trim());
     expect(visibleLines(output).length).toBe(plan.height);
+  });
+
+  it("renders the full variant with the raven's current mood", async () => {
+    const plan = ravenHeaderPlan({ columns: 100, rows: 40, contextRows: 0, outerInset: 2 });
+    const thinking = await capture(
+      React.createElement(RavenHeader, { plan, rows: [], mood: "thinking" }),
+      100,
+      30,
+    );
+    expect(thinking).toContain("<(O");
+    expect(thinking).not.toContain("<(o");
+  });
+
+  it("renders the brand suffix only in the plain-text fallback", async () => {
+    const plan = ravenHeaderPlan({ columns: 14, rows: 30, contextRows: 0, outerInset: 2 });
+    // A 14-column terminal leaves 8 content columns, so the fallback truncates:
+    // assert the suffix is part of the drawn brand rather than a full literal.
+    const withSuffix = await capture(
+      React.createElement(RavenHeader, { plan, rows: [], suffix: "X" }),
+      14,
+      30,
+    );
+    expect(withSuffix).toContain("HUGINN X");
+
+    const withoutSuffix = await capture(
+      React.createElement(RavenHeader, { plan, rows: [] }),
+      14,
+      30,
+    );
+    expect(withoutSuffix).toContain("HUGINN");
+    expect(withoutSuffix).not.toContain("HUGINN X");
+    expect(withoutSuffix).not.toContain("<(o");
   });
 
   it("never emits a line wider than the terminal, at any size", async () => {
@@ -348,7 +600,7 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     events.clear();
   });
 
-  it("renders the mark + wordmark and keeps runtime/thinker/executor/project/MCP context", async () => {
+  it("keeps stage/thinker/executor/project in the header and the environment in the panel", async () => {
     const output = await capture(
       React.createElement(LiveApp, { live: createMockLive(), cfg: mockCfg, initialShowModelPicker: false }),
       100,
@@ -359,17 +611,20 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     for (const row of HUGINN_WORDMARK) {
       expect(output).toContain(row.replace(/\s+$/, ""));
     }
-    // Presence over decoration (AC-29.4).
-    expect(output).toContain("runtime:");
-    expect(output).toContain("opencode");
+    // The header is identity and ephemeral state (ADR-73): the live stage badge,
+    // the project path and the two models.
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
     expect(output).toContain("/mock/project");
     expect(output).toContain("thinker:");
     expect(output).toContain("executor:");
+    // The environment — the runtime/agent, the MCP badge, git — lives in the
+    // panel now, so the header no longer repeats the runtime name.
+    expect(output).toContain("opencode");
     expect(output).toContain("MCP:");
-    expect(output).toContain("REFINE");
+    expect(output).not.toContain("runtime:");
   });
 
-  it("keeps the live frame inside the terminal at 80×24 (chat/stream never overflow)", async () => {
+  it("renders raven art, not the text mark, on an 80×24 terminal (REQ-73)", async () => {
     const rows = 24;
     const columns = 80;
     const output = await capture(
@@ -378,12 +633,18 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
       rows,
     );
 
-    // The compact fallback keeps the header at its original 4-row cost.
-    expect(output).toContain("HUGINN LIVE");
+    // REQ-73: with the palette closed, 80×24 affords the real five-row art, so
+    // the header renders the bird instead of the plain text mark.
+    expect(output).toContain("<(o");
+    expect(output).not.toContain("HUGINN LIVE");
     expect(output).toContain("Conversation");
     // Idle: no stream content, so the agent-output panel is collapsed by design.
     expect(output).not.toContain("THINKING & LIVE AGENT STREAM");
-    expect(output).toContain("stage: REFINE");
+    // The stage is the header's badge; the footer carries keys, not state.
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
+    expect(output).not.toContain("stage:");
+    // The frame still fits: the bird costs four rows more than text did, so the
+    // cards (and the hero) shrink instead of pushing the composer off-screen.
     expect(visibleLines(output).length).toBeLessThanOrEqual(rows);
     for (const line of output.replace(ANSI, "").split("\n")) {
       expect(line.length).toBeLessThanOrEqual(columns);
@@ -419,7 +680,8 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     expect(output).toContain("▸ /help");
     expect(output).toContain("<(o");
     expect(output).toContain("Conversation");
-    expect(output).toContain("stage: REFINE");
+    expect(output).toMatch(/\[[^\]]*REFINE\]/);
+    expect(output).not.toContain("stage:");
     expect(visibleLines(output).length).toBeLessThanOrEqual(rows);
   });
 
@@ -437,6 +699,20 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
     expect(output).toContain("Active Phase:");
     expect(output).toContain("thinker:");
     expect(output).toContain("PIPELINE PHASES");
+  });
+
+  it("opens the raven's beak in the cycle header while the engine is running (REQ-73)", async () => {
+    // `isRunning` is the dashboard's own busy flag; the header derives the
+    // thinking mood from it and from its existing 80 ms spinner tick.
+    const engine = { ...createMockEngine(), isRunning: true } as unknown as CycleEngine;
+    const output = await capture(
+      React.createElement(Dashboard, { engine, cfg: mockCfg, autoExit: false }),
+      100,
+      32,
+    );
+    // The header draws the open-beak mark; the idle stream card may still draw
+    // its own two ravens, so only the thinking glyph is asserted.
+    expect(output).toContain("<(O");
   });
 
   it("keeps the cycle dashboard inside 24 rows on an 80×24 terminal", async () => {
@@ -471,6 +747,86 @@ describe("Dashboard headers use the shared raven brand (AC-29.1, AC-29.4)", () =
   });
 });
 
+describe("console chrome speaks one measured alphabet (REQ-76)", () => {
+  const PICTOGRAPH = /\p{Extended_Pictographic}/u;
+
+  /** The engine's healthy badge source: two live servers, no tool count. */
+  const healthyMcp = () => ({
+    servers: [
+      { id: "pi:pi", name: "pi", status: "connected" as const, transport: "stdio" as const, toolsCount: 3 },
+      { id: "pi:muninn", name: "muninn", status: "connected" as const, transport: "stdio" as const, toolsCount: 0 },
+    ],
+    totalTools: 0,
+    healthy: true,
+  });
+
+  it("paints the mapped healthy badge on the live console and the cycle dashboard", async () => {
+    const live = createMockLive() as unknown as { runtime: unknown };
+    live.runtime = {
+      name: "pi",
+      id: "pi",
+      capabilities: { streaming: false, systemPrompts: true, tools: true },
+      getMcpStatus: async () => healthyMcp(),
+    };
+    const liveOut = await capture(
+      React.createElement(LiveApp, { live: live as unknown as LiveEngine, cfg: mockCfg, initialShowModelPicker: false }),
+      100,
+      30,
+    );
+    const engine = createMockEngine() as unknown as { runtime: unknown };
+    engine.runtime = {
+      name: "pi",
+      id: "pi",
+      capabilities: { streaming: false },
+      getMcpStatus: async () => healthyMcp(),
+    };
+    const cycleOut = await capture(
+      React.createElement(Dashboard, { engine: engine as unknown as CycleEngine, cfg: mockCfg, autoExit: false }),
+      120,
+      32,
+    );
+
+    // The exact wording both dashboards promise for a healthy report.
+    expect(liveOut).toContain("MCP: ✓ 2 connected · pi");
+    expect(cycleOut).toContain("MCP: ✓ 2 connected · pi");
+    for (const [where, output] of [
+      ["live", liveOut],
+      ["cycle", cycleOut],
+    ] as const) {
+      expect(output, where).not.toMatch(PICTOGRAPH);
+    }
+  });
+
+  it("paints no pictograph and no wide glyph in the live header or the side panel", async () => {
+    const live = await capture(
+      React.createElement(LiveApp, { live: createMockLive(), cfg: mockCfg, initialShowModelPicker: false }),
+      100,
+      30,
+    );
+    // The panel really is on screen: otherwise the guardian would pass by not looking.
+    expect(live).toContain(PANEL_TITLE);
+    const cycle = await capture(
+      React.createElement(Dashboard, { engine: createMockEngine(), cfg: mockCfg, autoExit: false }),
+      120,
+      32,
+    );
+    for (const [where, output] of [
+      ["live", live],
+      ["cycle", cycle],
+    ] as const) {
+      const lines = visibleLines(output);
+      expect(lines.length, where).toBeGreaterThan(0);
+      for (const line of lines) {
+        const detail = `${where}: ${JSON.stringify(line)}`;
+        // A double-width glyph breaks the monospace grid the frame measured:
+        // Ink lays out one column and the terminal paints two.
+        expect(PICTOGRAPH.test(line), detail).toBe(false);
+        expect(stringWidth(line), detail).toBe(line.length);
+      }
+    }
+  });
+});
+
 describe("source-wide eagle guard (AC-29.1)", () => {
   it("has no eagle code point anywhere under src/", () => {
     const root = new URL("../../src", import.meta.url).pathname;
@@ -489,5 +845,86 @@ describe("source-wide eagle guard (AC-29.1)", () => {
     };
     walk(root);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("raven mark colour follows the mood (REQ-73)", () => {
+  afterEach(() => {
+    delete process.env.FORCE_COLOR;
+    delete process.env.HUGINN_THEME;
+    delete process.env.NO_COLOR;
+  });
+
+  /** Render the full header with colour forced on for this test file. */
+  function renderMood(
+    mood: "idle" | "thinking" | "sleeping",
+    options: { blink?: boolean; noColor?: boolean } = {},
+  ): string {
+    if (options.noColor) {
+      process.env.NO_COLOR = "1";
+    } else {
+      delete process.env.NO_COLOR;
+    }
+    process.env.HUGINN_THEME = "dark";
+
+    const plan = ravenHeaderPlan({ columns: 100, rows: 30, contextRows: 0, outerInset: 2 });
+    const stdout = new PassThrough() as PassThrough & { columns: number; rows: number };
+    stdout.columns = 100;
+    stdout.rows = 30;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const instance = render(
+      React.createElement(RavenHeader, { plan, rows: [], mood, blink: options.blink }),
+      { stdout, patchConsole: false },
+    );
+    instance.unmount();
+    return output;
+  }
+
+  it("paints idle with the muted token", () => {
+    const output = renderMood("idle");
+    // dark palette: muted = #9aa5b1 (truecolor), the quiet state.
+    expect(output).toContain("\u001b[38;2;154;165;177m");
+    expect(output).toContain("<(o");
+  });
+
+  it("paints thinking with the accent token, not the old fixed accentStrong", () => {
+    const output = renderMood("thinking");
+    // dark palette: accent = cyan, accentStrong = cyanBright.
+    expect(output).toContain("\u001b[36m");
+    expect(output).toContain("<(O");
+    // The mark may not keep the old `accentStrong` colour.
+    expect(output).not.toContain("\u001b[96m");
+  });
+
+  it("paints sleeping with the danger token", () => {
+    const output = renderMood("sleeping");
+    // dark palette: danger = red.
+    expect(output).toContain("\u001b[31m");
+    expect(output).toContain("<(- ");
+  });
+
+  it("keeps the glyph readable when NO_COLOR clears every token", () => {
+    const thinking = renderMood("thinking", { noColor: true });
+    const sleeping = renderMood("sleeping", { noColor: true });
+    for (const output of [thinking, sleeping]) {
+      expect(output).not.toContain("\u001b[36m");
+      expect(output).not.toContain("\u001b[31m");
+      expect(output).not.toContain("\u001b[38;2;154;165;177m");
+    }
+    // The beak alone still separates the states.
+    expect(thinking).toContain("<(O");
+    expect(sleeping).toContain("<(- ");
+  });
+
+  it("keeps the blink frame on the idle colour and glyph", () => {
+    const output = renderMood("thinking", { blink: true });
+    // Blink drops to the open-eye idle mark, but the mood (and its colour) is
+    // still thinking, so the in-flight turn remains visible.
+    expect(output).toContain("<(o");
+    expect(output).not.toContain("<(O");
+    expect(output).toContain("\u001b[36m");
   });
 });

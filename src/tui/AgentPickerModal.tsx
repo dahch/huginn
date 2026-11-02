@@ -3,6 +3,8 @@ import { Box, Text, useInput } from "ink";
 import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../agents/integrator.js";
 import { detectAvailableAgents } from "../engine/agent/registry.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import { Modal } from "./Modal.js";
+import { MODAL_TITLE_GLYPHS, STATUS_GLYPHS } from "./glyphs.js";
 import { THEME } from "./theme.js";
 
 /** Rows the list window may occupy before it scrolls (REQ-33 / AC-33.1). */
@@ -54,7 +56,7 @@ export function buildAgentRows(
  * `/agent` used to *list* runtimes and tell the user to type an id, so selecting
  * one (e.g. `agy`) meant memorising it. This modal makes runtimes selectable like
  * models: availability is probed, the active runtime is marked, available entries
- * carry a `✔` (and the highlighted one its resolved path), unavailable ones say so,
+ * carry the measured availability mark (and the highlighted one its resolved path),
  * and Enter switches — the caller keeps the modal open when the switch fails so the
  * user can pick another immediately.
  */
@@ -131,14 +133,10 @@ export function AgentPickerModal({
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={THEME.accent} paddingX={1} width="100%">
-      <Box justifyContent="space-between" marginBottom={1}>
-        <Text bold color={THEME.accent}>
-          🐦 SELECT AGENT RUNTIME
-        </Text>
-        <Text color={THEME.muted}>↑/↓ move · Enter switch · Esc cancel</Text>
-      </Box>
-
+    <Modal
+      title={`${MODAL_TITLE_GLYPHS.agent} SELECT AGENT RUNTIME`}
+      hint="↑/↓ or k/j move · Enter switch · Esc cancel"
+    >
       {loading ? (
         <Text color={THEME.warn}>Detecting installed agent CLIs…</Text>
       ) : (
@@ -158,7 +156,7 @@ export function AgentPickerModal({
                   <Text color={THEME.muted}> ({sanitizeTerminalText(row.id)})</Text>
                   {isActive && <Text color={THEME.executor}> ● active</Text>}
                   {row.available ? (
-                    <Text color={THEME.ok}> ✔</Text>
+                    <Text color={THEME.ok}> {STATUS_GLYPHS.pass}</Text>
                   ) : (
                     <Text color={THEME.warn}> — not installed</Text>
                   )}
@@ -183,6 +181,6 @@ export function AgentPickerModal({
           Switching changes which agent runs your prompts; Muninn memory is project-scoped and unaffected.
         </Text>
       </Box>
-    </Box>
+    </Modal>
   );
 }

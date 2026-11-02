@@ -1782,3 +1782,634 @@ avoids. They are ordered by how central the decision is to the design.
     left behind by a crash (the next attempt fails closed and names it).
 
 
+## ADR-63: The decision modal speaks the same single-width alphabet as the rest of the product
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: ADR-51 moved the phase grid, the last-result pill and `PROGRESS.md` onto one
+  single-width glyph table, but the one surface that demands the user's attention was left behind:
+  `DecisionModal` composed its title from pictographs (`📋`, `❓`, a double-width warning sign) and the
+  feedback voice still prefixed every failure with the same double-width warning sign. The result was
+  a modal whose title measured two columns per mark in a frame laid out for one, and a conversation
+  that spoke a different alphabet from the dashboard beside it. The gate/fidelity literals and the
+  runtime's stream markers are contracts, not chrome, so they stay where they are.
+- **Decision**:
+  1. `src/tui/glyphs.ts` gains `DECISION_GLYPHS` — `approve` `+`, `question` `?`, `warn` `!`, `done`
+     `*` — and `decisionGlyph(kind)` maps every `DecisionKind` onto it. The table lives next to
+     `STATUS_GLYPHS` because both answer the same question: which single-column mark names this
+     state? Every entry is ASCII as well as one column wide, because a non-ASCII single-width mark
+     (`✓`, `·`, `–`) still mints a new code point for no gain, and the guardian test enforces both
+     properties. The marks are non-letters on purpose: the modal's own hints use `[a]`/`[d]`, so an
+     `A`/`D` title would read like another key to press.
+  2. `DecisionModal` composes its title through the pure `decisionTitle(req)` in
+     `src/tui/decision.ts`, so every title kind is testable without mounting Ink and can never
+     drift back to an emoji. The formatter is an exhaustive `switch` with an `assertNever`
+     fallback: a new `DecisionKind` fails to compile until it gets its own title, and `permission`
+     and `spec-deviation` no longer borrow the gate wording.
+  3. `feedback.ts` becomes `✓` / `!` / `…` (`FEEDBACK_OK` / `FEEDBACK_WARN` / `FEEDBACK_BUSY`). This
+     is a TUI-only change: the feedback channel is the console's voice, not the engine's.
+  4. A render test mounts the modal for every title kind and fails on any
+     `\p{Extended_Pictographic}` code point or when `stringWidth(line) !== line.length`; the glyph
+     guardian also asserts the decision table's entries are ASCII and one column wide.
+  5. Out of scope, deliberately: `### Overall gate: 🟢/🟡/🔴`, `### Overall fidelity: …`, the
+     producer markers (`⚡ ✓ ✗ 💭`) **and every engine/CLI warning output**. The gate's warning
+     handoff line, `HANDOFF_LINE_RE`, `VALIDATE_STEP_HANDOFF`, the role texts, both verdict parsers
+     and their fail-closed warning fallback stay exactly as they were:
+     they are a three-way contract (instructions ↔ enforcement ↔ parsers), not display chrome, and
+     rewriting them would silently change gate semantics.
+- **Alternatives rejected**: (a) keeping the modal's pictographs and widening its frame — the grid
+  breaks again at the first narrow terminal, and the reserved row budget cannot know a glyph's
+  width; (b) drawing the title from the phase-kind table — a decision is not a phase, and borrowing
+  a phase mark for a decision would overload one mark with two meanings; (c) changing only
+  `FEEDBACK_WARN` and leaving the modal — that is the drift this record exists to close; (d)
+  reusing `>` for "approve" or `✓` for "done" — both are already spoken for (`>` is `EXECUTE`’s
+  phase mark, `✓` is the STATUS/feedback pass mark), so the decision table uses its own discrete
+  non-letter marks instead.
+- **Consequences**:
+  - *Positive*: the modal, the conversation and the dashboard share one measured alphabet; every
+    title kind is unit-testable; the warning feedback mark is the same `!` the status column already
+    uses; the engine gate contract is provably untouched.
+  - *Negative*: the decision alphabet spends `+`/`*` where a pictograph would be more
+    self-explanatory, and a future decision kind must be added to both `decisionGlyph` and the
+    exhaustive `decisionTitle` switch or it fails to compile/guard.
+
+
+## ADR-64: The decision modal buys only the rows it can pay for
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: Both dashboards reserved a constant for the decision modal (`DECISION_HEIGHT = 7` in
+  the run dashboard, `6` in live) while the modal's body grew with the request: a question can carry
+  several message lines, up to eight described options per item, follow-up questions and their
+  options, plus the `+ N more question(s)` note. The constant was therefore either too large (wasting
+  rows on a small prompt) or too small: on a 24-row terminal a tall question under-reserved the modal
+  by eight rows, so the box painted over the frame and pushed the footer off-screen. The modal could
+  not simply be left to Ink either — Ink lays out `Text`/`Box` subtrees whose emitted height the
+  parent never learns, which is how the conversation card had already painted over its own border
+  (ADR-61). A surface that asks for the user's attention must never be the reason the composer
+  disappears.
+- **Decision**:
+  1. The modal's body and key footer are modelled as **one entry per terminal row**:
+     `decisionBodyRows(req)` and `decisionKeyRows(req)` return `ReactNode[]`, so a newline is a row
+     the budget knows about and a body can be sliced without fighting Yoga. The question's first
+     item renders its own rows; the rest stay visible as muted rows plus the `+ N` note.
+  2. One pure planner, `planDecisionModal(bodyCount, keyCount, maxRows, scroll)`, turns the counted
+     rows into an exact layout: it pays the double border, the title and the key footer **before**
+     any body row, buys the `… +N · ↑/↓` indicator only when it still leaves a body row, then
+     windows the body. `decisionModalHeight(req?, maxRows?)` exposes the result; with no request it
+     returns `DECISION_MIN_ROWS` (5), the floor both dashboards reserve. Below two rows the modal
+     draws nothing rather than claim a framed box it cannot open.
+  3. Each dashboard computes a `decisionMaxRows` budget from what its own fixed chrome leaves (header,
+     composer/footer, log tail, open palette, card floor) and passes it in; no dashboard carries a
+     height literal any more. `VIEWPORT_RESERVED_ROWS` uses the structural floor so the header never
+     spends rows the modal would need.
+  4. `↑`/`↓` scroll a windowed body (offset reset on `req.id`), and `LiveDashboard` consumes those
+     keys before `resolveDecisionKey` so a scroll never resolves a decision or is echoed as "press a
+     number". The first question remains answerable by digit while the body is scrolled.
+- **Alternatives rejected**: (a) raising the constant to the tallest possible request — it still
+  fails on an 18-row terminal, and a request is unbounded in follow-ups; (b) letting the modal clip
+  its own body — clipped options become unanswerable; (c) letting Ink lay the body out and measuring
+  the result — the emitted height is not available before the frame is painted, and a second layout
+  pass would still be wrong on the first frame; (d) always opening a fullscreen modal — it hides the
+  conversation the question is about and is a worse answer on a tall terminal.
+- **Consequences**:
+  - *Positive*: a decision can never push the composer or footer off-screen; the modal spends exactly
+    the rows it paints (`test/tui/decisionModal.test.ts` compares the planner with Ink's frame); a
+    tall request stays usable behind a scroll instead of losing options; both dashboards share one
+    planner instead of two literals.
+  - *Negative*: a windowed body hides rows until the user scrolls (mitigated by the `… +N` indicator
+    and the preserved first-question key handling), and `decisionBodyRows`/`decisionKeyRows` must be
+    revisited whenever the modal gains a new kind of row. `decisionKeyRows` falls back to the gate
+    keys for an unknown kind (unlike the exhaustive `decisionTitle` switch), so a new `DecisionKind`
+    compiles even if its body or footer rows were never counted — the guard test is what catches it.
+
+## ADR-65: Cards declare a chrome hierarchy instead of repeating border arithmetic
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: Every framed TUI surface used to repeat the same arithmetic in two places: the
+  component drew a border and a title, and the dashboard that laid it out guessed the row and column
+  cost ("two border rows, two padding columns", "the log card's three rows"). The copies drifted.
+  The log tail was the clearest failure: `LogsCard` still drew a full box and its callers carried a
+  literal row cost for it, so every entry spent two extra border rows while the conversation, the
+  stream, the pipeline and the side panel all competed with the same outline. A budget one row short
+  pushes the composer off the frame (ADR-64), so this is a layout-correctness problem, not only a
+  visual one.
+- **Decision**:
+  1. `src/tui/Card.tsx` owns `CARD_CHROME` and the pure `cardChrome(tone)`: `primary` (`round`, two
+     border rows, one title row, four columns), `secondary` (`single`, the same cost) and `tertiary`
+     (no border, one title row, two columns for the `│ ` rule). `rows` folds in the title row; a
+     titleless card reserves `borderRows` instead.
+  2. `Card` draws only chrome — the declared border, one clipped title row and `overflow="hidden"`.
+     It does not scroll, measure children or choose a height: the caller already computed the
+     height and paid for the chrome through `cardChrome`.
+  3. The hierarchy is applied as a promise: the conversation is `primary`, the stream, `InfoPanel`,
+     `PipelineCard` and `StreamCard` are `secondary`, and the log tail is `tertiary`. An unfocused
+     `primary` keeps its accent token, a focused card always uses `borderFocus`, an unfocused
+     `secondary` steps back to the quiet border, and `tertiary` has no box.
+  4. Both dashboards import the log tail's cost from the table, so `LogsCard` costs
+     `visibleLogs.length + 1` instead of `+ 3`. The tail itself spends two fewer rows; existing
+     five-row expectations intentionally become three.
+- **Alternatives rejected**: (a) keep each component's constants and only align their values — the
+  copies drift again on the next change, which is exactly how this happened; (b) use one border style
+  everywhere — it removes the hierarchy the screen needs and still leaves the title/padding cost
+  duplicated; (c) let `Card` own the height and scroll its children — it would fight Ink's layout and
+  duplicate the row planners that already exist; (d) fold the decision modal, composer, palette and
+  header into the same table now — the modal is a different weight (double border, windowed body)
+  and needs an `alert`/`double` tone, so those surfaces keep their own labelled constants for this
+  change.
+- **Consequences**:
+  - *Positive*: one table answers "what does this surface cost in rows and columns?"; the log tail
+    spends two fewer rows and no longer pretends to be a box; the visual hierarchy is explicit
+    (conversation → stream/panel → logs) and focus/colour follow it; the table, painted heights, log
+    cost, surface mapping and emitted border colours are guarded by `test/tui/card.test.ts` and
+    `test/tui/cardColors.test.ts`.
+  - *Negative*: `rows` includes the title row, so a titleless `secondary` must use `borderRows` or it
+    over-reserves one row; the decision modal, composer, palette and header still carry their own
+    border constants; and not every scroll-budget adjustment has been migrated to the table — a few
+    `- 3` literals remain, and they must be derived from `cardChrome` before the "one source" claim
+    can be made for the whole TUI.
+
+## ADR-66: The decision modal's policy is a pure module, its React surface a separate one
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: ADR-64 gave the decision modal an exact row planner, and both grew up inside
+  `src/tui/Dashboard.tsx`. That made the run-cycle page the owner of a policy the live console also
+  needs: `LiveDashboard` imported `DecisionModal`, `decisionKeyRows` and `decisionModalHeight` from
+  `./Dashboard`, so the whole run page and its engine graph came along for a title string and a row
+  count, and a test that only wanted to measure heights had to mount a page to get them.
+- **Decision**:
+  1. `src/tui/decision.ts` owns the modal's policy and nothing React-specific: `decisionTitle(req)`,
+     `decisionBodyRowSpecs(req)`/`decisionKeyRowSpecs(req)` (one plain entry per terminal row),
+     `planDecisionModal(...)`, `decisionModalHeight(...)` and `DECISION_MIN_ROWS`.
+  2. `src/tui/DecisionModal.tsx` owns the React surface: it maps those specs to Ink nodes
+     (`decisionBodyRows`/`decisionKeyRows`) and owns the body scroll state and its reset on
+     `req.id`. It imports no dashboard.
+  3. Both dashboards import the modal from `./DecisionModal` and the planner from `./decision`, so no
+     page module imports another page module for the modal.
+- **Alternatives rejected**: (a) keep the modal in `Dashboard.tsx` and export it — that is the coupling
+  this removes, and it keeps the run page's engine imports on the live page's load path; (b) move the
+  planner into `DecisionModal.tsx` — a pure height test would then still have to import Ink and React;
+  (c) extract one shared `modals.tsx` for every modal — the other modals share no policy, and a single
+  barrel would re-couple what this split separates.
+- **Consequences**:
+  - *Positive*: the policy is importable and testable without mounting a page; the row specs are the
+    single source both the renderer and the reservation count, so the two cannot drift; neither
+    dashboard depends on the other's page module for the modal.
+  - *Negative*: the modal now spans two files, so a new row kind must be added to the spec builder
+    **and** the renderer — `test/tui/decisionModal.test.ts` compares the plan with the painted frame,
+    which is what catches a renderer that forgot a spec.
+
+## ADR-67: Layout keys belong to a focused card, and the idle log tail gives its rows back
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The live console kept a fixed conversation/stream split and always drew the log tail.
+  On a 30-row terminal the tail and the stream took rows the conversation needed, and the only way to
+  change the balance was to resize the terminal. Keyboard space was already contested: `↑`/`↓` mean
+  "scroll the focused card" or "recall a submission", so any new layout key had to resolve by focus
+  rather than by inspecting the draft (AC-34.3 is the bug that taught this).
+- **Decision**:
+  1. `z` maximizes the focused card — the pure `liveCardHeights` gives it every available row and the
+     other card is not rendered — and `z` again restores the remembered split ratio.
+     `Ctrl+↑`/`Ctrl+↓` move that ratio in `SPLIT_RATIO_STEP` (0.08) steps through the pure
+     `adjustSplitRatio`/`clampSplitRatio`, clamped to `[SPLIT_RATIO_MIN 0.30, SPLIT_RATIO_MAX 0.80]`
+     around `DEFAULT_SPLIT_RATIO` (0.58).
+  2. All of them are card-only. From the composer, `z` and `L` are ordinary draft text and the chord
+     never reaches the terminal; the guard is the focus state (`FocusTarget`), never the draft's
+     emptiness. `nextFocus` walks only visible surfaces, so maximizing a card cannot leave focus on
+     the card the layout hid.
+  3. The log tail is ephemeral: `LOG_AUTO_COLLAPSE_MS` (60 s) without a new event collapses it, a new
+     log reopens it, an `error` still present in the visible tail keeps it open (a stale error that
+     has scrolled out does not), and `L` pins it, disabling the timer. Releasing the pin starts a
+     fresh minute instead of collapsing the same instant. The collapsed tail is advertised in the
+     footer as `[L] logs · N (card focus)`, where `N` counts every hidden entry.
+- **Alternatives rejected**: (a) dedicated layout commands (`/layout`) — they cost a submission and
+  cannot be repeated while reading; (b) layout keys that also work from the composer — `z` and `L`
+  would stop being typeable letters; (c) a permanent split — it is exactly what starves the
+  conversation on a short terminal; (d) collapsing the tail silently — a log that vanished without a
+  count is indistinguishable from a log that never arrived.
+- **Consequences**:
+  - *Positive*: one terminal size now serves several reading modes without resizing; the conversation
+    owns the rows back when nothing is being logged; a hidden tail announces itself; the layout maths
+    stays pure and is asserted on 100×30 frames.
+  - *Negative*: the maximized state is view-only and is released when the stream content disappears
+    (so a card maximized for one phase cannot reappear maximized after the next turn starts), and the
+    idle timer adds a `setTimeout` to the dashboard's render graph — its edges are pinned by
+    `test/tui/liveLayout.test.ts`, including "an error that scrolled out does not disable the timer".
+
+## ADR-68: Transcript navigation, search and copy are pure policy behind a focus-aware dispatcher
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The live conversation is a wrapped terminal transcript inside an alternate screen:
+  the terminal's own scrollback and text selection are unavailable, a single message may paint
+  dozens of rows, and the row offsets move whenever the card is resized. Reading back a long answer,
+  finding where the agent said something, or copying its last message therefore had no keyboard
+  path at all. The keys that would carry those actions are already contested — `↑`/`↓` scroll the
+  focused card or recall the composer's history, `Tab` moves focus, `Esc` is the two-step abort, and
+  `j`/`k` filter the command palette — so the new surfaces had to be resolved by focus the same way
+  ADR-67 resolved the layout keys, and the search/copy policy had to be testable without mounting
+  the dashboard.
+- **Decision**:
+  1. **`g`/`G` jump the focused transcript.** From the conversation or the stream, `g` scrolls to the
+     first row and `G` to the last; from the composer they are ordinary letters. They are matched as
+     bare input (`!key.ctrl && !key.meta`), so `Ctrl+G` remains a chord instead of a jump.
+  2. **`Ctrl+F` opens search from any focus, including a busy turn.** The search branch sits before
+     the command palette and every focus/editing branch, so a query can never be typed into the
+     draft. The composer swaps its prompt for `find ❯ ` and paints its border with `THEME.warn`;
+     the draft is saved in `draftBeforeSearch` and restored by `Esc` or `Ctrl+F`. Search consumes
+     every key it sees and cancels an armed two-step `Esc`, so `Esc` → `Ctrl+F` → `Esc` → `Esc`
+     warns again instead of aborting.
+  3. **Matches are messages, not painted rows.** `src/tui/search.ts` owns the pure `findMatches`
+     (case-insensitive, trims the query, an empty or whitespace-only query matches nothing) and
+     `matchLabel` (`n/m`, clamped). The dashboard maps a match to its first painted row through
+     `messageStartRow`, which is derived from the same wrapped rows the card renders, so a hit
+     survives a resize. `↑`/`↓` wrap through the hits, Backspace rewinds the selection to the first
+     hit, Enter jumps to the selected message and closes (no hits closes without moving), and the
+     card title/footer print `match n/m` only when there are hits.
+  4. **Copy is best-effort OSC 52 from the caller's stream.** `src/tui/clipboard.ts` sanitizes the
+     payload through `sanitizeTerminalText`, rejects a raw payload above `CLIPBOARD_MAX_BYTES`
+     (100 000 UTF-8 bytes) before spending work on it, re-checks the sanitized size, and returns the
+     sequence to be written by `copyToTerminal(text, out)` — the caller passes Ink's stdout, never a
+     global `process.stdout`. From the conversation, `y` copies the newest assistant message; the
+     agent stream has nothing to copy, and the composer keeps `y` as draft text. The notice names
+     OSC 52 and its terminal caveat, or says the payload was too large; it never claims the system
+     clipboard changed.
+  5. **One dispatcher, two guards.** The keys live in `LiveDashboard`'s single `useInput` handler,
+     and the policy lives in the two pure modules; `test/tui/transcriptNavigation.test.ts` and
+     `test/tui/transcriptSearchColors.test.ts` drive the real keys, and `src/tui/search.test.ts` +
+     `src/tui/clipboard.test.ts` cover the helpers. `test/tui/helpModal.test.ts` keeps the `/help`
+     cheat sheet and the README shortcut table naming the same keys and behaviour.
+- **Alternatives rejected**: (a) search by wrapped row — the anchor moves on every resize and the
+  same query would point at a different place; (b) store the query in the draft — then `Esc` could
+  not restore the exact draft the user was writing; (c) open search in a modal — it would compete
+  with the decision modal for the frame and hide the transcript it is meant to search; (d) bind the
+  actions to `Ctrl+G`/`Ctrl+Y` only — neither is discoverable, and both collide with readline habits;
+  (e) add a native clipboard dependency — a TUI cannot guarantee one, and OSC 52 is the channel every
+  terminal already understands (or is free to ignore).
+- **Consequences**:
+  - *Positive*: the transcript is navigable, searchable and copyable entirely by keyboard; search
+    anchors to messages rather than row arithmetic; the OSC 52 sequence is sanitized and bounded
+    before it reaches the terminal; the policy is importable and tested without mounting a page; and
+    the conflict with the two-step abort is handled explicitly rather than by luck.
+  - *Negative*: the composer now has three modes (draft, palette, search) whose precedence must stay
+    in the dispatcher's order — a new key handler added above the search branch could steal a query
+    character; `y` is swallowed on the stream rather than advertised as a no-op; and OSC 52 support
+    varies by terminal (tmux needs `set-clipboard on`), so the copy is honestly reported as
+    best-effort instead of guaranteed.
+
+## ADR-69: The raven carries the run's state, and the frame pays only for what is on screen
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The raven header was one fixed drawing. It identified the product but said nothing
+  about the work, and on a short terminal it disappeared completely: `VIEWPORT_RESERVED_ROWS` charged
+  the header for the tallest command palette *whether or not the palette was open*, so an 80×24 frame
+  could not afford five rows of art and fell straight back to plain `HUGINN` text — the one terminal
+  size where the brand is most useful paid the highest price. The remaining run state lived in prose:
+  the conversation's accent border named the theme rather than the stage, and the run dashboard's
+  `PIPELINE PHASES` card was a flat list with no "you are here" beyond the spinner and no indication
+  of which increment was running. Any of these could be fixed by adding a row; the frame had no rows
+  to add.
+- **Decision**:
+  1. **Mood is a beak glyph, not a second drawing.** `RAVEN_MOODS` and `ravenMark(mood)`
+     (`src/brand.ts`) expose `idle` (`o`), `thinking` (`O`) and `sleeping` (`-`). Every variant is
+     byte-for-byte the idle mark except that one cell, so the same three rows, the same leading
+     spaces and the same width survive a mood change and no caller re-measures anything.
+     `RavenHeader`/`buildRavenArtRows` and `LiveHero`/`heroPlan` take an optional `mood`; the live
+     console draws `thinking` while a turn is in flight and `idle` otherwise. The one-row compact
+     brand is fixed at the idle head, so a narrow frame cannot claim a mood it has no room to draw.
+  2. **A fourth, one-row rung.** `COMPACT_BRAND` (`<(o  HUGINN`) and `COMPACT_BRAND_WIDTH` sit between
+     the wordmark and the plain-text fallback in both `ravenHeaderPlan` and `heroPlan`. The five-row
+     art still needs `reservedRows + border + art + context` rows; the compact rung needs only
+     `border + 1 + context`, which is why an 80×24 frame keeps a bird instead of a word. The hero
+     uses the same rung and, when the art would starve the guidance, steps down to it rather than to
+     plain text: a first-run screen keeps both its brand and its advice.
+  3. **Reserve only what is on screen.** `LiveDashboard` exports `VIEWPORT_RESERVED_ROWS_CLOSED`
+     (card floors, composer, footer) and `VIEWPORT_RESERVED_ROWS_OPEN` (the closed figure plus
+     `MAX_SUGGESTION_ROWS` and the palette's border), and adds
+     `MODAL_COMPACT_RESERVE_ROWS = RAVEN_ART_ROWS - 1` while a full-screen modal (help, skills,
+     model/MCP/agent/profile picker) is open. The header plan is re-derived from the active figure, so
+     opening the palette may shrink the header and closing it gives the art back.
+  4. **Colour names the work, not the theme.** While a turn is in flight the conversation card's
+     `primary` accent is the active stage's token (`STAGE_LABEL`: `accent` refine, `warn` draft,
+     `thinker` approve, `executor` execute) via `Card`'s `accentToken`; at idle it returns to
+     `accent`. The stage label already exists, so this adds no vocabulary.
+  5. **The pipeline is a rail that names the increment.** `PipelineCard` prints `iter n/m` in its
+     title row through `Card`'s `titleRight` and hangs every phase off one connector: `├─` for each
+     node, `└─` for the last, and `   └─` for a `FIX_*` round beneath the phase it repairs. The status
+     glyph stays before the connector, so the current node keeps its spinner and a finished one keeps
+     its verdict mark. The connector is drawn inside the row the phase already occupied, so the card's
+     height is unchanged and the increment never costs a body row.
+- **Alternatives rejected**: (a) animate the raven across frames — that needs rows and columns to
+  change, which is exactly the budget this change is trying to recover, and a timer in the header's
+  render graph; a mood is one cell and no new layout; (b) ship each mood as an independent art
+  constant — three drawings drift, one grid does not; (c) keep reserving the palette permanently so
+  the header never moves — that is the defect: the header paid eight rows for a surface nobody had
+  opened; (d) drop the art below a threshold instead of adding a rung — the smaller the terminal, the
+  more the identity is worth, and one row is affordable almost everywhere; (e) print the increment as
+  an extra body row or a progress bar in the pipeline body — the title row is already paid for and
+  the body is the scarce surface; (f) mint stage-specific colour tokens — the profile's existing
+  tokens already name refine/draft/approve/execute.
+- **Consequences**:
+  - *Positive*: an 80×24 live console now draws the full mark (13 reserved + 2 border + 5 art +
+    2 context = 22 of 24 rows) with the palette closed, drops to plain text only while the palette is
+    open at that height, and reaches the compact row at 28 rows; the header returns to its full plan
+    the moment the palette closes. The conversation's loudest chrome now says which stage is running,
+    and the pipeline says which increment it belongs to without spending a row. Moods, the compact
+    rung and the reservation split are all pure and guarded by `src/brand.test.ts`,
+    `test/tui/ravenHeader.test.ts`, `test/tui/glyphs.test.ts`, `test/tui/liveLayout.test.ts`,
+    `test/tui/liveStageAccent.test.ts` and `test/tui/dashboard.test.ts`.
+  - *Negative*: the header's height now changes while the user types `/` (the plan is re-derived when
+    the palette opens or closes), so a caller that cached the header plan must read it from the hook
+    rather than snapshot it; the compact brand cannot express a mood, so the raven is idle-looking
+    whenever only one row fits; `MODAL_COMPACT_RESERVE_ROWS` is an `RAVEN_ART_ROWS - 1` offset and must
+    be revisited if the art ever grows a row; and the run page now passes
+    `iteration`/`totalIterations` into `PipelineCard`, so its state must keep those two fields current
+    (they already do for the progress bar).
+
+## ADR-70: Markdown is rendered as a block, at the width of the card that draws it
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The markdown renderer was line-shaped: `markdownSegments` parsed one line at a time,
+  `MarkdownLine` asked Ink to wrap it, and every rule-like line drew a **fixed literal** (40 columns
+  for `---`, 39 for a code-fence header with a short language tag and 47 with a long one). A table
+  could not be aligned at all — each row reached the card as raw `| … |` pipes, because column widths
+  need the whole contiguous block and the renderer only ever saw one line. Links kept their markdown
+  (`[label](url)`). The two literals also
+  violated the card's own contract: a rule narrower than the body floated short of the border, and a
+  rule wider than the body was handed to Ink, which paints the extra columns as a second row inside a
+  fixed-height card (the class of defect ADR-61 rules out). `StreamCard`'s report path made the table
+  problem worse by slicing the raw buffer (`reportLines.slice(-bodyBudget)`) before any formatting,
+  so a clipped report could start in the middle of a table.
+- **Decision**:
+  1. **Width is a parameter, not a constant.** `markdownSegments(text, color, width)` draws the
+     horizontal rule and the code-fence header at exactly that width; an undefined/non-finite width
+     falls back to `DEFAULT_MARKDOWN_WIDTH` (80) and every width is clamped to at least one column, so
+     the function can neither emit `repeat(0)` nor throw. `MarkdownLine` gains a `width` prop and
+     `MarkdownBlock` passes it down, while both dashboards supply that width from the frame they
+     already laid out (`Dashboard`'s stream column, `cardChrome(...).columns`).
+  2. **Links name their target.** `inlineSegments` matches `[label](url)` before the emphasis tokens
+     and emits the label underlined plus a dim ` ‹url›`. A malformed link stays literal text, the
+     underline travels as a segment flag (so `wrapSegments` preserves it), and a heading's bold maps
+     over it rather than dropping it.
+  3. **Tables are one pure block function.** Because column widths depend on every row, `tableBlock`
+     takes the whole contiguous block (raw strings or pre-split cells) and returns one styled row per
+     input row: natural widths per column, dim `" │ "` separators, a bold header, the separator line
+     drawn as `─`, `…` truncation inside a cell, and a final clip to the width. `isTableHeader`
+     requires the following `|---|` row, and `tableBlockEnd` stops at the first blank/non-pipe line,
+     so prose that merely contains a pipe is not mistaken for a table. Truncation is deliberate: a
+     wrapped row would spend two terminal rows and break the one-row-per-line budget.
+  4. **A block renderer is the only caller that can align.** `MarkdownBlock` walks a report or stream
+     buffer, formats each contiguous table block whole, hands every other line to `MarkdownLine`, and
+     clips by **rendered rows** (`maxRows` keeps the last N), which is what lets `StreamCard` show the
+     tail of a report without cutting a table header off first. The live conversation formats its
+     tables while building `ChatRow[]`, where the contiguous rows are still in hand.
+- **Alternatives rejected**: (a) let `wrapSegments` wrap table rows — the separators would no longer
+  line up and every table row could cost two rows; (b) pad every column to a fixed width — the table
+  would overflow a narrow card or waste half a wide one; (c) build the table in Ink components and
+  measure after layout — Ink has no pre-paint measurement, and the row budget must be known before the
+  frame is composed (ADR-61's constraint); (d) render only the header row in the "table" style — the
+  table would still reach the user as raw pipes; (e) style inline markup inside table cells by
+  naively truncating the rendered string — truncation would cut ANSI/segment boundaries, so the
+  limitation is recorded as a todo instead of half-implemented.
+- **Consequences**:
+  - *Positive*: a markdown table in a phase report or a chat message renders as aligned, dim-separated
+    rows with a bold header; a `---` is one row of the card's exact body width at any terminal size;
+    a link shows its label and its URL instead of its source. The width contract is testable at the
+    pure level (`markdownSegments`, `tableBlock`) and at the frame level (the dashboard and live chat
+    tests render the real components and assert the painted rows stay inside the card).
+  - *Negative*: `tableBlock` is O(rows × columns) per render of a table (acceptable: reports are
+    bounded, and the live chat memoizes its wrapped rows on the message list and the card width), and
+    cells are plain text — a bold or linked value inside a table cell still shows its markup until
+    width-aware truncation across styled runs is designed (`test/tui/markdownTable.test.ts` keeps
+    that as a `todo`). Widening a table therefore truncates rather than reflows, and a caller that
+    forgets to pass `width` gets the documented 80-column fallback, which is exactly the old defect at
+    a different number.
+
+## ADR-71: The six console modals share one presentational frame, and the footer names the focused surface
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: Each of the six console modals (`HelpModal`, `SkillsModal`, `AgentPickerModal`,
+  `ProfilePickerModal`, `ModelPickerModal`, `McpInspectorModal`) repeated its own `borderStyle`,
+  padding and footer arithmetic, and each implemented its own key grammar. The copies had already
+  diverged: the MCP inspector moved panes on both `Tab` and `Enter`, while the selectors used
+  `Enter` to confirm and the browsers used it for their own action; `q` closed some modals and did
+  nothing in others. The decision surface also owned a private double border just outside the new
+  `CARD_CHROME` hierarchy. The live console's footer was a single fixed sentence: while a card owned
+  the keyboard it still advertised History and Send, and the surface-specific keys were truncated
+  first. The run dashboard had its own copy of the same chain. Two frames and two footers guarantee
+  drift, and a row a modal or footer spends without being paid for is a row the fixed-height Ink
+  frame never gets back.
+- **Decision**:
+  1. **One presentational frame.** `src/tui/Modal.tsx` is the only console modal frame. `tone="alert"`
+     draws a `double` border with `THEME.warn`; every other tone is a `round` box with
+     `THEME.accent`, overridable through `borderColor`. The frame owns one clipped bold title row, an
+     optional muted subtitle row and the `hint` key footer (one muted clipped row for the console
+     modals, a `ReactNode` for the decision surface's own row specs), fixes `paddingX={1}`,
+     `flexShrink={0}` and `overflow="hidden"`, and leaves `height`, `width`, `minHeight`, `paddingY`
+     and the children to the caller. It never calls `useInput`: input belongs to the surface that
+     knows what a key means.
+  2. **One key grammar, exported as a literal.** `MODAL_KEY_CONTRACT`
+     (`close: "Esc"`, `quickClose: ["HelpModal", "SkillsModal"]`,
+     `confirm: ["AgentPickerModal", "ProfilePickerModal", "ModelPickerModal"]`, `move: "↑/↓"`,
+     `vimMove: "k/j"`) is the single statement of the grammar. `Esc` closes every console modal;
+     `q` closes only the two read-only browsers; `Enter` confirms only in the three selectors and
+     never closes a modal (`SkillsModal` keeps `Enter` for its own execute action, which is not a
+     generic confirm); `Tab` switches panes only in `SkillsModal`/`McpInspectorModal`; `p`/`g`
+     persist only in `ProfilePickerModal`; `k`/`j` move only where they already did. The decision
+     surface shares the frame and its `alert` tone but keeps its own answer keys and windowing.
+  3. **The footer is pure policy.** `footerHints(input)` in `src/tui/footer.ts` returns
+     `{ left, right }`: the left cell carries the keys of the **focused** surface (`composer`,
+     `chat`, `stream` or the run dashboard), the right cell keeps token usage and the stage badge,
+     and the palette/search/busy/maximized/hidden-log states replace the left cell where they own
+     the keyboard. It is pure (no React, no Ink), so both dashboards and the tests call the same
+     policy; `src/tui/footerHints.ts` is a compatibility re-export, not a second implementation.
+  4. **The width is the terminal's.** With `columns`, the right cell is clamped first through
+     `headerValue` (the stage badge must survive), one separator column is spent only when the right
+     cell is non-empty, and the left cell receives the remainder. A negative or fractional hit count
+     and a fractional width are floored rather than sliced.
+- **Alternatives rejected**: (a) keep each modal's frame and only align the footers — the border,
+  padding and title-row arithmetic is exactly what drifted; (b) put `useInput` inside `Modal` — the
+  frame would have to know every modal's key semantics and the decision surface's answer keys would
+  leak into the selectors; (c) leave the decision surface on its private double border — it would be
+  a second border implementation the chrome hierarchy cannot account for; (d) keep the live footer's
+  fixed sentence and simply abbreviate it — a footer that advertises keys the focused surface does
+  not accept is worse than a shorter list, and the run dashboard's copy would still drift; (e) make
+  `footerHints` read React state — that would make it untestable without Ink and couple the footer to
+  both pages.
+- **Consequences**:
+  - *Positive*: six modals plus the decision surface now spend the same frame and the same row
+    contract; the keyboard grammar is one exported literal and one guard test instead of six
+    independent `if` chains; the footer shows what the focused surface actually accepts, cannot
+    exceed the terminal width, and keeps the stage badge even when the card keys are clipped. The
+    shared frame also removes the last private double-border implementation, so `CARD_CHROME` stays
+    the only card-cost table while the `alert` tone owns the one alarm surface.
+  - *Negative*: `Modal` fixes horizontal chrome, so a future modal that needs different padding or a
+    second footer row must extend the frame rather than reach for `Box`; the footer's strings live
+    in a pure module and must be changed there (both dashboards and the tests read the same source);
+    and `SkillsModal`'s `Enter` is an intentional exception to the selectors' confirm rule, so the
+    grammar is uniform by surface role, not by key alone. `test/tui/modalContract.test.ts` and
+    `src/tui/footer.test.ts` are what keep the literals, the README/DESIGN paragraphs and the
+    handlers from drifting apart.
+
+
+## ADR-72: Console chrome paints one measured alphabet, and a clamped value announces its cut
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Context**: The console still painted two kinds of text it had not measured. The MCP badge
+  reached both headers and the side panel exactly as `formatMcpBadge` produced it, complete with
+  `🟢`/`🟡`/`⚪`; those pictographs are double-width, so the row the layout reserved for one column
+  was painted as two and shifted every following cell. Separately, `headerValue` clamped a dynamic
+  header value with `String.slice` — a **code-unit** cut that could split a surrogate pair or slice
+  a double-width glyph in half, and that gave no cue at all that the text continued. The side panel
+  made both problems visible: at its 34-column width (`SIDE_PANEL_WIDTH`) the value column was 21
+  columns, narrower than real values such as `⎇ upgrade/ui-ux · dirty` and large Muninn counts,
+  so the panel cropped exactly the facts it was built to report. The engine's badge contract is not
+  free to change: its pictographs are asserted by `test/engine/agent/mcpStatus.test.ts`, and the gate
+  markers are a three-way contract with huginn's parsers.
+- **Decision**:
+  1. **Map at the TUI boundary.** `mcpBadgeText(badge)` (`src/tui/sessionContext.ts`) strips every
+     `\p{Extended_Pictographic}` and variation selector, collapses the whitespace that leaves,
+     re-inserts the `MCP: ` label with one mark from `MCP_STATUS_GLYPHS` (`healthy` →
+     `STATUS_GLYPHS.pass` `✓`, `degraded` → `STATUS_GLYPHS.warning` `!`, `unknown` →
+     `STATUS_GLYPHS.pending` `·`) and keeps the engine's wording after it. `formatMcpBadge` still
+     produces the pictographed report for the engine and its own tests; only the TUI maps it. A
+     badge that carried only a mark still names itself, and a badge sent without the label is
+     repaired rather than dropped.
+  2. **Clamp in display columns and say so.** `headerValue(value, maxWidth)` measures with
+     `stringWidth`, returns a fitting value intact, and otherwise keeps the head and spends the
+     last column on `TRUNCATION_ELLIPSIS` (`…`). A value that must be cut in one column is the mark
+     alone; a zero, negative, sub-one fractional or `NaN` budget is `""`; `Infinity` keeps the value
+     whole. A double-width glyph is never split, so the result can never paint wider than its budget.
+     The footer inherits the same contract, so both of its cells announce a cut.
+  3. **Pay for the values.** `SIDE_PANEL_WIDTH` grows from 34 to 36 columns, giving a 23-column
+     value column (`36 − 4 chrome − 9 label`), and `memoryStat` formats both Muninn counters through
+     the existing `formatCount` (`840`, `1.4k`, `12k`) instead of printing raw integers. The width
+     is paid from the same 100-column threshold that already reserved a 44-column conversation, so
+     nothing is starved: `36 + 1 gap + 44 = 81 ≤ 100 − 2` inset.
+- **Alternatives rejected**: (a) change `formatMcpBadge` to emit ASCII — its pictographs are the
+  engine contract the CLI and its tests read, and changing them would move a presentation decision
+  into the engine; (b) use a three-column `...` mark — it costs two extra columns in every clamped
+  header and footer cell for no extra meaning; (c) keep the silent crop — a reader cannot tell a
+  complete value from a truncated one, which is the bug; (d) map the badge only in the headers and
+  leave the panel — the panel would keep the grid break and the divergence; (e) widen the panel
+  without checking the conversation floor — a 36-column panel beside a sliver is worse than no
+  panel; (f) shrink the 9-column label column — labels would no longer line up and value starts
+  would wander between rows.
+- **Consequences**:
+  - *Positive*: every console surface now paints a single-column, measured alphabet, so the
+    monospace grid holds and the frame's column arithmetic is true again; a truncated value is
+    visibly truncated, and the MCP badge reads the same (`MCP: ✓ …`) in the run header, the live
+    header and the side panel.
+  - *Negative*: the TUI carries a second presentation of the badge that must track the engine's
+    three statuses (guarded by `test/tui/sessionContext.test.ts` and the frame-wide scans in
+    `test/tui/ravenHeader.test.ts`); a clamped value loses one of its columns to `…`; the panel now
+    claims two more columns whenever it is visible, so a future narrower threshold must re-check
+    the three-way width sum; and `headerValue`'s degenerate branches (NaN, `Infinity`, one column)
+    are behaviour that must stay covered, because callers depend on them rather than on a throw.
+
+## ADR-73: One home per fact — header identity, panel environment, footer keys
+
+- **Date**: 2026-11-01
+- **Status**: Accepted
+- **Supersedes (in part)**: ADR-47 (the panel's `stage` row and the header's status summaries),
+  ADR-71 (the footer's stage badge) and ADR-72 (the MCP badge's home in the live header). Those
+  records stay as written; this one moves the facts they placed.
+- **Context**: The live console painted the same facts on three surfaces. The header's row 1 carried
+  the MCP badge (up to 40 columns) and the runtime name before it laid out the project path, so the
+  path was the first value clamped; its row 2 repeated the git branch and its dirtiness, the
+  worktree sandbox and the conversation counter that the side panel already reported. The panel in
+  turn repeated the live stage, which the header badge also named, and the footer appended
+  `stage: <LABEL>` to the usage figure — a fourth copy of the same state. On a 100-column frame this
+  was not only redundant: the duplication spent the columns the project path needed, and the tests
+  asserted the duplication ("the branch … in the header too", "counts the conversation in the header
+  and the panel", `stage: REFINE` in the footer), so the console could not lose it by accident but
+  also could not get better.
+- **Decision**:
+  1. **The header is identity and ephemeral state.** Row 1 is `[<spinner> <STAGE>]` plus the project
+     path; row 2 is the two active models and nothing else. MCP, the runtime name, git, the sandbox
+     and the context counter leave the header. `LIVE_HEADER_CONTEXT_ROWS` stays `2`, so the header's
+     height (and therefore `VIEWPORT_RESERVED_ROWS_CLOSED`/`_OPEN`, the card heights and the decision
+     modal's budget) does not move; the row-1 path simply inherits the columns the badge and the
+     runtime used to claim.
+  2. **The panel is the environment.** Its `stage` row is gone, together with the `PanelData` fields
+     that only it consumed (`stageLabel`, `stageToken`, `busy`, `spinner`). It keeps `agent`, the
+     attributed MCP badge, `git`, `sandbox`, `muninn`, `ctx` and the bottom-anchored `TIP`.
+     `gitStat(git, maxWidth?)` now pays for the `clean`/`dirty` suffix first and clamps only the
+     branch, because the panel is the one home of that state: a long branch is `…`-marked, the state
+     always survives. Without `maxWidth` the historic `GIT_BRANCH_COLUMNS` cap is unchanged.
+  3. **The footer is the keys.** `FooterHintInput` loses `stage`; the right cell carries `usage`
+     (the run dashboard still adds its decision notice there) and the left cell carries the focused
+     surface's keys. `sessionStat` — the header-only join of git, sandbox and context — had no other
+     caller and is deleted with its test rather than left as dead code.
+  4. **The tests state the new rule.** The two `test/tui/liveLayout.test.ts` assertions that fixed
+     the old duplication are rewritten, not deleted or relaxed: one asserts a single `⎇` occurrence
+     in the panel and none on the header's models row; the other asserts the conversation counter
+     appears exactly once, in the panel. The footer assertions in the TUI suites assert the header's
+     `[<spinner> <STAGE>]` badge and the absence of `stage:`. A 100×30 regression test mounts a long
+     project path and checks it is painted whole, which the old badge/runtime layout could not do.
+- **Alternatives rejected**: (a) keep the duplication and only widen the path — the goal is one home
+  per fact, and two sources of the same state can disagree; (b) keep the MCP badge and runtime in the
+  header for convenience — that is exactly what spends the path's columns; (c) shorten the panel's
+  9-column label column so a longer branch fits — labels would stop lining up and value starts would
+  wander; (d) widen the panel to fit an arbitrary branch — it is already sized for the longest real
+  value (`⎇ upgrade/ui-ux · dirty`, 23 columns) and widening steals conversation columns for
+  edge-case names, while reserving the state costs none; (e) keep `sessionStat` "for later" — dead
+  code and a second implementation of wording the panel owns; (f) leave `git` in the header as a
+  shortcut — it recreates the two-home problem this ADR removes.
+- **Consequences**:
+  - *Positive*: every fact has one home, so the surfaces cannot drift; row 1's project path gains
+    the badge/runtime columns (verified at 100×30); the header's height and every layout constant
+    derived from it stay put; the footer no longer truncates keys to pay for a badge that is not
+    needed there; the working-tree state survives a long branch name.
+  - *Negative*: the header alone no longer answers "which runtime/MCP?" — on a terminal too narrow
+    for the panel (below `SIDE_PANEL_MIN_COLUMNS`) that environment detail is only in `/status`; the
+    panel's `git` row now yields branch columns to its state suffix; and the removed `PanelData`
+    fields are a breaking change for any embedder constructing the panel directly (in-repo callers
+    and tests were updated in the same commit).
+
+
+## ADR-74: The output panel wraps once, then scrolls by terminal rows
+
+- **Date**: 2026-11-02
+- **Status**: Accepted
+- **Context**: The run dashboard's output panel handed each source line to Ink with
+  `wrap="truncate"` and derived its scroll offset from `streamLines.length`, so a long report line
+  was cut with `…` and the hidden part could not be reached by any key. The live stream had the same
+  mismatch in a quieter form: its card wrapped lines, but its scroll count still used the unwrapped
+  buffer. Two surfaces, two row models, one bug.
+- **Decision**:
+  1. `markdownBlockRows(lines, width, colorFor?)` is the pure formatter for a whole block and returns
+     one `MdSegment[]` per terminal row. Contiguous tables are expanded through `tableBlock` (column
+     widths need the whole block); every other line is `wrapSegments(markdownSegments(line, color,
+     width), width)`, so a styled span is never cut mid-markup. `MarkdownBlock` is reimplemented on
+     top of it and has no wrapping path of its own.
+  2. Both dashboards `useMemo` those rows on the text and the body width only — never per spinner
+     frame — and derive `maxScroll` from `rows.length - visibleRows`. They slice rows, not source
+     lines, so the scroll indicator and the frame agree with what is painted.
+  3. The stream buffer keeps the newest `MAX_STREAM_ROWS` (2 000) formatted rows; the cap is applied
+     before `maxScroll`, so the end of a runaway phase is reachable and the scroll range never claims
+     rows the buffer no longer holds.
+  4. In the run dashboard `z` is a view toggle that hides `PIPELINE` and gives the output panel the
+     full content width; a second press restores the split. `y` copies the original markdown (the
+     report or the stream buffer, never the wrapped rows) through `copyToTerminal`, exactly one
+     OSC 52 sequence per press.
+- **Alternatives rejected**: (a) keep truncation and raise the line width — the text is still lost at
+  any finite width; (b) let Ink wrap and count source lines — that is the original bug, and a text
+  node claiming one row while painting several corrupts the card; (c) wrap inside `StreamCard` per
+  frame — a 60 KB report would be reformatted on every tick; (d) give the run dashboard a separate
+  scrolling implementation — the live and run panels would drift again; (e) copy the wrapped rows —
+  the clipboard would receive layout artefacts instead of the report.
+- **Consequences**:
+  - *Positive*: a long report is readable end to end, the scroll indicator is honest on both
+    surfaces, and `z`/`y` make the run panel usable without leaving the dashboard.
+  - *Negative*: the scroll offset is measured in painted rows, so a terminal resize can change the
+    row count under a saved offset (the clamp keeps the view in range); the 2 000-row cap drops the
+    oldest rows of an exceptionally long stream; and every new output surface must use
+    `markdownBlockRows` rather than introducing another wrapper.

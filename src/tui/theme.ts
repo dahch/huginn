@@ -32,6 +32,7 @@
  */
 
 import type { McpBadgeStatus } from "../engine/agent/mcpStatus.js";
+import type { RavenMood } from "../brand.js";
 
 /** How the palette is chosen. `auto` adapts to the terminal it finds itself on. */
 export type ThemeMode = "light" | "dark" | "auto";
@@ -358,6 +359,23 @@ export function mcpStatusToken(status: McpBadgeStatus): ThemeToken {
       return "ok";
     case "degraded":
       return "warn";
+    default:
+      return "muted";
+  }
+}
+
+/**
+ * The raven's state → the colour its mark is painted with: quiet while idle,
+ * the accent while a turn is in flight, danger while MCP is degraded. Under
+ * `NO_COLOR` every token resolves to `undefined`, and the beak glyph alone still
+ * distinguishes the three states.
+ */
+export function ravenMoodToken(mood: RavenMood): ThemeToken {
+  switch (mood) {
+    case "thinking":
+      return "accent";
+    case "sleeping":
+      return "danger";
     default:
       return "muted";
   }

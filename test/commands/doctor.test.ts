@@ -156,7 +156,7 @@ describe("runDoctorChecks", () => {
   it("names the missing targets and the exact fix when Muninn is not provisioned (AC-38.4)", () => {
     // A fresh environment has nothing registered, so the detail must be actionable
     // rather than just "run huginn setup".
-    const report = runDoctorChecks(options(makeEnv()));
+    const report = runDoctorChecks(options(makeEnv(true)));
     const integrations = byId(report).get("integrations");
 
     expect(integrations?.status).toBe("warn");

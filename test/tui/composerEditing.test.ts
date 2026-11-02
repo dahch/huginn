@@ -12,7 +12,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { LiveApp } from "../../src/tui/LiveDashboard";
 import { CURSOR_GLYPH, MAX_INPUT_ROWS } from "../../src/tui/composer";
 import { events } from "../../src/engine/engineEvents";
@@ -387,7 +387,8 @@ describe("Composer caret & in-place editing (REQ-6)", () => {
       }
       // … the composer and the footer are the rows that survive …
       expect(output, where).toContain("❯ ");
-      expect(output, where).toContain("stage: REFINE");
+      expect(output, where).toContain("[Tab] Focus:");
+      expect(output, where).not.toContain("stage:");
       // … and the frame is not just *shorter*: every box is intact, with its
       // content inside it, instead of being squeezed until it bleeds into its
       // own border (which is what the composer used to do).

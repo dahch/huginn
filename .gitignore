@@ -21,3 +21,8 @@ opencode.jsonc
 .mcp.json
 .env
 .env.*
+
+# Worktree-local symlinks to the shared install / agent config (absolute host
+# paths). They are environment artifacts, never repository content.
+/.pi
+/node_modules

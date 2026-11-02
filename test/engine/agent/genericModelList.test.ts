@@ -36,9 +36,9 @@ describe("REQ-27 · GenericSubprocessRuntimeAdapter model discovery (AC-27.4)", 
     const script = makeScript("list-models.sh", `printf 'cli-only/model-x\\ncli-only/model-y\\n'`);
 
     const adapter = new GenericSubprocessRuntimeAdapter({
-      id: "gemini",
-      name: "Gemini CLI",
-      command: "gemini",
+      id: "qwen",
+      name: "Qwen CLI",
+      command: "qwen",
       models: [{ id: "static/model-z", name: "Static", provider: "static" }],
       modelListCommand: { command: script, args: ["--list-models"], parse: parseIdLines },
     });
@@ -51,9 +51,9 @@ describe("REQ-27 · GenericSubprocessRuntimeAdapter model discovery (AC-27.4)", 
     const script = makeScript("echo-args.sh", `printf '%s\\n' "$@"`);
 
     const adapter = new GenericSubprocessRuntimeAdapter({
-      id: "gemini",
-      name: "Gemini CLI",
-      command: "gemini",
+      id: "qwen",
+      name: "Qwen CLI",
+      command: "qwen",
       modelListCommand: { command: script, args: ["--list-models", "--json"], parse: parseIdLines },
     });
 
@@ -65,9 +65,9 @@ describe("REQ-27 · GenericSubprocessRuntimeAdapter model discovery (AC-27.4)", 
 
   it("returns [] on listing failure — never the static array, never a fake", async () => {
     const adapter = new GenericSubprocessRuntimeAdapter({
-      id: "gemini",
-      name: "Gemini CLI",
-      command: "gemini",
+      id: "qwen",
+      name: "Qwen CLI",
+      command: "qwen",
       models: [{ id: "static/model-z", name: "Static", provider: "static" }],
       modelListCommand: {
         command: "__huginn_missing_listing_cli__",
@@ -82,9 +82,9 @@ describe("REQ-27 · GenericSubprocessRuntimeAdapter model discovery (AC-27.4)", 
   it("returns [] when the parser itself throws", async () => {
     const script = makeScript("garbage.sh", `printf 'not json\\n'`);
     const adapter = new GenericSubprocessRuntimeAdapter({
-      id: "gemini",
-      name: "Gemini CLI",
-      command: "gemini",
+      id: "qwen",
+      name: "Qwen CLI",
+      command: "qwen",
       modelListCommand: {
         command: script,
         args: [],
@@ -215,8 +215,8 @@ describe("REQ-27 · native model forwarding (AC-27.5)", () => {
     const script = makeScript("argv.sh", `printf '%s\\n' "$@"`);
 
     const adapter = new GenericSubprocessRuntimeAdapter({
-      id: "gemini",
-      name: "Gemini CLI",
+      id: "qwen",
+      name: "Qwen CLI",
       command: script,
       args: ["-m"],
       modelArgs: (model) => ["-m", model],

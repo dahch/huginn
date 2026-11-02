@@ -9,7 +9,9 @@ import {
 } from "../engine/agent/mcpStatus.js";
 import { events } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text.js";
-import { NEXT_STEP, warnFeedback } from "./feedback.js";
+import { FEEDBACK_WARN, NEXT_STEP, warnFeedback } from "./feedback.js";
+import { Modal } from "./Modal.js";
+import { MODAL_TITLE_GLYPHS } from "./glyphs.js";
 import { THEME } from "./theme.js";
 
 const MAX_VISIBLE_TOOLS = 10;
@@ -161,7 +163,9 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
       return;
     }
 
-    if (key.tab || key.return) {
+    // Tab is the pane switch. Enter confirms only in the three selectors; in a
+    // read-only inspector it must not silently move focus (see `Modal`).
+    if (key.tab) {
       setFocusView((f) => (f === "servers" ? "tools" : "servers"));
       return;
     }
@@ -219,34 +223,22 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         : THEME.text;
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={THEME.thinker}
-      paddingX={1}
-      paddingY={1}
-      width="100%"
-      minHeight={14}
-    >
-      {/* Header */}
-      <Box justifyContent="space-between" marginBottom={1}>
-        <Box>
-          <Text bold color={THEME.thinker}>
-            🔌 MCP SERVER INSPECTOR
-          </Text>
-          <Text color={THEME.muted}> · </Text>
-          <Text bold color={statusColor}>
-            {statusSummary}
-          </Text>
+    <Modal
+      title={`${MODAL_TITLE_GLYPHS.inspector} MCP SERVER INSPECTOR`}
+      subtitle={
+        <>
+          <Text bold color={statusColor}>{statusSummary}</Text>
           <Text color={THEME.muted}> · </Text>
           <Text color={THEME.accent}>{totalTools} tools</Text>
-        </Box>
-        <Box>
-          <Text color={THEME.muted}>Runtime: </Text>
+          <Text color={THEME.muted}> · Runtime: </Text>
           <Text color={THEME.warn}>{agentLabel}</Text>
-        </Box>
-      </Box>
-
+        </>
+      }
+      hint="↑/↓ or k/j navigate · Tab switch pane · Esc close"
+      borderColor={THEME.thinker}
+      minHeight={14}
+      paddingY={1}
+    >
       {/* Attribution & expectation (AC-32.3) */}
       <Box flexDirection="column" marginBottom={1}>
         <Text color={THEME.muted} wrap="truncate">
@@ -256,21 +248,14 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         <Text color={muninn ? THEME.ok : THEME.warn} wrap="truncate">
           {muninn
             ? `✓ Muninn (the memory brain) is registered for ${agentLabel} as "${sanitizeTerminalText(muninn.name)}" — one project-scoped brain, shared by every agent.`
-            : `⚠ Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
+            : `${FEEDBACK_WARN} Muninn is not registered for ${agentLabel} — run: ${muninnSetupCommand(agentId)}`}
         </Text>
       </Box>
 
       {/* Main Split Body: Left Server List, Right Detail Panel */}
       <Box flexDirection="row" flexGrow={1}>
         {/* Left column: Server list */}
-        <Box
-          flexDirection="column"
-          width="50%"
-          borderStyle="single"
-          borderColor={focusView === "servers" ? THEME.accent : THEME.border}
-          paddingX={1}
-          marginRight={1}
-        >
+        <Box flexDirection="column" width="50%" paddingX={1} marginRight={1}>
           <Box marginBottom={1}>
             <Text bold color={focusView === "servers" ? THEME.accent : THEME.text}>
               Servers ({servers.length})
@@ -318,7 +303,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                 <Box key={server.id || idx} justifyContent="space-between" marginBottom={0}>
                   <Box>
                     <Text color={isSelected ? THEME.accent : THEME.muted}>
-                      {isSelected ? "▶ " : "  "}
+                      {isSelected ? "> " : "  "}
                     </Text>
                     <Text bold={isSelected} color={THEME.text}>
                       {sanitizeTerminalText(server.name)}
@@ -336,13 +321,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         </Box>
 
         {/* Right column: Detail & Tools panel */}
-        <Box
-          flexDirection="column"
-          width="50%"
-          borderStyle="single"
-          borderColor={focusView === "tools" ? THEME.accent : THEME.border}
-          paddingX={1}
-        >
+        <Box flexDirection="column" width="50%" paddingX={1}>
           <Box marginBottom={1} justifyContent="space-between">
             <Text bold color={focusView === "tools" ? THEME.accent : THEME.text}>
               {currentServer ? `Tools for ${sanitizeTerminalText(currentServer.name)}` : "Server Detail"}
@@ -398,7 +377,7 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
                       <Box key={tool.name ? `${tool.name}-${actualIndex}` : actualIndex} flexDirection="column" marginBottom={1}>
                         <Box>
                           <Text color={isToolSelected ? THEME.accentStrong : THEME.muted}>
-                            {isToolSelected ? "▶ " : "  "}
+                            {isToolSelected ? "> " : "  "}
                           </Text>
                           <Text bold color={THEME.accentStrong}>
                             {sanitizeTerminalText(tool.name)}
@@ -424,15 +403,12 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
         </Box>
       </Box>
 
-      {/* Footer Navigation */}
       <Box marginTop={1} justifyContent="space-between">
-        <Text color={THEME.muted}>
-          [↑/↓ or k/j] Navigate · [Tab/Enter] View Tools · [Esc] Close
-        </Text>
+        <Text color={THEME.muted}>Tab switches pane</Text>
         <Text color={THEME.muted}>
           Focus: <Text color={THEME.accent}>{focusView}</Text>
         </Text>
       </Box>
-    </Box>
+    </Modal>
   );
 });

@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { LiveApp } from "../../src/tui/LiveDashboard";
 import { events } from "../../src/engine/engineEvents";
 import type { LiveEngine } from "../../src/engine/liveMode";
@@ -115,7 +115,7 @@ describe("LiveDashboard Slash Commands", () => {
     // incremental frames, so the modal's *border/title* row can be overwritten by
     // neighbouring frames while its body rows survive intact.
     expect(output).toContain("Show this command cheat sheet");
-    expect(output).toContain("Press Esc, q, or Enter to close cheat sheet");
+    expect(output).toContain("HUGINN LIVE CHEAT SHEET");
   });
 
   it("opens SkillsModal when /skills or bare /skill is entered", async () => {
@@ -227,7 +227,7 @@ describe("LiveDashboard Slash Commands", () => {
     // AC-31.1/AC-31.2: the failure is prefixed, names the skill and says what to
     // do next — and the ANSI sequences in the query are stripped (SEC-LOW-001).
     expect(notFoundMsg).toBe(
-      '⚠ Skill "unknown-skill" not found — type /skills to browse the available skills.',
+      '! Skill "unknown-skill" not found — type /skills to browse the available skills.',
     );
     expect(notFoundMsg).not.toContain("\u001b[31m");
   });
@@ -308,7 +308,7 @@ describe("LiveDashboard Slash Commands", () => {
     // AC-31.2: the next step leads, the raw (sanitized) cause follows.
     const failure = systemMessages.find((m) => m.includes("Diagnostics failed"));
     expect(failure).toBeDefined();
-    expect(failure).toContain("⚠ Diagnostics failed");
+    expect(failure).toContain("! Diagnostics failed");
     expect(failure).toContain("run `/mcp`");
     expect(failure).toContain("cause: diagnostics probe failed");
   });

@@ -5,7 +5,7 @@
  * so the conversation reads as one narrator instead of a dozen ad-hoc strings:
  *
  *   ✓ <result>                       the action succeeded
- *   ⚠ <component> — <next step>      the action failed, with what to do next
+ *   ! <component> — <next step>      the action failed, with what to do next
  *   … <what is running>              the action started (the cards also spin)
  *
  * Failures always name the failing component, carry a next-step hint *before*
@@ -20,7 +20,7 @@ import { sanitizeTerminalText } from "../util/text.js";
 /** The action finished successfully. */
 export const FEEDBACK_OK = "✓";
 /** The action failed, or needs the user's attention. */
-export const FEEDBACK_WARN = "⚠";
+export const FEEDBACK_WARN = "!";
 /** The action is running (the cards render a spinner alongside this). */
 export const FEEDBACK_BUSY = "…";
 
@@ -68,7 +68,7 @@ export function okFeedback(text: string): string {
   return `${FEEDBACK_OK} ${sanitizeTerminalText(text)}`;
 }
 
-/** `⚠ <text>` — a problem the user should know about. */
+/** `! <text>` — a problem the user should know about. */
 export function warnFeedback(text: string): string {
   return `${FEEDBACK_WARN} ${sanitizeTerminalText(text)}`;
 }
@@ -79,7 +79,7 @@ export function busyFeedback(text: string): string {
 }
 
 /**
- * `<component> — <next step>`, without the `⚠` prefix: for surfaces that draw
+ * `<component> — <next step>`, without the `!` prefix: for surfaces that draw
  * their own warning glyph (e.g. `ModelPickerModal`'s error row).
  */
 export function failureHeadline(component: string, hint: string): string {
@@ -87,7 +87,7 @@ export function failureHeadline(component: string, hint: string): string {
 }
 
 /**
- * `⚠ <component> — <next step>` plus the raw sanitized cause on a `cause:` line.
+ * `! <component> — <next step>` plus the raw sanitized cause on a `cause:` line.
  * The hint always comes first: the cause is supporting detail, never the message.
  */
 export function failureFeedback(component: string, hint: string, cause?: unknown): string {

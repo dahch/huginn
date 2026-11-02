@@ -1,7 +1,7 @@
 import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { render } from "ink";
+import { render } from "./inkRender";
 import { ProfilePickerModal, buildProfileRows } from "../../src/tui/ProfilePickerModal.js";
 import { SLASH_COMMANDS, findCommand } from "../../src/tui/commandRegistry.js";
 import { PROFILE_NAMES } from "../../src/engine/profiles.js";

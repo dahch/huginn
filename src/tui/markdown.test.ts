@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { renderInlineSpans } from "./markdown";
+import { markdownBlockRows, renderInlineSpans, segmentsWidth, tableBlock } from "./markdown";
 
 describe("renderInlineSpans", () => {
   it("parses plain text without modification", () => {
@@ -25,5 +25,25 @@ describe("renderInlineSpans", () => {
   it("handles mixed markdown in a single line", () => {
     const nodes = renderInlineSpans("1. **¿Qué campos edita?** Opciones: solo `retitle <id>` o ambos");
     expect(nodes.length).toBeGreaterThan(3);
+  });
+});
+
+
+describe("markdownBlockRows", () => {
+  it("wraps a long line into terminal rows that each fit the width", () => {
+    const rows = markdownBlockRows(["x".repeat(200)], 40);
+    expect(rows.length).toBeGreaterThanOrEqual(5);
+    for (const row of rows) expect(segmentsWidth(row)).toBeLessThanOrEqual(40);
+  });
+
+  it("expands a table block through tableBlock, one row per source row", () => {
+    const lines = ["| a | b |", "|---|---|", "| 1 | 2 |"];
+    const rows = markdownBlockRows(lines, 40);
+    expect(rows).toHaveLength(3);
+    expect(rows).toEqual(tableBlock(lines, 40));
+  });
+
+  it("keeps an empty line as one paintable row", () => {
+    expect(markdownBlockRows([""], 20)).toHaveLength(1);
   });
 });

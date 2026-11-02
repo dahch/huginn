@@ -153,7 +153,7 @@ describe("pi SDK driver specifics", () => {
 
 describe("pi driver · the model the engine asks for is the model that runs", () => {
   it("switches the session model on every prompt that names one", async () => {
-    const setModel = vi.fn(async () => {});
+    const setModel = vi.fn(async (_model: string) => {});
     const port = createPiSdkPort(
       fakeAdapter({ async createSession() { return fakeHandle({ setModel }); } }),
     );
@@ -167,7 +167,7 @@ describe("pi driver · the model the engine asks for is the model that runs", ()
   });
 
   it("leaves pi's own setting alone when the prompt names no model", async () => {
-    const setModel = vi.fn(async () => {});
+    const setModel = vi.fn(async (_model: string) => {});
     const port = createPiSdkPort(
       fakeAdapter({ async createSession() { return fakeHandle({ setModel }); } }),
     );

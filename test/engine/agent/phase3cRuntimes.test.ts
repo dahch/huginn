@@ -239,7 +239,7 @@ describe("Phase 3C · codex exec streams the prompt over stdin", () => {
     const cli = installFakeCli("codex", { args: "mcp list --json", fixture: "codex-mcp-list.json" });
     const runtime = getAgentRuntime("codex", { env: { PATH: cli.path, HUGINN_ARGV: cli.argvPath } });
 
-    expect(await runtime.listMcpServers()).toEqual([
+    expect(await runtime.listMcpServers?.()).toEqual([
       {
         name: "muninn",
         transport: "stdio",

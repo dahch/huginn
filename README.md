@@ -214,7 +214,14 @@ live-first default described above.
 `huginn --help` (also `huginn help` or `huginn -h`) prints a concise, grouped overview: the Core
 commands (`live`, `run`, `init`, `setup`, `doctor`), copy-pasteable examples and the flags you need
 first. `huginn --help --all` (or `huginn help --all`) prints the full reference — every command, flag
-and default — while `huginn init --help` prints the wizard's own usage.
+and default.
+
+Every subcommand answers its own `--help`: `init` prints the wizard's flags and steps, `setup`,
+`doctor`, `memory`, `mcp`, `runtime`, `config` and `check` print their tailored usage, `promote`
+prints its recovery flags, and `run`, `live`, `plan` and `install` print the full `usage()`
+reference. Only a bare `--help`, `huginn help`, `huginn init --help` and an unknown command go
+through the global block, because intercepting every `--help` returned before dispatch and left each
+subcommand's help branch dead code.
 
 ### Commands
 
@@ -232,7 +239,7 @@ and default — while `huginn init --help` prints the wizard's own usage.
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
 | `runtime` | `huginn runtime list [--check]` | Show the five runtimes that can execute the cycle (`pi`, `codex`, `claude`, `opencode`, `generic`), with the capabilities each one declares (`--check` probes availability) |
 | `install` | `huginn install` | Compatibility no-op: the step prompts are built into huginn |
-| `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`) |
+| `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`, `decisions`) |
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |
 
 `huginn setup` targets: `cursor`, `claude`, `opencode`, `devin`, `qwen`, `codex`, `agy`,
@@ -522,20 +529,24 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
 (holding `*`) keeps that state out of the working tree.
 
 **Live & Dashboard TUI Features**:
-- **Raven Brand Header (`RavenHeader`)**: Both dashboards render one shared ASCII **raven mark + `HUGINN` wordmark** (from `src/brand.ts`), so the TUI reads as Huginn the raven instead of an eagle emoji. The mark degrades to wordmark-only below 72 columns, to plain `HUGINN` text when even that does not fit or the terminal is too short, and the header also carries the live stage, the MCP badge, the active runtime, the project path and the active models.
+- **Raven Brand Header (`RavenHeader`)**: Both dashboards render one shared ASCII **raven mark + `HUGINN` wordmark** (from `src/brand.ts`), so the TUI reads as Huginn the raven instead of an eagle emoji. The header has four rungs — mark + wordmark (≥72 columns), wordmark only, the one-row `<(o  HUGINN` compact brand, then plain `HUGINN` text — and drops the taller rungs when the terminal cannot afford them without eating the viewport, so an 80×24 frame with the palette closed still keeps a bird instead of a bare word. The raven has three moods (`idle`, `thinking`, `sleeping`): only the beak cell changes (`o` → `O` / `-`), the grid never reflows, and the live console opens the beak while a turn is in flight. The rows the header may not spend are reserved only for chrome that is really on screen, so opening the `/` palette may shrink the header and closing it gives the art back. In the live console the header is identity and ephemeral state — row 1 is `[<spinner> <STAGE>]` plus the project path, row 2 is the two active models — while the environment (runtime, MCP, git, sandbox, Muninn, conversation size) has one home in the side panel (ADR-73), so a long project path is painted whole instead of sharing its row with a badge; the run dashboard's header keeps its own MCP badge.
 - **Fullscreen Alternate Screen Buffer**: Operates in an isolated alternate screen buffer (`\x1b[?1049h\x1b[H`) with multi-layered exit handlers (`SIGINT`, `SIGTERM`, unhandled exceptions, and `process.on("exit")`), guaranteeing clean restoration of your shell history and visible cursor.
 - **Responsive Viewport Scaling**: Dynamically measures rows and columns via `useTerminalSize()` and auto-adapts layout cards to fill 100% of the screen upon terminal resizing without line truncation.
 - **Console Log Drawer (Zero Stdout Pollution)**: Background server logs, provider warnings, and runtime notices are intercepted via `patchConsole()` and routed into an in-app log drawer (`LogsCard`) rather than dumping to stdout and tearing the alternate screen.
 - **Stream Batching & Scroll Containment**: Real-time agent streaming (`phaseStream`) is throttled to 60ms flushes and capped with a 1,000-line ring buffer to prevent Ink rerender lag. Mouse and keyboard scrolling are trapped within the active card (`[PageUp]`/`[PageDown]` for 4 lines, `[↑]`/`[↓]` line-by-line) without leaking into the terminal scrollback history.
-- **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output with syntax-highlighted code fences, bold, italic, and headers. Message lines are wrapped to the card's real width before they are drawn, so a long paragraph breaks cleanly onto the next row instead of overlapping it or the card's border (and scrolling counts the rows you actually see). `[Tab]` switches card focus; `[Space]` pauses/resumes runs; `[v]` toggles verbose mode; `[Esc]` aborts immediately, while `/quit` (alias `/abort`) aborts after a two-step confirmation.
+- **Dual Focusable Cards & Markdown Rendering**: Parallel scrollable cards for conversation and live agent output, rendering inline `code`, bold, italic and headings, with code fences framed at the card's own width (there is no syntax highlighting; the fence is labelled and its rule fills the body). Message lines are wrapped to the card's real width before they are drawn, so a long paragraph breaks cleanly onto the next row instead of overlapping it or the card's border (and scrolling counts the rows you actually see). `[Tab]`/`[Shift+Tab]` cycle focus through the composer, conversation and agent stream; from a focused card `[z]` maximizes it and `[z]` again restores the split, `[Ctrl+↑]`/`[Ctrl+↓]` move the conversation/stream split, and `[L]` pins or reopens the log tail (typing `L` in the composer stays draft text). In the **run dashboard** `[Space]`/`[p]` pauses or resumes the cycle, `[v]` toggles verbose output, and `[Esc]`/`q` aborts immediately; in the **live console** `[Esc]` (like `/quit`, alias `/abort`) aborts after a two-step confirmation.
+- **Markdown Tables, Links & Full-Width Rules (`src/tui/markdown.tsx`)**: a report or a chat message can carry a markdown table, and it renders as one aligned row per source row — columns padded to their widest cell, dim `│` separators, a bold header, and an overlong cell truncated with `…` instead of wrapped, so a table never spends two terminal rows and the scroll offset stays honest. A link renders as an underlined label followed by its dim `‹url›`; a malformed link stays literal text. Horizontal rules and code-fence headers are drawn at the card's exact body width (the run dashboard derives its stream column from the terminal width, the live conversation from its `primary` chrome — both through `cardChrome`), so a `---` is one row of the card instead of a fixed-width literal that either floats short of the border or wraps into a second row. Inside a table cell, inline markdown is not styled yet: a bold or linked value in a cell shows its source (recorded as a `todo` in `test/tui/markdownTable.test.ts`, not as behaviour).
 - **Composer with a Cursor, Multiline Growth & Input History**: the message row is the anchor of the view — its own accent border and a `❯` prompt glyph. It is a real editor: `←`/`→` move the caret (with `⌥`/`Ctrl` for whole words), `Home`/`End` jump to the ends of the caret's visual row, `Backspace`/`Delete` act at the caret (again word-wise with `⌥`/`Ctrl`), and typed text is inserted at the caret. A draft that wraps grows up to **6 rows** and then scrolls internally, and the caret is always drawn inside the frame (it never pushes a column off the row). `↑` recalls the previous submission of the session (the last 50), `↓` walks forward and ends at the empty draft. Recalled drafts stay editable and slash-command submissions are never stored. Recall applies only while the command palette is closed and the draft is empty, so it never fights the palette's own `↑`/`↓`.
 - **Terminal Theme System (`src/tui/theme.ts`)**: components ask for a semantic token (`THEME.text`, `THEME.muted`, `THEME.danger`, …) instead of hard-coding colours — the old `color="white"` chat body is gone, so nothing is invisible on a white terminal. Modes are `light`, `dark` and `auto` (default), pinned with `HUGINN_THEME`; `auto` stays background-agnostic (and sniffs `COLORFGBG` when the terminal advertises it), and a non-empty `NO_COLOR` disables every token and `dimColor`.
-- **Adaptive Agent-Output Panel & Scrolling**: the live stream card appears only once the runtime emits real content. `PgUp`/`PgDn` scroll the focused card; when the stream card is collapsed, Tab explains that it appears with stream content and the footer drops the `[Tab] Focus` hint (the conversation scrolls with `PgUp`/`PgDn`). In the run dashboard, a non-streaming runtime's `AGENT OUTPUT` shows the last finished phase's report — including when the stream buffer holds only a blank row.
-- **Live Context Panel & Empty-State Hero (`InfoPanel` / `LiveHero`)**: on wide terminals (≥100 columns, with a minimum spare column/row budget) a compact **LIVE CONTEXT** panel sits beside the conversation with the stage, agent and models, the per-agent MCP enumeration, the git branch and tree state, the worktree sandbox, Muninn's counts and the size of the conversation, plus a stage-appropriate tip; below that width it is not rendered at all and the header alone carries the facts, so it can never push the composer or footer off the frame. An empty conversation renders a raven-branded hero with the first-run guidance instead of a blank card, sliced to the card's real rows.
-- **Honest Panels**: the old `REFINEMENT CONVERSATION` card is simply **`Conversation`**, and the agent-output (stream) panel **collapses automatically** while the agent has emitted no reasoning/stream content for the session — its rows return to the conversation and it is never shown as an empty bordered box; it expands on the first content. The `run` dashboard's output panel follows the same rule: with no stream content it shows the tail of the last finished phase's **real report**, and before anything has finished an **idle raven state** (the two-ravens mark, Huginn and Muninn, beside a rotating raven-voiced line). Only a runtime that can actually push incremental output (`RuntimeCapabilities.streaming`, i.e. opencode) still reads `LIVE AGENT OUTPUT` and shows the waiting placeholder; every other runtime names itself and states that each phase's report appears when it ends.
-- **One Glyph Language, Single Width**: every phase/status glyph comes from one table (`src/tui/glyphs.ts`), shared by the dashboard and `.harness/PROGRESS.md` — `·` pending, the braille spinner while running, `✓` pass, `!` warning, `✕` blocked, `–` skipped, and the `PROGRESS.md` phase kinds `?` `>` `=` `%` `#` `@` `~` `.` (a `FIX_*` row keeps its `└─` indent). Printable and single-width, so the monospace grid and `NO_COLOR` behaviour hold; the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) are untouched.
-- **Selectable Runtime Picker (`AgentPickerModal`)**: bare `/agent` opens a modal over every registered target, each with an availability marker (`✔` / `— not installed`), the active runtime marked, and the highlighted entry's resolved binary path. `↑`/`↓` (or `j`/`k`) navigate, `Enter` switches, `Esc` cancels; a failed switch keeps the picker open so another runtime can be chosen immediately. `/agent <id>` still works for power users.
+- **Adaptive Agent-Output Panel & Scrolling**: the live stream card appears only once the runtime emits real content. `PgUp`/`PgDn` and `↑`/`↓` scroll the focused card; a collapsed stream card is simply skipped by Tab — no notice is appended to the chat — and the footer keeps showing `[Tab] Focus: <surface>` for the surface that really has it (the conversation scrolls with the same keys). In the run dashboard, a non-streaming runtime's `AGENT OUTPUT` shows the last finished phase's report — including when the stream buffer holds only a blank row.
+- **Live Context Panel & Empty-State Hero (`InfoPanel` / `LiveHero`)**: on wide terminals (≥100 columns, with a minimum spare column/row budget) a compact **LIVE CONTEXT** panel sits beside the conversation, grouped into `SESSION` (agent, MCP badge, conversation size), `REPO` (git branch/tree state and worktree sandbox) and `MEMORY` (Muninn counts), with the stage tip anchored to the bottom; a section with no data is omitted, the panel is the environment's only home (the live stage lives in the header badge, and below the width/height threshold the environment is only in `/status`), and it can never push the composer or footer off the frame. An empty conversation renders a raven-branded hero with the first-run guidance instead of a blank card, sliced to the card's real rows and drawn with the same four-rung brand and mood as the header (a short card steps down to the one-row bird rather than dropping its guidance).
+- **Honest Panels**: the old `REFINEMENT CONVERSATION` card is simply **`Conversation`**, and the agent-output (stream) panel **collapses automatically** while the agent has emitted no reasoning/stream content for the session — its rows return to the conversation and it is never shown as an empty bordered box; it expands on the first content. In the live console the log tail follows the same idle rule: it collapses after a minute without a new event, reopens on the next log, advertises every hidden entry in the footer, and only stays open for an error still present in its visible tail. The `run` dashboard's output panel follows the same rule: with no stream content it shows the tail of the last finished phase's **real report**, and before anything has finished an **idle raven state** (the two-ravens mark, Huginn and Muninn, beside a rotating raven-voiced line). Only a runtime that can actually push incremental output (`RuntimeCapabilities.streaming`, i.e. opencode) still reads `LIVE AGENT OUTPUT` and shows the waiting placeholder; every other runtime names itself and states that each phase's report appears when it ends.
+- **One Glyph Language, Single Width**: every phase/status glyph comes from one table (`src/tui/glyphs.ts`), shared by the dashboard and `.harness/PROGRESS.md` — `·` pending, the braille spinner while running, `✓` pass, `!` warning, `✕` blocked, `–` skipped, and the `PROGRESS.md` phase kinds `?` (SPEC_AUDIT) `>` (EXECUTE) `=` (VALIDATE_STEP) `%` (TEST_MODULE) `V` (VERIFY) `#` (SECURE_CHECK) `@` (REVIEW) `~` (DOC_SYNC) `.` (COMMIT_ALL) `&` (REPAIR_PROMOTION), `+` for any other phase (a `FIX_*` row keeps its `└─` indent). The run dashboard's `PIPELINE PHASES` card draws the same glyphs as a rail: the increment is named in the title (`iter n/m`), each phase hangs off `├─`/`└─`, a repair round hangs under the phase it fixes, and the current node keeps its spinner inside the rail — one connector per phase, so the card never grows a row. The decision modal draws its title from the same alphabet (`DECISION_GLYPHS`: `+` approve, `?` question, `!` warning, `*` finished — non-letter marks, so they never read as modal key hints) through the pure `decisionTitle(req)` in `src/tui/decision.ts`, and the feedback voice is `✓` / `!` / `…`, so the surface asking for your attention cannot break the grid either. The MCP badge is mapped onto the same alphabet by `mcpBadgeText` (`MCP: 🟢 2 connected · pi` paints as `MCP: ✓ 2 connected · pi`), and `headerValue` clamps every dynamic header/panel/footer value in display columns, spending the last one on `…` so a cut is never silent. Printable and single-width, so the monospace grid and `NO_COLOR` behaviour hold; the gate marker literals (`### Overall gate: 🟢/🟡/🔴`) are untouched.
+- **Selectable Runtime Picker (`AgentPickerModal`)**: bare `/agent` opens a modal over every registered target, each with an availability marker (`✓` / `— not installed`), the active runtime marked, and the highlighted entry's resolved binary path. `↑`/`↓` (or `j`/`k`) navigate, `Enter` switches, `Esc` cancels; a failed switch keeps the picker open so another runtime can be chosen immediately. `/agent <id>` still works for power users.
 - **Agent-Agnostic Questions**: any runtime can ask you a clarifying question through a marked output block; the decision modal renders the real option rows — a digit picks that option verbatim, `Enter` accepts the recommended one, `d` skips and `Esc` aborts (see [Clarifying questions](#clarifying-questions-agent-agnostic)).
+- **Decision Modal Row Budget (`decisionModalHeight`)**: the modal charges the frame its real row cost instead of a constant. Both dashboards derive a `maxRows` budget from what the header, composer, footer, log tail and palette leave, and the modal pays its double border, title and key footer first; a body that does not fit is windowed with `↑`/`↓` and a `… +N · ↑/↓` marker names the hidden rows. A pending decision can therefore never push the composer or footer off an 18-row terminal, and the last-report pill and pipeline cards keep their own floor. The policy is pure and lives in `src/tui/decision.ts` (`decisionTitle`, `decisionBodyRowSpecs`/`decisionKeyRowSpecs`, `planDecisionModal`, `decisionModalHeight`); `src/tui/DecisionModal.tsx` only renders those specs and owns the body scroll, so neither dashboard imports the other's page module and a guard test can compare the reserved height with the rows Ink actually paints. A capped budget below `DECISION_MIN_ROWS` draws nothing rather than a title without the key footer that says what to press.
+- **Card Chrome Hierarchy (`CARD_CHROME`)**: every framed card picks one of three tones from the single table in `src/tui/Card.tsx` instead of repeating border arithmetic. The conversation is the round `primary` box, the stream, pipeline and side panel are quieter `secondary` single boxes, and the log tail is a borderless `tertiary` list (`SYSTEM LOGS` plus a `│ ` rule per entry). An unfocused primary keeps its accent — or, while a turn is in flight, the active stage's token (`accent` refine, `warn` draft, `thinker` approve, `executor` execute) — a focused card uses `borderFocus`, and both dashboards import the same cost into their row budgets — the log tail is `entries + cardChrome("tertiary").rows`, so a five-entry tail costs six rows instead of eight. `Card` draws only its chrome (border, one clipped title row, a clipped body); it never scrolls or guesses a height, and the dashboard has already paid for the rows it passes in.
+- **One Modal Frame & a Footer That Speaks for the Focused Surface (`Modal.tsx` / `footer.ts`)**: the six console modals and the decision surface render through one presentational frame. `tone="alert"` draws the only `double`/`warn` box (the decision surface); every other modal is a `round`/`accent` box. The frame owns one clipped bold title row, an optional muted subtitle, one muted key footer (`hint`), and the fixed `paddingX={1}`/`flexShrink={0}`/`overflow="hidden"`; the caller still owns height, width and vertical padding, and `Modal` never reads input. The uniform grammar is exported as `MODAL_KEY_CONTRACT`: `Esc` closes every console modal, `q` closes only the cheat sheet and the skills browser, `Enter` confirms only the runtime/profile/model selectors (the skills browser uses it for its own execute action), `Tab` switches the skills/MCP panes, and `k`/`j` move only where they already did. The footer is the pure `footerHints(...)` policy: the left cell carries the keys of the **focused** surface (composer, conversation, agent stream or the run dashboard), the palette/search/busy/maximized state replaces them where it owns the keyboard, and the right cell keeps token usage (the run dashboard also puts its decision notice there; the live stage is the header badge's fact, never a footer value — ADR-73); `columns` clamps both through `headerValue` (right cell first), so the footer never exceeds the terminal width. The agent stream never advertises a `[y] Copy` it cannot perform.
 - **Interactive Model & Provider Selector (`ModelPickerModal`)**:
   - Launch with `--choose-model` flag: `huginn --choose-model` or `huginn live --choose-model`.
   - In-session slash commands:
@@ -551,13 +562,13 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
   - **Native Model Forwarding**: the chosen model is passed to the runtime through the flag it documents (`--model`/`-m`, or the OpenCode SDK model ref), so selecting a model actually takes effect; `HUGINN_MODEL` is kept only as an extra environment hint for wrapper scripts.
   - **Auto-Onboarding Preflight Check**: if thinker or executor came from the documented defaults and the runtime's catalog is non-empty while containing **neither** default, Huginn automatically opens the model selector on startup.
 - **Live MCP Monitor & Server Inspector (`McpInspectorModal`)**:
-  - **Live Header Status Badge**: real-time indicator with 15-second polls over a bounded budget. MCP is **per-agent** — Huginn holds no client, the active agent owns every connection — so the badge is always self-describing and **attributes the agent it describes**, never rendering a bare or unexplained number: `MCP: 🟢 3 connected · opencode` (or `MCP: 🟢 2 connected (214 tools) · pi` when the agent reports tool counts) for servers a real probe reported reachable, `MCP: ⚪ 5 configured · agy` for servers the agent's own CLI enumerated as configured-but-unprobed, `MCP: ⚪ none · omp` when nothing is registered, and `MCP: 🟡 error — <reason> · <agent>` / `MCP: 🟡 timeout · <agent>` on failure. The native `pi` driver now reports through `pi mcp list --json` (config discovery is the fast fallback), so it no longer shows `none` while pi has servers. Every numeric field is nullish-coalesced, so `undefined`/`NaN` can no longer reach the screen.
+  - **Live MCP Status Badge**: real-time indicator with 15-second polls over a bounded budget, painted in the live console's side panel (`SESSION` group) and in the run dashboard's header. In the live console the badge's home is the panel, never the header (ADR-73). MCP is **per-agent** — Huginn holds no client, the active agent owns every connection — so the badge is always self-describing and **attributes the agent it describes**, never rendering a bare or unexplained number: `MCP: ✓ 3 connected · opencode` (or `MCP: ✓ 2 connected (214 tools) · pi` when the agent reports tool counts) for servers a real probe reported reachable, `MCP: · 5 configured · agy` for servers the agent's own CLI enumerated as configured-but-unprobed, `MCP: · none · omp` when nothing is registered, and `MCP: ! error — <reason> · <agent>` / `MCP: ! timeout · <agent>` on failure. The engine still produces the `🟢`/`🟡`/`⚪` badge (`formatMcpBadge`, whose contract and tests are unchanged); the console maps it through `mcpBadgeText` onto the single-width status alphabet, so the painted row never breaks the monospace grid. The native `pi` driver now reports through `pi mcp list --json` (config discovery is the fast fallback), so it no longer shows `none` while pi has servers. Every numeric field is nullish-coalesced, so `undefined`/`NaN` can no longer reach the screen.
   - **Render Loop Protection**: `fetchMcpStatusWithTimeout` enforces a strict `Promise.race` deadline (with `.unref()`'d timers) so an unresponsive MCP server never blocks the Ink render loop; a completed listing is cached for 60 s per runtime and one spawn is shared across polls, so a slow CLI (`claude mcp list` health-checks every server, ~23 s measured) is fetched once and reused instead of being killed and retried forever.
   - **Interactive Inspector (`/mcp`)**: Type `/mcp` in the live chat input to open an interactive two-pane inspector modal:
     - *Left Pane (Servers)*: lists each server as `name · transport · status · detail` — `[connected]` only after a real probe, `[unknown]` for a server the agent's CLI reports as merely configured (`enabled`/`disabled`/`pending`), plus whatever detail the CLI exposed (command, scope, auth); the header summarizes `n/total active` or `n/total unverified` instead of counting unprobed servers as live.
     - *Attribution & Muninn*: the header names the source runtime (*"Servers come from **&lt;agent&gt;** — add or change them with the agent's own config or CLI; Huginn only observes them"*) and states whether Muninn is registered for that agent (`✓ Muninn (the memory brain) is registered for <agent> … one project-scoped brain, shared by every agent`), or, when it is missing, the exact fix command `huginn setup --agent <id>`.
     - *Right Pane (Tools)*: Inspects exposed tools for the selected server with descriptions and paginated windowing (10 visible tools with scroll overflow indicators).
-    - *Navigation*: `[↑]`/`[↓]` or `[k]`/`[j]` to navigate, `[Tab]` or `[Enter]` to switch focus between servers and tools panes, `[Esc]` to return to chat.
+    - *Navigation*: `[↑]`/`[↓]` or `[k]`/`[j]` to navigate, `[Tab]` to switch focus between servers and tools panes, `[Esc]` to return to chat. (`Enter` is a selector-only key, so it never moves this inspector's focus.)
     - *Terminal Injection Defense*: All server names, tool descriptions, and error strings are sanitized via `sanitizeTerminalText` (shared module `src/util/text.ts`) to strip ANSI escape sequences, C0 and C1 non-printable control characters.
 - **Inline Command Palette**: typing `/` in an empty-or-partial input opens an autocomplete overlay directly beneath the input row — `↑`/`↓` (or `j`/`k` while the draft is exactly `/`) move the highlight, `Tab` accepts the highlighted command, `Enter` runs it, and `Esc` dismisses the overlay without aborting the session. Further typing filters by id/alias substring; accepting a command that takes arguments inserts its argument hint. These bindings take precedence over focus/scroll only while the overlay is open, and the palette is height-bounded (≤6 rows with `▲`/`▼` markers, shrinking on short terminals) so it can never push the frame off-screen.
 - **Rich Live Slash Commands**: a single command registry (`src/tui/commandRegistry.ts`) is the source of truth for dispatch, the palette and the `/help` cheat sheet (a drift-guard test keeps them in sync), so the UI can never advertise a command the dispatcher does not implement. The Live input bar intercepts any `/<…>` input before model dispatch, so typos are reported (``Unknown command "<cmd>" — type /help for the command reference.``) instead of being sent to the model as chat text. Available commands:
@@ -573,7 +584,28 @@ delimited as untrusted data), so a one-shot CLI still sees the conversation. `.h
   - `/resume`: continues a saved run from the step it was interrupted on, without re-planning. It only appears as an option when `.harness/state.json` holds a resume point recorded against the documents currently on disk; otherwise it says so and points at `/draft`.
   - `/quit` (alias `/abort`): exits the session after a two-step confirmation.
 - **Extensible Skills System (`/skills`, `/skill <name>`)**: Markdown skills in `<project>/.huginn/skills/` and `<project>/.opencode/skills/` (`.huginn` wins) are discovered automatically and browsable/executable in-app. Each skill pairs flat frontmatter metadata (`name`/`title`, `description`/`desc`, `triggers` as a YAML list, `[a, b]` or comma list) with a reusable prompt body; a file without frontmatter falls back to its basename + first paragraph. Three built-in skills (`audit`, `refactor`, `explain`) ship by default. See [Project skills](#project-skills-huginnskills).
-- **Consistent Action Feedback**: every action answers in the conversation with one of three prefixes — `✓` (done), `⚠` (problem, always naming the next step such as `/model <id>`, `/agent` or `/mcp`, with the raw cause on a `cause:` line) or `…` (running) — so no input is a silent no-op. An empty conversation shows raven-flavoured first-run hints for the palette, `/draft`, `/mcp`, `/status` and `/help`.
+- **Consistent Action Feedback**: every action answers in the conversation with one of three prefixes — `✓` (done), `!` (problem, always naming the next step such as `/model <id>`, `/agent` or `/mcp`, with the raw cause on a `cause:` line) or `…` (running) — so no input is a silent no-op. An empty conversation shows raven-flavoured first-run hints for the palette, `/draft`, `/mcp`, `/status` and `/help`.
+
+**Live console keyboard shortcuts**:
+
+| Key | Focus | Action |
+|---|---|---|
+| `Tab` / `Shift+Tab` | any | Cycle focus: composer → conversation → agent stream |
+| `↑` / `↓` | composer | Recall the session's submitted prompts (`j`/`k` move the inline palette only while the draft is exactly `/`) |
+| `↑` / `↓` | conversation / stream | Scroll the focused card line by line |
+| `PgUp` / `PgDn` | conversation / stream (the composer pages the conversation) | Scroll the focused card four lines |
+| `g` / `G` | conversation / stream | Jump to the start / end of the focused transcript (in the composer they are plain letters) |
+| `Ctrl+F` | any | Open transcript search: the composer becomes `find ❯ ` with a warning border; `↑`/`↓` walk the matches, `Enter` jumps to the selected message and closes, `Esc` closes and restores your draft |
+| `y` | conversation | Copy the last assistant message through OSC 52; the console confirms the channel and that some terminals ignore it |
+| `z` | conversation / stream | Maximize the focused card; press again to restore the split |
+| `Ctrl+↑` / `Ctrl+↓` | conversation / stream | Move the conversation/stream split |
+| `L` | conversation / stream | Pin or reopen the log tail |
+| `Esc` | any | Abort after a two-step confirmation (in search, cancel and restore the draft) |
+
+Every modal shares one key grammar: `Esc` closes it, `q` closes only the cheat sheet and the skills
+browser, and `Enter` confirms only in the runtime, profile and model selectors. `↑`/`↓` move wherever
+they always did, and `k`/`j` are accepted only where they already were; the footer names the keys of
+the focused surface.
 
 Flags: `--spec/--adr/--plan <file>` to override paths, `--prompt-file <file>` for long ideas,
 `--choose-model` to open the model selector modal on launch, `--continue`/`-c`, `--session <id>` and
@@ -597,8 +629,10 @@ CLI cannot open a prompt of its own. When the agent needs a decision it emits a 
 ```
 
 Huginn parses the JSON `QuestionItem[]` out of the reply, **strips the block from what you see**,
-and opens its decision modal with the real options — every option stays on screen, however many the
-agent offered. Keys: a digit `1`–`9` picks that option verbatim, `Enter` accepts the recommended
+and opens its decision modal with the real options — every option the agent offered is rendered, and
+when the request is taller than the frame the modal windows the body with `↑`/`↓` (a `… +N` row says
+how many options are hidden) instead of pushing the composer or footer off-screen. Keys: a digit
+`1`–`9` picks that option verbatim, `Enter` accepts the recommended
 (first) one, `d` skips the question (the turn continues without an answer) and `Esc` aborts it. A
 block with several questions is asked one modal at a time (the title shows `(2/3)`), and each chosen
 answer is paired with its own question before the answers are sent back as a follow-up turn. An
@@ -839,7 +873,7 @@ If a run is interrupted, just re-run the same command and it auto-resumes from t
 
 Huginn embeds the **Muninn memory engine**, a persistent memory layer for AI agents and developers that stores architectural decisions, conventions, bugfixes, discoveries, and code symbol linkages using SQLite with FTS5.
 
-> Muninn is no longer part of this repository: it lives at [dahch/muninn](https://github.com/dahch/muninn) and is consumed as the `@dahch/muninn` package, pinned to the `v0.1.0` tarball on its GitHub release while the package is not yet on npm. Its own CLI is `muninn memory | check | mcp run`; `huginn memory`, `huginn check` and `huginn mcp run` are thin wrappers over the same library, so existing scripts keep working.
+> Muninn is no longer part of this repository: it lives at [dahch/muninn](https://github.com/dahch/muninn) and is consumed as the `@dahch/muninn` package (published on npm as `0.1.0`; huginn depends on `^0.1.0`). Its own CLI is `muninn memory | check | mcp run`; `huginn memory`, `huginn check` and `huginn mcp run` are thin wrappers over the same library, so existing scripts keep working.
 
 - **Path Resolution**:
   - Resolves to `<project>/.huginn/muninn.db` inside a git repository, falling back to
@@ -864,9 +898,9 @@ Huginn embeds the **Muninn memory engine**, a persistent memory layer for AI age
   - Exported memory files (`.huginn/memories.jsonl`) are written with restrictive owner-only permissions (`0o600`).
   - Every `.huginn` path huginn writes is **symlink-screened** before use (the shared `assertDocPath`): a symlinked final component is always refused, and a project-relative path must resolve inside the project. That covers the database file, the JSONL export — both read and write — and the sandbox promotion backup, so a cloned repository shipping `.huginn/...` as a link can neither redirect huginn's state outside the project nor pull foreign content into the memory the MCP tools serve.
 
-### MemoryService API (`src/muninn/service/`)
+### MemoryService API (`@dahch/muninn`)
 
-The application core exposes `MemoryService` (`src/muninn/service/memory-service.ts`) for high-level memory operations:
+The application core exposes `MemoryService` (the package's `service/memory-service.ts`) for high-level memory operations:
 
 - **`saveObservation(input)`**:
   - Transactionally creates an observation and links any provided symbols in a single atomic transaction.
@@ -901,12 +935,12 @@ The application core exposes `MemoryService` (`src/muninn/service/memory-service
   - Validates record structure, falling back to current project if a foreign `projectId` is missing, and defaulting invalid categories to `'decision'`.
   - Re-links and indexes all entities; imported observations are automatically indexed into FTS5 by database triggers.
 
-### Model Context Protocol (MCP) Server (`src/muninn/mcp/`)
+### Model Context Protocol (MCP) Server (`@dahch/muninn`)
 
 Muninn exposes its memory engine directly to AI coding agents (Claude Code, Cursor, OpenCode, Devin) through a standard Model Context Protocol (MCP) server:
 
 - **Transport**: JSON-RPC 2.0 communication over standard input/output (`stdio`), using a bounded `StdioServerTransport` from `@modelcontextprotocol/sdk` (a 5 s write deadline plus output-stream error rejection, so a broken pipe fails the pending request instead of hanging on `'drain'`).
-- **Architecture**: Decoupled via the `IMemoryService` port interface (`src/muninn/service/index.ts`). The server accepts any compliant memory service instance or options to initialize its own.
+- **Architecture**: Decoupled via the `IMemoryService` port interface (the package's service barrel). The server accepts any compliant memory service instance or options to initialize its own.
 - **Declarative Tool Registry**: Defined via `TOOL_REGISTRY`, mapping tool names to strict Zod schemas and typed handlers.
 
 #### Available Tools
@@ -994,6 +1028,12 @@ huginn memory sync [--file <path>] [--project <path>]
 
 # Import observations from JSON Lines format
 huginn memory sync --import [--file <path>] [--project <path>]
+
+# Index AST symbols and dependencies for the given files into the symbol graph
+huginn memory index [files...] [--project <path>] [--db <path>]
+
+# Persist every `## ADR-N` section of adr.md (or ADR.md) as a decision observation; --dry-run previews
+huginn memory decisions [--adr <path>] [--project <path>] [--db <path>] [--dry-run]
 ```
 
 | Subcommand | Flag / Option | Description |
@@ -1005,6 +1045,10 @@ huginn memory sync --import [--file <path>] [--project <path>]
 | | `--limit <n>` | Max search results to display (default: `10`). |
 | `sync` | `--import` | Import from disk into SQLite database instead of exporting. |
 | | `--file <path>` | Path to `.jsonl` file (defaults to `<project_root>/.huginn/memories.jsonl`). |
+| `index` | `[files...]` | Files to index; with none, it scans the project's source files (`findSourceFiles`) and prints the indexed file/symbol/dependency counts. |
+| | `--project <path>`, `--db <path>` | Workspace root and database override. |
+| `decisions` | `--adr <path>` | ADR file (defaults to `adr.md`, else `ADR.md`, under the project root). |
+| | `--dry-run` | Print how many decision sections would be saved and write nothing; the run itself is idempotent (saved/updated/unchanged counts). |
 
 ### Stdio MCP Server Runner (`huginn mcp run`)
 
@@ -1040,6 +1084,11 @@ All optional:
 | `HUGINN_DEBUG` | string | unset | Print full error stack traces on fatal errors, plus non-fatal notes (e.g. why Muninn indexing was skipped). |
 | `CI` | string | unset | Every prompt (`promptLine`/`promptYesNo`, `src/util/prompt.ts`) returns its fallback instead of reading stdin — `huginn init` and any non-interactive run never block on a human. |
 
+Four more variables control the memory cap around agent and `Verification:` subprocesses —
+`HUGINN_MEMORY` (retrieval kill switch), `HUGINN_MEMORY_MAX`, `HUGINN_MEMORY_SWAP_MAX` and
+`HUGINN_TASKS_MAX`. They are documented in
+[Resource limits (memory cap)](#resource-limits-memory-cap).
+
 ### Background update check
 
 Every `huginn run` / `plan` / `live` fires a **non-blocking** check against the npm registry
@@ -1049,15 +1098,52 @@ stderr with the update command. Results are cached in
 `<opencode-config-dir>/huginn-update-cache.json` for 24 hours, and a stale cache is used as a
 fallback when the registry is unreachable. Set `HUGINN_NO_UPDATE_CHECK=1` to disable.
 
+## Documentation
+
+- [SPEC.md](./SPEC.md) — the requirements ledger: every functional requirement and acceptance
+  criterion, numbered.
+- [DESIGN.md](./DESIGN.md) — the technical design: module map, cycle and gate model, live mode, and
+  the per-phase design notes for the terminal UI.
+- [ADR.md](./ADR.md) — architecture decision records, one per significant decision, with the
+  alternatives that were rejected.
+- [AGENTS.md](./AGENTS.md) — the roles and step prompts huginn composes, the runtime port contract,
+  and the developer workflow (tests, toggles, debugging a single phase).
+- [MODULE_MAP.md](./MODULE_MAP.md) — module → requirement lookup for this codebase.
+- [CHANGELOG.md](./CHANGELOG.md) — release notes; a tag's section is the release text.
+
 ## Development
 
 ```sh
-npm test              # full test suite (bun test unit tests + vitest muninn suite)
-bun test              # run core unit tests via bun test
-vitest run            # run muninn database, service, mcp, and command tests
+npm test              # full test suite (`bun test src` unit tests + `vitest run` integration tests)
+bun test src          # unit tests next to the code, under src/**/*.test.ts (bun:test)
+vitest run            # integration suite under test/**/*.test.ts (engine, tui, commands, state)
 bun run typecheck     # tsc --noEmit
 bun run dev -- ...    # run from source
 bun run build         # bundle to dist/ for the global bin
+```
+
+## Validación visual
+
+La pasada a ojo de la consola es ahora una matriz automática: `test/tui/smokeMatrix.test.ts` monta la
+vista live (`LiveApp` en `refine`) y el dashboard de ejecución (`Dashboard` con el estado inicial) en
+los cuatro tamaños canónicos, y falla si una fila se sale del terminal, si sobran filas o si vuelve a
+aparecer un glifo de doble ancho.
+
+| Superficie | Tamaños | Entornos |
+|---|---|---|
+| `LiveApp` (refine) + `Dashboard` (estado inicial) | 80×24 · 100×30 · 120×40 · 160×50 | color auto · `NO_COLOR=1` · `HUGINN_THEME=dark` |
+
+Cada frame se mide con `string-width` (no con `.length`): ninguna línea supera `columns` en columnas
+de display, el número de líneas no supera `rows`, ninguna línea contiene
+`\p{Extended_Pictographic}`, y bajo `NO_COLOR=1` no aparece ningún SGR de color. El mensaje de fallo
+nombra la superficie, el tamaño y la fila infractora. El inspector y el seam de render tienen sus
+propios tests —ancho de display, fila de más, frame vacío, pictograma, SGR de 256 colores y
+restauración del tamaño de terminal—, así que una regresión del validador no deja la matriz en verde.
+Las modales no forman parte de la matriz todavía: solo se montan `LiveApp` en `refine` y el
+`Dashboard` inicial.
+
+```sh
+bun run vitest run test/tui/smokeMatrix.test.ts
 ```
 
 ## Built-in step prompts (no installer)
