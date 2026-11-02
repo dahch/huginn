@@ -4,12 +4,14 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTarget } from "../../../src/agents/integrator.js";
-import type { IAgentRuntime, McpStatusReport } from "../../../src/engine/agent/types.js";
+import type { IAgentRuntime, McpServerListing, McpStatusReport } from "../../../src/engine/agent/types.js";
 import {
   MCP_BADGE_REASON_WIDTH,
   fetchMcpStatusWithTimeout,
   formatMcpBadge,
+  hasUnverified,
   mapListingToServerState,
+  mcpToolTotal,
   reportFromListings,
 } from "../../../src/engine/agent/mcpStatus.js";
 import {
@@ -814,5 +816,226 @@ describe("listing reports carry real tool counts and failures (REQ-32)", () => {
     const report = await fetchMcpStatusWithTimeout(runtime, 100);
     expect(report.servers.map((server) => server.name)).toEqual(["muninn"]);
     expect(report.unverified).toBe(true);
+  });
+});
+
+describe("listing reports keep every failure explainable and never fabricate counts", () => {
+  it("joins multiple failed servers and names one that carried no detail", () => {
+    const report = reportFromListings("pi", [
+      { name: "rea", status: "error", detail: "cannot start" },
+      { name: "muninn", status: "error" },
+    ]);
+
+    expect(report.degraded).toBe(true);
+    expect(report.error).toBe("rea: cannot start; muninn failed");
+    expect(formatMcpBadge(report, "pi").text).toBe(
+      "MCP: 🟡 error — rea: cannot start; muninn failed · pi",
+    );
+  });
+
+  it("prefers a row's live detail over its stale error field", () => {
+    const report = reportFromListings("pi", [
+      { name: "broken", status: "error", detail: "fresh reason", toolsCount: 0 },
+    ]);
+    // The listing row shape has no `error`; a config-derived row does. Both reach
+    // `detail`, and a detail must win over a stale error string.
+    expect(report.error).toBe("broken: fresh reason");
+
+    const merged = reportFromListings("pi", [
+      { name: "offline", status: "error", detail: "config says it broke" },
+    ]);
+    expect(merged.servers[0]?.detail).toBe("config says it broke");
+  });
+
+  it("skips blank and duplicate names, and attributes an unnamed runtime honestly", () => {
+    const report = reportFromListings("", [
+      { name: "  rea  ", status: "connected", toolsCount: 2 },
+      { name: "rea", status: "error" },
+      { name: "   ", status: "connected" },
+    ]);
+
+    expect(report.servers).toHaveLength(1);
+    expect(report.servers[0]).toMatchObject({
+      id: "agent:rea",
+      name: "rea",
+      status: "connected",
+      toolsCount: 2,
+    });
+    expect(report.totalTools).toBe(2);
+    expect(report.healthy).toBe(true);
+  });
+
+  it("filters non-string tools and derives the count from what remains", () => {
+    const report = reportFromListings("pi", [
+      {
+        name: "srv",
+        status: "enabled",
+        tools: ["one", "", 7 as unknown as string],
+      },
+    ]);
+
+    expect(report.servers[0]).toMatchObject({
+      status: "unknown",
+      transport: "unknown",
+      toolsCount: 1,
+      tools: [{ name: "one" }],
+    });
+    expect(report.unverified).toBe(true);
+    expect(report.degraded).toBe(false);
+  });
+
+  it("computes tool totals from the report, then the servers, and flags unverified states", () => {
+    const servers = [
+      { id: "a", name: "a", status: "unknown" as const, transport: "stdio", toolsCount: 2 },
+      { id: "b", name: "b", status: "unknown" as const, transport: "stdio", toolsCount: 3 },
+    ];
+
+    expect(mcpToolTotal({ servers, totalTools: 9, healthy: false })).toBe(9);
+    expect(mcpToolTotal({ servers, totalTools: 0, healthy: false })).toBe(5);
+    expect(mcpToolTotal(null)).toBe(0);
+    expect(mcpToolTotal(undefined)).toBe(0);
+    // A malformed count must read as zero, not as `NaN` on the screen.
+    expect(
+      mcpToolTotal({
+        servers: [
+          {
+            id: "a",
+            name: "a",
+            status: "connected",
+            transport: "stdio",
+            toolsCount: Number.NaN,
+          },
+        ],
+        totalTools: Number.NaN,
+        healthy: true,
+      }),
+    ).toBe(0);
+
+    expect(hasUnverified({ servers, totalTools: 5, healthy: false })).toBe(true);
+    expect(hasUnverified({ servers: [], totalTools: 0, healthy: false, unverified: true })).toBe(true);
+    expect(
+      hasUnverified({
+        servers: [{ id: "a", name: "a", status: "connected", transport: "stdio", toolsCount: 1 }],
+        totalTools: 1,
+        healthy: true,
+      }),
+    ).toBe(false);
+    expect(hasUnverified(null)).toBe(false);
+  });
+
+  it("maps every listing word to a lifecycle state, keeping only connected live", () => {
+    expect(mapListingToServerState("connected")).toBe("connected");
+    expect(mapListingToServerState("disabled")).toBe("disconnected");
+    expect(mapListingToServerState("error")).toBe("error");
+    expect(mapListingToServerState("enabled")).toBe("unknown");
+    expect(mapListingToServerState("pending")).toBe("unknown");
+    expect(mapListingToServerState("unknown")).toBe("unknown");
+  });
+
+  it("falls back to the config probe when the listing throws or resolves non-array", async () => {
+    const probeReport: McpStatusReport = {
+      servers: [
+        { id: "pi:muninn", name: "muninn", status: "unknown", transport: "stdio", toolsCount: 0 },
+      ],
+      totalTools: 0,
+      healthy: false,
+      unverified: true,
+    };
+    const throwing = {
+      id: "throwing-listing-test",
+      name: "Throwing listing",
+      async listMcpServers(): Promise<McpServerListing[]> {
+        throw new Error("pi mcp list failed");
+      },
+      async getMcpStatus(): Promise<McpStatusReport> {
+        return probeReport;
+      },
+    };
+    expect((await fetchMcpStatusWithTimeout(throwing, 500)).servers.map((s) => s.name)).toEqual([
+      "muninn",
+    ]);
+
+    const malformed = {
+      id: "malformed-listing-test",
+      name: "Malformed listing",
+      async listMcpServers(): Promise<McpServerListing[]> {
+        return null as unknown as McpServerListing[];
+      },
+      async getMcpStatus(): Promise<McpStatusReport> {
+        return probeReport;
+      },
+    };
+    expect((await fetchMcpStatusWithTimeout(malformed, 500)).servers).toHaveLength(1);
+  });
+
+  it("prefers the port's mcpStatus over the legacy getMcpStatus", async () => {
+    let legacyCalled = false;
+    const source = {
+      id: "probe-precedence-test",
+      name: "Probe precedence",
+      async mcpStatus(): Promise<McpStatusReport> {
+        return {
+          servers: [
+            { id: "pi:rea", name: "rea", status: "unknown", transport: "stdio", toolsCount: 0 },
+          ],
+          totalTools: 0,
+          healthy: false,
+          unverified: true,
+        };
+      },
+      async getMcpStatus(): Promise<McpStatusReport> {
+        legacyCalled = true;
+        return { servers: [], totalTools: 0, healthy: false };
+      },
+    };
+
+    const report = await fetchMcpStatusWithTimeout(source, 500);
+    expect(report.servers.map((server) => server.name)).toEqual(["rea"]);
+    expect(legacyCalled).toBe(false);
+  });
+
+  it("degrades honestly when the probe returns a malformed report", async () => {
+    const source = {
+      id: "malformed-probe-test",
+      name: "Malformed probe",
+      async mcpStatus(): Promise<McpStatusReport> {
+        return { servers: "nope" } as unknown as McpStatusReport;
+      },
+    };
+
+    const report = await fetchMcpStatusWithTimeout(source, 500);
+    expect(report).toMatchObject({
+      servers: [],
+      healthy: false,
+      degraded: true,
+      error: "MCP status unavailable",
+    });
+    expect(formatMcpBadge(report, "pi").text).toBe("MCP: 🟡 error — MCP status unavailable · pi");
+  });
+
+  it("reuses a completed listing instead of spawning the CLI again within the TTL", async () => {
+    let calls = 0;
+    const source = {
+      id: "listing-cache-test",
+      name: "Listing cache",
+      async listMcpServers(): Promise<McpServerListing[]> {
+        calls += 1;
+        return [{ name: "rea", status: "connected" as const, toolsCount: 1 }];
+      },
+    };
+
+    const first = await fetchMcpStatusWithTimeout(source, 500);
+    const second = await fetchMcpStatusWithTimeout(source, 500);
+
+    expect(calls).toBe(1);
+    expect(second).toEqual(first);
+    expect(first.healthy).toBe(true);
+  });
+
+  it("says none with the agent attribution when nothing is configured or reported", () => {
+    expect(formatMcpBadge({ servers: [], totalTools: 0, healthy: false }, "pi")).toEqual({
+      text: "MCP: ⚪ none · pi",
+      status: "unknown",
+    });
   });
 });

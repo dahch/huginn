@@ -142,6 +142,20 @@ describe("pi SDK driver specifics", () => {
     expect((await port.isAvailable()).ok).toBe(false);
   });
 
+  it("explains a failed catalog instead of throwing", async () => {
+    const port = createPiSdkPort(
+      fakeAdapter({
+        async listModels() {
+          throw new Error("model registry offline");
+        },
+      }),
+    );
+    expect(await port.listModels()).toEqual({
+      models: [],
+      reason: "model registry offline",
+    });
+  });
+
   it("only accepts provider/model references", () => {
     const port = createPiSdkPort(fakeAdapter());
     expect(port.resolveModel("anthropic/claude-opus-4-5").ok).toBe(true);
@@ -185,5 +199,28 @@ describe("pi driver · the model the engine asks for is the model that runs", ()
       /cannot switch models per prompt/,
     );
     expect((await Promise.resolve(true))).toBe(true);
+  });
+
+  it("interrupts a turn that outlives its wall-clock timeout", async () => {
+    const interrupt = vi.fn(async () => {});
+    const port = createPiSdkPort(
+      fakeAdapter({
+        async createSession() {
+          return fakeHandle({
+            interrupt,
+            prompt() {
+              // A stalled provider: never settles, so only the deadline can end the turn.
+              return new Promise<string>(() => {});
+            },
+          });
+        },
+      }),
+    );
+    const session = await port.createSession({ title: "t" });
+    await expect(session.prompt({ text: "x", timeoutMs: 20 })).rejects.toThrow(
+      /pi turn timed out after 20ms/,
+    );
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    await session.close();
   });
 });
