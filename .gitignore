@@ -26,3 +26,8 @@ opencode.jsonc
 # paths). They are environment artifacts, never repository content.
 /.pi
 /node_modules
+
+# One-off run briefs from the aborted/retired upgrade passes. Their outcome is
+# already in the CHANGELOG, the ADRs and git history; the files are scratch.
+/plan.upgrade.md
+/plan.fix.md
