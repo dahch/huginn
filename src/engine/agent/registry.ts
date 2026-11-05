@@ -168,7 +168,14 @@ export function isAgentTarget(value: string): value is AgentTarget {
 }
 
 /**
- * Scan PATH to discover installed CLI binaries for all known agent targets.
+ * Scan PATH to discover installed CLI binaries for every known agent target.
+ *
+ * The result is sorted by **id**, never by registry order. The registry order is
+ * a historical list (and the contract `huginn setup --status` renders); using it
+ * to choose a runtime silently privileged whichever target had been written
+ * first, so an installation with claude and pi on PATH always started on claude
+ * no matter how often the user switched. A deterministic alphabetical order is
+ * an arbitrary choice the user can see — and override by persisting `agent`.
  */
 export async function detectAvailableAgents(
   pathEnv: string = process.env.PATH ?? "",
@@ -185,12 +192,15 @@ export async function detectAvailableAgents(
     });
   }
 
-  return results;
+  // Plain comparison, not localeCompare: the order must not depend on the
+  // machine's locale.
+  return results.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 /**
  * Resolve the effective AgentTarget with strict precedence:
- * CLI flag --agent -> project config -> user config -> HUGINN_AGENT env -> first detected available agent -> fallback to opencode.
+ * CLI flag --agent -> project config -> user config -> HUGINN_AGENT env ->
+ * first **detected** available agent in alphabetical order -> fallback to opencode.
  */
 export async function resolveAgent(sources: AgentResolutionSources = {}): Promise<AgentTarget> {
   const validateTarget = (val: string): AgentTarget => {

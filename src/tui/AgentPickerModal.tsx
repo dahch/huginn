@@ -20,10 +20,14 @@ export interface AgentPickerRow {
   path?: string;
 }
 
+/** Where a runtime change is kept (mirrors `ProfileScope`). */
+export type AgentScope = "session" | "project" | "global";
+
 export interface AgentPickerModalProps {
   /** The runtime currently driving the session (marked, not selectable-as-new). */
   currentAgentId: string;
-  onSelect: (id: AgentTarget) => void;
+  /** `scope` says whether the change is kept for the session, the project or globally. */
+  onSelect: (id: AgentTarget, scope: AgentScope) => void;
   onCancel: () => void;
   /**
    * Availability probe. Injected so the component is deterministic under test and
@@ -34,20 +38,44 @@ export interface AgentPickerModalProps {
   maxRows?: number;
 }
 
-/** Registry order, with availability resolved asynchronously (never blocking render). */
+const byAgentId = (a: AgentPickerRow, b: AgentPickerRow): number =>
+  a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+
+function rowFor(
+  id: AgentTarget,
+  found?: { available: boolean; path?: string },
+): AgentPickerRow {
+  return {
+    id,
+    label: AGENT_REGISTRY[id]?.label ?? id,
+    available: found?.available ?? false,
+    path: found?.path,
+  };
+}
+
+/**
+ * The runtimes this machine actually has, alphabetically.
+ *
+ * The picker used to render all thirteen targets in registry order, which made
+ * the user scroll past eight binaries that are not installed and taught them a
+ * list that says nothing about their machine. Only detected runtimes are listed;
+ * when detection finds none (or the probe throws) every target is shown
+ * alphabetically as unavailable, because an empty modal explains nothing.
+ */
 export function buildAgentRows(
   detected: Array<{ id: AgentTarget; available: boolean; path?: string }>,
 ): AgentPickerRow[] {
-  const byId = new Map(detected.map((d) => [d.id, d]));
-  return AGENT_TARGETS.map((id) => {
-    const found = byId.get(id);
-    return {
-      id,
-      label: AGENT_REGISTRY[id]?.label ?? id,
-      available: found?.available ?? false,
-      path: found?.path,
-    };
-  });
+  const found = new Map(detected.map((entry) => [entry.id, entry]));
+  const available = AGENT_TARGETS.map((id) => rowFor(id, found.get(id)))
+    .filter((row) => row.available)
+    .sort(byAgentId);
+  if (available.length > 0) return available;
+  return AGENT_TARGETS.map((id) => rowFor(id)).sort(byAgentId);
+}
+
+/** True when the rows describe a real installation rather than a failed probe. */
+export function hasDetectedRows(rows: AgentPickerRow[]): boolean {
+  return rows.some((row) => row.available);
 }
 
 /**
@@ -90,10 +118,13 @@ export function AgentPickerModal({
     };
   }, [detect]);
 
-  // Open on the active runtime so Enter is a no-op rather than an accidental switch.
+  // Open on the active runtime so Enter is a no-op rather than an accidental
+  // switch. When it is not installed it is not in the list at all, so the
+  // highlight goes to the first row instead of keeping whatever index the
+  // fallback list clamped it to.
   useEffect(() => {
     const index = rows.findIndex((r) => r.id === currentAgentId);
-    if (index >= 0) setSelectedIndex(index);
+    setSelectedIndex(index >= 0 ? index : 0);
   }, [rows, currentAgentId]);
 
   // Keep the highlight in bounds if the row set ever shrinks (REV-305).
@@ -127,20 +158,30 @@ export function AgentPickerModal({
     }
     if (key.return) {
       const chosen = cur.rows[cur.selectedIndex];
-      if (chosen) cur.onSelect(chosen.id);
+      if (chosen) cur.onSelect(chosen.id, "session");
       return;
     }
+    const pressed = input.toLowerCase();
+    const chosen = cur.rows[cur.selectedIndex];
+    if (!chosen) return;
+    if (pressed === "p") cur.onSelect(chosen.id, "project");
+    else if (pressed === "g") cur.onSelect(chosen.id, "global");
   });
 
   return (
     <Modal
       title={`${MODAL_TITLE_GLYPHS.agent} SELECT AGENT RUNTIME`}
-      hint="↑/↓ or k/j move · Enter switch · Esc cancel"
+      hint="↑/↓ or k/j move · Enter session · p project · g global · Esc cancel"
     >
       {loading ? (
         <Text color={THEME.warn}>Detecting installed agent CLIs…</Text>
       ) : (
         <Box flexDirection="column">
+          {!hasDetectedRows(rows) && (
+            <Text color={THEME.warn} wrap="truncate">
+              No agent CLI detected on PATH — showing every known target.
+            </Text>
+          )}
           {window.offset > 0 && <Text color={THEME.muted}>▲ {window.offset} more above</Text>}
           {window.visible.map((row, index) => {
             const absolute = window.offset + index;
@@ -176,9 +217,12 @@ export function AgentPickerModal({
         </Box>
       )}
 
-      <Box marginTop={1}>
+      <Box marginTop={1} flexDirection="column">
         <Text color={THEME.muted} wrap="truncate">
-          Switching changes which agent runs your prompts; Muninn memory is project-scoped and unaffected.
+          p and g keep the runtime for the next launch; Enter only for this session.
+        </Text>
+        <Text color={THEME.muted} wrap="truncate">
+          Muninn memory is project-scoped and unaffected.
         </Text>
       </Box>
     </Modal>

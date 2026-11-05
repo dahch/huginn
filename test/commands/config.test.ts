@@ -106,6 +106,36 @@ afterAll(() => {
 });
 
 describe("huginn config set", () => {
+  it("persists the runtime with --agent and show reports it as persisted", async () => {
+    const env = makeEnv();
+
+    const setOutput = await invoke(env, "set", { "--agent": "pi" });
+    expect(setOutput).toContain(getProjectConfigPath(env.project));
+    expect(setOutput).toContain("agent    = pi");
+    const onDisk = JSON.parse(readFileSync(getProjectConfigPath(env.project), "utf8")) as {
+      agent?: string;
+    };
+    expect(onDisk.agent).toBe("pi");
+
+    // `show` describes the persisted layer only: detection needs PATH and happens
+    // at launch, so "auto" is the honest answer when nothing is stored.
+    const showOutput = await invoke(env, "show");
+    expect(showOutput).toMatch(/agent\s*=\s*pi\s+\(source:\s*project\)/);
+
+    const autoEnv = makeEnv();
+    const autoOutput = await invoke(autoEnv, "show");
+    expect(autoOutput).toContain("detected from PATH at launch");
+  });
+
+  it("rejects an unknown --agent without writing anything", async () => {
+    const env = makeEnv();
+
+    const output = await invoke(env, "set", { "--agent": "not-an-agent" });
+    expect(output).toContain("--agent must be one of");
+    expect(process.exitCode).toBe(1);
+    expect(existsSync(getProjectConfigPath(env.project))).toBe(false);
+  });
+
   it("writes the project config and show reflects it with source: project", async () => {
     const env = makeEnv();
 

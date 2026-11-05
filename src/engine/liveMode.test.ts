@@ -615,6 +615,38 @@ describe("LiveEngine flow", () => {
       expect(engine.runtime.id).toBe("opencode");
     });
 
+    it("persists the chosen runtime only after the switch succeeds", async () => {
+      const projectPath = mkdtempSync(join(tmpdir(), "huginn-live-agent-"));
+      const configPath = join(projectPath, ".huginn", "config.json");
+      try {
+        const engine = new LiveEngine({
+          cfg: makeCfg({ projectPath }),
+          runtime: makeRuntime("opencode", "Mock OpenCode") as any,
+          runtimeFactory: () => makeRuntime("claude", "Mock Claude") as any,
+        });
+        await engine.start();
+
+        // Session scope writes nothing, which is what `/agent <id>` always did.
+        await engine.switchRuntime("claude");
+        expect(existsSync(configPath)).toBe(false);
+
+        await engine.switchRuntime("claude", "project");
+        expect(JSON.parse(readFileSync(configPath, "utf8")).agent).toBe("claude");
+
+        // A failing switch must not leave a runtime in the config that cannot run.
+        const failing = new LiveEngine({
+          cfg: makeCfg({ projectPath }),
+          runtime: makeRuntime("opencode", "Mock OpenCode") as any,
+          runtimeFactory: () => makeRuntime("codex", "Mock Codex", { available: false }) as any,
+        });
+        await failing.start();
+        await expect(failing.switchRuntime("codex", "project")).rejects.toThrow(/not available/);
+        expect(JSON.parse(readFileSync(configPath, "utf8")).agent).toBe("claude");
+      } finally {
+        rmSync(projectPath, { recursive: true, force: true });
+      }
+    });
+
     it("re-seeds the architect system prompt on the first prompt after a switch", async () => {
       const bodies: string[] = [];
       const engine = new LiveEngine({

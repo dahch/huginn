@@ -34,7 +34,7 @@ import { ModelPickerModal, type ModelPickerResult } from "./ModelPickerModal";
 import { McpInspectorModal } from "./McpInspectorModal";
 import { HelpModal } from "./HelpModal";
 import { SkillsModal } from "./SkillsModal";
-import { AgentPickerModal } from "./AgentPickerModal";
+import { AgentPickerModal, type AgentScope } from "./AgentPickerModal";
 import { ProfilePickerModal, type ProfileScope } from "./ProfilePickerModal";
 import { findCommand, matchCommands, type SlashCommand } from "./commandRegistry.js";
 import { profileSpec, type ProfileName } from "../engine/profiles.js";
@@ -1219,8 +1219,15 @@ function RefineView({
   /**
    * Switch the active runtime (REQ-33). Shared by `/agent <id>` and the picker so
    * both report the same busy/✓/! feedback and never crash the view on failure.
+   * `scope` decides whether the choice survives the session: the picker's
+   * `p`/`g` persist it to the project or user config, which is what makes the
+   * next `huginn live --prompt-file …` start on the runtime you chose instead of
+   * whichever binary PATH detection happens to rank first.
    */
-  const switchAgent = async (id: string): Promise<boolean> => {
+  const switchAgent = async (
+    id: string,
+    scope: AgentScope = "session",
+  ): Promise<boolean> => {
     if (id === live.runtime.id) {
       emitSystem(okFeedback(`Already using ${sanitizeTerminalText(live.runtime.name)}.`));
       return true;
@@ -1228,9 +1235,15 @@ function RefineView({
     setBusy(true);
     emitSystem(busyFeedback(`Switching runtime to "${sanitizeTerminalText(id)}"…`));
     try {
-      const newRuntime = await live.switchRuntime(id);
+      const newRuntime = await live.switchRuntime(id, scope);
       setCurrentRuntimeName(newRuntime.name);
-      emitSystem(okFeedback(`Runtime switched to ${sanitizeTerminalText(newRuntime.name)}.`));
+      emitSystem(
+        okFeedback(
+          `Runtime switched to ${sanitizeTerminalText(newRuntime.name)}${
+            scope === "session" ? "." : ` — saved for the ${scope}.`
+          }`,
+        ),
+      );
       return true;
     } catch (err) {
       emitSystem(failureFeedback("Runtime switch failed", NEXT_STEP.runtimeSwitch, err));
@@ -2289,11 +2302,11 @@ function RefineView({
       ) : showAgentPicker ? (
         <AgentPickerModal
           currentAgentId={live.runtime.id}
-          onSelect={(id) => {
+          onSelect={(id, scope) => {
             void (async () => {
               // Keep the picker open when the switch fails, so the user can pick a
               // different runtime without re-typing /agent (plan Iteration 31).
-              if (await switchAgent(id)) setShowAgentPicker(false);
+              if (await switchAgent(id, scope)) setShowAgentPicker(false);
             })();
           }}
           onCancel={() => setShowAgentPicker(false)}

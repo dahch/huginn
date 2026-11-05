@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Runtime choice persists. The `/agent` picker now takes `p` (project config) and `g` (user config)
+  besides `Enter` (session), writing the `agent` key — and `huginn config set --agent <id>` exists
+  for the same reason. Until now the only ways to pin a runtime were the `--agent` flag, the
+  `HUGINN_AGENT` variable or hand-editing the JSON, so a fixed choice never survived a restart.
+  The write happens only after the switch succeeded: a runtime whose availability probe just failed
+  can never become the next launch's default.
+- The runtime picker lists **what the machine actually has**, alphabetically, instead of all
+  thirteen targets in registry order. The registry order is a historical list — reading it as a
+  preference is why a box with `claude` and `pi` installed started on `claude` every time. PATH
+  detection now sorts by id and takes the first *available* entry, a rule the user can see and
+  override; a machine with nothing detected still gets the full alphabetical list marked
+  `— not installed` rather than an empty modal.
+
 ## 3.0.0-rc.2
 
 > Renumbered from `2.0.0-rc.6` before publishing. `3.0.0-rc.1` is already on npm (published on 21

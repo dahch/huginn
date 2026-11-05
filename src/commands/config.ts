@@ -27,27 +27,35 @@ import {
   profileSpec,
   type ProfileName,
 } from "../engine/profiles.js";
+import { isAgentTarget } from "../engine/agent/registry.js";
+import { AGENT_TARGETS } from "../agents/integrator.js";
 
 export function printConfigUsage(): void {
-  console.log(`huginn config — Persistent model configuration (thinker/executor)
+  console.log(`huginn config — Persistent model, profile and runtime configuration
 
 Usage:
   huginn config show [--project <path>] [--home <path>]
-  huginn config set [--thinker <m>] [--executor <m>] [--project <path>] [--home <path>] [--global]
+  huginn config set [--thinker <m>] [--executor <m>] [--profile <id>] [--agent <id>]
+                    [--project <path>] [--home <path>] [--global]
 
 Subcommands:
-  show   Print the effective thinker/executor and the layer each value came from
-  set    Persist thinker/executor to the project config (or the user config with --global)
+  show   Print the effective thinker/executor, profile and runtime, with the layer each came from
+  set    Persist them to the project config (or the user config with --global)
 
 Options:
   --thinker <m>   Model string for the thinker role (set)
   --executor <m>  Model string for the executor role (set)
+  --profile <id>  Methodology profile (set)
+  --agent <id>    Runtime that executes the cycle (set); without it the runtime is
+                  detected from PATH at launch
   --global        Write to <home>/.huginn/config.json instead of the project config
   --project <path> Project root whose .huginn/config.json is read/written (default: cwd)
   --home <path>   Home directory override for the user config (default: os.homedir())
 
 Precedence (show):
-  CLI flag → project config → user config → environment → defaults.
+  CLI flag → project config → user config → environment → defaults (models);
+  flag → project config → user config → HUGINN_AGENT → first runtime detected on
+  PATH, alphabetically (agent).
 `);
 }
 
@@ -105,6 +113,23 @@ export async function handleConfigCommand(
       `  profile  = ${chalk.cyan(layers.project.profile ?? layers.user.profile ?? DEFAULT_PROFILE)}` +
         `  (${profileSpec(layers.project.profile ?? layers.user.profile).name})`,
     );
+    console.log(chalk.bold("[huginn] runtime"));
+    // Only the *persisted* layers are described here; detection happens at launch
+    // and needs PATH, so claiming a resolved runtime from this command would lie.
+    const persistedAgent =
+      (isAgentTarget(layers.project.agent ?? "") && layers.project.agent) ||
+      (isAgentTarget(layers.user.agent ?? "") && layers.user.agent) ||
+      undefined;
+    const agentSource = persistedAgent
+      ? layers.project.agent === persistedAgent
+        ? "project"
+        : "user"
+      : undefined;
+    console.log(
+      persistedAgent
+        ? `  agent    = ${chalk.cyan(persistedAgent)}  (source: ${agentSource})`
+        : `  agent    = ${chalk.cyan("auto")}  (detected from PATH at launch)`,
+    );
     console.log(chalk.bold("[huginn] config files"));
     console.log(`  project: ${getProjectConfigPath(projectPath)}`);
     console.log(`  user:    ${getUserConfigPath(homeDir)}`);
@@ -144,9 +169,26 @@ export async function handleConfigCommand(
       }
       updates.profile = candidate as ProfileName;
     }
+    // The runtime that executes the cycle. Until now only the `--agent` flag and
+    // a hand-edited config could set it, so a fixed choice never survived a
+    // restart and PATH detection decided every launch.
+    const rawAgent = args["--agent"];
+    if (rawAgent !== undefined) {
+      provided = true;
+      const candidate = typeof rawAgent === "string" ? rawAgent.trim().toLowerCase() : "";
+      if (!isAgentTarget(candidate)) {
+        console.error(chalk.red(`Error: --agent must be one of [${AGENT_TARGETS.join(", ")}].`));
+        printConfigUsage();
+        process.exitCode = 1;
+        return;
+      }
+      updates.agent = candidate;
+    }
     if (!provided) {
       console.error(
-        chalk.red("Error: at least one of --thinker, --executor or --profile is required."),
+        chalk.red(
+          "Error: at least one of --thinker, --executor, --profile or --agent is required.",
+        ),
       );
       printConfigUsage();
       process.exitCode = 1;
@@ -166,6 +208,7 @@ export async function handleConfigCommand(
     if (updates.thinker !== undefined) console.log(`  thinker  = ${updates.thinker}`);
     if (updates.executor !== undefined) console.log(`  executor = ${updates.executor}`);
     if (updates.profile !== undefined) console.log(`  profile  = ${updates.profile}`);
+    if (updates.agent !== undefined) console.log(`  agent    = ${updates.agent}`);
     return;
   }
 

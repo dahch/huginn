@@ -438,6 +438,35 @@ describe("Agent Registry & Factory", () => {
     }
   });
 
+  it("detects installed runtimes alphabetically, never in registry order", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "huginn-detect-order-"));
+    try {
+      // claude comes before pi in the registry; both are installed here so the
+      // assertion is about the ORDER, not about which one happens to exist.
+      for (const bin of ["pi", "claude", "opencode"]) {
+        const file = join(tempDir, bin);
+        writeFileSync(file, "#!/bin/sh\nexit 0\n");
+        chmodSync(file, 0o755);
+      }
+
+      const detected = await detectAvailableAgents(tempDir);
+      expect(detected.map((entry) => entry.id)).toEqual(
+        [...detected.map((entry) => entry.id)].sort(),
+      );
+      expect(detected.filter((entry) => entry.available).map((entry) => entry.id)).toEqual([
+        "claude",
+        "opencode",
+        "pi",
+      ]);
+
+      // The default runtime is the first available alphabetically — a visible
+      // rule — rather than whichever target the registry happened to list first.
+      expect(await resolveAgent({ env: { PATH: tempDir } })).toBe("claude");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("trims whitespace from agent source strings", async () => {
     expect(await resolveAgent({ flagAgent: "  claude  " })).toBe("claude");
     expect(await resolveAgent({ projectConfig: { agent: "  codex  " } })).toBe("codex");

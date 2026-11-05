@@ -585,7 +585,7 @@ describe("LiveDashboard Slash Commands", () => {
     instance.unmount();
     off();
 
-    expect(live.switchRuntime).toHaveBeenCalledWith("claude");
+    expect(live.switchRuntime).toHaveBeenCalledWith("claude", "session");
     expect(systemMessages.some((m) => m.includes("Runtime switched to"))).toBe(true);
     expect(systemMessages.some((m) => m.includes("Runtime switch failed"))).toBe(false);
   });

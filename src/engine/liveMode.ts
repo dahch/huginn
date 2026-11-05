@@ -652,7 +652,10 @@ export class LiveEngine {
     return { id: candidate, name: spec.name, persisted: scope !== "session" };
   }
 
-  async switchRuntime(agentId: string): Promise<RuntimePort> {
+  async switchRuntime(
+    agentId: string,
+    scope: "session" | "project" | "global" = "session",
+  ): Promise<RuntimePort> {
     const target = agentId as AgentTarget;
     // Switching to the runtime already in use only reopens a session: reusing
     // the port keeps its client/daemon (and an injected fake) instead of dialing
@@ -699,6 +702,16 @@ export class LiveEngine {
     this.session = undefined;
     this.sink = undefined;
     this.sessionId = undefined;
+
+    // The choice is persisted only *after* the switch succeeded: the reverse
+    // order would write a runtime that is not installed (and whose `isAvailable`
+    // just failed), leaving every later launch on a broken default.
+    if (scope === "project") {
+      saveUserConfig(this.cfg.projectPath, { agent: target });
+    } else if (scope === "global") {
+      saveGlobalUserConfig({ agent: target });
+    }
+    this.cfg.agent = target;
     // REV-4C-001: the runtime that was reattached to (if any) is not the one being
     // talked to now, and the session about to be opened is empty — so the
     // transcript must be replayed again, exactly as after any other switch.

@@ -184,8 +184,11 @@ const CASES: Case[] = [
     quickClose: false,
     confirm: true,
     confirmProof: (_output, onSelect) => {
+      // Nothing is detected, so the alphabetical fallback list renders and the
+      // highlight opens on the active runtime: Enter confirms it with the
+      // session scope (p/g are the persistence keys).
       expect(onSelect).toHaveBeenCalledTimes(1);
-      expect(onSelect).toHaveBeenCalledWith(AGENT_TARGETS[0]);
+      expect(onSelect).toHaveBeenCalledWith(AGENT_TARGETS[0], "session");
     },
     mount: ({ onClose, onSelect }) =>
       React.createElement(AgentPickerModal, {
@@ -505,11 +508,11 @@ describe("modal key grammar — Enter confirms only in the selectors", () => {
 });
 
 describe("modal key grammar — k/j only where they already were", () => {
-  it("AgentPickerModal moves with j and selects the second target", async () => {
+  it("AgentPickerModal moves with j and selects the next runtime alphabetically", async () => {
     const onSelect = vi.fn();
     const view = await mount(
       React.createElement(AgentPickerModal, {
-        currentAgentId: AGENT_TARGETS[0]!,
+        currentAgentId: "cursor",
         onSelect,
         onCancel: vi.fn(),
         detect: async () => AGENT_TARGETS.map((id) => ({ id, available: true })),
@@ -518,14 +521,16 @@ describe("modal key grammar — k/j only where they already were", () => {
     await view.press("j");
     await view.press(ENTER);
     view.finish();
-    expect(onSelect).toHaveBeenCalledWith(AGENT_TARGETS[1]);
+    // The list is alphabetical, so the row after `cursor` is `devin`, not the
+    // next entry of the registry.
+    expect(onSelect).toHaveBeenCalledWith("devin", "session");
   });
 
   it("AgentPickerModal moves with k back to the active target", async () => {
     const onSelect = vi.fn();
     const view = await mount(
       React.createElement(AgentPickerModal, {
-        currentAgentId: AGENT_TARGETS[1]!,
+        currentAgentId: "claude",
         onSelect,
         onCancel: vi.fn(),
         detect: async () => AGENT_TARGETS.map((id) => ({ id, available: true })),
@@ -534,7 +539,7 @@ describe("modal key grammar — k/j only where they already were", () => {
     await view.press("k");
     await view.press(ENTER);
     view.finish();
-    expect(onSelect).toHaveBeenCalledWith(AGENT_TARGETS[0]);
+    expect(onSelect).toHaveBeenCalledWith("agy", "session");
   });
 
   it("ProfilePickerModal moves with j before Enter applies it", async () => {

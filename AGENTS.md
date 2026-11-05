@@ -475,8 +475,8 @@ forwarded to the model.
 | Command | Behaviour | Backing code |
 |---|---|---|
 | `/help` | Opens the cheat-sheet modal (`HelpModal`) with commands, shortcuts and the active agent/model/project banner. | `src/tui/HelpModal.tsx` |
-| `/agent` | Opens the interactive runtime picker (`AgentPickerModal`): availability, active marker, detected path. | `src/tui/AgentPickerModal.tsx` |
-| `/agent <id>` | Hot-switches the runtime; fails closed if `isAvailable()` is false. | `LiveEngine.switchRuntime()` |
+| `/agent` | Opens the runtime picker: the runtimes detected on this machine, alphabetically (`buildAgentRows`). `Enter` = session, `p` = project config, `g` = user config. | `src/tui/AgentPickerModal.tsx` |
+| `/agent <id>` | Hot-switches the runtime for the session; fails closed if `isAvailable()` is false. | `LiveEngine.switchRuntime()` |
 | `/models`, `/model` | Opens `ModelPickerModal`. | `src/tui/ModelPickerModal.tsx` |
 | `/model <thinker> [executor]` | Validates `provider/model` and updates models for the session. | `LiveEngine.updateModels()` |
 | `/profile` | Opens the methodology-profile picker (`ProfilePickerModal`): name, description, active marker; `↑`/`↓`/`j`/`k` move, `Enter` = session, `p` = project, `g` = global, `Esc` cancels. | `src/tui/ProfilePickerModal.tsx` |

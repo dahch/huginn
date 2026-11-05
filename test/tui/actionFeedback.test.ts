@@ -326,7 +326,7 @@ describe("actionable errors (REQ-31 / AC-31.2)", () => {
     await run(harness.stdin, "/agent claude");
     harness.unmount();
 
-    expect(live.switchRuntime).toHaveBeenCalledWith("claude");
+    expect(live.switchRuntime).toHaveBeenCalledWith("claude", "session");
     const failure = harness.messages.find((m) => m.includes("Runtime switch failed"));
     expect(failure).toContain("! Runtime switch failed — run `/agent`");
     expect(failure).toContain("cause: binary not found");
