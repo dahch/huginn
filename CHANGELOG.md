@@ -4,8 +4,8 @@
 
 ### Added
 
-- Runtime choice persists. The `/agent` picker now takes `p` (project config) and `g` (user config)
-  besides `Enter` (session), writing the `agent` key — and `huginn config set --agent <id>` exists
+- Runtime choice persists. The `/agent` picker **saves on `Enter` for the project**, with `s` for
+  this session only and `g` for every project, writing the `agent` key — and `huginn config set --agent <id>` exists
   for the same reason. Until now the only ways to pin a runtime were the `--agent` flag, the
   `HUGINN_AGENT` variable or hand-editing the JSON, so a fixed choice never survived a restart.
   The write happens only after the switch succeeded: a runtime whose availability probe just failed

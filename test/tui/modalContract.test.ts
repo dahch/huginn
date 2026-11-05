@@ -185,10 +185,10 @@ const CASES: Case[] = [
     confirm: true,
     confirmProof: (_output, onSelect) => {
       // Nothing is detected, so the alphabetical fallback list renders and the
-      // highlight opens on the active runtime: Enter confirms it with the
-      // session scope (p/g are the persistence keys).
+      // highlight opens on the active runtime: Enter confirms it and saves it
+      // for the project (`s` is the session-only escape hatch, `g` the global).
       expect(onSelect).toHaveBeenCalledTimes(1);
-      expect(onSelect).toHaveBeenCalledWith(AGENT_TARGETS[0], "session");
+      expect(onSelect).toHaveBeenCalledWith(AGENT_TARGETS[0], "project");
     },
     mount: ({ onClose, onSelect }) =>
       React.createElement(AgentPickerModal, {
@@ -523,7 +523,7 @@ describe("modal key grammar — k/j only where they already were", () => {
     view.finish();
     // The list is alphabetical, so the row after `cursor` is `devin`, not the
     // next entry of the registry.
-    expect(onSelect).toHaveBeenCalledWith("devin", "session");
+    expect(onSelect).toHaveBeenCalledWith("devin", "project");
   });
 
   it("AgentPickerModal moves with k back to the active target", async () => {
@@ -539,7 +539,7 @@ describe("modal key grammar — k/j only where they already were", () => {
     await view.press("k");
     await view.press(ENTER);
     view.finish();
-    expect(onSelect).toHaveBeenCalledWith("agy", "session");
+    expect(onSelect).toHaveBeenCalledWith("agy", "project");
   });
 
   it("ProfilePickerModal moves with j before Enter applies it", async () => {

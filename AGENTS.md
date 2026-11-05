@@ -475,7 +475,7 @@ forwarded to the model.
 | Command | Behaviour | Backing code |
 |---|---|---|
 | `/help` | Opens the cheat-sheet modal (`HelpModal`) with commands, shortcuts and the active agent/model/project banner. | `src/tui/HelpModal.tsx` |
-| `/agent` | Opens the runtime picker: the runtimes detected on this machine, alphabetically (`buildAgentRows`). `Enter` = session, `p` = project config, `g` = user config. | `src/tui/AgentPickerModal.tsx` |
+| `/agent` | Opens the runtime picker: the runtimes detected on this machine, alphabetically (`buildAgentRows`). `Enter` = project config, `s` = session only, `g` = user config. | `src/tui/AgentPickerModal.tsx` |
 | `/agent <id>` | Hot-switches the runtime for the session; fails closed if `isAvailable()` is false. | `LiveEngine.switchRuntime()` |
 | `/models`, `/model` | Opens `ModelPickerModal`. | `src/tui/ModelPickerModal.tsx` |
 | `/model <thinker> [executor]` | Validates `provider/model` and updates models for the session. | `LiveEngine.updateModels()` |
@@ -600,8 +600,9 @@ Ten display conventions a TUI change must follow:
   `paddingX={1}`/`flexShrink={0}`/`overflow="hidden"`. It never calls `useInput`; each surface keeps
   its keys. `MODAL_KEY_CONTRACT` states the grammar every handler follows: `Esc` closes all six,
   `q` only `HelpModal`/`SkillsModal`, `Enter` only the three selectors (Skills' own execute action
-  excepted), `Tab` only the Skills/MCP panes, `p`/`g` only the profile picker, and `k`/`j` only where
-  they already were. The footer is the pure `footerHints` (`src/tui/footer.ts`; `footerHints.ts` is a
+  excepted), `Tab` only the Skills/MCP panes, `p`/`g` on the profile picker and `s`/`g` on the runtime
+  picker (each picker's own scope keys, both spelled out in its hint), and `k`/`j` only where they
+  already were. The footer is the pure `footerHints` (`src/tui/footer.ts`; `footerHints.ts` is a
   re-export): the left cell is the **focused** surface's keys, the right keeps `usage` (the run
   dashboard adds its decision notice there), and the
   palette/search/busy/maximized/hidden-log states replace the left where they own the keyboard. The

@@ -156,22 +156,25 @@ export function AgentPickerModal({
       setSelectedIndex((i) => Math.min(Math.max(cur.rows.length - 1, 0), i + 1));
       return;
     }
+    const chosen = cur.rows[cur.selectedIndex];
     if (key.return) {
-      const chosen = cur.rows[cur.selectedIndex];
-      if (chosen) cur.onSelect(chosen.id, "session");
+      if (chosen) cur.onSelect(chosen.id, "project");
       return;
     }
-    const pressed = input.toLowerCase();
-    const chosen = cur.rows[cur.selectedIndex];
     if (!chosen) return;
-    if (pressed === "p") cur.onSelect(chosen.id, "project");
+    // Enter persists for the project because that is what a runtime switch
+    // means: this repository runs on this agent. `s` is the escape hatch for a
+    // one-off try. Every key is printed in the hint and in the note below, so
+    // nothing here has to be guessed.
+    const pressed = input.toLowerCase();
+    if (pressed === "s") cur.onSelect(chosen.id, "session");
     else if (pressed === "g") cur.onSelect(chosen.id, "global");
   });
 
   return (
     <Modal
       title={`${MODAL_TITLE_GLYPHS.agent} SELECT AGENT RUNTIME`}
-      hint="↑/↓ or k/j move · Enter session · p project · g global · Esc cancel"
+      hint="↑/↓ or k/j move · Enter project · s session · g global · Esc cancel"
     >
       {loading ? (
         <Text color={THEME.warn}>Detecting installed agent CLIs…</Text>
@@ -219,7 +222,7 @@ export function AgentPickerModal({
 
       <Box marginTop={1} flexDirection="column">
         <Text color={THEME.muted} wrap="truncate">
-          p and g keep the runtime for the next launch; Enter only for this session.
+          Enter saves it for this project · s only until you quit · g for every project.
         </Text>
         <Text color={THEME.muted} wrap="truncate">
           Muninn memory is project-scoped and unaffected.

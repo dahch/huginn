@@ -109,7 +109,7 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
     // The active runtime, its resolved path and the persistence keys are visible.
     expect(output).toContain("● active");
     expect(output).toContain("/usr/local/bin/claude");
-    expect(output).toContain("p and g keep the runtime for the next launch");
+    expect(output).toContain("Enter saves it for this project");
     expect(output).toContain("Muninn memory is project-scoped");
   });
 
@@ -120,7 +120,7 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
     expect(output).toContain("not installed");
   });
 
-  it("persists with p (project) and g (global), and switches for the session on Enter", async () => {
+  it("saves for the project on Enter, for the session on s, and globally on g", async () => {
     const onSelect = vi.fn();
     const picker = await renderPicker({
       // Not in the detected list, so the highlight stays on the first row
@@ -130,9 +130,9 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
       onSelect,
     });
 
-    picker.stdin.write("p");
+    picker.stdin.write("s");
     await tick();
-    expect(onSelect).toHaveBeenLastCalledWith("claude", "project");
+    expect(onSelect).toHaveBeenLastCalledWith("claude", "session");
 
     picker.stdin.write("g");
     await tick();
@@ -140,8 +140,21 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
 
     picker.stdin.write("\r");
     await tick();
-    expect(onSelect).toHaveBeenLastCalledWith("claude", "session");
+    expect(onSelect).toHaveBeenLastCalledWith("claude", "project");
     picker.finish();
+  });
+
+  it("prints every scope key and what each one does", async () => {
+    const picker = await renderPicker({ currentAgentId: "opencode", available: ["claude"] });
+    const output = picker.finish();
+    // No action is left for the user to guess: the keys and their consequence
+    // are on screen, not in the docs.
+    expect(output).toContain("Enter project");
+    expect(output).toContain("s session");
+    expect(output).toContain("g global");
+    expect(output).toContain("Enter saves it for this project");
+    expect(output).toContain("s only until you quit");
+    expect(output).toContain("g for every project");
   });
 
   it("fails closed when the availability probe rejects: the full list reads unavailable", async () => {
@@ -161,7 +174,7 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
     expect(output).toContain("not installed");
     expect(output).not.toContain("Detecting installed agent CLIs");
     expect(onSelect).toHaveBeenCalledTimes(1);
-    expect(onSelect.mock.calls[0][1]).toBe("session");
+    expect(onSelect.mock.calls[0][1]).toBe("project");
   });
 
   it("cancels on Esc", async () => {
