@@ -110,90 +110,55 @@ function tryParseQuestions(payload: string): QuestionItem[] | undefined {
   return questions.length > 0 ? questions : undefined;
 }
 
-/**
- * A reply that ends on the closing marker without ever opening the block.
- *
- * The payload sits in the paragraph immediately before the marker — exactly
- * where a well-formed block would have put it. It is accepted only when that
- * paragraph really is the questions array; otherwise the reply is left intact
- * and the marker is reported, so a stray token cannot swallow the agent's prose.
- */
-function recoverUnopenedBlock(text: string, endMatch: RegExpExecArray): ParsedQuestionBlock {
-  const beforeEnd = text.slice(0, endMatch.index);
-  const paragraphBreak = beforeEnd.lastIndexOf("\n\n");
-  const candidate = beforeEnd.slice(paragraphBreak === -1 ? 0 : paragraphBreak).trim();
-
-  if (candidate.startsWith("[") || candidate.startsWith("{")) {
-    const questions = tryParseQuestions(candidate);
-    if (questions) {
-      const prose = paragraphBreak === -1 ? "" : beforeEnd.slice(0, paragraphBreak);
-      return {
-        questions,
-        cleanedText: prose.replace(ANY_BLOCK, "").replace(/\n{3,}/g, "\n\n").trim(),
-      };
-    }
-  }
-
-  return {
-    questions: [],
-    cleanedText: text
-      .replace(ANY_BLOCK, "")
-      .replace(new RegExp(END_MARKER.source, "gi"), "")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim(),
-    warning: "the agent closed a question block that was never opened",
-  };
+/** Remove every block and any straggling marker from what the user sees. */
+function stripBlocks(text: string): string {
+  return text
+    .replace(ANY_BLOCK, "")
+    .replace(new RegExp(START_MARKER.source, "gi"), "")
+    .replace(new RegExp(END_MARKER.source, "gi"), "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /**
- * Extract a question block from agent output.
+ * The payload paragraph that ends at the closing marker, when it really is the
+ * questions array.
  *
- * Never throws: a block that is present but malformed is *reported* (AC-37.4)
- * rather than dropped silently, and the raw payload is sanitized before it can
- * reach the screen.
+ * Models put the payload there whether or not they remembered the opening
+ * marker, and a paragraph that parses is stronger evidence than a token that may
+ * only have been quoted in the prose ("the protocol is <<<HUGINN_QUESTION>>>").
+ * Taking the paragraph first is what keeps a mentioned marker from framing the
+ * wrong slice of the reply.
  */
-export function parseQuestionBlock(text: string): ParsedQuestionBlock {
-  // The markers are located by position, never anchored to their own line.
-  // Models routinely glue the payload to the opening marker (or the closing one
-  // to the payload), and a line-anchored match turned a perfectly usable
-  // question into a silent no-op: `hasQuestionBlock` said true while this
-  // function returned zero questions and no warning, leaving the raw JSON on
-  // screen (AC-37.4). Tolerating the layout still requires both markers.
-  const startMatch = START_MARKER.exec(text);
-  const endMatch = END_MARKER.exec(text);
+function paragraphPayloadBefore(
+  text: string,
+  endMatch: RegExpExecArray,
+): { questions: QuestionItem[]; cleanedText: string } | undefined {
+  const beforeEnd = text.slice(0, endMatch.index);
+  const paragraphBreak = beforeEnd.lastIndexOf("\n\n");
+  const candidate = beforeEnd.slice(paragraphBreak === -1 ? 0 : paragraphBreak).trim();
+  if (!candidate.startsWith("[") && !candidate.startsWith("{")) return undefined;
 
-  if (!startMatch) {
-    // A closing marker with no opener is the same failure the other way round:
-    // the payload is right there, immediately before it, and dropping the reply
-    // into "raw JSON on screen" helps nobody. Recover the paragraph that ends at
-    // the marker when it parses as the questions payload; otherwise report it.
-    if (endMatch) return recoverUnopenedBlock(text, endMatch);
-    return { questions: [], cleanedText: text };
-  }
+  const questions = tryParseQuestions(candidate);
+  if (!questions) return undefined;
+  const prose = paragraphBreak === -1 ? "" : beforeEnd.slice(0, paragraphBreak);
+  return { questions, cleanedText: stripBlocks(prose) };
+}
 
-  const payloadStart = startMatch.index + startMatch[0].length;
-
-  // A block must be delimited by both markers; an unclosed one would otherwise
-  // silently truncate the reply (REV-008). The closing marker is searched from
-  // the payload, so an earlier one (a second block's) cannot close this block.
-  const endAfterStart = new RegExp(END_MARKER.source, "gi");
-  endAfterStart.lastIndex = payloadStart;
-  const closing = endAfterStart.exec(text);
-  const endIndex = closing ? closing.index : -1;
-  if (endIndex === -1) {
-    return {
-      questions: [],
-      cleanedText: (text.slice(0, startMatch.index) + text.slice(payloadStart)).trim(),
-      warning: "the agent opened a question block and never closed it",
-    };
-  }
-
-  const payload = text.slice(payloadStart, endIndex).trim();
-  // Strip *every* block, so a second one cannot leak raw markers/JSON (REV-009).
-  const cleanedText = text
-    .replace(ANY_BLOCK, "")
-    .replace(/\n{3,}/g, "\n\n")
+/**
+ * A block framed by an explicit opener and a closer, with the spec's own
+ * diagnostics for a payload that cannot be used (AC-37.4).
+ */
+function parseFramedBlock(
+  text: string,
+  startMatch: RegExpExecArray,
+  endMatch: RegExpExecArray,
+): ParsedQuestionBlock {
+  const payload = text
+    .slice(startMatch.index + startMatch[0].length, endMatch.index)
     .trim();
+  // Strip *every* block, so a second one cannot leak raw markers/JSON (REV-009).
+  const cleanedText = stripBlocks(text);
 
   if (payload.length > MAX_QUESTION_PAYLOAD_BYTES) {
     return {
@@ -232,6 +197,55 @@ export function parseQuestionBlock(text: string): ParsedQuestionBlock {
   }
 
   return { questions, cleanedText };
+}
+
+/**
+ * Extract a question block from agent output.
+ *
+ * Never throws: a block that is present but malformed is *reported* (AC-37.4)
+ * rather than dropped silently, and the raw payload is sanitized before it can
+ * reach the screen.
+ *
+ * The order matters and is the whole point: the paragraph that ends at the
+ * closing marker is tried first, because that is where every model — including
+ * the ones that drop or mangle the opening marker — actually puts the payload.
+ */
+export function parseQuestionBlock(text: string): ParsedQuestionBlock {
+  const endMatch = END_MARKER.exec(text);
+
+  if (endMatch) {
+    const paragraph = paragraphPayloadBefore(text, endMatch);
+    if (paragraph) return paragraph;
+
+    // No parseable paragraph: an explicit opener before the marker still frames
+    // the block, which is the documented shape and the one that can carry a
+    // payload spread over several lines.
+    const startMatch = START_MARKER.exec(text);
+    if (startMatch && startMatch.index < endMatch.index) {
+      return parseFramedBlock(text, startMatch, endMatch);
+    }
+
+    // A closer with neither shape: report it and strip it, so a stray token
+    // cannot swallow the agent's prose.
+    return {
+      questions: [],
+      cleanedText: stripBlocks(text),
+      warning: "the agent closed a question block that was never opened",
+    };
+  }
+
+  const startMatch = START_MARKER.exec(text);
+  if (startMatch) {
+    // A block must be delimited by both markers; an unclosed one would otherwise
+    // silently truncate the reply (REV-008).
+    return {
+      questions: [],
+      cleanedText: stripBlocks(text),
+      warning: "the agent opened a question block and never closed it",
+    };
+  }
+
+  return { questions: [], cleanedText: text };
 }
 
 /** True when the text carries a question block at all. */

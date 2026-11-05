@@ -26,7 +26,10 @@
   closing marker without ever opening the block has its payload recovered from the paragraph before
   it — the exact shape that left a usable three-option question on screen as raw JSON in
   `muninn`'s session. An unopened block whose paragraph is not a payload is still reported and the
-  stray marker removed, so a stray token cannot swallow the agent's prose.
+  stray marker removed, so a stray token cannot swallow the agent's prose. The payload is now looked for in the paragraph that
+  ends at the closing marker *before* an opening marker is considered, so a reply that merely
+  quotes `<<<HUGINN_QUESTION>>>` in its prose can no longer pull the JSON slice back into that
+  sentence and lose every question.
 
 ## 3.0.0-rc.2
 

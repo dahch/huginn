@@ -93,6 +93,27 @@ describe("agent-agnostic question protocol (REQ-37 / ADR-36)", () => {
     expect(hasQuestionBlock(text)).toBe(true);
   });
 
+  it("prefers the payload paragraph over a marker merely quoted in the prose", () => {
+    // A real reply explained the protocol ("…is <<<HUGINN_QUESTION>>> and closes
+    // like this") and then emitted the payload with only the closing marker. The
+    // quoted token must not frame the payload, or the JSON slice starts at the
+    // prose and every question is lost.
+    const payload = JSON.stringify([
+      { question: "Which behaviour?", options: [{ label: "Portable only" }] },
+    ]);
+    const text =
+      `The protocol is ${QUESTION_BLOCK_START} and closes like this.\n\n` +
+      `${payload}\n<<<END HUGINN QUESTION >>>`;
+
+    const parsed = parseQuestionBlock(text);
+    expect(parsed.warning).toBeUndefined();
+    expect(parsed.questions).toHaveLength(1);
+    expect(parsed.questions[0]!.options?.map((o) => o.label)).toEqual(["Portable only"]);
+    expect(parsed.cleanedText).toContain("The protocol is");
+    expect(parsed.cleanedText).not.toContain('"question"');
+    expect(parsed.cleanedText).not.toContain("<<<");
+  });
+
   it("reports an unopened block whose paragraph is not a payload", () => {
     const parsed = parseQuestionBlock("Some prose.\n\nnot json at all\n<<<END HUGINN QUESTION>>>");
     expect(parsed.questions).toEqual([]);
