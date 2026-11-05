@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **REVIEW was handed two empty diffs.** The review task interpolated `git diff
+  main...HEAD`, which is exactly nothing while an iteration's work is still
+  uncommitted — the state REVIEW always runs in. The reviewer had no diff to read,
+  improvised from whatever it opened, and in one run blocked four times over a
+  defect that a fix had already resolved. The review now diffs the worktree
+  (`git diff HEAD`), lists the untracked files that no diff can show, and the
+  engine appends the committed range since the iteration base so a repair merge or
+  a checkpoint commit is reviewed instead of being invisible.
+
 ### Added
 
 - Runtime choice persists. The `/agent` picker **saves on `Enter` for the project**, with `s` for

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -208,6 +209,36 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).toContain("pull request");
     expect(p).toContain("### Audit status: 🟢 PASS");
     expect(p).toContain("never the emoji skeleton");
+  });
+
+  it("reviewPrompt shows the uncommitted work and the new files, not an empty main...HEAD", () => {
+    // An iteration's work is uncommitted when REVIEW runs, so `git diff
+    // main...HEAD` resolved to nothing and the reviewer had no diff. This pins
+    // the two halves that fix it against a real repository with both an edited
+    // tracked file and a new untracked one.
+    const repo = mkdtempSync(join(tmpdir(), "huginn-review-prompt-"));
+    try {
+      const run = (args: string[]) =>
+        spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+      run(["init", "-q"]);
+      run(["config", "user.email", "t@example.com"]);
+      run(["config", "user.name", "T"]);
+      writeFileSync(join(repo, "tracked.ts"), "export const value = 1;\n");
+      run(["add", "-A"]);
+      run(["commit", "-qm", "base"]);
+      // The iteration's work: one edited file, one brand-new file, both unstaged.
+      writeFileSync(join(repo, "tracked.ts"), "export const value = 2;\n");
+      writeFileSync(join(repo, "nuevo.ts"), "export const added = true;\n");
+
+      const p = reviewPrompt(ctx({ projectPath: repo, directory: repo }));
+      expect(p).not.toContain("main...HEAD");
+      expect(p).toContain("tracked.ts");
+      expect(p).toContain("export const value = 2");
+      // New files are not in any diff until staged: the prompt must list them.
+      expect(p).toContain("nuevo.ts");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("docSyncPrompt carries the doc-writer role and the doc targets", () => {

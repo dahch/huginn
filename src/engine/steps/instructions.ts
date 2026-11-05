@@ -29,7 +29,7 @@ export const COMMAND_TEST_MODULE = "Run full QA cycle for the module at path: $A
 
 export const COMMAND_SECURE_CHECK = "Perform a fast security scan focused on what's about to be pushed.\n\nFiles changed:\n!`git diff --name-only HEAD`\n\nFull diff of pending changes:\n!`git diff HEAD`\n\nStaged changes:\n!`git diff --cached`\n\nFocus exclusively on: hardcoded secrets, API keys, tokens, private URLs, credentials, or any value that should be in `.env`. This is a pre-push gate — be fast and decisive. Flag only real findings, no theoretical risks.";
 
-export const COMMAND_REVIEW = "Review all current changes before submitting a pull request.\n\nChanges to review:\n!`git diff main...HEAD --stat`\n\nFull diff:\n!`git diff main...HEAD`\n\nFocus on architecture violations, SOLID issues, and anything that should be caught before merge. Be concise — this is a pre-PR sanity check, not a full audit.";
+export const COMMAND_REVIEW = "Review all current changes before submitting a pull request.\n\nChanges to review:\n!`git diff HEAD --stat`\n\nFull diff of the worktree:\n!`git diff HEAD`\n\nNew files (not part of the diff until they are staged; read them directly):\n!`git ls-files --others --exclude-standard`\n\nFocus on architecture violations, SOLID issues, and anything that should be caught before merge. Be concise — this is a pre-PR sanity check, not a full audit.";
 
 export const COMMAND_DOC_SYNC = "Synchronize all documentation with the current codebase state.\n\nRecent changes that may have made docs stale:\n!`git log --oneline -20`\n\nFiles modified in the last sprint:\n!`git diff --name-only HEAD~10`\n\nCheck README.md, SPEC.md, DESIGN.md, ADR.md, and AGENTS.md for accuracy. Update only what's stale — don't rewrite docs that are still valid.";
 

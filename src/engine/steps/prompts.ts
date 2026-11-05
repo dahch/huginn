@@ -19,6 +19,7 @@ import {
   embedUntrusted,
   fidelityContract,
   gitOutput,
+  MAX_EMBEDDED_OUTPUT,
   readFileBounded,
   resolveShellInterpolations,
   sanitizeDerivedName,
@@ -281,9 +282,34 @@ export function reviewPrompt(ctx: StepContext): string {
   return joinBlocks(
     ROLE_REVIEWING,
     resolveShellInterpolations(ctx, COMMAND_REVIEW),
+    // The interpolated diff above describes the worktree, because an iteration's
+    // work is uncommitted when REVIEW runs. This block adds the other half: what
+    // the iteration already committed on top of its base, so a repair round or a
+    // checkpoint commit is reviewed too instead of being invisible.
+    reviewBaseDiff(ctx),
     ["## Diff range", diffRange(ctx)].join("\n"),
     auditStatusContract(),
   );
+}
+
+/**
+ * The iteration's committed range, when there is one.
+ *
+ * `git diff HEAD` cannot see commits already made in the sandbox (a repair merge,
+ * a checkpoint), and `main...HEAD` sees nothing at all while the work is
+ * uncommitted — which is exactly when REVIEW runs, so the reviewer used to
+ * receive two empty diffs and improvise. This is the missing anchor.
+ */
+function reviewBaseDiff(ctx: StepContext): string {
+  if (!ctx.baseCommit) return "";
+  const stat = gitOutput(ctx, ["diff", "--stat", ctx.baseCommit], 2_000);
+  if (stat.length === 0) return "";
+  const body = gitOutput(ctx, ["diff", ctx.baseCommit], MAX_EMBEDDED_OUTPUT);
+  return [
+    `## Changes already committed since the iteration base (${ctx.baseCommit.slice(0, 12)})`,
+    stat,
+    body.length > 0 ? body : "(no committed changes; everything is in the worktree diff above)",
+  ].join("\n\n");
 }
 
 /** `DOC_SYNC` — the doc-writer role plus a sync of stale documentation. */
