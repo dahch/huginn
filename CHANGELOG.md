@@ -21,6 +21,12 @@
   invisible to recall, and a resumed `--continue` session's own prompts were too — the only way to
   send that prompt again was to go and read the file. User turns of the transcript and the CLI idea
   now seed the list (slash commands excluded, consecutive duplicates collapsed).
+- The question protocol survives how models actually write it. The markers are matched with
+  spaces, hyphens or a different case (`<<<END HUGINN QUESTION>>>`), and a reply that ends on the
+  closing marker without ever opening the block has its payload recovered from the paragraph before
+  it — the exact shape that left a usable three-option question on screen as raw JSON in
+  `muninn`'s session. An unopened block whose paragraph is not a payload is still reported and the
+  stray marker removed, so a stray token cannot swallow the agent's prose.
 
 ## 3.0.0-rc.2
 

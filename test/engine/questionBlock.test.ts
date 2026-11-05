@@ -55,6 +55,54 @@ describe("agent-agnostic question protocol (REQ-37 / ADR-36)", () => {
     expect(hasQuestionBlock(`${QUESTION_BLOCK_START} x`)).toBe(true);
   });
 
+  it("accepts markers rendered with spaces or a different case", () => {
+    // A model "remembers" the token but renders the separator as a space:
+    // `<<<END HUGINN QUESTION>>>`. Same intent, different bytes.
+    const payload = JSON.stringify([{ question: "Spaced markers?" }]);
+    const parsed = parseQuestionBlock(
+      `Before.\n\n<<<huginn question>>>\n${payload}\n<<<END HUGINN QUESTION>>>\nAfter.`,
+    );
+    expect(parsed.warning).toBeUndefined();
+    expect(parsed.questions.map((q) => q.question)).toEqual(["Spaced markers?"]);
+    expect(parsed.cleanedText).toBe("Before.\n\nAfter.");
+    expect(parsed.cleanedText).not.toContain("<<<");
+    expect(hasQuestionBlock("<<<END HUGINN QUESTION>>>")).toBe(true);
+  });
+
+  it("recovers a payload that arrives with the closing marker only", () => {
+    // The exact shape a real thinker emitted: the JSON paragraph, then the
+    // closing marker, and no opening marker at all. The questions were usable;
+    // showing them as raw JSON was not.
+    const payload = JSON.stringify([
+      {
+        question: "What should `muninn setup` do without --agent?",
+        options: [{ label: "Portable only" }, { label: "Every agent" }],
+      },
+    ]);
+    const text = `The scope is anchored.\n\n${payload}\n<<<END HUGINN QUESTION>>>\n`;
+
+    const parsed = parseQuestionBlock(text);
+    expect(parsed.warning).toBeUndefined();
+    expect(parsed.questions).toHaveLength(1);
+    expect(parsed.questions[0]!.options?.map((o) => o.label)).toEqual([
+      "Portable only",
+      "Every agent",
+    ]);
+    // The prose survives, the payload and the stray marker do not.
+    expect(parsed.cleanedText).toBe("The scope is anchored.");
+    expect(hasQuestionBlock(text)).toBe(true);
+  });
+
+  it("reports an unopened block whose paragraph is not a payload", () => {
+    const parsed = parseQuestionBlock("Some prose.\n\nnot json at all\n<<<END HUGINN QUESTION>>>");
+    expect(parsed.questions).toEqual([]);
+    expect(parsed.warning).toMatch(/never opened/i);
+    // Nothing is swallowed: the prose stays, only the marker is removed.
+    expect(parsed.cleanedText).toContain("Some prose.");
+    expect(parsed.cleanedText).toContain("not json at all");
+    expect(parsed.cleanedText).not.toContain("<<<");
+  });
+
   it("extracts a block whose markers share a line with the payload", () => {
     // The layout a real thinker emitted: the JSON glued to the opening marker
     // and the closing marker glued to the JSON. The line-anchored match used to
