@@ -55,6 +55,38 @@ describe("agent-agnostic question protocol (REQ-37 / ADR-36)", () => {
     expect(hasQuestionBlock(`${QUESTION_BLOCK_START} x`)).toBe(true);
   });
 
+  it("extracts a block whose markers share a line with the payload", () => {
+    // The layout a real thinker emitted: the JSON glued to the opening marker
+    // and the closing marker glued to the JSON. The line-anchored match used to
+    // return zero questions with no warning here, while `hasQuestionBlock`
+    // reported true — the silent failure AC-37.4 exists to prevent.
+    const payload = JSON.stringify([
+      { question: "What should `setup` do without --agent?", options: [{ label: "Portable only" }] },
+    ]);
+    const inline = `Refining.\n\n${QUESTION_BLOCK_START}${payload}${QUESTION_BLOCK_END}`;
+
+    const parsed = parseQuestionBlock(inline);
+    expect(parsed.warning).toBeUndefined();
+    expect(parsed.questions).toHaveLength(1);
+    expect(parsed.questions[0]!.options?.map((option) => option.label)).toEqual([
+      "Portable only",
+    ]);
+    expect(parsed.cleanedText).toBe("Refining.");
+    expect(parsed.cleanedText).not.toContain(QUESTION_BLOCK_START);
+    expect(parsed.cleanedText).not.toContain(QUESTION_BLOCK_END);
+    expect(hasQuestionBlock(inline)).toBe(true);
+  });
+
+  it("extracts a block that mixes a line-anchored opener with an inline closer", () => {
+    const payload = JSON.stringify([{ question: "Inline closer?" }]);
+    const parsed = parseQuestionBlock(
+      `Before.\n${QUESTION_BLOCK_START}\n${payload}${QUESTION_BLOCK_END}\nAfter.`,
+    );
+    expect(parsed.warning).toBeUndefined();
+    expect(parsed.questions.map((question) => question.question)).toEqual(["Inline closer?"]);
+    expect(parsed.cleanedText).toBe("Before.\n\nAfter.");
+  });
+
   it("reports a malformed block instead of dropping it silently (AC-37.4)", () => {
     const parsed = parseQuestionBlock(wrap("{ not json"));
     expect(parsed.questions).toEqual([]);
@@ -78,6 +110,18 @@ describe("agent-agnostic question protocol (REQ-37 / ADR-36)", () => {
     // The reply must not be silently truncated: everything survives.
     expect(parsed.cleanedText).toContain("Here is my answer.");
     expect(parsed.cleanedText).toContain("and more text");
+    expect(parsed.cleanedText).not.toContain(QUESTION_BLOCK_START);
+  });
+
+  it("reports an unclosed block whose payload is glued to the marker", () => {
+    const parsed = parseQuestionBlock(
+      `Here is my answer.\n${QUESTION_BLOCK_START}[{"question":"Which?"}]\nand more text`,
+    );
+    expect(parsed.questions).toEqual([]);
+    expect(parsed.warning).toMatch(/never closed/i);
+    expect(parsed.cleanedText).toContain("Here is my answer.");
+    expect(parsed.cleanedText).toContain("and more text");
+    // The dangling marker is removed even though no closing marker follows it.
     expect(parsed.cleanedText).not.toContain(QUESTION_BLOCK_START);
   });
 

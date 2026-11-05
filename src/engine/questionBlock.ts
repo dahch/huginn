@@ -80,23 +80,28 @@ export function normalizeQuestion(raw: unknown): QuestionItem | undefined {
  * reach the screen.
  */
 export function parseQuestionBlock(text: string): ParsedQuestionBlock {
-  const marker = new RegExp(`^\\s*${QUESTION_BLOCK_START}\\s*$`, "m");
-  if (!marker.test(text)) return { questions: [], cleanedText: text };
+  // The markers are located by position, never anchored to their own line.
+  // Models routinely glue the payload to the opening marker (or the closing one
+  // to the payload), and a line-anchored match turned a perfectly usable
+  // question into a silent no-op: `hasQuestionBlock` said true while this
+  // function returned zero questions and no warning, leaving the raw JSON on
+  // screen (AC-37.4). Tolerating the layout still requires both markers.
+  const startIndex = text.indexOf(QUESTION_BLOCK_START);
+  if (startIndex === -1) return { questions: [], cleanedText: text };
+  const payloadStart = startIndex + QUESTION_BLOCK_START.length;
 
   // A block must be delimited by both markers; an unclosed one would otherwise
   // silently truncate the reply (REV-008).
-  const endMarker = new RegExp(`^\\s*${QUESTION_BLOCK_END}\\s*$`, "m");
-  const endMatch = endMarker.exec(text);
-  if (!endMatch) {
+  const endIndex = text.indexOf(QUESTION_BLOCK_END, payloadStart);
+  if (endIndex === -1) {
     return {
       questions: [],
-      cleanedText: text.replace(marker, "").trim(),
+      cleanedText: (text.slice(0, startIndex) + text.slice(payloadStart)).trim(),
       warning: "the agent opened a question block and never closed it",
     };
   }
 
-  const startMatch = marker.exec(text)!;
-  const payload = text.slice(startMatch.index + startMatch[0].length, endMatch.index).trim();
+  const payload = text.slice(payloadStart, endIndex).trim();
   // Strip *every* block, so a second one cannot leak raw markers/JSON (REV-009).
   const cleanedText = text
     .replace(
