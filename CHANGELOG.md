@@ -16,6 +16,11 @@
   detection now sorts by id and takes the first *available* entry, a rule the user can see and
   override; a machine with nothing detected still gets the full alphabetical list marked
   `— not installed` rather than an empty modal.
+- The composer's `↑` history starts with what the session already asked. `submit()` was its
+  only writer, so a prompt handed to `huginn live --prompt-file …` (or as a positional idea) was
+  invisible to recall, and a resumed `--continue` session's own prompts were too — the only way to
+  send that prompt again was to go and read the file. User turns of the transcript and the CLI idea
+  now seed the list (slash commands excluded, consecutive duplicates collapsed).
 
 ## 3.0.0-rc.2
 

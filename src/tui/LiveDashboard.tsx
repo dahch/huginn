@@ -325,6 +325,39 @@ function transcriptToChatMessages(turns: ReadonlyArray<TranscriptTurn>): ChatMes
 }
 
 /**
+ * The composer history a view starts with: what the session already asked.
+ *
+ * `submit()` is the only other writer, so a prompt the user never typed into the
+ * composer was invisible to ↑: an idea handed to `huginn live --prompt-file …`
+ * (or a positional one) goes straight to `live.chat()`, and the turns of a
+ * resumed `--continue` session arrive as a transcript. Both are prompts the user
+ * really sent, so both belong in the recall list; recall otherwise only works for
+ * retyped prompts. Slash commands are excluded, exactly like `submit()` does.
+ */
+export function seedInputHistory(
+  transcript: ReadonlyArray<TranscriptTurn>,
+  ideaText?: string,
+  limit = INPUT_HISTORY_LIMIT,
+): string[] {
+  const entries = transcript
+    .filter((turn) => turn.role === "user")
+    .map((turn) => sanitizeTerminalText(turn.text).trim())
+    .filter((text) => text.length > 0 && !text.startsWith("/"));
+
+  // The seeded idea is the newest submission. It is skipped when the transcript
+  // already carries it (a resumed session), so ↑ cannot show the same prompt
+  // twice in a row.
+  const idea = (ideaText ?? "").trim();
+  if (idea.length > 0 && !entries.includes(idea)) entries.push(idea);
+
+  const deduped: string[] = [];
+  for (const entry of entries) {
+    if (deduped[deduped.length - 1] !== entry) deduped.push(entry);
+  }
+  return deduped.slice(-Math.max(1, limit));
+}
+
+/**
  * Phase 4D (REQ-2.3) — true when `event` only re-announces the newest turn the
  * engine had already recorded when this view hydrated, so appending it would show
  * that turn twice.
@@ -584,8 +617,17 @@ function RefineView({
    */
   const [search, setSearch] = useState<{ query: string; index: number } | null>(null);
   const draftBeforeSearch = useRef<{ text: string; cursor: number }>({ text: "", cursor: 0 });
-  /** Submitted prompts of this session, oldest first (REQ-34 / AC-34.1). */
-  const [inputHistory, setInputHistory] = useState<string[]>([]);
+  /**
+   * Submitted prompts of this session, oldest first (REQ-34 / AC-34.1).
+   *
+   * Seeded with what the session already asked (a resumed transcript and the CLI
+   * idea) because `submit()` is the only other writer. Without the seed, ↑ could
+   * not recall a `--prompt-file` idea at all, which made "switch the runtime, then
+   * relaunch the same prompt" a copy-paste job.
+   */
+  const [inputHistory, setInputHistory] = useState<string[]>(() =>
+    seedInputHistory(live.getTranscript(), live.ideaText),
+  );
   /** Position while recalling: `null` means "not recalling". */
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
 
