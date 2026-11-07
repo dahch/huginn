@@ -48,6 +48,15 @@ function capabilityLine(caps: RuntimePort["capabilities"]): string {
   else if (caps.permissions === "gate") on.push("permissions: gate");
   if (caps.interrupt) on.push("interrupt");
   if (caps.modelCatalog !== "none") on.push(`catalog:${caps.modelCatalog}`);
+  // Always printed, including the unflattering answer: "sandboxed" means the
+  // edits land in a worktree, not that the agent cannot touch the machine.
+  on.push(
+    caps.filesystemIsolation === "home-read-only"
+      ? "fs: home read-only"
+      : caps.filesystemIsolation === "worktree"
+        ? "fs: worktree only"
+        : "fs: uncontained",
+  );
   return on.length > 0 ? on.join(" · ") : "prompt only";
 }
 

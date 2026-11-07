@@ -44,7 +44,23 @@ export interface RuntimeCapabilities {
   readonly mcpListing: boolean;
   /** A running turn can be interrupted. */
   readonly interrupt: boolean;
+  /**
+   * How much of the filesystem the driver keeps the agent out of.
+   *
+   * `none` — nothing is contained. `worktree` — the agent is *pointed* at the
+   * iteration's worktree, and nothing stops it from writing anywhere else: this
+   * is what every driver here can honestly claim today. `home-read-only` — the
+   * process additionally runs with the home directory read-only, so the worktree
+   * and a cache directory are the only writable places.
+   *
+   * A run whose driver cannot do better is not unsafe by accident of design, but
+   * the user deserves to know that "sandboxed" means "edits land in a worktree",
+   * not "the agent cannot touch my files".
+   */
+  readonly filesystemIsolation: FilesystemIsolation;
 }
+
+export type FilesystemIsolation = "none" | "worktree" | "home-read-only";
 
 /** Why a driver cannot run here, in words a human can act on. */
 export interface Availability {

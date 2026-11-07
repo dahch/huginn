@@ -109,6 +109,9 @@ const CAPABILITIES: RuntimeCapabilities = {
   // Config discovery is always available; `pi mcp list --json` adds real liveness.
   mcpListing: true,
   interrupt: true,
+  // The worktree is where the agent is pointed; nothing stops it
+  // writing elsewhere.
+  filesystemIsolation: "worktree",
 };
 
 /** Split huginn's canonical `provider/model` reference. */

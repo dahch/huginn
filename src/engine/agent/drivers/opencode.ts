@@ -51,6 +51,9 @@ const CAPABILITIES: RuntimeCapabilities = {
   usageCost: true,
   mcpListing: true,
   interrupt: true,
+  // The worktree is where the agent is pointed; nothing stops it
+  // writing elsewhere.
+  filesystemIsolation: "worktree",
 };
 
 interface SessionRegistration {

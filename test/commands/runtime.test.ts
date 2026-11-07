@@ -6,6 +6,7 @@ const CAPS: RuntimeCapabilities = {
   inProcess: true, structuredEvents: false, streaming: false, permissions: "none",
   sessionHistory: true, sessionResume: false, modelCatalog: "dynamic",
   structuredOutput: false, usageCost: false, mcpListing: false, interrupt: true,
+  filesystemIsolation: "worktree",
 };
 
 function port(caps: Partial<RuntimeCapabilities> = {}, available = true): RuntimePort {
@@ -51,6 +52,25 @@ describe("huginn runtime list", () => {
     expect(out).toContain("history");
     expect(out).toContain("interrupt");
     expect(out).not.toContain("streaming");
+    // The filesystem claim is printed even when it is the unflattering one.
+    expect(out).toContain("fs: worktree only");
+  });
+
+  it("names a contained runtime as contained, and an uncontained one as such", async () => {
+    const contained = silent();
+    await handleRuntimeCommand("list", {}, {
+      getPort: () => port({ filesystemIsolation: "home-read-only" }),
+    });
+    expect(contained.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "fs: home read-only",
+    );
+    contained.mockRestore();
+
+    const none = silent();
+    await handleRuntimeCommand("list", {}, {
+      getPort: () => port({ filesystemIsolation: "none" }),
+    });
+    expect(none.mock.calls.map((c) => String(c[0])).join("\n")).toContain("fs: uncontained");
   });
 
   it("probes availability only with --check, and reports the reason", async () => {

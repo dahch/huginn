@@ -525,6 +525,23 @@ export class CycleEngine {
       });
     }
 
+    // The sandbox isolates *where the work lands*, not what the agent may touch.
+    // Say it once, in the surface that already carries run notices, so "sandbox"
+    // is never read as a filesystem guarantee it does not make.
+    if (this.cfg.sandbox) {
+      const isolation = this.runtime.capabilities.filesystemIsolation;
+      if (isolation !== "home-read-only") {
+        events.emit("log", {
+          level: "warn",
+          message:
+            `[huginn] sandbox: edits land in the iteration worktree, but the agent can still write ` +
+            `outside it (${this.runtime.name}: filesystem isolation = ${isolation}). ` +
+            `huginn warns when a known agent config changes; it cannot prevent it.`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
     // Best-effort: reclaim worktrees (and orphaned branches) left behind by a
     // previous interrupted run before creating this run's sandboxes — except the
     // one this run is about to resume, whose worktree holds the only copy of the

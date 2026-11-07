@@ -340,6 +340,9 @@ const GENERIC_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
   usageCost: false,
   mcpListing: false,
   interrupt: true,
+  // The worktree is where the agent is pointed; nothing stops it
+  // writing elsewhere.
+  filesystemIsolation: "worktree",
 };
 
 /**

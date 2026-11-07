@@ -42,6 +42,9 @@ export function legacyCapabilities(runtime: IAgentRuntime): RuntimeCapabilities 
     usageCost: false,
     mcpListing: typeof runtime.listMcpServers === "function",
     interrupt: true,
+  // The worktree is where the agent is pointed; nothing stops it
+  // writing elsewhere.
+  filesystemIsolation: "worktree",
   };
 }
 

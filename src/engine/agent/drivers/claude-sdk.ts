@@ -47,6 +47,9 @@ const CAPABILITIES: RuntimeCapabilities = {
   mcpListing: false,
   // An AbortController cancels a running query.
   interrupt: true,
+  // The worktree is where the agent is pointed; nothing stops it
+  // writing elsewhere.
+  filesystemIsolation: "worktree",
 };
 
 /** The Claude driver. */

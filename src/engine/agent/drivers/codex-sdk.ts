@@ -45,6 +45,9 @@ const CAPABILITIES: RuntimeCapabilities = {
   mcpListing: false,
   // The SDK exposes no abort for a running turn.
   interrupt: false,
+  // The worktree is where the agent is pointed; nothing stops it
+  // writing elsewhere.
+  filesystemIsolation: "worktree",
 };
 
 /**
