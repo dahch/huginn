@@ -605,6 +605,51 @@ describe("ModelPickerModal Component", () => {
     expect(result.saveScope).toBe("project");
   });
 
+  it("skips the save-scope step for a host that already owns the destination (init)", async () => {
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+
+    const stdin = createMockStdin();
+    const runtime = createMockRuntime();
+    const onSelect = vi.fn();
+
+    const instance = render(
+      React.createElement(ModelPickerModal, {
+        runtime,
+        onSelect,
+        onCancel: vi.fn(),
+        saveScopeStep: "skip",
+        defaultSaveScope: "project",
+      }),
+      { stdout, stdin, patchConsole: false }
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Two steps, not three: the wizard never asks where to save.
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 60));
+    stdin.write("\u001B[B");
+    await new Promise((r) => setTimeout(r, 30));
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 60));
+    instance.unmount();
+
+    // The last painted frame is the executor step; the thinker frame has
+    // already been erased by the time this reads.
+    expect(output).toContain("Step 2/2");
+    expect(output).not.toContain("Step 3/3");
+    expect(output).not.toContain("Save Model Preferences");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    const result: ModelPickerResult = onSelect.mock.calls[0][0];
+    expect(result.thinker).toBe("anthropic/claude-3-7-sonnet");
+    expect(result.executor).toBe("opencode/gpt-5.1-codex");
+    expect(result.saveScope).toBe("project");
+  });
+
   it("selects global or session scope correctly with direct numeric keys", async () => {
     const stdout = new PassThrough();
     const stdin = createMockStdin();

@@ -631,6 +631,42 @@ describe("huginn init wizard — interactive", () => {
     expect(cap.setupCalls[0]["--agent"]).toBe("codex");
   });
 
+  it("chooses both models through the console picker and persists them", async () => {
+    const env = makeEnv();
+    const models: ModelInfo[] = [
+      { id: "acme/alpha", name: "Alpha", provider: "acme" },
+      { id: "acme/beta", name: "Beta", provider: "acme" },
+    ];
+    const seen: Array<{ thinker?: string; executor?: string; scopeStep?: string; models: string[] }> = [];
+    await runInit(env, {}, {
+      isTTY: true,
+      pickAgent: async () => "codex",
+      getRuntime: () => catalogRuntime(models),
+      pickModels: async (options) => {
+        const catalog = await options.runtime.listModels?.();
+        seen.push({
+          thinker: options.initialThinker,
+          executor: options.initialExecutor,
+          scopeStep: options.saveScopeStep,
+          models: (catalog?.models ?? []).map((model) => model.id),
+        });
+        return { thinker: "vendor/think", executor: "vendor/exec", saveScope: "project" };
+      },
+      promptText: async (_question, fallback) => fallback,
+    });
+
+    // The picker receives the catalog the wizard already discovered, not a
+    // second probe, and it is told not to ask for a persistence scope.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].scopeStep).toBe("skip");
+    expect(seen[0].models).toEqual(models.map((model) => model.id));
+    expect(readConfig(env)).toEqual({
+      agent: "codex",
+      thinker: "vendor/think",
+      executor: "vendor/exec",
+    });
+  });
+
   it("falls back to the numbered prompt when the picker cannot mount", async () => {
     const env = makeEnv();
     const promptChoice = vi.fn(async () => "claude");

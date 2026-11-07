@@ -34,6 +34,8 @@ import {
 } from "../config.js";
 import { promptLine, promptYesNo, type PromptIo } from "../util/prompt.js";
 import { sanitizeTerminalText } from "../util/text.js";
+import type { ModelPickerResult } from "../tui/ModelPickerModal.js";
+import type { PickModelsOptions } from "../tui/pickModels.js";
 import { handleSetupCommand } from "./setup.js";
 
 /** Package manager inferred from the project's lockfile (ADR-26). */
@@ -89,6 +91,12 @@ export interface InitDeps {
     currentAgentId: AgentTarget,
     detect: () => Promise<AgentDetection[]>,
   ) => Promise<AgentTarget | undefined>;
+  /**
+   * Interactive thinker→executor picker (TTY only). Defaults to mounting the
+   * console's `ModelPickerModal` with the scope step skipped; injectable so a
+   * test can drive the wizard without a terminal.
+   */
+  pickModels?: (options: PickModelsOptions) => Promise<ModelPickerResult | undefined>;
   /**
    * Agent runtime factory (Phase 5). Defaults to the real
    * {@link getAgentRuntime}; injectable so tests drive the model picker with a
@@ -473,18 +481,60 @@ export async function handleInitCommand(
         if (flag.length > 0 || catalogIds.has(current)) return current;
         return catalog.models[index]?.id ?? catalog.models[0]?.id ?? current;
       };
-      report.thinker = await promptModelChoice(
-        "   Thinker model",
-        catalog.models,
-        seedModel(report.thinker, flagThinker, 0),
-        promptChoice,
-      );
-      report.executor = await promptModelChoice(
-        "   Executor model",
-        catalog.models,
-        seedModel(report.executor, flagExecutor, 1),
-        promptChoice,
-      );
+      const pickNumberedModels = async (): Promise<void> => {
+        report.thinker = await promptModelChoice(
+          "   Thinker model",
+          catalog.models,
+          seedModel(report.thinker, flagThinker, 0),
+          promptChoice,
+        );
+        report.executor = await promptModelChoice(
+          "   Executor model",
+          catalog.models,
+          seedModel(report.executor, flagExecutor, 1),
+          promptChoice,
+        );
+      };
+
+      // The console's own thinker → executor selector, same precedence rules as
+      // the agent picker: an injected picker, then Ink when the wizard owns the
+      // process streams, then the numbered list. The catalog is handed over as
+      // an adapter so the modal never probes the runtime a second time.
+      const usesModelPicker =
+        deps.pickModels !== undefined || (deps.promptChoice === undefined && ownsTerminal);
+      if (!usesModelPicker) {
+        await pickNumberedModels();
+      } else {
+        const pickModels =
+          deps.pickModels ??
+          (async (options: PickModelsOptions) => {
+            const { pickModelsInteractively } = await import("../tui/pickModels.js");
+            return pickModelsInteractively(options);
+          });
+        let picked: ModelPickerResult | undefined;
+        let mountFailed = false;
+        try {
+          picked = await pickModels({
+            runtime: {
+              id: report.agent,
+              name: report.agent,
+              listModels: async () => catalog,
+            },
+            initialThinker: seedModel(report.thinker, flagThinker, 0),
+            initialExecutor: seedModel(report.executor, flagExecutor, 1),
+            saveScopeStep: "skip",
+            defaultSaveScope: "project",
+          });
+        } catch {
+          mountFailed = true;
+        }
+        if (picked) {
+          report.thinker = picked.thinker;
+          report.executor = picked.executor;
+        } else if (mountFailed) {
+          await pickNumberedModels();
+        }
+      }
     } else {
       // No catalog (or a reasoned empty one): fall back to the plain-text entry
       // so a runtime that cannot list models is never a dead end. The reason was

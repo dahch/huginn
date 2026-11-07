@@ -20,6 +20,15 @@ export interface ModelPickerModalProps {
   initialExecutor?: string;
   onSelect: (result: ModelPickerResult) => void;
   onCancel: () => void;
+  /**
+   * Whether the third "where do I save this" step is asked. The live console
+   * asks (default); `huginn init` skips it because the wizard already decided
+   * where the config goes before it opened the picker, and a scope step there
+   * would offer a choice the wizard cannot honour.
+   */
+  saveScopeStep?: "ask" | "skip";
+  /** Scope reported when {@link saveScopeStep} is `skip`. Defaults to `project`. */
+  defaultSaveScope?: ModelPickerResult["saveScope"];
 }
 
 type PickerStep = "thinker" | "executor" | "saveScope";
@@ -71,7 +80,10 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
   initialExecutor,
   onSelect,
   onCancel,
+  saveScopeStep = "ask",
+  defaultSaveScope = "project",
 }: ModelPickerModalProps) {
+  const totalSteps = saveScopeStep === "skip" ? 2 : 3;
   const [step, setStep] = useState<PickerStep>("thinker");
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -169,6 +181,8 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     runtime,
     onSelect,
     onCancel,
+    saveScopeStep,
+    defaultSaveScope,
   });
   stateRef.current = {
     step,
@@ -182,6 +196,8 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     runtime,
     onSelect,
     onCancel,
+    saveScopeStep,
+    defaultSaveScope,
   };
 
   useInput((input, key) => {
@@ -295,9 +311,22 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
         setSelectedIndex(0);
       } else {
         setSelectedExecutor(modelId);
-        setStep("saveScope");
         setFilter("");
         setSelectedIndex(0);
+        if (cur.saveScopeStep === "skip") {
+          // No scope step: the host already owns the destination.
+          try {
+            cur.onSelect({
+              thinker: cur.selectedThinker,
+              executor: modelId,
+              saveScope: cur.defaultSaveScope,
+            });
+          } catch (err) {
+            setErrorMsg((err as Error).message || "Failed to confirm model selection");
+          }
+        } else {
+          setStep("saveScope");
+        }
       }
       return;
     }
@@ -339,9 +368,9 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     <Modal
       title={
         step === "thinker"
-          ? "MODEL SELECTOR · Step 1/3: Choose Thinker (Architect & Fixes)"
+          ? `MODEL SELECTOR · Step 1/${totalSteps}: Choose Thinker (Architect & Fixes)`
           : step === "executor"
-            ? "MODEL SELECTOR · Step 2/3: Choose Executor (Coder & Gates)"
+            ? `MODEL SELECTOR · Step 2/${totalSteps}: Choose Executor (Coder & Gates)`
             : "MODEL SELECTOR · Step 3/3: Save Model Preferences"
       }
       subtitle={`Runtime: ${safeRuntimeName} · Current: T: ${

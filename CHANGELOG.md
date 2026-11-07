@@ -41,6 +41,11 @@
   wizard always writes `<project>/.huginn/config.json` — so `s`/`g` are not offered and the footer
   says `Enter project` instead of promising a write it would not perform. The numbered prompt stays as
   the fallback for CI, a non-TTY, a host that owns its own streams, and a picker that cannot mount.
+- **`huginn init` picks models through the console too.** With a catalog of thousands, the old path
+  printed every model as a numbered line and asked for two numbers. Init now mounts the
+  thinker → executor selector against the catalog it already discovered (handed over as an adapter, so
+  the runtime is never probed twice) and skips its save-scope step: the wizard decided where the config
+  goes before the picker opened. Titles read `Step 1/2` and `Step 2/2` there, never `Step 3/3`.
 
 ### Fixed
 
