@@ -2,16 +2,16 @@
 
 [![npm](https://img.shields.io/npm/v/%40dahch%2Fhuginn)](https://www.npmjs.com/package/@dahch/huginn) [![license](https://img.shields.io/github/license/dahch/huginn)](https://github.com/dahch/huginn/blob/main/LICENSE) [![ci](https://img.shields.io/github/actions/workflow/status/dahch/huginn/publish.yml)](https://github.com/dahch/huginn/actions) [![stars](https://img.shields.io/github/stars/dahch/huginn)](https://github.com/dahch/huginn/stargazers) [![issues](https://img.shields.io/github/issues/dahch/huginn)](https://github.com/dahch/huginn/issues) [![bun](https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun)](https://bun.sh) [![TypeScript](https://img.shields.io/badge/stack-TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-> ### 2.0.0-rc.5 — the SDK rewrite, out for testing
+> ### 3.0.1-rc.2 — the SDK rewrite, out for testing
 >
-> Huginn now executes **five runtimes** instead of driving thirteen agent CLIs: `pi` and `codex` run
+> Huginn executes **five runtimes** instead of driving thirteen agent CLIs: `pi` and `codex` run
 > their SDK in-process or over their app-server, `claude` uses its agent SDK (optional, external, and
 > the only non-OSS one), `opencode` keeps its daemon, and every other CLI goes through one configured
 > `generic` driver. The memory engine lives in [dahch/muninn](https://github.com/dahch/muninn).
 >
 > A runtime only advertises what it can deliver — `huginn runtime list` prints the contract. This is a
-> **release candidate**: 2.0.0 final follows the first field reports, and the runtime list is the
-> contract, not the implementation.
+> **release candidate**: the stable release follows the first field reports, and the runtime list is
+> the contract, not the implementation.
 
 CLI/TUI orchestrator for the agent-driven build cycle:
 
@@ -235,6 +235,7 @@ subcommand's help branch dead code.
 | `init` | `huginn init [--yes] [--skip-setup] [flags]` | Guided onboarding: detect git/package manager/agent CLIs, pick agent + models (from the runtime's own catalog when it lists one), register Muninn MCP, write `.huginn/config.json` |
 | `setup` | `huginn setup [--agent <t1,t2\|all>] [--installed] [--status] [--dry-run] [flags]` | Register the Muninn MCP server + agent directives across supported agents (or inspect the provisioning matrix) |
 | `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
+| `stats` | `huginn stats [--project <path>] [--json]` | Summarize what the recorded runs prove — iterations, per-phase verdicts and medians, fix rounds, promotion, token usage — by reading `.harness/state.json` and `.huginn/receipts/`; writes nothing and never calls a model |
 | `config` | `huginn config show\|set [flags]` | Inspect the effective models, profile and runtime, or persist `thinker`/`executor`/`profile`/`agent` to project or user config |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
 | `runtime` | `huginn runtime list [--check]` | Show the five runtimes that can execute the cycle (`pi`, `codex`, `claude`, `opencode`, `generic`), with the capabilities each one declares (`--check` probes availability) |

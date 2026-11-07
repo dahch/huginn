@@ -42,6 +42,7 @@ import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
 import { handleCheckCommand } from "./commands/check";
 import { handleRuntimeCommand } from "./commands/runtime";
+import { handleStatsCommand } from "./commands/stats";
 import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
 import { handleInitCommand, printInitUsage } from "./commands/init.js";
 import { handleInstallCommand } from "./commands/install";
@@ -76,6 +77,7 @@ Core commands:
   init     guided onboarding: agent, models, Muninn MCP and .huginn/config.json
   setup    register the Muninn MCP + rules with Cursor, Claude, OpenCode, Devin, …
   doctor   diagnose the local environment, providers and Muninn database
+  stats    summarize the recorded runs, read-only
 
 Examples:
   huginn "add a checkout flow with Stripe"    live-first build from an idea
@@ -125,6 +127,7 @@ Usage:
   huginn check [files...] [--project <path>]
   huginn setup [--agent <t1,t2|all>] [--installed] [--status] [--dry-run] [--project <path>] [--force]
   huginn doctor [--project <path>] [--home <path>] [--opencode-config-dir <path>]
+  huginn stats [--project <path>] [--json]  summarize the recorded runs (read-only)
   huginn mcp run [--db <path>] [--project <path>]
   huginn config show [--project <path>] [--home <path>]
   huginn config set [--thinker <m>] [--executor <m>] [--global] [--project <path>] [--home <path>]
@@ -149,6 +152,9 @@ Commands:
           approve, then run the build cycles in the same dashboard
   setup   register Muninn MCP + rules with the 13 provisioning targets
   doctor  diagnose the local environment, providers and Muninn database
+  stats   summarize what the recorded runs prove: iterations, per-phase verdicts
+          and medians, fix rounds, promotion and usage (reads state.json and the
+          iteration receipts; writes nothing and never calls a model)
   check   verify TypeScript execution contracts and pre-emit diagnostics
   runtime show which runtimes can execute the cycle, and what each one promises
   version print the version and exit (--version, -v)
@@ -298,6 +304,7 @@ const KNOWN_COMMANDS = new Set([
   "doctor",
   "config",
   "promote",
+  "stats",
 ]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -743,6 +750,10 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (command === "promote") {
     process.exitCode = await runPromote(args);
+    return;
+  }
+  if (command === "stats") {
+    handleStatsCommand(args as Record<string, string | boolean | undefined>);
     return;
   }
   // Live-first default (REQ-14.4): an unknown/absent subcommand — including a

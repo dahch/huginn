@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`huginn stats` says what the recorded runs prove.** Every project already carries the evidence
+  of its cycles — `.harness/state.json` and one receipt per iteration — and reading it meant grepping
+  the harness directory. The command now summarizes iterations, per-phase verdicts and medians, fix
+  rounds, promotion and token usage, and prints the collected object with `--json` for a script. It
+  is a reader: no engine, no model, no writes, and a project that never ran here says so instead of
+  showing an empty table. The output names where each count comes from, because `state.json` holds
+  the *current* run while the receipts accumulate across runs — the difference between a baseline and
+  a number that looks bigger than the project.
+- **The README banner names the version this checkout is.** It announced `2.0.0-rc.5` while
+  `package.json` (and npm) were three release candidates ahead, so a reader installed an older
+  candidate on purpose. `test/commands/docsVersion.test.ts` now fails the build when the banner and
+  the released changelog section drift from `package.json`.
+
 ## 3.0.1-rc.2
 
 > Fourteen commits since `3.0.0-rc.2`, 54 files: `src` +1383/−183, `test` +919/−71 and docs

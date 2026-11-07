@@ -1617,7 +1617,7 @@ describe("huginn init routing & help hierarchy (AC-26.2)", () => {
       if (line.trim().length === 0 || !line.startsWith("  ")) break;
       coreCommands.push(line.trim().split(/\s+/)[0]);
     }
-    expect(coreCommands).toEqual(["live", "run", "promote", "init", "setup", "doctor"]);
+    expect(coreCommands).toEqual(["live", "run", "promote", "init", "setup", "doctor", "stats"]);
     for (const command of coreCommands) {
       expect(usage()).toContain(`\n  ${command} `);
     }
