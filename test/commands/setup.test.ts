@@ -450,6 +450,9 @@ describe("rules injection", () => {
     expect(first).toContain(MUNINN_RULES_START);
     expect(first).toContain(MUNINN_RULES_END);
     expect(first).toContain("muninn_context");
+    // The block asks for a write too: memory that is only ever read never grows.
+    expect(first).toContain("muninn_save");
+    expect(first).toContain("topicKey");
     expect(first).toContain("muninn_inspect_symbol");
     expect(first).toContain("muninn_verify_contract");
 

@@ -11,6 +11,10 @@
   vanished is named in the run log and in a *Writes outside the project* section of
   `.harness/PROGRESS.md`. Advisory by design — a warning that halted a run would be worse than the
   write it reports. Project-scoped configs are excluded: they are supposed to change.
+- **The injected Muninn rules ask for a write, not only for reads.** The block told an agent to
+  lookup decisions, inspect symbols and verify the contract — all reads — so a session that settled a
+  convention left nothing behind. `muninn_save` (with the `topicKey` advice) is now part of it, which
+  is what makes the memory survive a different agent opening the project tomorrow.
 - **Every runtime declares how much of the filesystem it contains.** `RuntimeCapabilities` gains
   `filesystemIsolation` (`none` / `worktree` / `home-read-only`). All five drivers declare `worktree`,
   which is the honest answer: the agent is pointed at the iteration worktree and nothing stops it

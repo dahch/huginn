@@ -708,17 +708,14 @@ In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the re
 If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
 <!-- CODEGRAPH_END -->
 
-<!-- huginn:muninn-rules:start -->
-## Muninn memory directives
+<!-- muninn:rules:start -->
+## Muninn project memory
 
-This project is indexed by Muninn. Before designing any change, call
-`muninn_context` and `muninn_inspect_symbol` to load the relevant symbols and
-dependency paths. Before emitting any final code, call `muninn_verify_contract`.
-
-Do not emit final code that has not been contract-verified.
-
-If you need a decision from the user to proceed, ask with a marked block:
-`<<<HUGINN_QUESTION>>>` + a JSON array of
-`{"question", "options":[{"label","description"}]}` + `<<<END_HUGINN_QUESTION>>>`
-on their own lines, and Huginn will present the choices.
-<!-- huginn:muninn-rules:end -->
+- Call `muninn_bootstrap` once at the start of a session to load the project brief.
+- Before designing a change, use `muninn_search` and `muninn_inspect_symbol` to check prior decisions and the relevant code.
+- When a session settles something the project should remember — a convention, a tradeoff, a
+  discovered constraint, or a bug that took real work — record it with `muninn_save` before you
+  finish. Use a `topicKey` for anything a later decision could replace, so the newer one supersedes
+  it instead of contradicting it.
+- Before completing code, use `muninn_verify_contract` to verify the execution contract.
+<!-- muninn:rules:end -->
