@@ -6,6 +6,7 @@ import { discoverModelCatalog } from "../engine/agent/modelCatalog.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { FEEDBACK_WARN } from "./feedback.js";
 import { Modal } from "./Modal.js";
+import { filterByQuery, visibleWindow } from "./pickerWindow.js";
 import { THEME } from "./theme.js";
 
 export interface ModelPickerResult {
@@ -139,17 +140,16 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
     };
   }, [runtime]);
 
-  const filteredModels = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return availableModels;
-    return availableModels.filter(
-      (m) =>
-        m.id.toLowerCase().includes(q) ||
-        m.name.toLowerCase().includes(q) ||
-        m.provider.toLowerCase().includes(q) ||
-        (m.description && m.description.toLowerCase().includes(q)),
-    );
-  }, [availableModels, filter]);
+  const filteredModels = useMemo(
+    () =>
+      filterByQuery(availableModels, filter, (model) => [
+        model.id,
+        model.name,
+        model.provider,
+        model.description,
+      ]),
+    [availableModels, filter],
+  );
 
   // Keep selected index within bounds
   useEffect(() => {
@@ -346,14 +346,9 @@ export const ModelPickerModal = React.memo(function ModelPickerModal({
   });
 
   // Calculate scroll slice for long model lists
-  const scrollOffset = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(VISIBLE_ITEMS / 2),
-      Math.max(0, filteredModels.length - VISIBLE_ITEMS),
-    ),
-  );
-  const visibleModels = filteredModels.slice(scrollOffset, scrollOffset + VISIBLE_ITEMS);
+  const modelWindow = visibleWindow(filteredModels.length, selectedIndex, VISIBLE_ITEMS, "center");
+  const scrollOffset = modelWindow.offset;
+  const visibleModels = filteredModels.slice(modelWindow.offset, modelWindow.end);
 
   const emptyCatalog = !loading && !discoveryError && availableModels.length === 0;
 

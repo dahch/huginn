@@ -23,6 +23,7 @@ canonical `SPEC.md` ones.
 | `src/tui/sessionContext.ts`, `src/tui/RavenHeader.tsx`, `src/tui/InfoPanel.tsx` | REQ-47, REQ-76, REQ-77 |
 | `src/tui/search.ts`, `src/tui/clipboard.ts` | REQ-72 |
 | `src/tui/markdown.tsx` | REQ-74 |
+| `src/tui/pickerWindow.ts`, `src/tui/PickerList.tsx` | REQ-27, REQ-33, REQ-54, REQ-75 |
 | `src/engine/permissionPolicy.ts`, `src/engine/runtimeEvents.ts`, `src/engine/agent/drivers/opencode.ts` | REQ-37, REQ-42, REQ-67 |
 | `src/engine/liveMode.ts`, `src/engine/liveRepo.ts` | REQ-44, REQ-54 |
 | `src/state/liveSession.ts` | REQ-44, REQ-53 |

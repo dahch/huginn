@@ -539,7 +539,7 @@ Session resume is a CLI-flag surface rather than a command: `--continue`/`-c`, `
 store and the resume precedence are documented for users too, in the `usage()` section *Sessions
 (live)* (`src/cli.ts`, REQ-53).
 
-Ten display conventions a TUI change must follow:
+Eleven display conventions a TUI change must follow:
 
 - **One logical line is one terminal row in the conversation card.** Message lines are pre-wrapped to
   the card's column budget with `wrapSegments` (`src/tui/markdown.tsx`) and rendered `wrap="truncate"`;
@@ -566,6 +566,16 @@ Ten display conventions a TUI change must follow:
   styled without moving a separator. A cell that does not fit is truncated on its visible text
   (the cut drops every segment past it) and still occupies exactly one row;
   `test/tui/markdownTable.test.ts` asserts the styles and the alignment.
+- **A windowed list is `PickerList`, never a local `slice`.** `src/tui/pickerWindow.ts` owns the
+  arithmetic — `visibleWindow` with `end` alignment (the highlight rides the bottom edge, as the
+  agent and profile pickers do) or `center` (the model catalog and the MCP tool list), plus
+  `clampIndex`, `normalizeLimit`, `filterByQuery` and the `hiddenAbove`/`hiddenBelow` counts — and
+  `src/tui/PickerList.tsx` draws the `▲/▼ N more` frame around it. The two alignments are not
+  interchangeable: a picker that recentred itself would move the list under the user's eyes, and both
+  clamp to `total - limit`, the off-by-one a short terminal exposes. Every list surface filters by
+  typing (`MODAL_KEY_CONTRACT.filter`), never by a numbered choice — `huginn init` read numbers for
+  both of its pickers until that became the slowest step of an onboarding.
+  `test/tui/pickerList.test.ts` pins the windows and the filter.
 - **Display glyphs come from `src/tui/glyphs.ts`** — single-width status/phase marks shared by
   the dashboard and `.harness/PROGRESS.md` (`·` pending, the braille spinner while running, `✓` pass,
   `!` warning, `✕` blocked, `–` skipped; phase kinds `?` SPEC_AUDIT, `>` EXECUTE, `=` VALIDATE_STEP,

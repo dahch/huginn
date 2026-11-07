@@ -43,6 +43,18 @@ export const MODAL_KEY_CONTRACT = {
   confirm: ["AgentPickerModal", "ProfilePickerModal", "ModelPickerModal"],
   move: "↑/↓",
   vimMove: "k/j",
+  /**
+   * The three selectors filter by typing into the list; none of them takes a
+   * numbered choice any more (huginn init read numbers for both for a while,
+   * and a catalog of thousands has no useful numbering).
+   */
+  filter: "type",
+  /**
+   * A list longer than its budget is windowed by visibleWindow
+   * (src/tui/pickerList.ts): "end" alignment for the pickers, "center" for a
+   * catalog. The frame stays out of that arithmetic on purpose.
+   */
+  listWindow: "visibleWindow",
 } as const;
 
 export interface ModalProps {

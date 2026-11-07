@@ -11,6 +11,7 @@ import { events } from "../engine/engineEvents";
 import { sanitizeTerminalText } from "../util/text.js";
 import { FEEDBACK_WARN, NEXT_STEP, warnFeedback } from "./feedback.js";
 import { Modal } from "./Modal.js";
+import { visibleWindow } from "./pickerWindow.js";
 import { MODAL_TITLE_GLYPHS } from "./glyphs.js";
 import { THEME } from "./theme.js";
 
@@ -124,15 +125,15 @@ export const McpInspectorModal = React.memo(function McpInspectorModal({
     }
   }, [currentTools.length, selectedToolIndex]);
 
-  // Window calculation for tool pagination (SEC-002)
-  const startIndex = Math.max(
-    0,
-    Math.min(
-      selectedToolIndex - Math.floor(MAX_VISIBLE_TOOLS / 2),
-      currentTools.length - MAX_VISIBLE_TOOLS,
-    ),
+  // Window calculation for tool pagination (SEC-002), shared with the pickers.
+  const toolWindow = visibleWindow(
+    currentTools.length,
+    selectedToolIndex,
+    MAX_VISIBLE_TOOLS,
+    "center",
   );
-  const endIndex = Math.min(currentTools.length, startIndex + MAX_VISIBLE_TOOLS);
+  const startIndex = toolWindow.offset;
+  const endIndex = toolWindow.end;
   const visibleTools = currentTools.slice(startIndex, endIndex);
   const moreAbove = startIndex;
   const moreBelow = currentTools.length - endIndex;

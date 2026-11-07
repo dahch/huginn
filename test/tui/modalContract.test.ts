@@ -650,6 +650,10 @@ describe("the key grammar is documented, not just implemented", () => {
     ]);
     expect(MODAL_KEY_CONTRACT.move).toBe("↑/↓");
     expect(MODAL_KEY_CONTRACT.vimMove).toBe("k/j");
+    // The selectors filter by typing and window long lists through one helper;
+    // a numbered choice is not part of the contract any more.
+    expect(MODAL_KEY_CONTRACT.filter).toBe("type");
+    expect(MODAL_KEY_CONTRACT.listWindow).toBe("visibleWindow");
   });
 
   it("covers every console modal the frame claims to unify", () => {

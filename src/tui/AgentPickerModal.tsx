@@ -4,6 +4,7 @@ import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../agents/integ
 import { detectAvailableAgents } from "../engine/agent/registry.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { Modal } from "./Modal.js";
+import { PickerList } from "./PickerList.js";
 import { MODAL_TITLE_GLYPHS, STATUS_GLYPHS } from "./glyphs.js";
 import { THEME } from "./theme.js";
 
@@ -195,13 +196,6 @@ export function AgentPickerModal({
     setSelectedIndex((i) => Math.min(Math.max(i, 0), Math.max(rows.length - 1, 0)));
   }, [rows.length]);
 
-  const limit = Math.max(1, Math.floor(maxRows));
-  const window = useMemo(() => {
-    const max = Math.max(0, rows.length - limit);
-    const offset = Math.min(Math.max(0, selectedIndex - limit + 1), max);
-    return { offset, visible: rows.slice(offset, offset + limit) };
-  }, [rows, selectedIndex, limit]);
-
   const stateRef = useRef({ rows, selectedIndex, onSelect, onCancel, allowedScopes, enterScope });
   stateRef.current = { rows, selectedIndex, onSelect, onCancel, allowedScopes, enterScope };
 
@@ -252,38 +246,37 @@ export function AgentPickerModal({
               No agent CLI detected on PATH — showing every known target.
             </Text>
           )}
-          {window.offset > 0 && <Text color={THEME.muted}>▲ {window.offset} more above</Text>}
-          {window.visible.map((row, index) => {
-            const absolute = window.offset + index;
-            const selected = absolute === selectedIndex;
-            const isActive = row.id === currentAgentId;
-            return (
-              <Box key={row.id} flexDirection="column">
-                <Text wrap="truncate">
-                  <Text color={selected ? THEME.accentStrong : THEME.accent} bold={selected}>
-                    {selected ? "▸ " : "  "}
-                    {sanitizeTerminalText(row.label)}
+          <PickerList
+            items={rows}
+            selectedIndex={selectedIndex}
+            maxRows={maxRows}
+            renderItem={(row, selected) => {
+              const isActive = row.id === currentAgentId;
+              return (
+                <Box key={row.id} flexDirection="column">
+                  <Text wrap="truncate">
+                    <Text color={selected ? THEME.accentStrong : THEME.accent} bold={selected}>
+                      {selected ? "▸ " : "  "}
+                      {sanitizeTerminalText(row.label)}
+                    </Text>
+                    <Text color={THEME.muted}> ({sanitizeTerminalText(row.id)})</Text>
+                    {isActive && <Text color={THEME.executor}> ● active</Text>}
+                    {row.available ? (
+                      <Text color={THEME.ok}> {STATUS_GLYPHS.pass}</Text>
+                    ) : (
+                      <Text color={THEME.warn}> — not installed</Text>
+                    )}
                   </Text>
-                  <Text color={THEME.muted}> ({sanitizeTerminalText(row.id)})</Text>
-                  {isActive && <Text color={THEME.executor}> ● active</Text>}
-                  {row.available ? (
-                    <Text color={THEME.ok}> {STATUS_GLYPHS.pass}</Text>
-                  ) : (
-                    <Text color={THEME.warn}> — not installed</Text>
+                  {selected && row.path && (
+                    <Text color={THEME.muted} wrap="truncate">
+                      {"      "}
+                      {sanitizeTerminalText(row.path)}
+                    </Text>
                   )}
-                </Text>
-                {selected && row.path && (
-                  <Text color={THEME.muted} wrap="truncate">
-                    {"      "}
-                    {sanitizeTerminalText(row.path)}
-                  </Text>
-                )}
-              </Box>
-            );
-          })}
-          {window.offset + window.visible.length < rows.length && (
-            <Text color={THEME.muted}>▼ {rows.length - window.offset - window.visible.length} more below</Text>
-          )}
+                </Box>
+              );
+            }}
+          />
         </Box>
       )}
 

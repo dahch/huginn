@@ -3,6 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { PROFILES, PROFILE_NAMES, type ProfileName } from "../engine/profiles.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { Modal } from "./Modal.js";
+import { PickerList } from "./PickerList.js";
 import { THEME } from "./theme.js";
 
 /** Rows the list window may occupy before it scrolls (REQ-54 / AC-54.1). */
@@ -88,36 +89,31 @@ export function ProfilePickerModal({
     else if (c === "g") cur.onSelect(chosen.id, "global");
   });
 
-  const limit = Math.max(1, Math.floor(maxRows));
-  const offset = Math.min(Math.max(0, selectedIndex - limit + 1), Math.max(0, rows.length - limit));
-  const visible = rows.slice(offset, offset + limit);
-
   return (
     <Modal
       title="SELECT METHODOLOGY PROFILE"
       hint="↑/↓ or k/j move · Enter session · p project · g global · Esc cancel"
     >
       <Box flexDirection="column">
-        {offset > 0 && <Text color={THEME.muted}>▲ {offset} more above</Text>}
-        {visible.map((row, index) => {
-          const absolute = offset + index;
-          const selected = absolute === selectedIndex;
-          const active = row.id === currentProfileId;
-          return (
-            <Text key={row.id} wrap="truncate">
-              <Text color={selected ? THEME.accentStrong : THEME.accent} bold={selected}>
-                {selected ? "▸ " : "  "}
-                {sanitizeTerminalText(row.name)}
+        <PickerList
+          items={rows}
+          selectedIndex={selectedIndex}
+          maxRows={maxRows}
+          renderItem={(row, selected) => {
+            const active = row.id === currentProfileId;
+            return (
+              <Text key={row.id} wrap="truncate">
+                <Text color={selected ? THEME.accentStrong : THEME.accent} bold={selected}>
+                  {selected ? "▸ " : "  "}
+                  {sanitizeTerminalText(row.name)}
+                </Text>
+                <Text color={THEME.muted}> ({sanitizeTerminalText(row.id)})</Text>
+                {active && <Text color={THEME.executor}> ● active</Text>}
+                <Text color={THEME.muted}> — {sanitizeTerminalText(row.description)}</Text>
               </Text>
-              <Text color={THEME.muted}> ({sanitizeTerminalText(row.id)})</Text>
-              {active && <Text color={THEME.executor}> ● active</Text>}
-              <Text color={THEME.muted}> — {sanitizeTerminalText(row.description)}</Text>
-            </Text>
-          );
-        })}
-        {offset + visible.length < rows.length && (
-          <Text color={THEME.muted}>▼ {rows.length - offset - visible.length} more below</Text>
-        )}
+            );
+          }}
+        />
       </Box>
 
       <Box marginTop={1}>

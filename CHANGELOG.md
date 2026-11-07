@@ -46,6 +46,15 @@
   thinker → executor selector against the catalog it already discovered (handed over as an adapter, so
   the runtime is never probed twice) and skips its save-scope step: the wizard decided where the config
   goes before the picker opened. Titles read `Step 1/2` and `Step 2/2` there, never `Step 3/3`.
+- **One windowed list for every picker.** Four modals re-derived "which rows are visible" with their
+  own clamp expression — two of them using different alignments under the same name — so the
+  off-by-one at the end of a long list was a per-surface bug. `src/tui/pickerWindow.ts` owns the
+  arithmetic now (`visibleWindow` with `end` or `center` alignment, `clampIndex`,
+  `normalizeLimit`, `filterByQuery`, the `▲/▼` counts) and `src/tui/PickerList.tsx` draws the
+  frame around it, shared by the runtime and profile pickers; the model catalog and the MCP tool list
+  keep their own row layout and take the math. The contract in `Modal.tsx` now says what the
+  selectors do — type to filter, no numbered choice — because that is what the numbered lists used
+  to be.
 
 ### Fixed
 
