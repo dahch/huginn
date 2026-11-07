@@ -201,6 +201,24 @@ export function renderProgressMarkdown(projectPath: string, state: HarnessState)
       )}\` — the next run restarts that step${kept}`,
     );
   }
+  // Writes that escaped the project, named rather than summarised: the sandbox
+  // does not prevent them, so the trail is the only honest artifact (homeGuard).
+  const worldChanges = state.worldChanges ?? [];
+  if (worldChanges.length > 0) {
+    lines.push("");
+    lines.push("## Writes outside the project");
+    lines.push("");
+    lines.push(
+      "- The sandbox isolates where the work lands, not what the agent may touch. These files changed while a phase ran:",
+    );
+    for (const change of worldChanges.slice(-20)) {
+      lines.push(
+        `- ${STATUS_GLYPHS.warning} iteration ${change.iteration} \`${sanitizeTerminalText(
+          change.phase,
+        )}\`: \`${sanitizeTerminalText(change.path)}\` — ${sanitizeTerminalText(change.detail)}`,
+      );
+    }
+  }
   lines.push("");
 
   for (let i = 1; i <= maxIter; i++) {

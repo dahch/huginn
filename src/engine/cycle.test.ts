@@ -259,6 +259,46 @@ describe("CycleEngine run loop", () => {
     expect(engine.getState().aborted).not.toBe(true);
   });
 
+  it("records a write outside the project during the phase that made it", async () => {
+    // The sandbox cannot prevent an agent from writing under $HOME; it can name
+    // the file and the phase. This is the tripwire that turns the incident into
+    // a line in PROGRESS.md.
+    const home = mkdtempSync(join(tmpdir(), "huginn-homeguard-home-"));
+    const previous = process.env.HUGINN_HOME;
+    process.env.HUGINN_HOME = home;
+    try {
+      let wrote = false;
+      const client = makeClient(async () => {
+        if (!wrote) {
+          wrote = true;
+          writeFileSync(join(home, ".claude.json"), '{"mcpServers":{"muninn":{}}}\n');
+        }
+        return {
+          info: { id: "msg", error: undefined },
+          parts: [{ type: "text", text: '{"status":"pass","summary":"ok","actionItems":[]}' }],
+        };
+      });
+
+      const engine = new CycleEngine({ cfg: makeCfg(), client, plan: makePlan() });
+      const outcome = await engine.run();
+      expect(outcome.reason).toBe("completed");
+
+      const changes = engine.getState().worldChanges ?? [];
+      const claude = changes.find((change) => change.path === join(home, ".claude.json"));
+      expect(claude).toBeDefined();
+      expect(claude?.detail).toContain("created");
+      expect(claude?.iteration).toBe(1);
+      // PROGRESS.md carries the trail, not just the event log.
+      const progress = readFileSync(join(dir, ".harness", "PROGRESS.md"), "utf8");
+      expect(progress).toContain("Writes outside the project");
+      expect(progress).toContain(".claude.json");
+    } finally {
+      if (previous === undefined) delete process.env.HUGINN_HOME;
+      else process.env.HUGINN_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("advances currentIteration after a normally completed iteration", async () => {
     // prompt feeds EXECUTE (gate none) and the judge passes (TEST_MODULE /
     // SECURE_CHECK / REVIEW); command feeds VALIDATE_STEP, which needs the

@@ -366,6 +366,35 @@ huginn config set [--thinker <m>] [--executor <m>] [--profile <id>] [--agent <id
 `set` requires at least one of `--thinker`/`--executor`/`--profile`; `--project`/`--home` override the paths
 (used by tests). `show` also prints the effective methodology profile and its display name.
 
+## What the sandbox does and does not isolate
+
+`sandbox` has always meant *where an iteration's edits land*, not *what the agent may touch*. Say it
+plainly: with `--sandbox` (the default) the agent works inside a git worktree and its commits are the
+only thing that gets integrated; **nothing stops it from writing anywhere else on the machine** —
+`$HOME`, `~/.ssh`, your other repositories. An agent that runs a project's own installer as a smoke
+test can rewrite the configuration of every agent you have, and one run of this repository did exactly
+that.
+
+Every runtime declares the truth, `huginn runtime list` prints it, and a sandboxed run says it once at
+start:
+
+| `filesystemIsolation` | Meaning |
+|---|---|
+| `none` | Nothing is contained. |
+| `worktree` | The agent is *pointed* at the iteration worktree; the rest of the filesystem is writable. Every driver here claims this today. |
+| `home-read-only` | The process also runs with `$HOME` read-only, leaving the worktree and a cache directory writable. Not implemented yet. |
+
+Because huginn cannot prevent it, it **watches** it: after every phase it compares the files outside
+the project that an agent toolchain owns — every provisioning target's user-scoped MCP config, the
+portable MCP configs, `~/.huginn/config.json` — and names anything that appeared, changed or vanished.
+The warnings go to the run log and to a *Writes outside the project* section in
+`.harness/PROGRESS.md`, so a run that touched your machine is visible afterwards instead of only in a
+scrollback nobody kept. It is advisory by design: a warning that halts a run would be worse than the
+write it reports.
+
+Project-scoped configs (`.mcp.json`, `.cursor/mcp.json`, …) are deliberately **not** watched: they are
+supposed to change, and they land in the iteration's own diff.
+
 ## Sandboxing (git worktrees)
 
 By default (`--sandbox`), each iteration runs in an isolated git worktree so your editor stays on

@@ -37,6 +37,21 @@ export const promotionSchema = z.object({
  * fields are what let a sandboxed run reattach the worktree that holds the
  * partially-done work. Optional so state written before the cursor still parses.
  */
+/**
+ * A change huginn noticed outside the project while a phase ran.
+ *
+ * Recorded, never prevented: the sandbox contains where the work lands, not what
+ * the agent may touch, so the honest capability is a trail. One entry per
+ * (iteration, phase, path), so a run that rewrote an agent config is visible in
+ * `PROGRESS.md` afterwards instead of only in a scrollback nobody kept.
+ */
+export const worldChangeSchema = z.object({
+  iteration: z.number(),
+  phase: z.string(),
+  path: z.string(),
+  detail: z.string(),
+});
+
 export const resumeCursorSchema = z.object({
   iteration: z.number(),
   phase: z.string(),
@@ -91,6 +106,7 @@ export const stateSchema = z.object({
   promotion: promotionSchema.optional(),
   resume: resumeCursorSchema.optional(),
   specAudit: specAuditSchema.optional(),
+  worldChanges: z.array(worldChangeSchema).optional(),
   usage: usageSchema.optional(),
   history: z.array(historyEntrySchema),
 });
@@ -98,6 +114,7 @@ export const stateSchema = z.object({
 export type HarnessState = z.infer<typeof stateSchema>;
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 export type PromotionRecord = z.infer<typeof promotionSchema>;
+export type WorldChange = z.infer<typeof worldChangeSchema>;
 export type ResumeCursor = z.infer<typeof resumeCursorSchema>;
 export type SpecAuditRecord = z.infer<typeof specAuditSchema>;
 export type UsageTotalsRecord = z.infer<typeof usageSchema>;

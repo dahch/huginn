@@ -53,6 +53,13 @@ import {
 import { resolveDatabasePath } from "@dahch/muninn";
 import type { RuntimePort, RuntimeSession } from "./agent/port.js";
 import { asRuntimePort } from "./agent/legacy-bridge.js";
+import {
+  diffWorld,
+  snapshotWorld,
+  watchedPaths,
+  type FileStamp,
+  type WatchedPath,
+} from "./homeGuard.js";
 import type { IAgentRuntime } from "./agent/types.js";
 import { createOpencodePort } from "./agent/drivers/opencode.js";
 import { createRuntimeSink, addUsage } from "./runtimeEvents";
@@ -312,6 +319,10 @@ export class CycleEngine {
   private abortRequested = false;
   private worktrees?: WorktreeManager;
   private sandboxEnabledCache?: boolean;
+  /** Files outside the project whose changes are worth naming (see homeGuard). */
+  private worldWatch: WatchedPath[] = [];
+  /** Their stamps as of the last check, so a phase's writes are attributed to it. */
+  private worldBaseline: Map<string, FileStamp> = new Map();
   /**
    * Set when an iteration's sandbox could not be integrated into the primary
    * branch (ADR-48). The run then finishes as a promotion failure — with the
@@ -524,6 +535,11 @@ export class CycleEngine {
         timestamp: new Date().toISOString(),
       });
     }
+
+    // Start watching what lives outside the project before any phase runs, so the
+    // first snapshot is the pre-run world.
+    this.worldWatch = watchedPaths({ projectPath: this.cfg.projectPath });
+    this.worldBaseline = snapshotWorld(this.worldWatch);
 
     // The sandbox isolates *where the work lands*, not what the agent may touch.
     // Say it once, in the surface that already carries run notices, so "sandbox"
@@ -1615,11 +1631,63 @@ export class CycleEngine {
     // `VERIFY` runs deterministic commands and never prompts an agent, so it
     // gets no session: opening one would be waste (and one more failure point).
     if (step.phase === "VERIFY") {
-      return this.runPhaseBody(step, ctx, ctx.sessionId, iteration);
+      try {
+        await this.runPhaseBody(step, ctx, ctx.sessionId, iteration);
+      } finally {
+        this.noteWorldChanges(iteration.index, step.phase);
+      }
+      return;
     }
-    await this.withPhaseSession(ctx, iteration, step.phase, this.models.executor, (scopedCtx, scopedId) =>
-      this.runPhaseBody(step, scopedCtx, scopedId, iteration),
-    );
+    try {
+      await this.withPhaseSession(ctx, iteration, step.phase, this.models.executor, (scopedCtx, scopedId) =>
+        this.runPhaseBody(step, scopedCtx, scopedId, iteration),
+      );
+    } finally {
+      // In a `finally`, so an aborted or thrown phase — the ones most likely to
+      // have left a mess somewhere — still get checked.
+      this.noteWorldChanges(iteration.index, step.phase);
+    }
+  }
+
+  /**
+   * Compare the watched world against the last snapshot and report what moved.
+   *
+   * Advisory by construction: huginn cannot stop an agent from writing under
+   * `$HOME` (no driver claims `home-read-only`), so the only honest thing it can
+   * do is name the file and the phase. Never throws: a stat failure must not turn
+   * a finished phase into a failed one.
+   */
+  private noteWorldChanges(iteration: number, phase: string): void {
+    try {
+      const now = snapshotWorld(this.worldWatch);
+      const changes = diffWorld(this.worldBaseline, now, this.worldWatch);
+      this.worldBaseline = now;
+      if (changes.length === 0) return;
+
+      const entries = changes.map((change) => ({
+        iteration,
+        phase,
+        path: change.path,
+        detail: change.detail,
+      }));
+      this.state.worldChanges = [...(this.state.worldChanges ?? []), ...entries].slice(-100);
+
+      for (const change of changes) {
+        events.emit("log", {
+          level: "warn",
+          message:
+            `[huginn] ${change.label} changed outside the project during ${phase}: ` +
+            `${change.path} (${change.detail})`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      events.emit("log", {
+        level: "warn",
+        message: `[huginn] could not check for writes outside the project: ${(err as Error).message}`,
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 
   private async runPhaseBody(

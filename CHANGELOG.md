@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Writes outside the project are watched and named.** The sandbox isolates where an iteration's
+  edits land, not what the agent may touch, and one run proved it by rewriting four agent configs under
+  `$HOME`. Huginn cannot prevent that, so it reports it: after every phase it stamps the user-scoped MCP
+  configs of every provisioning target and the portable configs, and anything that appeared, changed or
+  vanished is named in the run log and in a *Writes outside the project* section of
+  `.harness/PROGRESS.md`. Advisory by design — a warning that halted a run would be worse than the
+  write it reports. Project-scoped configs are excluded: they are supposed to change.
+
 ### Fixed
 
 - **REVIEW was handed two empty diffs.** The review task interpolated `git diff
