@@ -109,6 +109,11 @@ off-by-one exist once.
   recall, and a resumed `--continue` session's own prompts were too — the only way to send that prompt
   again was to go and read the file. User turns of the transcript and the CLI idea now seed the list
   (slash commands excluded, consecutive duplicates collapsed).
+- **The composer keeps the space after its prompt when the recall hint is visible.** Seeding the
+  history made the `↑ history` hint permanently present, which squeezed the empty row until Ink
+  truncated it — and the prompt's trailing space went with the truncation, painting `❯Message...`.
+  The prompt is now its own non-shrinking cell and the separator belongs to the placeholder, so the
+  row stays readable at any width (and the `find ❯ ` query row follows the same rule).
 
 ## 3.0.0-rc.2
 

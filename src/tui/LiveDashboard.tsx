@@ -2798,10 +2798,19 @@ function ChatInputRow({
           })
         ) : (
           <Box flexDirection="row" height={1}>
-            <Text bold color={accent}>{enabled ? prompt : "· "}</Text>
-            <Text color={THEME.muted} wrap="truncate">
-              {placeholder}
-            </Text>
+            {/* The prompt is trimmed before the separator is added: when the
+                recall hint squeezes the row, Ink truncates the placeholder and
+                the trailing space of the prompt Text disappears, painting
+                `❯Message...`. One explicit space in the truncated node keeps
+                the separator whatever the available width. */}
+            <Box flexShrink={0}>
+              <Text bold color={accent}>{enabled ? prompt.trimEnd() : "·"}</Text>
+            </Box>
+            <Box flexShrink={1} overflow="hidden">
+              <Text color={THEME.muted} wrap="truncate">
+                {" "}{placeholder}
+              </Text>
+            </Box>
           </Box>
         )}
       </Box>
