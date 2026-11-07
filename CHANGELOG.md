@@ -11,46 +11,43 @@
   vanished is named in the run log and in a *Writes outside the project* section of
   `.harness/PROGRESS.md`. Advisory by design — a warning that halted a run would be worse than the
   write it reports. Project-scoped configs are excluded: they are supposed to change.
+- **Every runtime declares how much of the filesystem it contains.** `RuntimeCapabilities` gains
+  `filesystemIsolation` (`none` / `worktree` / `home-read-only`). All five drivers declare `worktree`,
+  which is the honest answer: the agent is pointed at the iteration worktree and nothing stops it
+  writing elsewhere. `huginn runtime list` prints the value unconditionally and a sandboxed run warns
+  once at start, so "sandboxed" is never read as a guarantee it does not make.
+- **Runtime choice persists.** The `/agent` picker saves on `Enter` for the project, with `s` for this
+  session only and `g` for every project, writing the `agent` key — and `huginn config set --agent <id>`
+  exists for the same reason. Until now the only ways to pin a runtime were the `--agent` flag, the
+  `HUGINN_AGENT` variable or hand-editing the JSON, so a fixed choice never survived a restart. The
+  write happens only after the switch succeeded: a runtime whose availability probe just failed can
+  never become the next launch's default.
+- **The runtime picker lists what the machine actually has**, alphabetically, instead of all thirteen
+  targets in registry order. The registry order is a historical list — reading it as a preference is why
+  a box with `claude` and `pi` installed started on `claude` every time. PATH detection now sorts by id
+  and takes the first *available* entry, a rule the user can see and override; a machine with nothing
+  detected still gets the full alphabetical list marked `— not installed` rather than an empty modal.
 
 ### Fixed
 
-- **REVIEW was handed two empty diffs.** The review task interpolated `git diff
-  main...HEAD`, which is exactly nothing while an iteration's work is still
-  uncommitted — the state REVIEW always runs in. The reviewer had no diff to read,
-  improvised from whatever it opened, and in one run blocked four times over a
-  defect that a fix had already resolved. The review now diffs the worktree
-  (`git diff HEAD`), lists the untracked files that no diff can show, and the
-  engine appends the committed range since the iteration base so a repair merge or
-  a checkpoint commit is reviewed instead of being invisible.
-
-### Added
-
-- Runtime choice persists. The `/agent` picker **saves on `Enter` for the project**, with `s` for
-  this session only and `g` for every project, writing the `agent` key — and `huginn config set --agent <id>` exists
-  for the same reason. Until now the only ways to pin a runtime were the `--agent` flag, the
-  `HUGINN_AGENT` variable or hand-editing the JSON, so a fixed choice never survived a restart.
-  The write happens only after the switch succeeded: a runtime whose availability probe just failed
-  can never become the next launch's default.
-- The runtime picker lists **what the machine actually has**, alphabetically, instead of all
-  thirteen targets in registry order. The registry order is a historical list — reading it as a
-  preference is why a box with `claude` and `pi` installed started on `claude` every time. PATH
-  detection now sorts by id and takes the first *available* entry, a rule the user can see and
-  override; a machine with nothing detected still gets the full alphabetical list marked
-  `— not installed` rather than an empty modal.
-- The composer's `↑` history starts with what the session already asked. `submit()` was its
-  only writer, so a prompt handed to `huginn live --prompt-file …` (or as a positional idea) was
-  invisible to recall, and a resumed `--continue` session's own prompts were too — the only way to
-  send that prompt again was to go and read the file. User turns of the transcript and the CLI idea
-  now seed the list (slash commands excluded, consecutive duplicates collapsed).
-- The question protocol survives how models actually write it. The markers are matched with
-  spaces, hyphens or a different case (`<<<END HUGINN QUESTION>>>`), and a reply that ends on the
-  closing marker without ever opening the block has its payload recovered from the paragraph before
-  it — the exact shape that left a usable three-option question on screen as raw JSON in
-  `muninn`'s session. An unopened block whose paragraph is not a payload is still reported and the
-  stray marker removed, so a stray token cannot swallow the agent's prose. The payload is now looked for in the paragraph that
-  ends at the closing marker *before* an opening marker is considered, so a reply that merely
-  quotes `<<<HUGINN_QUESTION>>>` in its prose can no longer pull the JSON slice back into that
-  sentence and lose every question.
+- **REVIEW was handed two empty diffs.** The review task interpolated `git diff main...HEAD`, which is
+  exactly nothing while an iteration's work is still uncommitted — the state REVIEW always runs in. The
+  reviewer had no diff to read, improvised from whatever it opened, and in one run blocked four times
+  over a defect that a fix had already resolved. The review now diffs the worktree (`git diff HEAD`),
+  lists the untracked files that no diff can show, and the engine appends the committed range since the
+  iteration base so a repair merge or a checkpoint commit is reviewed instead of being invisible.
+- **The question protocol survives how models actually write it.** The markers are matched with spaces,
+  hyphens or a different case (`<<<END HUGINN QUESTION>>>`), and the payload is looked for in the
+  paragraph that ends at the closing marker *before* an opening marker is considered — so a reply that
+  merely quotes `<<<HUGINN_QUESTION>>>` in its prose can no longer pull the JSON slice back into that
+  sentence. A reply that ends on the closing marker without ever opening the block has its payload
+  recovered from that paragraph; an unopened block whose paragraph is not a payload is still reported and
+  the stray marker removed, so a stray token cannot swallow the agent's prose.
+- **The composer's `↑` history starts with what the session already asked.** `submit()` was its only
+  writer, so a prompt handed to `huginn live --prompt-file …` (or as a positional idea) was invisible to
+  recall, and a resumed `--continue` session's own prompts were too — the only way to send that prompt
+  again was to go and read the file. User turns of the transcript and the CLI idea now seed the list
+  (slash commands excluded, consecutive duplicates collapsed).
 
 ## 3.0.0-rc.2
 

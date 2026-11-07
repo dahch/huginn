@@ -114,6 +114,7 @@ src/
 │   ├── engineEvents.ts     global typed event emitter
 │   ├── worktree.ts         git worktree sandbox manager (create/promote/discard/list/cleanup, untracked/tracked-collision parking + branch preservation)
 │   ├── promotionRepair.ts  mergeRef, repairPromotionFindings and promotionRepairEligibility: the conflict-only repair path for a failed promotion (ADR-62)
+│   ├── homeGuard.ts        watchedPaths/snapshotWorld/diffWorld: the tripwire for writes that escape the project (REQ-78)
 │   └── types.ts            shared types (Verdict, PhaseName, DecisionRequest, …)
 ├── muninn/
 │   ├── db/
@@ -1096,6 +1097,28 @@ letting `createSandbox` throw.
   `cleanupAll()` for an explicit reclamation; `parkForResume()` — not a cleanup — is what
   `SIGINT`/`SIGTERM` register in `cli.ts` for both `run` and the live handoff path.
 
+### 19.5 The sandbox boundary, and the tripwire for crossing it
+
+The worktree contains **where an iteration's edits land**, not what the agent may touch. No driver can
+claim more than `filesystemIsolation: "worktree"`: an in-process agent (`pi`) inherits the user's own
+file access, and a subprocess agent is only memory-capped. One run proved the gap — the executor
+smoke-tested a project's own installer and rewrote four agent configs under `$HOME`.
+
+Prevention is not attempted (a `HOME` override would break the credentials the agent needs, and there
+is no in-process write sandbox), so the engine does the next honest thing:
+
+- `snapshotWorld(watchedPaths(...))` runs once before the first phase. The list is derived from the
+  provisioning registry — the **user-scoped** MCP configuration of every `setup` target — plus
+  `~/.muninn/mcp.json`, `~/.huginn/mcp.json` and `~/.huginn/config.json`. Project-scoped paths are
+  filtered out: they are supposed to change and they already appear in the iteration's diff.
+- After every phase, in a `finally` (so aborted and thrown phases are checked too), `diffWorld`
+  compares the stamps and each appeared/rewritten/deleted path is reported with the phase and the size
+  transition. The entries are capped in `state.worldChanges` and rendered by
+  `renderProgressMarkdown` under *Writes outside the project*.
+- The check never throws, never blocks and never fails a phase: it is a tripwire, and a tripwire that
+  stops the train is worse than the write it reports. A stat failure is reported as a warning, not as
+  a phase error.
+
 ---
 
 ## 20. Phase 5 — Fullscreen Terminal UI & Viewport Engine
@@ -1304,6 +1327,7 @@ The runtime abstraction defines two foundational ports:
      `codex`, `claude` or `generic`. `RuntimePort.id` is therefore one of those five.
    - `name: string` — human-readable agent name.
    - `readonly sessionHistory?: boolean` — `true` when the backend keeps the conversation server-side (only `opencode`); every subprocess adapter declares `false` and `undefined` is read as "does not keep history" (§ 29.1).
+   - `RuntimeCapabilities.filesystemIsolation` — `none`, `worktree` or `home-read-only`: how much of the filesystem the driver keeps the agent out of. Every driver declares `worktree`, because that is the truth — the agent is *pointed* at the iteration worktree and nothing stops it writing under `$HOME` (REQ-78 / AC-78.1). `huginn runtime list` prints it unconditionally and a sandboxed run warns once at start, so "sandboxed" is never read as containment. Prevention is deliberately out of scope until it can be verified against real runs; `src/engine/homeGuard.ts` compensates by naming what changed outside the project, per phase (§ 19.5).
    - `RuntimeCapabilities.streaming` — whether the driver can push **incremental** output while a prompt runs: `true` for the native `opencode` port (its server's SSE event stream), `false` on every subprocess adapter and on the legacy bridge, because a subprocess buffers stdout and resolves once. A surface uses it to decide what the output panel may claim rather than testing a hardcoded id list (§ 32.2).
    - `isAvailable(): Promise<boolean>` — non-blocking probe verifying if the agent's executable binary exists on `PATH` or daemon is reachable.
    - `getAvailableModels(): Promise<ModelInfo[]>` — queries the models the runtime can actually use (never a fabricated catalog); returns `[]` when the runtime exposes no listing mechanism.

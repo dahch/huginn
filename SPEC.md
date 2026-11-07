@@ -1505,6 +1505,34 @@ cannot disagree or spend each other's columns.
   `test/tui/infoPanel.test.ts` pin the new policy, and `test/tui/liveLayout.test.ts` holds the
   100×30 project-path regression.
 
+### REQ-78: A runtime declares how much of the filesystem it contains, and writes outside the project are reported
+
+The sandbox isolates **where an iteration's edits land**, not what the agent may touch. That boundary
+must be stated by the runtime itself and, where it cannot be enforced, made visible after the fact.
+
+- **AC-78.1 (declare it)**: `RuntimeCapabilities.filesystemIsolation` is one of `none`, `worktree` or
+  `home-read-only`. Every driver declares it (all five declare `worktree` today: the agent is pointed
+  at the iteration worktree and nothing stops it writing elsewhere). `huginn runtime list` prints the
+  value unconditionally, including the unflattering one, and a sandboxed run emits exactly one warning
+  at start naming the runtime and its isolation. No surface may describe `--sandbox` as filesystem
+  containment.
+- **AC-78.2 (watch it)**: before the first phase the engine snapshots the watched files; after every
+  phase — in a `finally`, so an aborted or thrown phase is checked too — it diffs them and reports
+  each path that appeared, was rewritten or vanished, with the phase and the size transition. The
+  check never throws and never fails, blocks or delays a phase: an admonition that halts a run would
+  be worse than the write it reports.
+- **AC-78.3 (which files)**: the watch list is derived from the provisioning registry — the user-scoped
+  MCP configuration of every `setup` target — plus the portable MCP configs and
+  `~/.huginn/config.json`. Project-scoped configuration (`.mcp.json`, `.cursor/mcp.json`, …) is
+  excluded: it is expected to change during a run and already appears in the iteration's own diff.
+- **AC-78.4 (leave a trail)**: the entries are persisted in `HarnessState.worldChanges` (capped) and
+  rendered by `PROGRESS.md` under a *Writes outside the project* section, so a run that touched the
+  machine is still visible after the terminal is closed.
+- **AC-78.5 (say the limit)**: the README documents that the sandbox is worktree scoping, that no
+  driver can prevent an agent from writing under `$HOME`, and that the report is a tripwire rather
+  than a guarantee. Preventing it (systemd `ProtectHome`) is explicitly out of scope until it can be
+  verified against real agent runs.
+
 ---
 
 ## Appendix — module map

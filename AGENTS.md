@@ -79,7 +79,7 @@ enforced by huginn (see §4).
   `.build/`, `~/.gradle`, `~/.m2`, `~/.npm`) are banned — a `**` glob there can hang for tens of
   minutes and stall the pipeline. Use bounded patterns (`find <path> -maxdepth N ... | head`) and
   grep scoped to project paths.
-- **Driven by**: `REVIEW` (`reviewPrompt`, pre-PR review of `main...HEAD`).
+- **Driven by**: `REVIEW` (`reviewPrompt`, pre-PR review of the iteration's worktree).
 
 > The task bodies were snapshotted verbatim from the opencode command templates that hugged the roles
 > in the previous design, so some of them still *read* as delegation instructions ("Delegate to the
@@ -317,6 +317,17 @@ when the thread starts, so it ignores the request and the thread keeps its own. 
 known gap, recorded next to the code.
 
 All three SDKs are `--external` in the build, so pi, codex and claude stay out of the bundle.
+
+`filesystemIsolation` says what the driver keeps the agent out of — `none`, `worktree` or
+`home-read-only`. Every driver here declares `worktree`, which is the truth: the agent is *pointed* at
+the iteration worktree and nothing stops it writing under `$HOME`. That is not a detail: one run of
+this repository rewrote four agent configs while its executor smoke-tested `muninn setup`.
+`src/engine/homeGuard.ts` compensates only by watching — it stamps the user-scoped MCP config of every
+provisioning target plus the portable configs and `~/.huginn/config.json` before the first phase, and
+diffs them in the `finally` of every phase, so a phase that wrote outside the project is named (with
+the phase and the size transition) in the run log and in `PROGRESS.md`. The check is advisory and must
+stay that way: it never throws, never blocks and never fails a phase. Project-scoped configs are
+excluded on purpose — they are supposed to change and already appear in the iteration's diff.
 
 A driver *declares* its capabilities instead of implying them (and
 `permissions: "none"` for every legacy adapter because none of them has a channel back mid-turn), and

@@ -17,6 +17,7 @@ canonical `SPEC.md` ones.
 | `src/engine/steps/` | REQ-40, REQ-41, REQ-60, REQ-61, REQ-64…REQ-66 |
 | `src/engine/memory/`, `src/engine/steps/retrieval.ts` | REQ-64…REQ-66 |
 | `src/engine/sandbox.ts`, `src/engine/verify.ts` | REQ-56 |
+| `src/engine/homeGuard.ts` | REQ-78 |
 | `src/tui/*`, `src/headless.ts` | REQ-21, REQ-29, REQ-31, REQ-51, REQ-52, REQ-68, REQ-69, REQ-70, REQ-71, REQ-72, REQ-73, REQ-74, REQ-75, REQ-76, REQ-77 |
 | `src/tui/Modal.tsx`, `src/tui/footer.ts` | REQ-75, REQ-77 |
 | `src/tui/sessionContext.ts`, `src/tui/RavenHeader.tsx`, `src/tui/InfoPanel.tsx` | REQ-47, REQ-76, REQ-77 |
@@ -26,5 +27,5 @@ canonical `SPEC.md` ones.
 | `src/engine/liveMode.ts`, `src/engine/liveRepo.ts` | REQ-44, REQ-54 |
 | `src/state/liveSession.ts` | REQ-44, REQ-53 |
 | `src/engine/gitRepo.ts` | REQ-39 |
-| `src/engine/agent/` | REQ-22, REQ-27, REQ-32, REQ-33, REQ-43, REQ-58, REQ-67 |
+| `src/engine/agent/` | REQ-22, REQ-27, REQ-32, REQ-33, REQ-43, REQ-58, REQ-67, REQ-78 |
 | `src/update.ts` | background version check (no numbered requirement) |

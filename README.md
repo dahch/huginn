@@ -397,6 +397,10 @@ supposed to change, and they land in the iteration's own diff.
 
 ## Sandboxing (git worktrees)
 
+> **Read this as worktree scoping, not filesystem containment.** The agent is *pointed* at the
+> worktree; nothing stops it writing elsewhere. [What the sandbox does and does not isolate](#what-the-sandbox-does-and-does-not-isolate)
+> is the section that says so, and the one to read before trusting a long run.
+
 By default (`--sandbox`), each iteration runs in an isolated git worktree so your editor stays on
 the primary branch while the agent works:
 
@@ -757,7 +761,7 @@ huginn-run gate is huginn's own:
 5. **TEST_MODULE** — the embedded test-module instruction; the role ends on its own
    `### Audit status:` line, and the extra "judge" pass only runs when that line is not green.
 6. **SECURE_CHECK** — the embedded security-audit instruction; any breach → fix with the executor until clear.
-7. **REVIEW** — the embedded pre-PR review instruction; blockers → fix with the executor and re-review.
+7. **REVIEW** — the embedded pre-PR review instruction, given the iteration's **worktree diff** (`git diff HEAD`), the untracked files a diff cannot show, and the committed range since the iteration base; blockers → fix with the executor and re-review. (It used to interpolate `git diff main...HEAD`, which is empty exactly when REVIEW runs, because an iteration's work is uncommitted until `COMMIT_ALL`.)
 8. **DOC_SYNC** — the embedded doc-sync instruction (informative, never blocks).
 9. **COMMIT_ALL** — deterministic by default: huginn derives
    `feat|fix|docs(<scope>): <subject>` from the iteration, with no model turn. `--commit agent`

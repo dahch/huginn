@@ -2375,6 +2375,49 @@ avoids. They are ordered by how central the decision is to the design.
     and tests were updated in the same commit).
 
 
+## ADR-75: The sandbox is declared, not implied — and a write outside it is reported, not prevented
+
+- **Date**: 2026-11-07
+- **Status**: Accepted
+- **Context**: `--sandbox` has always meant "this iteration's edits land in a worktree that gets
+  integrated only when its gates pass". It was read — by the docs, and by the executor — as filesystem
+  containment. It is not: every driver runs with the user's own file access, so a phase that runs the
+  project's own installer can rewrite configuration anywhere. One run of this repository did exactly
+  that, moving four agent configs under `$HOME` from `huginn mcp run` to `muninn mcp run`, and left no
+  trace: with an in-process runtime there is no command log, and `.harness/` recorded nothing.
+- **Decision**:
+  1. **Declare the limit on the port.** `RuntimeCapabilities.filesystemIsolation` is `none`,
+     `worktree` or `home-read-only`; every driver declares `worktree`, which is the true value. It is
+     printed by `huginn runtime list` unconditionally, including when it is unflattering, and a
+     sandboxed run warns once at start naming the runtime and the value. No surface may describe the
+     sandbox as containment.
+  2. **Watch the boundary instead of enforcing it.** `src/engine/homeGuard.ts` stamps the user-scoped
+     MCP configuration of every provisioning target plus the portable configs and
+     `~/.huginn/config.json` before the first phase, and diffs them in the `finally` of every phase, so
+     an aborted or thrown phase is checked too. Each appeared/rewritten/deleted path is reported with
+     the phase and the size transition, kept in `state.worldChanges`, and rendered by `PROGRESS.md`
+     under *Writes outside the project*.
+  3. **Advisory, never blocking.** The check never throws, never delays a phase and never fails a run.
+     A stat failure is a warning. An admonition that halts a run is worse than the write it reports.
+  4. **Project-scoped configs are excluded.** `.mcp.json`, `.cursor/mcp.json` and friends are supposed
+     to change during a run and already appear in the iteration's own diff; warning about them would
+     train the user to ignore the warning that matters.
+- **Alternatives rejected**:
+  - *Redirect `HOME` to a temporary directory per phase.* Breaks authentication: `pi` runs in-process
+    and reads its credentials from `~/.pi`, and every CLI agent does the equivalent.
+  - *`systemd-run -p ProtectHome=read-only -p ReadWritePaths=<worktree>`.* The right eventual answer
+    for subprocess runtimes, and deliberately out of scope here: it can break caches and token refresh,
+    it cannot cover an in-process agent at all, and it must be verified against real runs rather than
+    unit tests. The capability value `home-read-only` exists so this can be adopted per driver without
+    changing the contract.
+  - *Fail the run when a watched path changes.* Makes a legitimate `setup` run impossible and turns a
+    tripwire into a blocker.
+- **Consequences**: "sandboxed" now has a precise, printed meaning; a run that touches the machine is
+  visible afterwards in `PROGRESS.md` instead of only in a scrollback nobody kept; and the gap between
+  the claim and the mechanism is documented where both the user and the next developer read it. The
+  cost is one stat per watched path per phase, and a warning that will fire on any agent-config change
+  a run legitimately causes — which is the point.
+
 ## ADR-74: The output panel wraps once, then scrolls by terminal rows
 
 - **Date**: 2026-11-02
