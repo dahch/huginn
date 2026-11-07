@@ -32,6 +32,16 @@
   and takes the first *available* entry, a rule the user can see and override; a machine with nothing
   detected still gets the full alphabetical list marked `— not installed` rather than an empty modal.
 
+### Changed
+
+- **`huginn init` picks the runtime the way the console does.** The wizard printed a numbered list
+  and read one keystroke per line, so choosing a runtime meant counting rows — while `/agent` had
+  had a real selector for releases: availability probed, the active runtime marked, `↑`/`↓`/`k`/`j`
+  and `Esc`. Init now mounts that same surface (`src/tui/pickAgent.tsx`), with one scope, because the
+  wizard always writes `<project>/.huginn/config.json` — so `s`/`g` are not offered and the footer
+  says `Enter project` instead of promising a write it would not perform. The numbered prompt stays as
+  the fallback for CI, a non-TTY, a host that owns its own streams, and a picker that cannot mount.
+
 ### Fixed
 
 - **REVIEW was handed two empty diffs.** The review task interpolated `git diff main...HEAD`, which is

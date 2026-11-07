@@ -4,8 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { render } from "./inkRender";
 import {
   AgentPickerModal,
+  agentPickerHint,
+  agentPickerNote,
   buildAgentRows,
   hasDetectedRows,
+  resolveAgentScopes,
 } from "../../src/tui/AgentPickerModal";
 import { AGENT_REGISTRY, AGENT_TARGETS, type AgentTarget } from "../../src/agents/integrator.js";
 
@@ -31,6 +34,7 @@ async function renderPicker(props: {
   onSelect?: (id: string, scope: string) => void;
   onCancel?: () => void;
   detectThrows?: boolean;
+  scopes?: Array<"session" | "project" | "global">;
 }): Promise<{ stdin: any; finish: () => string }> {
   const stdout = new PassThrough() as any;
   stdout.columns = 100;
@@ -46,6 +50,7 @@ async function renderPicker(props: {
       currentAgentId: props.currentAgentId,
       onSelect: (props.onSelect ?? vi.fn()) as any,
       onCancel: props.onCancel ?? vi.fn(),
+      scopes: props.scopes,
       detect: async () => {
         if (props.detectThrows) throw new Error("PATH probe failed");
         return AGENT_TARGETS.map((id) => ({
@@ -206,5 +211,90 @@ describe("AgentPickerModal (REQ-33 / ADR-32)", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
     // First row of the alphabetical list, not of the registry.
     expect(onSelect.mock.calls[0][0]).toBe("claude");
+  });
+});
+
+/**
+ * `huginn init` always writes `<project>/.huginn/config.json`, so it mounts the
+ * picker with a single scope. Offering `s`/`g` there would promise a write the
+ * wizard never performs — these tests pin the narrowed keyboard, not just the
+ * narrowed hint.
+ */
+describe("AgentPickerModal scoped host (init)", () => {
+  it("defaults to every scope and keeps the console hint untouched", () => {
+    expect(resolveAgentScopes(undefined)).toEqual(["session", "project", "global"]);
+    expect(agentPickerHint(resolveAgentScopes(undefined))).toBe(
+      "↑/↓ or k/j move · Enter project · s session · g global · Esc cancel",
+    );
+    expect(agentPickerNote(resolveAgentScopes(undefined))).toEqual([
+      "Enter saves it for this project · s only until you quit · g for every project.",
+      "Muninn memory is project-scoped and unaffected.",
+    ]);
+  });
+
+  it("drops unknown scopes and de-duplicates instead of rendering an empty picker", () => {
+    expect(resolveAgentScopes(["project", "project"] as any)).toEqual(["project"]);
+    expect(resolveAgentScopes(["nonsense"] as any)).toEqual(["session", "project", "global"]);
+  });
+
+  it("narrows the footer and the note to the scope the host can persist", () => {
+    const scopes = resolveAgentScopes(["project"]);
+    expect(agentPickerHint(scopes)).toBe("↑/↓ or k/j move · Enter project · Esc cancel");
+    expect(agentPickerHint(scopes)).not.toContain("s session");
+    expect(agentPickerHint(scopes)).not.toContain("g global");
+    expect(agentPickerNote(scopes)).toEqual([
+      "Enter saves it for this project.",
+      "Muninn memory is project-scoped and unaffected.",
+    ]);
+  });
+
+  it("saves for the project on Enter and ignores the scope keys it does not offer", async () => {
+    const onSelect = vi.fn();
+    const picker = await renderPicker({
+      currentAgentId: "opencode",
+      available: ["claude", "pi"],
+      onSelect,
+      scopes: ["project"],
+    });
+
+    picker.stdin.write("s");
+    await tick(30);
+    picker.stdin.write("g");
+    await tick(30);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    picker.stdin.write("\r");
+    await tick(30);
+    expect(onSelect).toHaveBeenLastCalledWith("claude", "project");
+    picker.finish();
+  });
+
+  it("advertises only the keys it honours", async () => {
+    const picker = await renderPicker({
+      currentAgentId: "opencode",
+      available: ["claude"],
+      scopes: ["project"],
+    });
+    const output = picker.finish();
+    expect(output).toContain("Enter project");
+    expect(output).toContain("Esc cancel");
+    expect(output).not.toContain("s session");
+    expect(output).not.toContain("g global");
+    expect(output).toContain("Enter saves it for this project.");
+    expect(output).not.toContain("only until you quit");
+  });
+
+  it("still cancels on Esc when only one scope is offered", async () => {
+    const onCancel = vi.fn();
+    const picker = await renderPicker({
+      currentAgentId: "opencode",
+      available: ["claude"],
+      onCancel,
+      scopes: ["project"],
+    });
+    picker.stdin.write("\u001B");
+    await tick(30);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    picker.finish();
   });
 });

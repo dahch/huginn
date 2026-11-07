@@ -23,6 +23,9 @@ export interface AgentPickerRow {
 /** Where a runtime change is kept (mirrors `ProfileScope`). */
 export type AgentScope = "session" | "project" | "global";
 
+/** Every persistence scope, in the order the hint advertises them. */
+export const AGENT_SCOPES: readonly AgentScope[] = ["session", "project", "global"];
+
 export interface AgentPickerModalProps {
   /** The runtime currently driving the session (marked, not selectable-as-new). */
   currentAgentId: string;
@@ -36,6 +39,63 @@ export interface AgentPickerModalProps {
   detect?: () => Promise<Array<{ id: AgentTarget; available: boolean; path?: string }>>;
   /** Rows the list window may use; shrinks on short terminals. */
   maxRows?: number;
+  /**
+   * Scopes this host can actually persist. Defaults to all three (the live
+   * console). `huginn init` passes `["project"]` because it always writes
+   * `<project>/.huginn/config.json` — offering `s`/`g` there would promise a
+   * write the wizard does not perform.
+   */
+  scopes?: readonly AgentScope[];
+}
+
+/**
+ * The scopes a picker may offer, in a stable order and without duplicates.
+ * An empty or unknown-only list falls back to every scope rather than rendering
+ * a picker whose Enter has nowhere to save.
+ */
+export function resolveAgentScopes(scopes?: readonly AgentScope[]): AgentScope[] {
+  if (scopes === undefined) return [...AGENT_SCOPES];
+  const known = scopes.filter((scope): scope is AgentScope => AGENT_SCOPES.includes(scope));
+  return known.length > 0 ? [...new Set(known)] : [...AGENT_SCOPES];
+}
+
+/** What Enter persists when the host does not offer `project`. */
+function enterScopeFor(scopes: AgentScope[]): AgentScope {
+  if (scopes.includes("project")) return "project";
+  if (scopes.includes("session")) return "session";
+  return "global";
+}
+
+/** One footer row naming exactly the keys this picker accepts. */
+export function agentPickerHint(scopes: AgentScope[]): string {
+  const keys = ["↑/↓ or k/j move"];
+  const enter = enterScopeFor(scopes);
+  keys.push(enter === "project" ? "Enter project" : enter === "session" ? "Enter session" : "Enter global");
+  if (scopes.includes("project") && scopes.includes("session")) keys.push("s session");
+  if (scopes.length > 1 && scopes.includes("global")) keys.push("g global");
+  keys.push("Esc cancel");
+  return keys.join(" · ");
+}
+
+/**
+ * The note under the list. It only mentions a scope the host can honour, so
+ * `huginn init` cannot advertise "g for every project" while writing the
+ * project config.
+ */
+export function agentPickerNote(scopes: AgentScope[]): string[] {
+  const lines: string[] = [];
+  if (scopes.length === 1) {
+    lines.push("Enter saves it for this project.");
+  } else {
+    const parts = ["Enter saves it for this project"];
+    if (scopes.includes("session")) parts.push("s only until you quit");
+    if (scopes.includes("global")) parts.push("g for every project");
+    lines.push(`${parts.join(" · ")}.`);
+  }
+  if (scopes.includes("project")) {
+    lines.push("Muninn memory is project-scoped and unaffected.");
+  }
+  return lines;
 }
 
 const byAgentId = (a: AgentPickerRow, b: AgentPickerRow): number =>
@@ -94,7 +154,10 @@ export function AgentPickerModal({
   onCancel,
   detect = detectAvailableAgents,
   maxRows = VISIBLE_AGENT_ROWS,
+  scopes,
 }: AgentPickerModalProps): React.ReactElement {
+  const allowedScopes = useMemo(() => resolveAgentScopes(scopes), [scopes]);
+  const enterScope = enterScopeFor(allowedScopes);
   const [rows, setRows] = useState<AgentPickerRow[]>(() =>
     buildAgentRows(AGENT_TARGETS.map((id) => ({ id, available: false }))),
   );
@@ -139,8 +202,8 @@ export function AgentPickerModal({
     return { offset, visible: rows.slice(offset, offset + limit) };
   }, [rows, selectedIndex, limit]);
 
-  const stateRef = useRef({ rows, selectedIndex, onSelect, onCancel });
-  stateRef.current = { rows, selectedIndex, onSelect, onCancel };
+  const stateRef = useRef({ rows, selectedIndex, onSelect, onCancel, allowedScopes, enterScope });
+  stateRef.current = { rows, selectedIndex, onSelect, onCancel, allowedScopes, enterScope };
 
   useInput((input, key) => {
     const cur = stateRef.current;
@@ -158,23 +221,27 @@ export function AgentPickerModal({
     }
     const chosen = cur.rows[cur.selectedIndex];
     if (key.return) {
-      if (chosen) cur.onSelect(chosen.id, "project");
+      if (chosen) cur.onSelect(chosen.id, cur.enterScope);
       return;
     }
     if (!chosen) return;
     // Enter persists for the project because that is what a runtime switch
     // means: this repository runs on this agent. `s` is the escape hatch for a
     // one-off try. Every key is printed in the hint and in the note below, so
-    // nothing here has to be guessed.
+    // nothing here has to be guessed — and a host that cannot persist a scope
+    // never binds its key.
     const pressed = input.toLowerCase();
-    if (pressed === "s") cur.onSelect(chosen.id, "session");
-    else if (pressed === "g") cur.onSelect(chosen.id, "global");
+    if (pressed === "s" && cur.allowedScopes.includes("session")) {
+      cur.onSelect(chosen.id, "session");
+    } else if (pressed === "g" && cur.allowedScopes.includes("global")) {
+      cur.onSelect(chosen.id, "global");
+    }
   });
 
   return (
     <Modal
       title={`${MODAL_TITLE_GLYPHS.agent} SELECT AGENT RUNTIME`}
-      hint="↑/↓ or k/j move · Enter project · s session · g global · Esc cancel"
+      hint={agentPickerHint(allowedScopes)}
     >
       {loading ? (
         <Text color={THEME.warn}>Detecting installed agent CLIs…</Text>
@@ -221,12 +288,11 @@ export function AgentPickerModal({
       )}
 
       <Box marginTop={1} flexDirection="column">
-        <Text color={THEME.muted} wrap="truncate">
-          Enter saves it for this project · s only until you quit · g for every project.
-        </Text>
-        <Text color={THEME.muted} wrap="truncate">
-          Muninn memory is project-scoped and unaffected.
-        </Text>
+        {agentPickerNote(allowedScopes).map((line) => (
+          <Text key={line} color={THEME.muted} wrap="truncate">
+            {line}
+          </Text>
+        ))}
       </Box>
     </Modal>
   );

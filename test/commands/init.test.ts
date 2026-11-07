@@ -607,6 +607,63 @@ describe("huginn init wizard — interactive", () => {
     expect(cap.setupCalls[0]["--agent"]).toBe("codex");
   });
 
+  it("chooses the agent through the console picker and persists the result", async () => {
+    const env = makeEnv();
+    let detectedRows: AgentDetection[] = [];
+    const cap = await runInit(env, {}, {
+      isTTY: true,
+      pickAgent: async (_current, detect) => {
+        detectedRows = await detect();
+        return "codex";
+      },
+      promptText: async (_question, fallback) => fallback,
+    });
+
+    // The picker gets the scan section 3 already performed, not a second probe.
+    expect(detectedRows.map((row) => row.id).sort()).toEqual(
+      DETECTED.map((row) => row.id).sort(),
+    );
+    expect(detectedRows.filter((row) => row.available).map((row) => row.id).sort()).toEqual([
+      "claude",
+      "opencode",
+    ]);
+    expect(readConfig(env).agent).toBe("codex");
+    expect(cap.setupCalls[0]["--agent"]).toBe("codex");
+  });
+
+  it("falls back to the numbered prompt when the picker cannot mount", async () => {
+    const env = makeEnv();
+    const promptChoice = vi.fn(async () => "claude");
+    await runInit(env, {}, {
+      isTTY: true,
+      pickAgent: async () => {
+        throw new Error("no terminal to drive");
+      },
+      promptChoice,
+      promptText: async (_question, fallback) => fallback,
+    });
+
+    expect(promptChoice).toHaveBeenCalled();
+    expect(readConfig(env).agent).toBe("claude");
+  });
+
+  it("keeps the default when the picker is cancelled with Esc", async () => {
+    const env = makeEnv();
+    const promptChoice = vi.fn(async (_q: string, _l: string[], fallback: string) => fallback);
+    await runInit(env, {}, {
+      isTTY: true,
+      pickAgent: async () => undefined,
+      promptChoice,
+      promptText: async (_question, fallback) => fallback,
+    });
+
+    // A cancel is not a failure: the agent question is never re-asked.
+    expect(promptChoice.mock.calls.some(([question]) => question.includes("Default agent"))).toBe(
+      false,
+    );
+    expect(readConfig(env).agent).toBe(FIRST_AVAILABLE);
+  });
+
   it("ignores an invalid prompted agent/model and keeps the safe default", async () => {
     const env = makeEnv();
     await runInit(env, {}, {

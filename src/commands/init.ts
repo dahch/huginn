@@ -80,6 +80,16 @@ export interface InitDeps {
   promptChoice?: (question: string, choices: string[], fallback: string) => Promise<string>;
   confirm?: (question: string, fallback?: boolean) => Promise<boolean>;
   /**
+   * Interactive agent picker (TTY only). Defaults to mounting the same
+   * `AgentPickerModal` the live console uses; injectable so a test can drive the
+   * wizard's selection without owning a terminal. A `promptChoice` override wins
+   * over it, which is how the numbered-prompt tests keep their seam.
+   */
+  pickAgent?: (
+    currentAgentId: AgentTarget,
+    detect: () => Promise<AgentDetection[]>,
+  ) => Promise<AgentTarget | undefined>;
+  /**
    * Agent runtime factory (Phase 5). Defaults to the real
    * {@link getAgentRuntime}; injectable so tests drive the model picker with a
    * fake catalog instead of spawning a CLI. The wizard only ever calls the
@@ -402,8 +412,48 @@ export async function handleInitCommand(
     const promptText =
       deps.promptText ??
       ((question: string, fallback: string) => promptTextDefault(question, fallback, io));
-    const pickedAgent = await promptChoice("   Default agent", choices, report.agent);
-    if (isAgentTarget(pickedAgent)) report.agent = pickedAgent;
+    // The runtime is chosen through the console's own selector: a numbered
+    // list read one character at a time is not a selector, and the modal already
+    // knows this machine (availability, PATH, active runtime). The numbered
+    // prompt stays as the fallback for CI/non-TTY, for a host that owns the
+    // streams itself (an embedder or a test — Ink may only drive this process's
+    // own terminal), and for the `promptChoice` seam.
+    // Precedence: an explicitly injected picker, then the console's own Ink
+    // host (only when the wizard owns the process streams), then the numbered
+    // prompt (legacy/test seam, CI, or a host that owns its streams).
+    const ownsTerminal = deps.stdin === undefined && deps.stdout === undefined;
+    const usesPicker = deps.pickAgent !== undefined || (deps.promptChoice === undefined && ownsTerminal);
+    if (!usesPicker) {
+      const pickedAgent = await promptChoice("   Default agent", choices, report.agent);
+      if (isAgentTarget(pickedAgent)) report.agent = pickedAgent;
+    } else {
+      const pick =
+        deps.pickAgent ??
+        (async (current: AgentTarget, detect: () => Promise<AgentDetection[]>) => {
+          const { pickAgentInteractively } = await import("../tui/pickAgent.js");
+          const picked = await pickAgentInteractively({
+            currentAgentId: current,
+            detect,
+            scopes: ["project"],
+          });
+          return picked?.id;
+        });
+      let picked: AgentTarget | undefined;
+      let mountFailed = false;
+      try {
+        // Reuse the scan section 3 already printed instead of probing PATH twice.
+        picked = await pick(report.agent, async () =>
+          ordered.map(({ id, available, path }) => ({ id, available, path })),
+        );
+      } catch {
+        mountFailed = true;
+      }
+      if (picked !== undefined) report.agent = picked;
+      if (mountFailed) {
+        const answer = await promptChoice("   Default agent", choices, report.agent);
+        if (isAgentTarget(answer)) report.agent = answer;
+      }
+    }
 
     // Phase 5: prefer a numbered model picker driven by the runtime's own
     // catalog. The runtime is built *after* the agent is final, from the chosen
