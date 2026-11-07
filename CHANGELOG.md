@@ -1,6 +1,39 @@
 # Changelog
 
-## Unreleased
+## 3.0.1-rc.2
+
+> Fourteen commits since `3.0.0-rc.2`, 54 files: `src` +1383/−183, `test` +919/−71 and docs
+> +258/−28. A patch candidate that mostly hardens boundaries the cycle had been assuming: what the
+> sandbox does *not* contain, which diff REVIEW is handed, and what a runtime actually is on this
+> machine.
+
+The sandbox now says what it is. Every runtime declares a `filesystemIsolation` capability (all five
+answer `worktree`, the honest one: the agent is *pointed* at the iteration worktree and nothing stops
+it writing under `$HOME`), `huginn runtime list` prints it and a sandboxed run warns once at start.
+Because huginn cannot prevent a write outside the project, it watches for one: before the first phase
+it stamps every provisioning target's user-scoped MCP config plus the portable configs, and after
+every phase — in a `finally`, so an aborted phase is checked too — it names what appeared, changed or
+vanished in the run log and in a *Writes outside the project* section of `.harness/PROGRESS.md`. The
+check is advisory by design and never blocks. README, SPEC (REQ-78) and ADR-75 record the boundary
+instead of leaving "sandboxed" to be read as filesystem containment.
+
+Three bugs that made a gate lie or a prompt disappear are fixed. REVIEW was interpolating
+`git diff main...HEAD`, empty exactly while an iteration's work is still uncommitted — the only state
+REVIEW runs in — so it now gets the worktree diff (`git diff HEAD`), the untracked files no diff can
+show, and the committed range since the iteration base. The `<<<HUGINN_QUESTION>>>` parser is matched
+by position and tolerates the spaces, hyphens and casing models actually write, including a reply that
+quotes the marker without opening the block. And the composer's `↑` history is seeded with what the
+session already asked, so a prompt handed to `huginn live --prompt-file …`, a positional idea or a
+resumed transcript is recallable.
+
+The runtime is now a choice, not an accident of PATH order. Bare `/agent` lists only the runtimes
+installed here, alphabetically, and `Enter` saves the selection for the project (`s` for the session,
+`g` globally) — the write happens only after the switch succeeds — and
+`huginn config set --agent <id>` exposes the same key. `huginn init` mounts the console's own runtime
+and model selectors instead of printing numbered lists, keeping the numbered path only as the CI /
+non-TTY fallback. All four pickers now share one windowed-list implementation
+(`pickerWindow.ts` / `PickerList.tsx`), so the "which rows are visible" arithmetic and its end-of-list
+off-by-one exist once.
 
 ### Added
 
