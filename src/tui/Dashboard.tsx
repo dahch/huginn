@@ -13,7 +13,8 @@ import { sanitizeTerminalText } from "../util/text";
 import { THEME, mcpStatusToken } from "./theme.js";
 import { TWO_RAVENS, ravenBlink, ravenMood, type RavenMood } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
-import { STATUS_GLYPHS } from "./glyphs.js";
+import { EVIDENCE_GLYPHS, STATUS_GLYPHS } from "./glyphs.js";
+import { evidenceClassForPhase } from "../engine/evidence.js";
 import { Card, cardChrome } from "./Card.js";
 import { footerHints } from "./footer.js";
 import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
@@ -871,7 +872,9 @@ function PipelineCard({
             <Text color={color} wrap="truncate">
               {icon}
               {rail}
-              <Text bold={isCurrent}>{name.padEnd(14)}</Text>
+              <Text bold={isCurrent}>
+                {`${name.padEnd(13)}${EVIDENCE_GLYPHS[evidenceClassForPhase(name)]}`}
+              </Text>
             </Text>
             <Text dimColor={THEME.colorEnabled && !isCurrent} color={color}>
               {st?.attempt && st.attempt > 1 ? `[att ${st.attempt}] ` : ""}

@@ -4,6 +4,22 @@
 
 ### Added
 
+- **A result now says what it is, not only whether it passed.** `src/engine/evidence.ts` classifies
+  every phase by its producer: the engine runs `VERIFY`, `COMMIT_ALL` and `REPAIR_PROMOTION` and
+  gates on real exit codes, every other phase is a model turn. `TEST_MODULE` sits in the judgment
+  lane on purpose — the agent runs the suite today, so the phase is a report *about* tests rather
+  than a test run huginn performed. The pipeline rows append a one-column lane mark (`=` measured,
+  `~` judged) without moving the rail or the row count, and the receipt records the split so a
+  reader of the JSON does not have to know which phases are trustworthy.
+- **Iteration receipts carry the lanes and the claims they cannot make (v2).** A receipt now writes
+  `lanes: { deterministic, judgment }` and an `unproven` list — for example that the suite result is
+  the agent's report, or that no receipt proves the agent stayed inside the worktree. v1 receipts
+  remain readable; the reader classifies them from the phase names and says the split was derived
+  rather than recorded.
+- **`huginn report` reads one receipt in two lanes.** The command prints what the engine proved,
+  what a model judged and what the receipt cannot claim, with the commits and tree hash it pinned;
+  `--json` emits the collected object and `--iteration` reads an older increment. Read-only, like
+  `stats`: no engine, no model, no writes.
 - **`huginn stats` says what the recorded runs prove.** Every project already carries the evidence
   of its cycles — `.harness/state.json` and one receipt per iteration — and reading it meant grepping
   the harness directory. The command now summarizes iterations, per-phase verdicts and medians, fix

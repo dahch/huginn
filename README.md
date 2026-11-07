@@ -235,6 +235,7 @@ subcommand's help branch dead code.
 | `init` | `huginn init [--yes] [--skip-setup] [flags]` | Guided onboarding: detect git/package manager/agent CLIs, pick agent + models (from the runtime's own catalog when it lists one), register Muninn MCP, write `.huginn/config.json` |
 | `setup` | `huginn setup [--agent <t1,t2\|all>] [--installed] [--status] [--dry-run] [flags]` | Register the Muninn MCP server + agent directives across supported agents (or inspect the provisioning matrix) |
 | `doctor` | `huginn doctor [flags]` | Diagnose the environment, providers and Muninn database |
+| `report` | `huginn report [--project <path>] [--iteration <n>] [--json]` | Print one iteration's receipt in two lanes: what the engine ran and proved (deterministic), what a model judged (judgment), and the claims the receipt cannot make. v1 receipts are classified from their phase names and say so |
 | `stats` | `huginn stats [--project <path>] [--json]` | Summarize what the recorded runs prove — iterations, per-phase verdicts and medians, fix rounds, promotion, token usage — by reading `.harness/state.json` and `.huginn/receipts/`; writes nothing and never calls a model |
 | `config` | `huginn config show\|set [flags]` | Inspect the effective models, profile and runtime, or persist `thinker`/`executor`/`profile`/`agent` to project or user config |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |

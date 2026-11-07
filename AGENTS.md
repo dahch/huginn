@@ -586,6 +586,13 @@ Eleven display conventions a TUI change must follow:
   the title text is composed by the pure `decisionTitle(req)` in `src/tui/decision.ts` (an exhaustive
   `switch`, so a new `DecisionKind` fails to compile until it gets a title). The feedback voice is
   `✓` / `!` / `…`.
+  The pipeline rows also carry the **evidence lane** (`EVIDENCE_GLYPHS`: `=` when the engine ran the
+  phase, `~` when a model judged it), appended inside the name column so the rail and the row count
+  do not move. It exists because a passing `VERIFY` and a passing `REVIEW` printed the same check
+  mark: the first is a command's exit code, the second is an opinion. `src/engine/evidence.ts` is the
+  one classification (phase → lane, plus the basis line and the claims a receipt cannot make);
+  `huginn report` prints the same split from a receipt, and `TEST_MODULE` belongs to the judgment
+  lane until the engine runs that suite itself.
   Never add an emoji display glyph. The gate marker literals (`### Overall gate: 🟢/🟡/🔴`,
   `### Overall fidelity: …`), the engine's `⚠️ REVIEW REQUESTED` handoff line and the runtime stream
   prefixes (`⚡ ✓ ✗ 💭`) are excluded: the first are a three-way contract, the last are producer

@@ -33,6 +33,25 @@ export const STATUS_GLYPHS = {
 export type StatusGlyph = keyof typeof STATUS_GLYPHS;
 
 /**
+ * The evidence lane of a phase row.
+ *
+ * A passing `VERIFY` means a command exited 0 on the verified tree; a passing
+ * `REVIEW` means a model read the diff and liked it. Both used to print the same
+ * check mark, so a run made only of opinions read exactly like one with command
+ * evidence behind it. The engine-executed phases carry `=` (a measured result),
+ * every model phase carries `~` (a judgment) — ASCII and one column, like the
+ * rest of the alphabet, so it never breaks the grid or the row count.
+ */
+export const EVIDENCE_GLYPHS = {
+  /** The engine ran it: real exit codes, commit state, a tree hash. */
+  deterministic: "=",
+  /** A model judged it; reproducible only as "the same model said so". */
+  judgment: "~",
+} as const;
+
+export type EvidenceGlyph = keyof typeof EVIDENCE_GLYPHS;
+
+/**
  * Decision-modal glyphs (REQ-68 / ADR-63).
  *
  * The decision modal and the feedback channel used to speak pictographs (`📋`,

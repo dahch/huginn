@@ -42,6 +42,7 @@ import { handleMemoryCommand, handleMcpCommand } from "./commands/memory";
 import { handleConfigCommand } from "./commands/config";
 import { handleCheckCommand } from "./commands/check";
 import { handleRuntimeCommand } from "./commands/runtime";
+import { handleReportCommand } from "./commands/report";
 import { handleStatsCommand } from "./commands/stats";
 import { handleDoctorCommand, handleSetupCommand } from "./commands/setup";
 import { handleInitCommand, printInitUsage } from "./commands/init.js";
@@ -128,6 +129,7 @@ Usage:
   huginn setup [--agent <t1,t2|all>] [--installed] [--status] [--dry-run] [--project <path>] [--force]
   huginn doctor [--project <path>] [--home <path>] [--opencode-config-dir <path>]
   huginn stats [--project <path>] [--json]  summarize the recorded runs (read-only)
+  huginn report [--project <path>] [--iteration <n>] [--json]  what one receipt proves
   huginn mcp run [--db <path>] [--project <path>]
   huginn config show [--project <path>] [--home <path>]
   huginn config set [--thinker <m>] [--executor <m>] [--global] [--project <path>] [--home <path>]
@@ -155,6 +157,8 @@ Commands:
   stats   summarize what the recorded runs prove: iterations, per-phase verdicts
           and medians, fix rounds, promotion and usage (reads state.json and the
           iteration receipts; writes nothing and never calls a model)
+  report  print one iteration's receipt in two lanes -- what the engine ran and
+          proved, what a model judged, and which claims it cannot make
   check   verify TypeScript execution contracts and pre-emit diagnostics
   runtime show which runtimes can execute the cycle, and what each one promises
   version print the version and exit (--version, -v)
@@ -305,6 +309,7 @@ const KNOWN_COMMANDS = new Set([
   "config",
   "promote",
   "stats",
+  "report",
 ]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -754,6 +759,10 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (command === "stats") {
     handleStatsCommand(args as Record<string, string | boolean | undefined>);
+    return;
+  }
+  if (command === "report") {
+    handleReportCommand(args as Record<string, string | boolean | undefined>);
     return;
   }
   // Live-first default (REQ-14.4): an unknown/absent subcommand — including a

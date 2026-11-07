@@ -5,6 +5,7 @@ import { gitBounded, headCommit } from "./diff.js";
 import { profileSpec, type ProfileEvidence, type ProfileName } from "./profiles.js";
 import { assertDocPath } from "../util/docPath.js";
 import { writeFileAtomic } from "../util/atomicWrite.js";
+import { partitionPhases, unprovenClaims, type EvidenceEntry } from "./evidence.js";
 import type { PhaseName, Verdict } from "./types.js";
 
 /**
@@ -25,9 +26,27 @@ export interface IterationReceipt {
   headCommit?: string;
   /** Tree hash of the verified state — the frozen evidence. */
   treeHash?: string;
+  /**
+   * Schema version. 1 (implicit, no field) listed only verdicts; 2 adds the
+   * evidence lanes and the claims the receipt cannot prove. Readers must keep
+   * accepting 1: a receipt is an archive, not a cache.
+   */
+  version?: 2;
   /** `strict-tdd` only: the tree before `EXECUTE`, so test-first is provable. */
   preExecuteTree?: string;
   verdicts: Array<{ phase: PhaseName; verdict?: Verdict }>;
+  /**
+   * Which lane each verdict belongs to, and what it rests on (v2). The lanes are
+   * derived from the phase, so this block is a *record* of the split rather than
+   * a second source of truth — but a reader of the JSON should not have to know
+   * that `VERIFY` is deterministic and `REVIEW` is not.
+   */
+  lanes?: {
+    deterministic: EvidenceEntry[];
+    judgment: EvidenceEntry[];
+  };
+  /** What this receipt cannot prove, stated at write time (v2). */
+  unproven?: string[];
   createdAt: string;
 }
 
@@ -240,7 +259,9 @@ export function buildIterationReceipt(opts: {
   const spec = profileSpec(opts.profile);
   if (spec.evidence === "none") return undefined;
   const head = headCommit(opts.projectPath) ?? undefined;
+  const lanes = partitionPhases(opts.verdicts);
   return {
+    version: 2,
     profile: spec.id,
     evidence: spec.evidence,
     iteration: opts.iteration,
@@ -250,6 +271,8 @@ export function buildIterationReceipt(opts: {
     treeHash: treeHash(opts.projectPath),
     ...(spec.evidence === "snapshot" ? { preExecuteTree: opts.preExecuteTree } : {}),
     verdicts: opts.verdicts,
+    lanes,
+    unproven: unprovenClaims(opts.verdicts.map((entry) => entry.phase)),
     createdAt: new Date().toISOString(),
   };
 }
