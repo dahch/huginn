@@ -225,8 +225,10 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 ## 5. Runtime requirements
 
 1. **Bun** (the bin is `#!/usr/bin/env bun`; the bundle is Bun-target).
-2. **An agent CLI on `$PATH`** — huginn has 13 **provisioning targets** but only 5 **runtimes**
-   (`pi`, `codex`, `claude`, `opencode`, `generic`). `opencode` is the default and the only runtime
+2. **An agent CLI on `$PATH`** — huginn has 13 **provisioning targets** but only four supported
+   **runtimes** (`pi`, `codex`, `claude`, `opencode`); `generic` still exists as a deprecated bridge
+   for the nine CLI-only targets and is not part of the support contract
+   ([RUNTIMES.md](RUNTIMES.md)). `opencode` is the default and the only runtime
    with a native permission channel (`--permissions ask|deny`), server-side session history, and an
    incremental output channel (`RuntimeCapabilities.streaming`, true only there — every subprocess
    CLI buffers stdout and resolves once, so a surface shows the phase report instead of pretending to
@@ -245,6 +247,11 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
    `templates/` directory, no `postinstall` hook and no warning about missing pieces.
 
 ### The runtime port
+
+> **The support contract lives in [RUNTIMES.md](RUNTIMES.md).** Only the four SDK-backed runtimes
+> (`pi`, `codex`, `claude`, `opencode`) execute cycles; the `generic` bridge is deprecated and
+> promises nothing. A capability table is a claim, so `scripts/probe-runtimes.ts --prompt` reproduces
+> the per-agent evidence (and `huginn runtime list --check` prints the declarations).
 
 `src/engine/agent/port.ts` is the driver-neutral contract the cycle is moving onto: a `RuntimeId`
 (defined in `src/agents/integrator.ts` next to the provisioning targets), a `RuntimeCapabilities`

@@ -4,10 +4,12 @@
 
 > ### 3.0.1-rc.2 — the SDK rewrite, out for testing
 >
-> Huginn executes **five runtimes** instead of driving thirteen agent CLIs: `pi` and `codex` run
-> their SDK in-process or over their app-server, `claude` uses its agent SDK (optional, external, and
-> the only non-OSS one), `opencode` keeps its daemon, and every other CLI goes through one configured
-> `generic` driver. The memory engine lives in [dahch/muninn](https://github.com/dahch/muninn).
+> Huginn executes cycles through **four SDK-backed runtimes** — `pi` and `codex` run their SDK
+> in-process or over their app-server, `claude` uses its agent SDK (optional, external, and the only
+> non-OSS one), `opencode` keeps its daemon — instead of driving thirteen agent CLIs. Every other
+> target is **provisioning only**: the `generic` bridge can still run a CLI, but it is deprecated and
+> promises nothing. [RUNTIMES.md](RUNTIMES.md) is the per-agent truth. The memory engine lives in
+> [dahch/muninn](https://github.com/dahch/muninn).
 >
 > A runtime only advertises what it can deliver — `huginn runtime list` prints the contract. This is a
 > **release candidate**: the stable release follows the first field reports, and the runtime list is
@@ -112,11 +114,13 @@ The claim is deliberately narrow: the process leaves evidence, and the evidence 
 - `git` on `$PATH` (module inference, diffs, worktree sandboxing). A directory that is inside **no**
   work tree is initialized in place by `run`/`plan`/`live` unless `--no-git-init` is passed.
 
-> **Runtimes vs provisioning targets.** `huginn runtime list` shows the five things that can execute
-> the cycle. `huginn setup`/`init`/`doctor` still know all 13 targets and register Muninn for each;
-> a target without a dedicated driver is executed through `generic` and is no longer a persisted
-> `agent` choice (an old config warns and falls back to auto-detection, while `--agent <target>`
-> keeps working).
+> **Runtimes vs provisioning targets.** `huginn runtime list` shows what can execute the cycle:
+> the four SDK-backed runtimes. `huginn setup`/`init`/`doctor` still know all 13 targets and register
+> Muninn for each. A target without a dedicated driver is only a provisioning target; the deprecated
+> `generic` bridge can still run one, but it declares nothing beyond interrupt and is no longer a
+> persisted `agent` choice (an old config warns and falls back to auto-detection, while
+> `--agent <target>` keeps working). [RUNTIMES.md](RUNTIMES.md) lists what is supported, what is
+> verified on this machine and what is not supported by design.
 
 > Note: the instructions huginn drives are **built in** (`src/engine/steps/instructions.ts`) — there
 > are no opencode subagents or slash commands to install, and `huginn install` is a compatibility
@@ -239,7 +243,7 @@ subcommand's help branch dead code.
 | `stats` | `huginn stats [--project <path>] [--json]` | Summarize what the recorded runs prove — iterations, per-phase verdicts and medians, fix rounds, promotion, token usage — by reading `.harness/state.json` and `.huginn/receipts/`; writes nothing and never calls a model |
 | `config` | `huginn config show\|set [flags]` | Inspect the effective models, profile and runtime, or persist `thinker`/`executor`/`profile`/`agent` to project or user config |
 | `check` | `huginn check [files...] [flags]` | Verify TypeScript compiler execution contracts with visual diagnostic snippets |
-| `runtime` | `huginn runtime list [--check]` | Show the five runtimes that can execute the cycle (`pi`, `codex`, `claude`, `opencode`, `generic`), with the capabilities each one declares (`--check` probes availability) |
+| `runtime` | `huginn runtime list [--check]` | Show the runtimes that can execute the cycle (`pi`, `codex`, `claude`, `opencode`; `generic` is deprecated), with the capabilities each one declares (`--check` probes availability). [RUNTIMES.md](RUNTIMES.md) records what was actually verified per agent |
 | `install` | `huginn install` | Compatibility no-op: the step prompts are built into huginn |
 | `memory` | `huginn memory <subcmd> [flags]` | Manage persistent codebase memory (`init`, `search`, `sync`, `index`, `decisions`) |
 | `mcp` | `huginn mcp run [flags]` | Start the Model Context Protocol stdio server for agent integration |

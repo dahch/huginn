@@ -4,6 +4,26 @@
 
 ### Added
 
+- **A runtime support contract, and the four SDKs it is built on are current.** `RUNTIMES.md` now
+  states per agent what can execute a cycle, what was actually verified on the reference machine and
+  what is not supported by design — only `pi`, `codex`, `claude` and `opencode` qualify; every other
+  target is provisioning-only and `generic` is a deprecated bridge that promises nothing. The four
+  SDKs move to `pi-coding-agent` 1.5.2, `codex-sdk` 0.169.0, `claude-agent-sdk` 0.3.325 and
+  `opencode-ai/sdk` 1.19.5. `scripts/probe-runtimes.ts [--prompt]` reproduces the evidence: codex
+  answered a real turn, pi answered one with an explicit model, claude is wired but not logged in
+  here, and opencode's installed v2 CLI is refused with a reason (below).
+- **`huginn runtime list --check` stops conflating "cannot enumerate" with "cannot run".**
+  `Availability` gains a `note`, separate from `reason`: pi's SDK does not read the providers in
+  `~/.pi/agent/models.json`, so an empty catalog used to mark the runtime unavailable even though
+  `--model provider/id` worked. It now reads `available (no model catalog…)` instead.
+- **opencode v2 is refused instead of timing out.** The driver speaks the v1 HTTP API; a v2 binary
+  serves `/api/*` and answers unknown paths with the web app's HTML, so the v1 health check could
+  only fail after 60 s. The driver now reads `opencode --version` and refuses v2 with the exact
+  reason. Two silent bugs behind it are fixed too: `--port 0` was passed straight through (the
+  server bound an ephemeral port nobody learned), and the health check could not tell HTML from a
+  JSON `{healthy}` body.
+
+
 - **A result now says what it is, not only whether it passed.** `src/engine/evidence.ts` classifies
   every phase by its producer: the engine runs `VERIFY`, `COMMIT_ALL` and `REPAIR_PROMOTION` and
   gates on real exit codes, every other phase is a model turn. `TEST_MODULE` sits in the judgment

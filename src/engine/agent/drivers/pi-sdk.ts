@@ -286,11 +286,15 @@ export function createPiSdkPort(
 
     async isAvailable(): Promise<Availability> {
       try {
+        // The question is "can this runtime execute", not "can it enumerate".
+        // pi's providers are declared in ~/.pi/agent/models.json, which the SDK's
+        // ModelRuntime does not read the same way the CLI does, so an empty
+        // catalog is a caveat, not an outage: `--model provider/id` still works.
         const models = await resolvedAdapter.listModels();
         if (models.length > 0) return { ok: true };
         return {
-          ok: false,
-          reason: "the pi SDK is installed but exposes no available model; run `pi` once to sign in",
+          ok: true,
+          note: "no model catalog from the SDK; pass --model explicitly (pi providers live in ~/.pi/agent/models.json)",
         };
       } catch (err) {
         return {

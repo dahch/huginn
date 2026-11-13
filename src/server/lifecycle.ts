@@ -7,6 +7,7 @@ import {
   readFileSync,
   writeSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { checkDocPath, NO_FOLLOW } from "../util/docPath";
 
@@ -127,6 +128,27 @@ function unrefDelay(ms: number): Promise<void> {
   });
 }
 
+/**
+ * A port the OS says is free.
+ *
+ * The driver used to pass `--port 0` straight to `opencode serve` and then poll
+ * `http://127.0.0.1:0`, which can never answer: the process binds an ephemeral
+ * port the caller never learns. Asking the OS for one first costs a few
+ * milliseconds and makes the connection target knowable.
+ */
+export async function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
 async function waitForHealth(url: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
@@ -136,6 +158,14 @@ async function waitForHealth(url: string, timeoutMs: number): Promise<void> {
     try {
       const res = await fetch(`${url}/global/health`);
       if (res.ok) {
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("text/html")) {
+          // v2 opencode serves the web app for unknown paths, so an HTML body is
+          // not a healthy v1 server — it is the wrong API answering.
+          throw new Error(
+            "the server answered HTML on /global/health: opencode v2 serves /api/*, this driver speaks v1",
+          );
+        }
         const body = (await res.json()) as { healthy?: boolean };
         if (body.healthy !== false) return;
       }
@@ -159,9 +189,10 @@ async function waitForHealth(url: string, timeoutMs: number): Promise<void> {
 
 export async function startServer(
   projectPath: string,
-  port: number,
+  requestedPort: number,
   timeoutMs: number,
 ): Promise<ServerHandle> {
+  const port = requestedPort > 0 ? requestedPort : await findFreePort();
   console.error(`[huginn] starting opencode server on port ${port}...`);
   // SEC-101: `undefined` when the repository ships the log path as a symlink (or
   // a path escaping the project) — the server still runs, it just writes no log.

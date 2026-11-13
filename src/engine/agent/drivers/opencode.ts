@@ -12,7 +12,11 @@ import {
 import { events } from "../../engineEvents.js";
 import { resolveModel } from "../../modelRouter.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
-import { OpencodeRuntimeAdapter } from "../adapters/opencode.js";
+import {
+  OpencodeRuntimeAdapter,
+  opencodeMajorVersion,
+  probeOpencodeVersion,
+} from "../adapters/opencode.js";
 import type {
   EventSink,
   PermissionHandler,
@@ -25,7 +29,25 @@ import type {
 } from "../port.js";
 import type { McpServerListing, McpStatusReport, ModelCatalog, PromptResult } from "../types.js";
 
+/**
+ * Why a given `opencode --version` cannot run this driver, if it cannot.
+ *
+ * Pure on purpose: the availability probe calls it, and a test can pin every
+ * answer without a binary, a server or a network.
+ */
+export function opencodeVersionRefusal(version: string | undefined): string | undefined {
+  const major = version ? opencodeMajorVersion(version) : undefined;
+  if (major === undefined || major < 2) return undefined;
+  const label = version!.replace(/^opencode\s+/i, "");
+  return (
+    `opencode ${label} speaks the v2 API; this driver targets v1.x. ` +
+    `Install the v1 line (opencode@1) or wait for the v2 driver.`
+  );
+}
+
 export interface OpencodePortOptions {
+  /** Version probe, injectable so a test never depends on the host's binary. */
+  versionProbe?: () => string | undefined;
   client?: OpencodeClient;
   baseUrl?: string;
   projectPath?: string;
@@ -328,9 +350,16 @@ export function createOpencodePort(options: OpencodePortOptions = {}): RuntimePo
     async isAvailable() {
       if (client) return { ok: true };
       const available = await legacy.isAvailable();
-      return available
-        ? { ok: true }
-        : { ok: false, reason: "the opencode binary is not installed or is not on PATH" };
+      if (!available) {
+        return { ok: false, reason: "the opencode binary is not installed or is not on PATH" };
+      }
+      // The driver speaks the v1 HTTP API (/global/*, /session). A v2 CLI serves
+      // /api/* and answers unknown paths with the web app's HTML, so a v1 health
+      // check cannot tell a wrong API from a broken server — it just times out.
+      const version = (options.versionProbe ?? probeOpencodeVersion)();
+      const refusal = opencodeVersionRefusal(version);
+      if (refusal) return { ok: false, reason: refusal };
+      return { ok: true };
     },
 
     listModels(): Promise<ModelCatalog> {

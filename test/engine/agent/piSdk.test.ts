@@ -139,7 +139,13 @@ describe("pi SDK driver specifics", () => {
     const catalog = await port.listModels();
     expect(catalog.models).toEqual([]);
     expect(catalog.reason).toBeTruthy();
-    expect((await port.isAvailable()).ok).toBe(false);
+    // An empty catalog is a caveat, not an outage: the SDK cannot read the
+    // providers declared in ~/.pi/agent/models.json, but an explicit model id
+    // still executes, so the runtime stays available and says what is missing.
+    const availability = await port.isAvailable();
+    expect(availability.ok).toBe(true);
+    expect(availability.note).toContain("no model catalog");
+    expect(availability.reason).toBeUndefined();
   });
 
   it("explains a failed catalog instead of throwing", async () => {

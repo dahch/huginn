@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { delimiter, join } from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { isExecutableBinary } from "../binaryUtils.js";
@@ -28,6 +29,33 @@ import { resolveModel } from "../../modelRouter.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
 import { listMcpServersViaCommand, parseOpencodeMcpList } from "./mcpList.js";
 import { runModelListCommand } from "./modelList.js";
+
+/**
+ * Parse the major version out of `opencode --version`.
+ *
+ * The CLI prints `opencode v2.3.0` (older builds: `2.3.0`). The API this driver
+ * speaks — `/global/*` — exists in the v1 line; a v2 binary serves `/api/*` and
+ * answers unknown paths with the web app's HTML, so a v1 health check can never
+ * see a real failure signal. Reading the version is the only cheap way to say
+ * that out loud instead of timing out.
+ */
+export function opencodeMajorVersion(output: string): number | undefined {
+  const match = /(\d+)\.\d+\.\d+/.exec(output);
+  if (!match) return undefined;
+  const major = Number(match[1]);
+  return Number.isInteger(major) ? major : undefined;
+}
+
+/** `opencode --version` output, or `undefined` when the probe fails. */
+export function probeOpencodeVersion(binary = "opencode"): string | undefined {
+  try {
+    const result = spawnSync(binary, ["--version"], { encoding: "utf8", timeout: 5_000 });
+    if (result.status !== 0) return undefined;
+    return (result.stdout ?? "").trim();
+  } catch {
+    return undefined;
+  }
+}
 
 export interface OpencodeRuntimeOptions {
   client?: OpencodeClient;

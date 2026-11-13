@@ -65,7 +65,15 @@ export type FilesystemIsolation = "none" | "worktree" | "home-read-only";
 /** Why a driver cannot run here, in words a human can act on. */
 export interface Availability {
   readonly ok: boolean;
+  /** Why the runtime cannot run, when `ok` is false. */
   readonly reason?: string;
+  /**
+   * A caveat that does not make the runtime unusable — today, a loaded SDK whose
+   * model catalog is empty. It is separate from `reason` on purpose: a runtime
+   * that can execute with an explicit model must not be reported as unavailable
+   * just because it cannot enumerate what it could run.
+   */
+  readonly note?: string;
   /** Resolved binary path, when the driver knows it. */
   readonly path?: string;
 }

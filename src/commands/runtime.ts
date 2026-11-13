@@ -86,7 +86,8 @@ export async function handleRuntimeCommand(
       try {
         const availability = await port.isAvailable();
         status = availability.ok
-          ? chalk.green("  available")
+          ? chalk.green("  available") +
+            (availability.note ? chalk.dim(` (${availability.note})`) : "")
           : chalk.yellow(`  unavailable: ${availability.reason ?? "unknown reason"}`);
       } catch (err) {
         status = chalk.red(`  probe failed: ${err instanceof Error ? err.message : String(err)}`);
