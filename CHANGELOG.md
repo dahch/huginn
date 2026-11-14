@@ -4,6 +4,10 @@
 
 ### Added
 
+- **`i` shows the plan's iteration list in `huginn run`, including after a live handoff.** The list
+  reads the titles from `plan.md` when the caller does not pass them (the live console swaps in the
+  run dashboard on `/go` without them), and when there is no plan to read it logs why instead of
+  silently ignoring the key.
 - **`i` shows the plan's iteration list in `huginn run`.** A read-only checklist of every iteration
   title, opened on the one that is running (`>` marks it) and closed by default, so it costs no rows
   until you ask: `i` opens and closes it, `Esc` closes it, `↑`/`↓` move the window, and the subtitle

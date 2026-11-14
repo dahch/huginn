@@ -650,7 +650,10 @@ Eleven display conventions a TUI change must follow:
 - **The plan's iteration list is read-only and exists on demand (ADR-75 territory).** `i` in
   `huginn run` opens `IterationListModal` (`src/tui/IterationListModal.tsx`) with the plan's titles,
   which `runTui`→`renderTui`→`Dashboard` receive as `iterations` (the CLI passes
-  `plan.iterations.map(i => i.title)`). It is closed by default, so it costs no rows until asked for;
+  `plan.iterations.map(i => i.title)`). The live console swaps this dashboard in on handoff
+  (`<Dashboard engine={cycle} …/>`) without that prop, so an empty `iterations` falls back to
+  reading `cfg.planPath`; if the plan is missing too, `i` emits a `warn` log saying so instead of
+  doing nothing — that silent no-op is exactly how the handoff bug reached a user. It is closed by default, so it costs no rows until asked for;
   while open it consumes every key (`i`/`Esc` close, `↑`/`↓` move the focus, nothing leaks to the
   cycle — importantly `Esc` must not abort), and a decision closes it because the decision owns the
   keyboard. It makes exactly one claim: `>` marks the running iteration; it never marks an earlier

@@ -14,6 +14,7 @@ import { THEME, mcpStatusToken } from "./theme.js";
 import { TWO_RAVENS, ravenBlink, ravenMood, type RavenMood } from "../brand.js";
 import { idleAgentPhrase } from "./feedback.js";
 import { EVIDENCE_GLYPHS, STATUS_GLYPHS } from "./glyphs.js";
+import { loadPlan } from "../plan/parser";
 import { evidenceClassForPhase } from "../engine/evidence.js";
 import { Card, cardChrome } from "./Card.js";
 import { footerHints } from "./footer.js";
@@ -167,6 +168,21 @@ export function Dashboard({
    * never touches the run.
    */
   const [iterationFocus, setIterationFocus] = useState<number | null>(null);
+  /**
+   * The titles the list shows. A caller may hand them over (the CLI does), but
+   * the live console swaps this dashboard in on handoff without them — and the
+   * plan is already on disk, so the panel reads it instead of quietly having
+   * nothing to show. A missing or unparseable plan is the only empty case, and
+   * `i` reports that in the log rather than doing nothing.
+   */
+  const planTitles = useMemo<readonly string[]>(() => {
+    if (iterations.length > 0) return iterations;
+    try {
+      return loadPlan(cfg.planPath).iterations.map((iteration) => iteration.title);
+    } catch {
+      return [];
+    }
+  }, [iterations, cfg.planPath]);
 
   const [ui, setUi] = useState<UiState>(() => {
     const st = engine.getState();
@@ -487,12 +503,12 @@ export function Dashboard({
       promotionHeight -
       1,
   );
-  const iterating = iterationFocus !== null && !ui.decision && iterations.length > 0;
+  const iterating = iterationFocus !== null && !ui.decision && planTitles.length > 0;
   const iterationHeight = iterating
     ? Math.min(
         iterationMaxRows,
         ITERATION_LIST_CHROME +
-          Math.max(1, iterationListWindow(iterations.length, iterationFocus, iterationMaxRows).length),
+          Math.max(1, iterationListWindow(planTitles.length, iterationFocus, iterationMaxRows).length),
       )
     : 0;
 
@@ -572,7 +588,7 @@ export function Dashboard({
         return;
       }
       if (key.downArrow) {
-        setIterationFocus((f) => Math.min(iterations.length - 1, (f ?? 0) + 1));
+        setIterationFocus((f) => Math.min(planTitles.length - 1, (f ?? 0) + 1));
         return;
       }
       return;
@@ -616,9 +632,18 @@ export function Dashboard({
       if (ui.paused) engine.resume();
       else engine.pause();
       setUi((s) => ({ ...s, paused: !s.paused }));
-    } else if (input === "i" && iterations.length > 0) {
+    } else if (input === "i") {
+      if (planTitles.length === 0) {
+        // A key that does nothing is indistinguishable from a broken app: say why.
+        events.emit("log", {
+          level: "warn",
+          message: "[i] no iteration titles: plan.md is missing or has no iterations",
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
       // Open on the running iteration, where the reader's attention already is.
-      setIterationFocus(Math.min(Math.max(0, ui.currentIteration - 1), iterations.length - 1));
+      setIterationFocus(Math.min(Math.max(0, ui.currentIteration - 1), planTitles.length - 1));
     } else if (input === "v") {
       const next = !ui.verbose;
       verboseRef.current = next;
@@ -720,7 +745,7 @@ export function Dashboard({
 
       {iterating ? (
         <IterationListModal
-          titles={iterations}
+          titles={planTitles}
           current={ui.currentIteration}
           focus={iterationFocus ?? 0}
           maxRows={iterationMaxRows}

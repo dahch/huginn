@@ -1,4 +1,7 @@
 import React from "react";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "./inkRender";
@@ -37,10 +40,10 @@ const engineOf = (requestAbort = () => {}) =>
     requestAbort,
   }) as unknown as CycleEngine;
 
-const configOf = () =>
+const configOf = (planPath = "/tmp/p/plan.md") =>
   ({
     projectPath: "/tmp/p",
-    planPath: "/tmp/p/plan.md",
+    planPath,
     specPath: "/tmp/p/spec.md",
     adrPath: "/tmp/p/adr.md",
     thinker: "a/b",
@@ -103,7 +106,10 @@ describe("iteration list", () => {
 });
 
 describe("the run dashboard's iteration list", () => {
-  async function mount(requestAbort = () => {}) {
+  async function mount(
+    requestAbort = () => {},
+    options: { iterations?: readonly string[]; planPath?: string } = {},
+  ) {
     const stdout = new PassThrough() as any;
     stdout.columns = 110;
     stdout.rows = 30;
@@ -115,9 +121,9 @@ describe("the run dashboard's iteration list", () => {
     const instance = render(
       React.createElement(Dashboard, {
         engine: engineOf(requestAbort),
-        cfg: configOf(),
+        cfg: configOf(options.planPath),
         autoExit: false,
-        iterations: TITLES,
+        iterations: options.iterations ?? TITLES,
       }),
       { stdout, stdin, patchConsole: false },
     );
@@ -152,6 +158,39 @@ describe("the run dashboard's iteration list", () => {
     instance.unmount();
     await sleep(50);
     expect(requestAbort).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the plan on disk when the caller carries no titles (live handoff)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "huginn-iter-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan: demo\n\n## Iteration 1 — First stored title\n\nmodules: .\n\n## Iteration 2 — Second stored title\n\nmodules: .\n",
+    );
+    const { instance, stdin, output } = await mount(undefined, { iterations: [], planPath });
+    stdin.write("i");
+    await sleep(120);
+    instance.unmount();
+    await sleep(50);
+    expect(output()).toContain("ITERATIONS");
+    expect(output()).toContain("First stored title");
+  });
+
+  it("logs why i does nothing when there is no plan to read", async () => {
+    const emit = vi.spyOn(events, "emit");
+    const { instance, stdin } = await mount(undefined, {
+      iterations: [],
+      planPath: "/nonexistent/huginn/plan.md",
+    });
+    stdin.write("i");
+    await sleep(120);
+    instance.unmount();
+    await sleep(50);
+    const explained = emit.mock.calls.some(
+      ([name, payload]) =>
+        name === "log" && String((payload as { message?: string }).message ?? "").includes("no iteration titles"),
+    );
+    expect(explained).toBe(true);
   });
 
   it("does nothing on i when the plan has no titles", async () => {

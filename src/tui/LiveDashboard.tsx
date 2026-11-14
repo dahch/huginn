@@ -567,6 +567,9 @@ export function LiveApp({
     })();
   }, [cycle, exit, live]);
 
+  // The handoff does not carry the plan's titles: the dashboard reads them from
+  // `cfg.planPath` when the prop is absent (the same fallback protects any other
+  // caller that only has a run config).
   if (cycle) return <Dashboard engine={cycle} cfg={cfg} autoExit={false} />;
   return (
     <RefineView
