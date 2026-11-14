@@ -134,7 +134,47 @@ export function createOpencodePort(options: OpencodePortOptions = {}): RuntimePo
     }
   };
 
+  /**
+   * v2 renamed the whole event vocabulary (`session.text.delta`,
+   * `session.step.ended`, `session.execution.succeeded`). The pump below speaks
+   * v1, so v2 frames are mapped here and stop: ignoring them would silently kill
+   * streaming on a v2 server while the blocking prompt still returned text.
+   */
+  const handleV2Event = (frame: unknown): boolean => {
+    const v2 = frame as { type?: string; data?: Record<string, unknown> };
+    if (typeof v2?.type !== "string" || !v2.type.startsWith("session.")) return false;
+    const data = (v2.data ?? {}) as Record<string, unknown>;
+    const sessionId = typeof data.sessionID === "string" ? data.sessionID : undefined;
+    const sink = sessionId ? registrations.get(sessionId)?.sink : undefined;
+    if (!sink) return true;
+    if (v2.type === "session.text.delta" && typeof data.delta === "string" && data.delta.length > 0) {
+      sink({ type: "text", text: data.delta });
+    } else if (v2.type === "session.reasoning.delta" && typeof data.delta === "string" && data.delta.length > 0) {
+      sink({ type: "reasoning", text: data.delta });
+    } else if (v2.type === "session.step.ended") {
+      const tokens = data.tokens as { input?: number; output?: number } | undefined;
+      sink({
+        type: "usage",
+        inputTokens: tokens?.input,
+        outputTokens: tokens?.output,
+        costUsd: typeof data.cost === "number" ? data.cost : undefined,
+      });
+    } else if (v2.type === "session.execution.failed" || v2.type === "session.execution.error") {
+      const message =
+        typeof data.error === "string"
+          ? data.error
+          : typeof data.message === "string"
+            ? data.message
+            : "the opencode session failed";
+      sink({ type: "error", message });
+    }
+    return true;
+  };
+
   const handleEvent = async (ev: unknown): Promise<void> => {
+    // v2 frames are shaped differently (data, not properties) and use their own
+    // vocabulary; map them first and stop, so the v1 switch never sees them.
+    if (handleV2Event(ev)) return;
     const event = ev as { type?: string; properties?: Record<string, unknown> } | undefined;
     if (!event || typeof event.type !== "string") return;
 
@@ -319,6 +359,7 @@ export function createOpencodePort(options: OpencodePortOptions = {}): RuntimePo
             model: modelRef,
             timeoutMs: request.timeoutMs,
             directory: request.directory ?? defaultDirectory,
+            v2: legacy.v2Auth?.(),
           });
           registration.sink?.({ type: "done", result });
           return result;

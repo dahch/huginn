@@ -4,6 +4,16 @@
 
 ### Added
 
+- **opencode v2 completes a real turn.** The bootstrap captures the password the
+  server prints, sends HTTP Basic and points the SDK at `/api`; the prompt is
+  asynchronous there (`POST /api/session/{id}/prompt` returns the user message and
+  the answer arrives on the event stream), so `src/server/opencodeV2.ts` subscribes
+  first, prompts second and resolves on `session.execution.succeeded`. Text deltas
+  now reach the console sink, and tokens/cost are captured from the step event.
+  Verified against v2.3.0: a real prompt returns its text and emits `text` then
+  `done`. Permissions on v2 are not exercised yet.
+
+
 - **A runtime support contract, and the four SDKs it is built on are current.** `RUNTIMES.md` now
   states per agent what can execute a cycle, what was actually verified on the reference machine and
   what is not supported by design — only `pi`, `codex`, `claude` and `opencode` qualify; every other

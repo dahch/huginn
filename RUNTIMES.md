@@ -24,9 +24,9 @@ promises nothing beyond "a prompt went in and text came out".
 | `pi` | `@earendil-works/pi-coding-agent` 1.5.2, in-process | history, interrupt, dynamic catalog, MCP listing | **one turn works with an explicit model** (`commandcode/deepseek/deepseek-v4.1-flash` → `pong`). The SDK does **not** enumerate the providers declared in `~/.pi/agent/models.json`, so the catalog is empty and availability carries a note instead of a refusal |
 | `codex` | `@openai/codex-sdk` 0.169.0 | history | **one turn works out of the box** (`pong` in 4.1 s). No abort, no streaming, no approvals, no catalog |
 | `claude` | `@anthropic-ai/claude-agent-sdk` 0.3.325 (optional, external) | history, interrupt | **not verified on this machine**: the SDK loads but the CLI answers "Not logged in · Please run /login". The driver is wired; the credential is not |
-| `opencode` | `@opencode-ai/sdk` 1.19.5 + `opencode serve` | history, resume, streaming, interactive permissions, dynamic catalog, usage, MCP, interrupt | **v2 partially verified.** Bootstrap, Basic auth, `/api` root and session creation work against v2.3.0 (`scripts/probe-opencode-v2.ts`). The remaining piece is the prompt path: v2's `POST /api/session/{id}/prompt` returns immediately and the answer arrives on the event stream, while the SDK's generated helper still targets the v1 `/message` + `parts` shape |
+| `opencode` | `@opencode-ai/sdk` 1.19.5 + `opencode serve` | history, resume, streaming, interactive permissions, dynamic catalog, usage, MCP, interrupt | **v2 verified end to end** against v2.3.0: bootstrap, Basic auth, session creation, the asynchronous prompt (`POST /api/session/{id}/prompt`) resolved through the event stream, text deltas reaching the sink and a `done` event, with tokens and cost captured. Permissions on v2 are **not exercised yet** — the response path is the SDK's, and no real permission prompt was triggered |
 
-### The opencode v2 migration (in progress)
+### The opencode v2 migration
 
 What the probe established against `opencode v2.3.0`, and what the driver must do:
 
@@ -40,10 +40,17 @@ What the probe established against `opencode v2.3.0`, and what the driver must d
 | events | `GET /event` (SSE) | the v2 SDK's event stream |
 | permissions | `onPermission` over SSE | `/api/permission` |
 
-The SDK package (1.19.5) is already generated against v2, so the work is in the
-driver and the server bootstrap: capture the password, send Basic auth, replace
-the `/global` health check, and move sessions/events/permissions to the `/api`
-shapes. `scripts/probe-opencode-v2.ts` is the regression tripwire.
+The bootstrap and the prompt path are done. The SDK's generated *paths* are
+relative to the API root, so pointing the client at `/api` fixed sessions and
+events; the prompt needed real work, because v2's POST returns the user message
+immediately and the answer arrives as `session.text.delta` →
+`session.text.ended` → `session.execution.succeeded`. `src/server/opencodeV2.ts`
+subscribes first, prompts second and resolves on the execution event; the driver
+also maps those frames into the console sink, so streaming is real on v2.
+
+Still open on this runtime: permissions and questions were not exercised against
+v2 (the response helper still uses the SDK's path), and a v1 server keeps the
+blocking prompt through the same code with no password.
 
 ### What the columns mean
 

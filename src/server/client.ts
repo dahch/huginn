@@ -1,4 +1,5 @@
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
+import { promptV2, type V2Auth } from "./opencodeV2.js";
 import type { ModelRef } from "../engine/types";
 import { events } from "../engine/engineEvents";
 
@@ -262,8 +263,29 @@ export async function prompt(
      * sandbox worktree rather than the primary project tree (REQ-17).
      */
     directory?: string;
+    /** Present for a v2 server: the prompt is asynchronous there. */
+    v2?: V2Auth;
   },
 ): Promise<PromptResult> {
+  if (opts.v2) {
+    const result = await promptV2({
+      ...opts.v2,
+      sessionId,
+      text: opts.text,
+      agent: opts.agent,
+      model: opts.model,
+      directory: opts.directory,
+      timeoutMs: opts.timeoutMs,
+    });
+    return {
+      messageId: result.messageId,
+      text: result.text,
+      raw: {
+        info: { id: result.messageId, tokens: result.tokens, cost: result.cost },
+        parts: [{ type: "text", text: result.text }],
+      },
+    };
+  }
   const body: Record<string, unknown> = {
     parts: [textPart(opts.text)],
   };

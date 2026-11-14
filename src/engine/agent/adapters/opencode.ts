@@ -24,6 +24,7 @@ import {
   runCommand as clientRunCommand,
 } from "../../../server/client.js";
 import { startServer, type ServerHandle } from "../../../server/lifecycle.js";
+import type { V2Auth } from "../../../server/opencodeV2.js";
 import { events } from "../../engineEvents.js";
 import { resolveModel } from "../../modelRouter.js";
 import { sanitizeTerminalText } from "../../../util/text.js";
@@ -179,6 +180,17 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
     if (options.client) {
       this._client = options.client;
     }
+  }
+
+  /**
+   * The v2 auth this adapter captured when it started the daemon, if it did.
+   * `undefined` for an injected client or a v1 server, where the blocking SDK
+   * prompt keeps working.
+   */
+  v2Auth(): V2Auth | undefined {
+    const handle = this.serverHandle;
+    if (!handle?.password) return undefined;
+    return { baseUrl: handle.url, password: handle.password };
   }
 
   get client(): OpencodeClient {
