@@ -580,7 +580,11 @@ Eleven display conventions a TUI change must follow:
   the order, so `VERIFY` sits right after `EXECUTE` in the Huginn Cycle. It names the increment in its
   title row (`iter n/m`) and hangs the phases off one rail (`├─`, the last `└─`, a `FIX_*` round
   `   └─`), which is still one row per phase — a connector is drawn inside the row it already
-  occupies.
+  occupies. The header bar is **phase-weighted** (`src/tui/progress.ts`): an iteration is worth
+  `1/totalIterations` and earns it only as its phases get a verdict, so a one-iteration plan starts
+  at 0% instead of 100% and reaches 100% only when the last phase is done. The denominator is
+  `iterationPhases(profile)` — the profile's own phases, de-duplicated (strict-tdd repeats
+  `TEST_MODULE` and must not make 100% unreachable).
 - **A table needs the whole block, and every rule needs the card's real width.** `MarkdownBlock`
   (`src/tui/markdown.tsx`) is the only caller that may format a report or a stream buffer: it hands
   each contiguous table block (header + `|---|` + rows, detected by `isTableHeader`/`tableBlockEnd`)

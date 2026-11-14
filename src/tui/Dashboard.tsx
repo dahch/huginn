@@ -18,6 +18,7 @@ import { loadPlan } from "../plan/parser";
 import { evidenceClassForPhase } from "../engine/evidence.js";
 import { Card, cardChrome } from "./Card.js";
 import { footerHints } from "./footer.js";
+import { runProgressPercent } from "./progress.js";
 import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
 import { DecisionModal } from "./DecisionModal.js";
 import { ITERATION_LIST_CHROME, iterationListWindow } from "./iterationList.js";
@@ -133,9 +134,9 @@ interface UiState {
   verbose: boolean;
 }
 
-function renderProgressBar(current: number, total: number, width = 16): string {
-  if (total <= 0) return "[]";
-  const pct = Math.min(1, Math.max(0, current / total));
+/** One bar from an already computed percent, so the header never divides twice. */
+export function renderProgressBar(percent: number, width = 16): string {
+  const pct = Math.min(1, Math.max(0, Number.isFinite(percent) ? percent / 100 : 0));
   const filled = Math.round(pct * width);
   const empty = width - filled;
   return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${Math.round(pct * 100)}%`;
@@ -666,6 +667,28 @@ export function Dashboard({
   const phaseElapsed = now - ui.phaseStartedAt;
   const spinner = SPINNER_FRAMES[spinnerIndex] ?? "⠋";
 
+  // The bar is phase-weighted: a 1-iteration plan is not 100% before the first
+  // phase runs, and each verdict moves it by 1/(iterations × phases) of the run.
+  const donePhases = useMemo(
+    () =>
+      new Set(
+        Object.entries(ui.phases)
+          .filter(([, phase]) => phase.verdict !== undefined)
+          .map(([name]) => name),
+      ),
+    [ui.phases],
+  );
+  const progressPercent = useMemo(
+    () =>
+      runProgressPercent({
+        currentIteration: ui.currentIteration,
+        totalIterations: ui.totalIterations,
+        profile: cfg.profile,
+        donePhases,
+      }),
+    [ui.currentIteration, ui.totalIterations, cfg.profile, donePhases],
+  );
+
   const streamStart = Math.max(0, outputRows.length - streamLinesCount - streamScroll);
   const visibleStreamRows = outputRows.slice(streamStart, streamStart + streamLinesCount);
 
@@ -681,6 +704,7 @@ export function Dashboard({
         plan={headerPlan}
         iteration={ui.currentIteration}
         totalIterations={ui.totalIterations}
+        progress={progressPercent}
         iterationTitle={ui.iterationTitle}
         modules={ui.iterationModules}
         currentPhase={ui.currentPhase}
@@ -771,6 +795,7 @@ function HeaderCard({
   plan,
   iteration,
   totalIterations,
+  progress,
   iterationTitle,
   modules,
   currentPhase,
@@ -787,6 +812,8 @@ function HeaderCard({
   plan: RavenHeaderPlan;
   iteration: number;
   totalIterations: number;
+  /** Phase-weighted percent of the whole run (see src/tui/progress.ts). */
+  progress: number;
   iterationTitle: string;
   modules: string[];
   currentPhase: string;
@@ -804,7 +831,7 @@ function HeaderCard({
   agentId?: string;
 }) {
   const isFix = currentPhase.startsWith("FIX");
-  const progressStr = renderProgressBar(iteration, Math.max(1, totalIterations));
+  const progressStr = renderProgressBar(progress);
   const mcpBadge = formatMcpBadge(mcpStatus, agentId);
   /** Same precedence as the live header: busy > degraded > idle. */
   const mood: RavenMood = ravenMood({ busy, degraded: mcpBadge.status === "degraded" });

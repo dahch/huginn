@@ -4,6 +4,14 @@
 
 ### Added
 
+- **The progress bar is phase-weighted.** A one-iteration plan showed 100% before the first phase
+  ran, because the bar divided iterations by iterations. Now an iteration is worth `1/total` and
+  only earns it phase by phase: each verdict moves the bar by `1/(iterations × phases)`, so a
+  1/1 run starts at 0% and reads 100% only when the last phase has a verdict. The denominator comes
+  from the active profile (`iterationPhases`), de-duplicated for `strict-tdd`'s repeated
+  `TEST_MODULE`.
+
+
 - **`i` shows the plan's iteration list in `huginn run`, including after a live handoff.** The list
   reads the titles from `plan.md` when the caller does not pass them (the live console swaps in the
   run dashboard on `/go` without them), and when there is no plan to read it logs why instead of
