@@ -108,9 +108,9 @@ describe("semantic glyph table (REQ-52)", () => {
       expect([...glyph], surface).toHaveLength(1);
       expect(stringWidth(glyph), surface).toBe(1);
     }
-    // The three names are the API the modal titles compose from, not ad-hoc
+    // The names are the API the modal titles compose from, not ad-hoc
     // characters in the JSX.
-    expect(MODAL_TITLE_GLYPHS).toEqual({ agent: ">", help: "?", inspector: "·" });
+    expect(MODAL_TITLE_GLYPHS).toEqual({ agent: ">", help: "?", inspector: "·", iterations: "·" });
     // Only the inspector spends the middle dot; the other two are ASCII.
     expect(MODAL_TITLE_GLYPHS.agent.codePointAt(0)).toBeLessThan(0x80);
     expect(MODAL_TITLE_GLYPHS.help.codePointAt(0)).toBeLessThan(0x80);

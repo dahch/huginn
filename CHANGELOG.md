@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`i` shows the plan's iteration list in `huginn run`.** A read-only checklist of every iteration
+  title, opened on the one that is running (`>` marks it) and closed by default, so it costs no rows
+  until you ask: `i` opens and closes it, `Esc` closes it, `↑`/`↓` move the window, and the subtitle
+  names how many titles are hidden above/below. It makes exactly one claim — which iteration is
+  running — and never marks earlier ones as done. It renders through the shared modal frame and the
+  console's measured-surface rules (one title row, one footer row, no pictographs).
+
+
 - **Verbose is a transcript now, and the output panel actually scrolls.** `v` in `huginn run` used to
   widen the panel by seven percent and print `[VERBOSE]` — it changed nothing you could read. It now
   switches the panel from *the phase that is running* to *the whole run*: every phase's stream with a

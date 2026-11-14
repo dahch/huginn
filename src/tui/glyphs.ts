@@ -90,6 +90,7 @@ export const MODAL_TITLE_GLYPHS = {
   agent: ">",
   help: "?",
   inspector: "·",
+  iterations: "·",
 } as const;
 
 /** Compile-time proof that every {@link DecisionKind} has a glyph. */

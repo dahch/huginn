@@ -975,7 +975,11 @@ export async function main(argv: string[]): Promise<void> {
   try {
     if (cfg.tui) {
       const { runTui } = await import("./tui/app");
-      await runTui(engine, cfg);
+      await runTui(
+        engine,
+        cfg,
+        plan.iterations.map((iteration) => iteration.title),
+      );
     } else {
       const { runHeadless } = await import("./headless");
       await runHeadless(engine);

@@ -103,10 +103,14 @@ export function setupTuiEnvironment(): () => void {
   };
 }
 
-export async function renderTui(engine: CycleEngine, cfg: RunConfig): Promise<void> {
+export async function renderTui(
+  engine: CycleEngine,
+  cfg: RunConfig,
+  iterations?: readonly string[],
+): Promise<void> {
   const cleanup = setupTuiEnvironment();
   try {
-    const { waitUntilExit } = render(<Dashboard engine={engine} cfg={cfg} />);
+    const { waitUntilExit } = render(<Dashboard engine={engine} cfg={cfg} iterations={iterations} />);
     engine.run().catch((err) => {
       // persist() inside engine.run() can throw; surface it and let the Dashboard
       // react to the done event instead of hanging with an unhandled rejection.

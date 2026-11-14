@@ -19,6 +19,8 @@ import { Card, cardChrome } from "./Card.js";
 import { footerHints } from "./footer.js";
 import { DECISION_MIN_ROWS, decisionModalHeight } from "./decision.js";
 import { DecisionModal } from "./DecisionModal.js";
+import { ITERATION_LIST_CHROME, iterationListWindow } from "./iterationList.js";
+import { IterationListModal } from "./IterationListModal.js";
 import type { McpStatusReport } from "../engine/agent/types.js";
 import {
   MCP_STATUS_POLL_TIMEOUT_MS,
@@ -142,10 +144,13 @@ export function Dashboard({
   engine,
   cfg,
   autoExit = true,
+  iterations = [],
 }: {
   engine: CycleEngine;
   cfg: RunConfig;
   autoExit?: boolean;
+  /** The plan's iteration titles, shown by the `i` list. Informative only. */
+  iterations?: readonly string[];
 }) {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -156,6 +161,12 @@ export function Dashboard({
   const [streamLines, setStreamLines] = useState<string[]>([]);
   /** `z`: the output panel hides the pipeline and owns the full content width. */
   const [streamMaximized, setStreamMaximized] = useState(false);
+  /**
+   * `i`: the plan's iteration titles. `null` means the list is closed; a number
+   * is the 0-based iteration the window is centred on. It is a view state, so it
+   * never touches the run.
+   */
+  const [iterationFocus, setIterationFocus] = useState<number | null>(null);
 
   const [ui, setUi] = useState<UiState>(() => {
     const st = engine.getState();
@@ -199,6 +210,12 @@ export function Dashboard({
   useEffect(() => {
     verboseRef.current = ui.verbose;
   }, [ui.verbose]);
+
+  // A decision owns the keyboard: an informative overlay must get out of its way
+  // instead of swallowing the keys the decision advertises.
+  useEffect(() => {
+    if (ui.decision) setIterationFocus(null);
+  }, [ui.decision]);
 
   /** Append to the whole-run transcript, trimming the oldest lines past the cap. */
   const traceAppend = (text: string) => {
@@ -456,6 +473,29 @@ export function Dashboard({
     ? decisionModalHeight(ui.decision, decisionMaxRows)
     : 0;
 
+  // The iteration list pays from the same budget as the decision modal: the rows
+  // the frame has left after its fixed chrome. It is closed by default, so it
+  // costs nothing until the reader asks for it.
+  const iterationMaxRows = Math.max(
+    ITERATION_LIST_CHROME + 1,
+    terminalSize.rows -
+      headerHeight -
+      footerHeight -
+      MIDDLE_MIN_ROWS -
+      logsHeight -
+      reportHeight -
+      promotionHeight -
+      1,
+  );
+  const iterating = iterationFocus !== null && !ui.decision && iterations.length > 0;
+  const iterationHeight = iterating
+    ? Math.min(
+        iterationMaxRows,
+        ITERATION_LIST_CHROME +
+          Math.max(1, iterationListWindow(iterations.length, iterationFocus, iterationMaxRows).length),
+      )
+    : 0;
+
   const middleHeight = Math.max(
     MIDDLE_MIN_ROWS,
     terminalSize.rows -
@@ -463,6 +503,7 @@ export function Dashboard({
       footerHeight -
       logsHeight -
       decisionHeight -
+      iterationHeight -
       reportHeight -
       promotionHeight -
       1,
@@ -518,6 +559,25 @@ export function Dashboard({
       return;
     }
 
+    // The iteration list is read-only and owns the keyboard while it is open:
+    // Esc closes it (it must not abort the run), `i` toggles it, and the arrows
+    // walk the titles. Any other key is consumed so nothing leaks to the cycle.
+    if (iterationFocus !== null) {
+      if (input === "i" || key.escape) {
+        setIterationFocus(null);
+        return;
+      }
+      if (key.upArrow) {
+        setIterationFocus((f) => Math.max(0, (f ?? 0) - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setIterationFocus((f) => Math.min(iterations.length - 1, (f ?? 0) + 1));
+        return;
+      }
+      return;
+    }
+
     // `z` gives the output panel the whole content row (and hides the pipeline)
     // while a second press restores the split. It is a view key, so it never
     // disturbs the run itself.
@@ -556,6 +616,9 @@ export function Dashboard({
       if (ui.paused) engine.resume();
       else engine.pause();
       setUi((s) => ({ ...s, paused: !s.paused }));
+    } else if (input === "i" && iterations.length > 0) {
+      // Open on the running iteration, where the reader's attention already is.
+      setIterationFocus(Math.min(Math.max(0, ui.currentIteration - 1), iterations.length - 1));
     } else if (input === "v") {
       const next = !ui.verbose;
       verboseRef.current = next;
@@ -654,6 +717,16 @@ export function Dashboard({
       ) : null}
 
       {ui.decision ? <DecisionModal req={ui.decision} maxRows={decisionMaxRows} /> : null}
+
+      {iterating ? (
+        <IterationListModal
+          titles={iterations}
+          current={ui.currentIteration}
+          focus={iterationFocus ?? 0}
+          maxRows={iterationMaxRows}
+          height={iterationHeight}
+        />
+      ) : null}
 
       {ui.lastReport && !ui.decision && <ReportPill report={ui.lastReport} />}
 

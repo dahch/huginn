@@ -660,12 +660,14 @@ describe("the key grammar is documented, not just implemented", () => {
     const files = readdirSync(TUI_DIR)
       .filter((file) => file.endsWith("Modal.tsx") && file !== "Modal.tsx")
       .sort();
-    // Six console modals plus the decision surface, which shares the frame and
-    // owns the `alert` tone (its rows are specs, not a one-row hint).
+    // The console modals plus the decision surface, which shares the frame and
+    // owns the `alert` tone (its rows are specs, not a one-row hint), and the
+    // run dashboard's read-only iteration list.
     expect(files).toEqual([
       "AgentPickerModal.tsx",
       "DecisionModal.tsx",
       "HelpModal.tsx",
+      "IterationListModal.tsx",
       "McpInspectorModal.tsx",
       "ModelPickerModal.tsx",
       "ProfilePickerModal.tsx",

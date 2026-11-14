@@ -53,6 +53,16 @@ export const NAVIGATION_SHORTCUTS: ShortcutItem[] = [
     description: "Maximize the focused card; press z again to restore the split",
   },
   {
+    key: "i (run)",
+    description:
+      "Open the plan's iteration list — a read-only checklist of every iteration title, opened on the one running. i or Esc closes it, ↑/↓ scroll it",
+  },
+  {
+    key: "v (run)",
+    description:
+      "Switch the output panel between the phase that is running and the whole run's transcript",
+  },
+  {
     key: "Ctrl+↑ / Ctrl+↓",
     description: "Move the conversation/stream split (from a focused card)",
   },

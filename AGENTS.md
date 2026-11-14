@@ -647,12 +647,23 @@ Eleven display conventions a TUI change must follow:
   composer, palette and header keep their own labelled border constants, and the decision modal's
   double border is the shared frame's `alert` tone — never describe `CARD_CHROME` as the cost source
   for the whole TUI.
+- **The plan's iteration list is read-only and exists on demand (ADR-75 territory).** `i` in
+  `huginn run` opens `IterationListModal` (`src/tui/IterationListModal.tsx`) with the plan's titles,
+  which `runTui`→`renderTui`→`Dashboard` receive as `iterations` (the CLI passes
+  `plan.iterations.map(i => i.title)`). It is closed by default, so it costs no rows until asked for;
+  while open it consumes every key (`i`/`Esc` close, `↑`/`↓` move the focus, nothing leaks to the
+  cycle — importantly `Esc` must not abort), and a decision closes it because the decision owns the
+  keyboard. It makes exactly one claim: `>` marks the running iteration; it never marks an earlier
+  one "done", because a resumed run may have skipped it. `iterationListWindow` centers the window and
+  `ITERATION_LIST_CHROME` is 5 — two border rows, title, subtitle and footer. That 5 is load-bearing:
+  a budget of 4 made the frame overflow and Ink squeezed the title out of its own box, which is the
+  bug `test/tui/iterationList.test.ts` now pins.
 - **Every console modal shares one frame and one key grammar; the footer names the focused surface.**
   `src/tui/Modal.tsx` is the only frame: `tone="alert"` is the single double/warn box (the decision
   surface), everything else is round/accent; it owns one clipped bold title row, an optional muted
   subtitle, one muted key footer (or the decision surface's `ReactNode` row specs), and the fixed
   `paddingX={1}`/`flexShrink={0}`/`overflow="hidden"`. It never calls `useInput`; each surface keeps
-  its keys. `MODAL_KEY_CONTRACT` states the grammar every handler follows: `Esc` closes all six,
+  its keys. `MODAL_KEY_CONTRACT` states the grammar every handler follows: `Esc` closes all seven,
   `q` only `HelpModal`/`SkillsModal`, `Enter` only the three selectors (Skills' own execute action
   excepted), `Tab` only the Skills/MCP panes, `p`/`g` on the profile picker and `s`/`g` on the runtime
   picker (each picker's own scope keys, both spelled out in its hint), and `k`/`j` only where they

@@ -73,9 +73,9 @@ function searchHint(input: FooterHintInput): string {
 }
 
 function runHint(input: FooterHintInput): string {
-  return `[Space] ${input.paused ? "Resume" : "Pause"} · [q/Esc] Abort · [v] Verbose ${
+  return `[Space] ${input.paused ? "Resume" : "Pause"} · [i] Iterations · [v] Verbose ${
     input.verbose ? "(ON)" : "(OFF)"
-  } · [PageUp/Down, ↑/↓] Scroll`;
+  } · [q/Esc] Abort · [PageUp/Down, ↑/↓] Scroll`;
 }
 
 function leftHint(input: FooterHintInput): string {

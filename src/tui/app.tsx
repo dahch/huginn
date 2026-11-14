@@ -2,9 +2,13 @@ import type { CycleEngine } from "../engine/cycle";
 import type { LiveEngine } from "../engine/liveMode";
 import type { RunConfig } from "../config";
 
-export async function runTui(engine: CycleEngine, cfg: RunConfig): Promise<void> {
+export async function runTui(
+  engine: CycleEngine,
+  cfg: RunConfig,
+  iterations?: readonly string[],
+): Promise<void> {
   const { renderTui } = await import("./render");
-  await renderTui(engine, cfg);
+  await renderTui(engine, cfg, iterations);
 }
 
 export async function runLiveTui(live: LiveEngine, cfg: RunConfig): Promise<void> {
