@@ -27,6 +27,10 @@
   same bottom-anchored window as the stream, and the panel title's `▲ +N` confirms where you are.
 
 
+- **Approving a live draft adopts the plan's profile.** The `[c]` in the draft-approval decision is
+  now the acceptance the CLI already had: the session takes the proposal and writes it to the project
+  config, with a log line naming the previous profile. Before this the proposal was only advice a
+  human had to retype, so a plan that recommended `odd` still ran the full cycle.
 - **The plan proposes its own profile, so a small task stops paying for the full cycle.** The thinker
   that drafts `plan.md` now has to state `**Profile:** <id>` and `**Profile reason:**` — the
   lightest methodology that keeps the run honest. `parseProfileAdvice` reads it, the plan draft

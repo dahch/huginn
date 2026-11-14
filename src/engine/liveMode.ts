@@ -1,6 +1,6 @@
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import type { RunConfig } from "../config";
-import { saveGlobalUserConfig, saveUserConfig } from "../config";
+import { loadConfigLayers, saveGlobalUserConfig, saveUserConfig } from "../config";
 import {
   DEFAULT_PROFILE,
   PROFILE_NAMES,
@@ -1533,9 +1533,13 @@ export class LiveEngine {
     await this.generateDocs(scope);
     this.setStage("approve");
     const advice = parseProfileAdvice(readOptional(this.cfg.planPath, this.cfg.projectPath));
+    const currentProfile = this.cfg.profile ?? DEFAULT_PROFILE;
     const profileLine = advice
-      ? `The plan proposes profile "${advice.profile}"${advice.reason ? ` — ${advice.reason}` : ""}.\n` +
-        `Apply it with /profile ${advice.profile} (or keep the current one).\n`
+      ? `The plan proposes profile "${advice.profile}"${advice.reason ? ` — ${advice.reason}` : ""}.${
+          advice.profile === currentProfile
+            ? "\n"
+            : ` Approving with [c] adopts it; [a] keeps "${currentProfile}". Use /profile to pick another.\n`
+        }`
       : "";
     const decision = await this.requestDecision({
       id: crypto.randomUUID(),
@@ -1557,6 +1561,30 @@ export class LiveEngine {
       return "aborted";
     }
     if (decision === "retry") return this.draft();
+    // Approving the draft is the acceptance: the plan's proposal becomes the
+    // session's profile and is written to the project config, exactly as
+    // `huginn plan` does when the user answers yes. Without this the proposal
+    // was only advice a human had to retype, which is how a plan that said
+    // "odd" ran as the full cycle.
+    if (advice && advice.profile !== (this.cfg.profile ?? DEFAULT_PROFILE)) {
+      const previous = this.cfg.profile ?? DEFAULT_PROFILE;
+      this.cfg.profile = advice.profile;
+      try {
+        const { project } = loadConfigLayers(this.cfg.projectPath);
+        saveUserConfig(this.cfg.projectPath, { ...project, profile: advice.profile });
+        events.emit("log", {
+          level: "info",
+          message: `profile ${advice.profile} adopted from the plan (was ${previous}) — saved to .huginn/config.json`,
+        });
+      } catch (err) {
+        // A config that cannot be written must not fail the handoff: the session
+        // still carries the profile for this run.
+        events.emit("log", {
+          level: "warn",
+          message: `profile ${advice.profile} adopted for this run, but the project config could not be written: ${(err as Error).message}`,
+        });
+      }
+    }
     return "approved";
   }
 

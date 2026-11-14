@@ -118,7 +118,10 @@ silent default. The draft contract enforces the line (`validateDraftFormat("plan
 broken iteration still reports first). `huginn plan` prints the proposal and offers it through
 `promptYesNo`; accepting writes `profile` into the project config, declining leaves it alone, and
 `--yes` accepts without asking. `CI`/no-TTY never write. The live console shows the proposal in the
-`approve-draft` decision instead of silently switching, and `/profile <id>` applies it. An explicit
+`approve-draft` decision, and approving the draft (`[c]`) **is** the acceptance: the session adopts the
+proposal and it is written to the project config, exactly as `huginn plan` does on `yes`; `/profile`
+still overrides before the handoff. Advice the user had to retype was how a plan that said `odd` ran
+as the full cycle. An explicit
 `--profile` always wins, because it is resolved from the flag before the config. When it does — or
 when the proposal was never accepted, e.g. a plan drafted under `CI` — `run` prints
 `profileMismatchNote` once (a dim `note:` line, or a `warn` log row in the TUI) naming both profiles

@@ -327,6 +327,13 @@ describe("LiveEngine flow", () => {
       const ok = await engine.draft();
       expect(ok).toBe("approved");
       expect(engine.currentStage).toBe("approve");
+      // Approving the draft adopts the plan's proposal — advice the user had to
+      // retype was how a plan that said "rdd" ran as the full cycle.
+      expect(engine.getProfile().id).toBe("rdd");
+      const projectConfig = JSON.parse(
+        await Bun.file(join(dir, ".huginn", "config.json")).text(),
+      ) as { profile?: string };
+      expect(projectConfig.profile).toBe("rdd");
 
       const ce = await engine.execute();
       expect(engine.cycleEngine).toBe(ce);
