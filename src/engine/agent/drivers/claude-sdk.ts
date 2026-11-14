@@ -8,7 +8,15 @@ import type {
   RuntimeSessionOptions,
 } from "../port.js";
 
-/** One Claude Code turn, as huginn needs it. */
+/**
+ * One Claude Code turn, as huginn needs it.
+ *
+ * It returns text, not a result object on purpose: the conformance contract says
+ * a driver that declares `structuredEvents: false` may only emit `text`, `done`
+ * or `error` — a `usage` event is structured output and would be a capability
+ * this driver cannot honestly claim. The SDK does report cost and tokens, so the
+ * day partial events are wired this becomes the natural place to carry them.
+ */
 export interface ClaudeTurnHandle {
   /** Per-prompt model override and wall-clock bound. */
   run(prompt: string, options?: { model?: string; timeoutMs?: number }): Promise<string>;
@@ -43,6 +51,8 @@ const CAPABILITIES: RuntimeCapabilities = {
   sessionResume: false,
   modelCatalog: "none",
   structuredOutput: false,
+  // Reported by the SDK, but forwarding it would emit a structured `usage` event
+  // a non-structured driver may not produce; it stays false until events land.
   usageCost: false,
   mcpListing: false,
   // An AbortController cancels a running query.
@@ -99,8 +109,8 @@ export function createClaudeSdkPort(adapter: ClaudeSdkAdapter = createDefaultCla
               model: request.model,
               timeoutMs: request.timeoutMs,
             });
-            const result = { messageId: `${id}:last`, text };
             if (text) sink?.({ type: "text", text });
+            const result = { messageId: `${id}:last`, text };
             sink?.({ type: "done", result });
             return result;
           } catch (err) {

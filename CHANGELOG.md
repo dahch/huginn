@@ -4,6 +4,18 @@
 
 ### Added
 
+- **The Claude driver has a contract test, runnable without an account.**
+  `test/engine/agent/claudeContract.test.ts` pins what the injected
+  `ClaudeSdkAdapter` seam must do — build the turn with the session's
+  directory/model/permissions, return the text, emit `text`/`done` exactly once,
+  propagate a failed turn to the sink, apply the per-prompt model and timeout, and
+  abort on interrupt. The SDK does report cost, but `usageCost` stays false and no
+  usage event is emitted: the conformance contract allows only `text`/`done`/
+  `error` when `structuredEvents` is false, and claiming otherwise was the first
+  thing the suite caught. What a contract test cannot prove — the provider
+  round-trip — stays marked *not verified* in RUNTIMES.md.
+
+
 - **opencode v2 completes a real turn.** The bootstrap captures the password the
   server prints, sends HTTP Basic and points the SDK at `/api`; the prompt is
   asynchronous there (`POST /api/session/{id}/prompt` returns the user message and
