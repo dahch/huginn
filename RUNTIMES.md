@@ -24,7 +24,26 @@ promises nothing beyond "a prompt went in and text came out".
 | `pi` | `@earendil-works/pi-coding-agent` 1.5.2, in-process | history, interrupt, dynamic catalog, MCP listing | **one turn works with an explicit model** (`commandcode/deepseek/deepseek-v4.1-flash` → `pong`). The SDK does **not** enumerate the providers declared in `~/.pi/agent/models.json`, so the catalog is empty and availability carries a note instead of a refusal |
 | `codex` | `@openai/codex-sdk` 0.169.0 | history | **one turn works out of the box** (`pong` in 4.1 s). No abort, no streaming, no approvals, no catalog |
 | `claude` | `@anthropic-ai/claude-agent-sdk` 0.3.325 (optional, external) | history, interrupt | **not verified on this machine**: the SDK loads but the CLI answers "Not logged in · Please run /login". The driver is wired; the credential is not |
-| `opencode` | `@opencode-ai/sdk` 1.19.5 + `opencode serve` | history, resume, streaming, interactive permissions, dynamic catalog, usage, MCP, interrupt | **not usable with the installed CLI**: `opencode v2.3.0` serves `/api/*` while this driver speaks the v1 API (`/global/*`, `/session`). The driver now refuses a v2 binary **with that reason** instead of timing out for 60 s. The v1 line is required |
+| `opencode` | `@opencode-ai/sdk` 1.19.5 + `opencode serve` | history, resume, streaming, interactive permissions, dynamic catalog, usage, MCP, interrupt | **v2 is mapped and the driver migration is in progress.** The installed v2.3.0 speaks `/api/*` with **HTTP Basic auth** (`opencode:<password printed by serve>`); `scripts/probe-opencode-v2.ts` reproduces it. Until the driver lands, a v2 binary is refused with that reason instead of timing out |
+
+### The opencode v2 migration (in progress)
+
+What the probe established against `opencode v2.3.0`, and what the driver must do:
+
+| Need | v1 (current driver) | v2 (target) |
+|---|---|---|
+| base path | `/global/*`, `/session` | `/api/*` |
+| auth | none | HTTP Basic, user `opencode`, password printed on stdout |
+| health | `GET /global/health` → JSON | `GET /api/session` (there is no health route; unknown paths answer the web app's HTML with 200) |
+| sessions | `POST /session`, `POST /session/{id}/message` | `client.session.create` / `session.prompt` from the generated v2 SDK |
+| providers/catalog | `/config/providers` | `GET /api/provider` |
+| events | `GET /event` (SSE) | the v2 SDK's event stream |
+| permissions | `onPermission` over SSE | `/api/permission` |
+
+The SDK package (1.19.5) is already generated against v2, so the work is in the
+driver and the server bootstrap: capture the password, send Basic auth, replace
+the `/global` health check, and move sessions/events/permissions to the `/api`
+shapes. `scripts/probe-opencode-v2.ts` is the regression tripwire.
 
 ### What the columns mean
 
