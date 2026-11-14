@@ -4,6 +4,17 @@
 
 ### Added
 
+- **The plan proposes its own profile, so a small task stops paying for the full cycle.** The thinker
+  that drafts `plan.md` now has to state `**Profile:** <id>` and `**Profile reason:**` — the
+  lightest methodology that keeps the run honest. `parseProfileAdvice` reads it, the plan draft
+  contract enforces it (after the iteration checks, so a broken increment still reports first), and
+  `huginn plan` prints the proposal and asks. Accepting (`y`, or `--yes`) writes `profile` into
+  `.huginn/config.json`; declining leaves your config untouched; an explicit `--profile` still wins;
+  `CI` and a missing TTY never write, they print the proposal plus how to adopt it. In the live
+  console the proposal rides in the draft-approval decision and `/profile <id>` applies it — no
+  silent switch.
+
+
 - **Codex declares what it can actually do about approvals, and pi says what it cannot.** The
   capability enum now distinguishes `gate` from `none` in `port.ts`: codex accepts an
   `approvalPolicy` when the thread starts (`auto`→`never`, `ask`→`on-request`,

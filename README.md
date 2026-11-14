@@ -846,6 +846,15 @@ deterministic `VERIFY` phase before its commit:
   directly; an unknown id fails closed with the valid list. Unrecognised values elsewhere fail or are
   dropped the same way as before: an unknown id on the flag exits with usage, and a persisted unknown
   profile is dropped with a warning (never a crash).
+- **Proposed by the plan**: the thinker that drafts `plan.md` must also state the methodology the
+  work needs — a `**Profile:** <id>` line and a `**Profile reason:**` sentence, choosing the
+  *lightest* profile that keeps the run honest (`odd` for a small change, `rdd` when the gate and a
+  receipt are worth it, up to `huginn` for repo-wide work). `huginn plan` prints the proposal and
+  asks; accepting (`y`, or `--yes` to skip the question) writes `profile` into
+  `.huginn/config.json`, and declining keeps your config untouched. Non-interactive runs (`CI` or no
+  TTY) never write: the proposal is printed together with the `--profile` that would adopt it. In the
+  live console the proposal is part of the draft-approval decision, and `/profile <id>` applies it.
+  `--profile` always wins over a proposal.
 - **Announced**: the active profile is printed in the CLI banner (e.g. `profile=huginn`) and shown as
   the **Methodology** row in the `/status` box, so you always know which cycle is running.
 - **Frozen evidence (`rdd` / `strict-tdd`)**: on iteration success a receipt is written to

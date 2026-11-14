@@ -32,6 +32,7 @@ import { randomUUID } from "node:crypto";
 import type { DecisionChoice, DecisionRequest, QuestionItem } from "./types";
 import { formatModel, resolveModels, type Models } from "./modelRouter";
 import { appendAdrPrompt, remainingPlanPrompt, unwrapFences, updateSpecDeltaPrompt, updateSpecPrompt, validateDraftFormat, type DraftDocType } from "./planMode";
+import { parseProfileAdvice } from "./profiles.js";
 import { CycleEngine } from "./cycle";
 import { loadPlan } from "../plan/parser";
 import { commitDocs, readOptional, repoContext, resetHarnessState, stageDocsForReview, unstageDocs, writeDoc } from "./liveRepo";
@@ -1531,6 +1532,11 @@ export class LiveEngine {
     this.scope = scope;
     await this.generateDocs(scope);
     this.setStage("approve");
+    const advice = parseProfileAdvice(readOptional(this.cfg.planPath, this.cfg.projectPath));
+    const profileLine = advice
+      ? `The plan proposes profile "${advice.profile}"${advice.reason ? ` — ${advice.reason}` : ""}.\n` +
+        `Apply it with /profile ${advice.profile} (or keep the current one).\n`
+      : "";
     const decision = await this.requestDecision({
       id: crypto.randomUUID(),
       kind: "approve-draft",
@@ -1540,6 +1546,7 @@ export class LiveEngine {
       message:
         `Docs drafted for review:\n` +
         `  ${this.cfg.specPath}\n  ${this.cfg.adrPath}\n  ${this.cfg.planPath}\n` +
+        profileLine +
         `Inspect with: git diff HEAD -- spec.md adr.md plan.md\n` +
         `[r] Re-draft (regenerate with latest chat) · [c] OK — commit & execute · [a] Abort`,
     });

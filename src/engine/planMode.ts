@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { parseProfileAdvice, profileSpec, type ProfileAdvice } from "./profiles.js";
 import chalk from "chalk";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { startServer } from "../server/lifecycle";
@@ -8,6 +9,8 @@ import { parsePlan } from "../plan/parser";
 import { readOptional, writeDoc } from "./liveRepo";
 import { boundEmbedded, embedUntrusted, MAX_EMBEDDED_OUTPUT } from "./steps/context.js";
 import { saveAdrDecisions } from "./phases.js";
+import { getProjectConfigPath, loadConfigLayers, saveUserConfig } from "../config.js";
+import { promptYesNo } from "../util/prompt.js";
 
 const PLAN_PROMPT_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -20,6 +23,8 @@ export interface PlanModeOptions {
   planPath: string;
   port: number;
   serverTimeoutMs: number;
+  /** Accept the thinker's profile proposal without asking (--yes). */
+  assumeYes?: boolean;
 }
 
 export function unwrapFences(text: string): string {
@@ -69,6 +74,8 @@ export const OUTPUT_FORMAT_CONTRACT: Record<DraftDocType, string> = {
 - Respond with ONLY the plan.md content. No preamble, no closing remarks, no commentary.
 - Code fences will be stripped; the content must be valid standalone markdown.
 - Start with "# Plan: <short project name>".
+- Then the profile proposal, before anything else: a "**Profile:** <id>" line naming one of huginn, sdd, odd, rdd, strict-tdd and a "**Profile reason:** <one sentence>" line.
+  Pick the LIGHTEST profile that keeps the run honest, not the most thorough: odd for a small self-contained change, rdd when the increment gate and a frozen receipt are worth it, strict-tdd when the requirement is best expressed by failing tests first, sdd when spec and design must be stated before code, huginn for repo-wide or high-risk work. The user can reject the proposal.
 - Iterations are "## Iteration N — <Title>" numbered from 1 (space after "##", capital "Iteration", " — " separator).
 - Immediately after each heading, a "modules:" line with comma-separated source paths the iteration touches (use "modules: ." when the iteration is repository-wide).
 - Then EXACTLY these three sections, in this order, before the executor prompt:
@@ -132,6 +139,11 @@ export function validateDraftFormat(docType: DraftDocType, content: string): str
         if (missing.length > 0) {
           return `iteration ${iteration.index} ("${iteration.title}") must declare ${missing.join(", ")} — every iteration is a runnable, testable increment`;
         }
+      }
+      // Last, because a broken iteration is the more actionable error: a complete
+      // plan that merely forgot the proposal gets its own message.
+      if (!parseProfileAdvice(text)) {
+        return 'plan must state a profile proposal right after the title: "**Profile:** <huginn|sdd|odd|rdd|strict-tdd>" and "**Profile reason:** <one sentence>"';
       }
       return null;
     }
@@ -242,6 +254,7 @@ The plan is consumed by a harness that runs iterations one by one. Format rules 
   - "**Verification:**" followed by a fenced \`\`\`sh block with one non-interactive command per line (e.g. "bun test", "bun run typecheck"). These commands are executed by the harness before the iteration is promoted.
 - After those sections, the body of the heading is the verbatim prompt that will be sent to the executor to build that iteration. It must be self-contained and actionable.
 - Order iterations so each builds on the previous, but keep every one a vertical slice. 3 to 8 iterations is typical.
+- State the profile proposal right after the title: a "**Profile:** <id>" line and a "**Profile reason:** <one sentence>" line. Choose the LIGHTEST profile that keeps the run honest — odd (small change, no spec work) < rdd (needs the increment gate) < strict-tdd (tests first) < sdd (spec/design first) < huginn (repo-wide, high-risk). The user may reject it.
 
 Iterations should map cleanly to the numbered requirements in the spec so progress is auditable.
 
@@ -375,6 +388,7 @@ The plan is consumed by a harness that runs iterations one by one against the cu
   - "**Verification:**" followed by a fenced \`\`\`sh block with one non-interactive command per line (e.g. "bun test", "bun run typecheck"). These commands are executed by the harness before the iteration is promoted.
 - After those sections, the body of the heading is the verbatim prompt that will be sent to the executor to build that iteration. It must be self-contained and actionable. Reference existing code paths and the new spec requirements (REQ-*) so the executor knows exactly what to add or change.
 - Order iterations so each builds on the previous, but keep every one a vertical slice. 3 to 8 iterations is typical.
+- State the profile proposal right after the title: a "**Profile:** <id>" line and a "**Profile reason:** <one sentence>" line. Choose the LIGHTEST profile that keeps the run honest — odd (small change, no spec work) < rdd (needs the increment gate) < strict-tdd (tests first) < sdd (spec/design first) < huginn (repo-wide, high-risk). The user may reject it.
 
 CRITICAL: this is an UPDATE, not a greenfield plan. The iterations you write cover ONLY the work that remains — the delta between the current codebase and the updated spec. Do NOT re-plan or re-run anything already shipped: previous iterations were completed and committed to git history. Assume the repository is in the state described below.
 
@@ -446,6 +460,45 @@ async function draftDoc(
   console.log(`${chalk.green("✓")} ${chalk.white.bold(`Wrote ${label}`)} ${chalk.dim(`(${bytes} bytes in ${elapsed}s)`)} → ${chalk.cyan(path)}`);
 }
 
+/**
+ * Offer the thinker's profile proposal. Accepting writes `profile` into the
+ * project config — that is what "set it for the run" means, and it is visible and
+ * reversible (`--profile`, `/profile`, or editing `.huginn/config.json`).
+ *
+ * Non-interactive runs never write: `CI` prints the proposal and how to adopt it,
+ * and a missing TTY falls through `promptYesNo`'s fallback of "no".
+ */
+async function offerProfile(
+  advice: ProfileAdvice,
+  projectPath: string,
+  assumeYes: boolean,
+): Promise<void> {
+  const spec = profileSpec(advice.profile);
+  console.log("");
+  console.log(
+    `${chalk.cyan("◆ Profile proposal:")} ${chalk.white.bold(`${advice.profile} — ${spec.name}`)} ${chalk.dim(`(${spec.phases.length} phases, evidence: ${spec.evidence})`)}`,
+  );
+  if (advice.reason) console.log(`  ${chalk.dim(advice.reason)}`);
+  if (process.env.CI && !assumeYes) {
+    console.log(
+      chalk.dim(`  CI: config untouched. Adopt it with --profile ${advice.profile} or "profile" in .huginn/config.json.`),
+    );
+    return;
+  }
+  const accepted =
+    assumeYes ||
+    (await promptYesNo(`Use the "${advice.profile}" profile for this project's runs?`, false));
+  if (!accepted) {
+    console.log(chalk.dim(`  Keeping the configured profile. Override with --profile <id>.`));
+    return;
+  }
+  const { project } = loadConfigLayers(projectPath);
+  saveUserConfig(projectPath, { ...project, profile: advice.profile });
+  console.log(
+    `${chalk.green("✓")} ${chalk.bold(`profile=${advice.profile}`)} written to ${chalk.cyan(getProjectConfigPath(projectPath))}`,
+  );
+}
+
 export async function runPlanMode(opts: PlanModeOptions): Promise<void> {
   const steps: Array<{ label: string; path: string; build: (prior: string[]) => string }> = [
     { label: "spec", path: opts.specPath, build: () => specPrompt(opts.idea) },
@@ -487,6 +540,9 @@ export async function runPlanMode(opts: PlanModeOptions): Promise<void> {
         }
       }
     }
+
+    const advice = parseProfileAdvice(prior[2] ?? "");
+    if (advice) await offerProfile(advice, opts.projectPath, opts.assumeYes === true);
 
     console.log("");
     console.log(chalk.green("✨ All architectural documents drafted successfully!"));

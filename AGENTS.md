@@ -111,6 +111,16 @@ enforced by huginn (see §4).
 with `agent: "build"`, and guarded by the same `treeHash` read-only check as the auditors), then the
 executor applies that plan.
 
+**The plan proposes its own methodology.** `planPrompt` / `remainingPlanPrompt` require a
+`**Profile:** <id>` + `**Profile reason:**` proposal chosen from `PROFILE_NAMES`, and
+`parseProfileAdvice` (`src/engine/profiles.ts`) reads it back — an unknown id is `null`, never a
+silent default. The draft contract enforces the line (`validateDraftFormat("plan", …)`, last, so a
+broken iteration still reports first). `huginn plan` prints the proposal and offers it through
+`promptYesNo`; accepting writes `profile` into the project config, declining leaves it alone, and
+`--yes` accepts without asking. `CI`/no-TTY never write. The live console shows the proposal in the
+`approve-draft` decision instead of silently switching, and `/profile <id>` applies it. An explicit
+`--profile` always wins, because it is resolved from the flag before the config.
+
 **Increments, not layers.** `planPrompt` / `remainingPlanPrompt` (`src/engine/planMode.ts`) carry the
 shared `INCREMENT_CONTRACT`: every iteration is a vertical, runnable slice with no forward dependency,
 and the first one includes the smallest runnable hello-world. The plan format also requires

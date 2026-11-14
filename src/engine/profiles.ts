@@ -158,3 +158,40 @@ export function validateProfilePhases(
 export function profilePreamble(name: ProfileName | undefined): string {
   return profileSpec(name).preamble ? `${profileSpec(name).preamble}\n\n` : "";
 }
+/**
+ * A plan's profile proposal: which methodology the work actually needs, and why.
+ *
+ * The thinker drafts the plan, so it is the only actor that has seen the whole
+ * scope before a single token is spent on the cycle. Asking it for a profile is
+ * what keeps a two-file bugfix from paying for SPEC_AUDIT + SECURE_CHECK +
+ * REVIEW + DOC_SYNC it does not need.
+ */
+export interface ProfileAdvice {
+  profile: ProfileName;
+  reason?: string;
+}
+
+const PROFILE_LINE =
+  /^[ \t]*(?:\*\*[ \t]*profile[ \t]*:?[ \t]*\*\*|#{1,6}[ \t]*profile[ \t]*:?)[ \t]*`?([a-z][a-z-]*)`?[ \t]*(?:(?:—|–|-{1,2})[ \t]*(.+))?$/im;
+const PROFILE_REASON_LINE =
+  /^[ \t]*(?:\*\*[ \t]*profile[ \t]+reason[ \t]*:?[ \t]*\*\*|#{1,6}[ \t]*profile[ \t]+reason[ \t]*:?)[ \t]*(.+)$/im;
+
+/**
+ * Read the profile proposal out of a plan. Returns `null` when the line is
+ * missing or names something that is not a profile: a draft that proposes a
+ * methodology huginn does not have must not silently become the default.
+ */
+export function parseProfileAdvice(text: string): ProfileAdvice | null {
+  const match = PROFILE_LINE.exec(text);
+  const candidate = match?.[1]?.toLowerCase();
+  if (!candidate || !isProfileName(candidate)) return null;
+  const inline = match?.[2]?.trim();
+  const reason = inline || PROFILE_REASON_LINE.exec(text)?.[1]?.trim();
+  return reason ? { profile: candidate, reason } : { profile: candidate };
+}
+
+/** One-line-per-profile summary for a console offer. */
+export function describeProfileChoice(name: ProfileName): string {
+  const spec = profileSpec(name);
+  return `${spec.id} — ${spec.name} (${spec.phases.length} phases)`;
+}

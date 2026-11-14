@@ -243,6 +243,9 @@ describe("validateDraftFormat", () => {
     const increment = [
       "# Plan: x",
       "",
+      "**Profile:** rdd",
+      "**Profile reason:** one increment that needs the gate and a receipt.",
+      "",
       "## Iteration 1 — Do",
       "",
       "**Goal:** the app starts and answers a request.",
@@ -274,6 +277,9 @@ describe("LiveEngine flow", () => {
   const ADR_REPLY = "## ADR-2: Publish via queues\n\nContext: notify needs async delivery.\nDecision: use a queue.\nConsequences: adds infra.";
   const PLAN_REPLY = [
     "# Plan: notifications",
+    "",
+    "**Profile:** rdd",
+    "**Profile reason:** one increment on existing code that needs the gate.",
     "",
     "## Iteration 1 — Add notifications",
     "modules: src/notifications/",

@@ -1172,7 +1172,17 @@ async function runPlan(args: ParsedArgs): Promise<void> {
   let port = num(args["--port"], 0);
   if (port === 0) port = await getFreePort();
   const serverTimeoutMs = num(args["--server-timeout"], 60000);
-  await runPlanMode({ projectPath, idea, thinker, specPath, adrPath, planPath, port, serverTimeoutMs });
+  await runPlanMode({
+    projectPath,
+    idea,
+    thinker,
+    specPath,
+    adrPath,
+    planPath,
+    port,
+    serverTimeoutMs,
+    assumeYes: Boolean(args["--yes"]),
+  });
 }
 
 /**
