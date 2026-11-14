@@ -857,3 +857,148 @@ describe("run dashboard controls", () => {
     expect(Math.max(0, capped.length - visibleRows)).toBe(MAX_STREAM_ROWS - visibleRows);
   });
 });
+/**
+ * The output panel's two read modes and its one scroll contract.
+ *
+ * Verbose is not "a wider panel": off, the panel shows the phase that is
+ * running; on, it keeps the whole run — every phase's output plus a separator,
+ * and the report of a phase that streamed nothing — so the arrows can walk back
+ * through it. The regression these pin is the one the console reported: a panel
+ * that could not be scrolled, and a `v` that only changed the width.
+ */
+describe("run dashboard output panel: transcript mode and scrolling", () => {
+  const stdoutOf = () => {
+    const stdout = new PassThrough() as any;
+    stdout.columns = 110;
+    stdout.rows = 30;
+    return stdout;
+  };
+  const engineOf = () =>
+    ({
+      getState: () => ({ currentIteration: 1, currentPhase: "EXECUTE" }),
+      runtime: {
+        id: "commandcode",
+        getMcpStatus: async () => ({ servers: [], totalTools: 0, healthy: true }),
+      },
+      resolveDecision: () => {},
+      pause: () => {},
+      resume: () => {},
+      requestAbort: () => {},
+    }) as unknown as CycleEngine;
+  const configOf = () =>
+    ({
+      projectPath: "/tmp/p",
+      planPath: "/tmp/p/plan.md",
+      specPath: "/tmp/p/spec.md",
+      adrPath: "/tmp/p/adr.md",
+      thinker: "a/b",
+      executor: "c/d",
+      mode: "auto",
+      permissions: "auto",
+      maxRetries: 0,
+      tui: false,
+      port: 0,
+      serverTimeoutMs: 1000,
+      phaseTimeoutMs: 0,
+      ignorePlanChanges: false,
+      sandbox: false,
+    }) as unknown as RunConfig;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  async function runPhases(opts: { verbose: boolean }) {
+    const stdout = stdoutOf();
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const stdin = createMockStdin();
+    const instance = render(React.createElement(Dashboard, { engine: engineOf(), cfg: configOf(), autoExit: false }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+    });
+    await sleep(80);
+    if (opts.verbose) {
+      stdin.write("v");
+      await sleep(80);
+    }
+    events.emit("phaseStart", { iteration: 1, totalIterations: 1, phase: "EXECUTE", attempt: 1 } as never);
+    events.emit("phaseStream", { text: "FIRST-PHASE-MARKER\n" } as never);
+    await sleep(120);
+    events.emit("phaseStart", { iteration: 1, totalIterations: 1, phase: "VALIDATE_STEP", attempt: 1 } as never);
+    events.emit("phaseStream", { text: "SECOND-PHASE-MARKER\n" } as never);
+    await sleep(150);
+    instance.unmount();
+    await sleep(60);
+    return output;
+  }
+
+  it("drops the previous phase when verbose is off", async () => {
+    const output = await runPhases({ verbose: false });
+    expect(output).toContain("SECOND-PHASE-MARKER");
+    expect(output).not.toContain("FIRST-PHASE-MARKER");
+  });
+
+  it("keeps every phase, with a separator, when verbose is on", async () => {
+    const output = await runPhases({ verbose: true });
+    expect(output).toContain("FIRST-PHASE-MARKER");
+    expect(output).toContain("SECOND-PHASE-MARKER");
+    expect(output).toContain("──── EXECUTE");
+    expect(output).toContain("──── VALIDATE_STEP");
+    expect(output).toContain("[VERBOSE]");
+  });
+
+  it("scrolls the output with ↑ and says so in the panel title", async () => {
+    const stdout = stdoutOf();
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const stdin = createMockStdin();
+    const instance = render(React.createElement(Dashboard, { engine: engineOf(), cfg: configOf(), autoExit: false }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+    });
+    await sleep(80);
+    events.emit("phaseStart", { iteration: 1, totalIterations: 1, phase: "EXECUTE", attempt: 1 } as never);
+    for (let i = 0; i < 60; i += 1) {
+      events.emit("phaseStream", { text: `scroll-line-${i}\n` } as never);
+    }
+    await sleep(150);
+    stdin.write("\u001b[A");
+    stdin.write("\u001b[A");
+    await sleep(150);
+    instance.unmount();
+    await sleep(60);
+    expect(output).toContain("▲ +");
+  });
+
+  it("scrolls a plain phase report too, not only a live stream", async () => {
+    const stdout = new PassThrough() as any;
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const report = Array.from({ length: 40 }, (_, i) => `report-line-${i}`).join("\n");
+    const instance = render(
+      React.createElement(StreamCard, {
+        totalLines: 40,
+        scrollOffset: 20,
+        maxScroll: 28,
+        chars: 400,
+        spinner: "⠋",
+        verbose: false,
+        height: 12,
+        report,
+      }),
+      { stdout, patchConsole: false },
+    );
+    instance.unmount();
+    await sleep(50);
+    // Bottom-anchored window, moved up by 20 rows: the bottom lines are gone and
+    // the earlier ones are on screen.
+    expect(output).not.toContain("report-line-39");
+    expect(output).toContain("report-line-19");
+  });
+});

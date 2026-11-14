@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Verbose is a transcript now, and the output panel actually scrolls.** `v` in `huginn run` used to
+  widen the panel by seven percent and print `[VERBOSE]` — it changed nothing you could read. It now
+  switches the panel from *the phase that is running* to *the whole run*: every phase's stream with a
+  `──── PHASE · iter n/m · attempt k ────` separator, the report of any phase that streamed nothing,
+  and a 400k-character cap so the buffer stays bounded. The panel keeps its width in both modes.
+- **The arrows scroll a phase report, not just a live stream.** `StreamCard`'s plain-report branch
+  ignored the scroll offset and always drew the first rows, so with a runtime that buffers (every
+  driver except `opencode`) a long report could not be read past its first screen. It now applies the
+  same bottom-anchored window as the stream, and the panel title's `▲ +N` confirms where you are.
+
+
 - **The plan proposes its own profile, so a small task stops paying for the full cycle.** The thinker
   that drafts `plan.md` now has to state `**Profile:** <id>` and `**Profile reason:**` — the
   lightest methodology that keeps the run honest. `parseProfileAdvice` reads it, the plan draft

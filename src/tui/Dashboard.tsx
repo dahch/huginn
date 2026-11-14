@@ -75,6 +75,13 @@ export function streamLineColor(line: string): string | undefined {
 }
 
 /** Keep only the newest `MAX_STREAM_ROWS` formatted rows. */
+/**
+ * Hard cap on the whole-run transcript kept while verbose is on. It is larger
+ * than the row cap on purpose: the panel scrolls, so the buffer is what makes
+ * "read the whole run" possible, and 400k characters is still bounded memory.
+ */
+export const MAX_TRACE_CHARS = 400_000;
+
 export function capStreamRows(rows: MdSegment[][]): MdSegment[][] {
   return rows.length > MAX_STREAM_ROWS ? rows.slice(-MAX_STREAM_ROWS) : rows;
 }
@@ -176,9 +183,32 @@ export function Dashboard({
   });
 
   const streamBuf = useRef<string>("");
+  /**
+   * `v` changes what the panel *is*, not how wide it is: off, it shows the phase
+   * that is running; on, it keeps the whole run's output — every phase's stream,
+   * a separator per phase, and the report of any phase that streamed nothing —
+   * so the panel becomes a transcript you can scroll back through.
+   */
+  const verboseRef = useRef(false);
+  const traceBuf = useRef<string>("");
+  const flushRef = useRef<() => void>(() => {});
   const logBuf = useRef<Array<{ level: "info" | "warn" | "error"; message: string; timestamp: string }>>(
     ui.logs,
   );
+
+  useEffect(() => {
+    verboseRef.current = ui.verbose;
+  }, [ui.verbose]);
+
+  /** Append to the whole-run transcript, trimming the oldest lines past the cap. */
+  const traceAppend = (text: string) => {
+    traceBuf.current += text;
+    if (traceBuf.current.length > MAX_TRACE_CHARS) {
+      const keepFrom = traceBuf.current.length - Math.floor(MAX_TRACE_CHARS * 0.75);
+      const cut = traceBuf.current.indexOf("\n", keepFrom);
+      traceBuf.current = cut >= 0 ? traceBuf.current.slice(cut + 1) : traceBuf.current.slice(keepFrom);
+    }
+  };
 
   const [mcpStatus, setMcpStatus] = useState<McpStatusReport | null>(null);
 
@@ -238,7 +268,9 @@ export function Dashboard({
         streamTimer = null;
       }
       lastFlushTime = Date.now();
-      const allLines = streamBuf.current.split("\n");
+      // Verbose renders the run rather than the phase: one buffer, one cap, and
+      // the phase separators are just lines in it.
+      const allLines = (verboseRef.current ? traceBuf.current : streamBuf.current).split("\n");
       const lines =
         allLines.length > MAX_STREAM_ROWS
           ? allLines.slice(-MAX_STREAM_ROWS)
@@ -256,6 +288,9 @@ export function Dashboard({
         }));
       }
     };
+    // The key handler lives in another closure: it needs the same flush so
+    // toggling `v` repaints from the new source immediately.
+    flushRef.current = flushStream;
 
     const offs: Array<() => void> = [
       events.on("iterationStart", (e) => {
@@ -275,7 +310,15 @@ export function Dashboard({
         }
         pendingStreamChars = 0;
         streamBuf.current = "";
-        setStreamLines([]);
+        if (verboseRef.current) {
+          const where = e.totalIterations
+            ? `iter ${e.iteration}/${e.totalIterations}`
+            : `iter ${e.iteration}`;
+          traceAppend(`\n──── ${e.phase} · ${where} · attempt ${e.attempt} ────\n`);
+          flushStream();
+        } else {
+          setStreamLines([]);
+        }
         setStreamScroll(0);
         setUi((s) => ({
           ...s,
@@ -295,6 +338,7 @@ export function Dashboard({
       }),
       events.on("phaseStream", (e) => {
         streamBuf.current += e.text;
+        if (verboseRef.current) traceAppend(e.text);
         pendingStreamChars += e.text.length;
         const now = Date.now();
         if (now - lastFlushTime >= 60) {
@@ -304,6 +348,12 @@ export function Dashboard({
         }
       }),
       events.on("phaseEnd", (r) => {
+        // A subprocess runtime buffers its output: the phase's report is what the
+        // panel would show, so a transcript that dropped it would be a transcript
+        // with holes.
+        if (verboseRef.current && streamBuf.current.trim().length === 0 && r.result.raw) {
+          traceAppend(`\n${r.result.raw.trimEnd()}\n`);
+        }
         flushStream();
         setUi((s) => ({
           ...s,
@@ -425,7 +475,7 @@ export function Dashboard({
   const contentColumns = Math.max(1, terminalSize.columns - VIEW_OUTER_INSET);
   const streamWidth = streamMaximized
     ? contentColumns
-    : Math.max(1, Math.floor(contentColumns * (ui.verbose ? 0.65 : 0.58)));
+    : Math.max(1, Math.floor(contentColumns * 0.58));
   const streamBodyWidth = Math.max(1, streamWidth - cardChrome("secondary").columns);
 
   // Wrapping is the expensive part, so it happens exactly when the text or the
@@ -507,7 +557,17 @@ export function Dashboard({
       else engine.pause();
       setUi((s) => ({ ...s, paused: !s.paused }));
     } else if (input === "v") {
-      setUi((s) => ({ ...s, verbose: !s.verbose }));
+      const next = !ui.verbose;
+      verboseRef.current = next;
+      if (next) {
+        // Turning it on keeps what the phase already wrote: a transcript that
+        // started empty on a keypress would look like the output was lost.
+        traceBuf.current = streamBuf.current;
+        traceAppend("\n──── transcript on ────\n");
+        flushRef.current();
+      }
+      setUi((s) => ({ ...s, verbose: next }));
+      setStreamScroll(0);
     } else if (key.escape || input === "q") {
       engine.requestAbort();
     }
@@ -548,7 +608,7 @@ export function Dashboard({
 
       <Box flexDirection="row" height={middleHeight} marginTop={0}>
         {!streamMaximized && (
-          <Box width={ui.verbose ? "35%" : "42%"} flexDirection="column" marginRight={1}>
+          <Box width="42%" flexDirection="column" marginRight={1}>
             <PipelineCard
               phases={ui.phases}
               currentPhase={ui.currentPhase}
@@ -561,7 +621,7 @@ export function Dashboard({
             />
           </Box>
         )}
-        <Box width={streamMaximized ? "100%" : ui.verbose ? "65%" : "58%"} flexDirection="column">
+        <Box width={streamMaximized ? "100%" : "58%"} flexDirection="column">
           <StreamCard
             rows={visibleStreamRows}
             totalLines={outputRows.length}
@@ -1006,9 +1066,14 @@ export function StreamCard({
         )
       ) : hasReport ? (
         // The runtime cannot stream: show the phase's real report rather than an
-        // empty panel that looks broken (AC-51.1).
+        // empty panel that looks broken (AC-51.1). It scrolls with the same
+        // bottom-anchored offset as a live stream — a long report that could not
+        // be scrolled was the bug the console called out.
         <MarkdownBlock
-          lines={reportLines}
+          lines={reportLines.slice(
+            Math.max(0, reportLines.length - bodyBudget - Math.max(0, scrollOffset)),
+            Math.max(0, reportLines.length - Math.max(0, scrollOffset)),
+          )}
           width={bodyColumns}
           maxRows={bodyBudget}
           wrap="truncate"

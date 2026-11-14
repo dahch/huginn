@@ -678,6 +678,18 @@ Eleven display conventions a TUI change must follow:
   content width (`z` again restores it), and `y` copies the original markdown through OSC 52 with
   `copyToTerminal` — never the wrapped rows. The panel title carries the same `▲ +N` / `▼ bottom`
   indicator as the conversation.
+  **`v` changes what the panel is, not how wide it is.** Off, the panel renders the phase that is
+  running (`phaseStart` clears the buffer). On, it renders the run: every `phaseStream` is also
+  appended to `traceBuf`, each `phaseStart` writes a `──── PHASE · iter n/m · attempt k ────`
+  separator, a `phaseEnd` with no streamed text appends the phase's report (a subprocess runtime
+  buffers its output, so a transcript without it would have holes), and the buffer is trimmed at
+  `MAX_TRACE_CHARS` (400 000). The key handler seeds the trace from the running phase so turning it
+  on never looks like lost output, and `flushRef` repaints immediately. The panel no longer widens
+  for verbose — that was the only thing it did, and it read as a no-op. The arrows and `PageUp`/
+  `PageDown` scroll **both** sources: the stream path slices `outputRows`, and `StreamCard`'s plain
+  `report` branch applies the same bottom-anchored offset (a long report that could not be scrolled
+  was the reported bug). Tests: `test/tui/dashboard.test.ts` (off drops the previous phase, on keeps
+  it with its separator, `▲ +` after two `↑`, and the report branch scrolls).
 - **The raven's presence follows the run, and chrome is paid for only while it is on screen.**
   `RAVEN_MOODS`/`ravenMark(mood)` (`src/brand.ts`) are the three moods (`idle` `o`, `thinking` `O`,
   `sleeping` `-`) and differ from `RAVEN_MARK` by one beak cell: never add a mood that changes the
