@@ -126,3 +126,41 @@ describe("claude driver contract (injected adapter)", () => {
     await expect(session.close()).resolves.toBeUndefined();
   });
 });
+
+describe("claude permission wiring", () => {
+  async function capture(decision: "allow-once" | "deny") {
+    const events: RuntimeEvent[] = [];
+    const captured: { onPermission?: (request: { tool: string; detail?: string }) => Promise<boolean> } = {};
+    const adapter = {
+      probe: async () => {},
+      startTurn: async (options: { onPermission?: (request: { tool: string; detail?: string }) => Promise<boolean> }) => {
+        captured.onPermission = options.onPermission;
+        return fakeTurn();
+      },
+    };
+    const port = createClaudeSdkPort(adapter as never);
+    await port.createSession({
+      ...OPTIONS,
+      sink: (event) => events.push(event),
+      onPermission: async () => decision,
+    });
+    return { events, captured };
+  }
+
+  it("asks through the session handler and maps the decision to a boolean", async () => {
+    const allowed = await capture("allow-once");
+    expect(allowed.captured.onPermission).toBeTypeOf("function");
+    expect(await allowed.captured.onPermission!({ tool: "Write" })).toBe(true);
+    const event = allowed.events.find((e) => e.type === "permission.request");
+    expect(event && event.type === "permission.request" && event.request.title).toBe("Write");
+
+    const denied = await capture("deny");
+    expect(await denied.captured.onPermission!({ tool: "Write" })).toBe(false);
+  });
+
+  it("declares interactive permissions and therefore interrupt", () => {
+    const port = createClaudeSdkPort(fakeAdapter());
+    expect(port.capabilities.permissions).toBe("interactive");
+    expect(port.capabilities.interrupt).toBe(true);
+  });
+});

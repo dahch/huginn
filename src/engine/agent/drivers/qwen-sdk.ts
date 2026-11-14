@@ -32,6 +32,8 @@ export interface QwenSdkAdapter {
     cwd?: string;
     model?: string;
     permissions?: "auto" | "ask" | "deny";
+    /** Asked before a tool runs; resolved `false` means deny (fail closed). */
+    onPermission?: (request: { tool: string; detail?: string }) => Promise<boolean>;
   }): Promise<QwenTurnHandle>;
 }
 
@@ -40,9 +42,9 @@ const CAPABILITIES: RuntimeCapabilities = {
   inProcess: false,
   structuredEvents: false,
   streaming: false,
-  // `canUseTool` exists in the SDK, but huginn does not feed it yet: `ask|deny`
-  // must fail closed rather than claim a channel that is not wired.
-  permissions: "none",
+  // `canUseTool` is wired through the session's PermissionHandler; an unanswered
+  // request denies.
+  permissions: "interactive",
   sessionHistory: true,
   sessionResume: false,
   modelCatalog: "none",
@@ -88,13 +90,27 @@ export function createQwenSdkPort(adapter: QwenSdkAdapter = createDefaultQwenAda
     },
 
     async createSession(options: RuntimeSessionOptions): Promise<RuntimeSession> {
+      const sink = options.sink;
+      const id = randomUUID();
+      let asked = 0;
+      const onPermission = options.onPermission
+        ? async (request: { tool: string; detail?: string }): Promise<boolean> => {
+            const permissionRequest = {
+              id: `${id}:perm:${(asked += 1)}`,
+              title: request.tool,
+              detail: request.detail,
+            };
+            sink?.({ type: "permission.request", request: permissionRequest });
+            const decision = await options.onPermission!(permissionRequest);
+            return decision !== "deny";
+          }
+        : undefined;
       const turn = await adapter.startTurn({
         cwd: options.directory,
         model: options.model,
         permissions: options.permissions,
+        onPermission,
       });
-      const sink = options.sink;
-      const id = randomUUID();
       return {
         id,
         resumable: false,
@@ -146,7 +162,7 @@ export function createDefaultQwenAdapter(): QwenSdkAdapter {
       await sdk();
     },
 
-    async startTurn({ cwd, model, permissions }) {
+    async startTurn({ cwd, model, permissions, onPermission }) {
       const { query } = await sdk();
       let controller: AbortController | undefined;
       return {
@@ -171,6 +187,17 @@ export function createDefaultQwenAdapter(): QwenSdkAdapter {
                 // default stays the CLI's own default (ask), and an unanswerable
                 // prompt then fails closed instead of silently editing.
                 ...(permissions === "auto" ? { permissionMode: "auto" as const } : {}),
+                // Only a caller with an answerer gets the control channel.
+                ...(onPermission && permissions !== "auto"
+                  ? {
+                      canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+                        const allowed = await onPermission({ tool: toolName });
+                        return allowed
+                          ? { behavior: "allow" as const, updatedInput: input }
+                          : { behavior: "deny" as const, message: "denied by huginn" };
+                      },
+                    }
+                  : {}),
               },
             });
             let text = "";

@@ -35,6 +35,8 @@ export interface KimiSdkAdapter {
     cwd?: string;
     model?: string;
     permissions?: "auto" | "ask" | "deny";
+    /** Asked when the CLI sends an ApprovalRequest; `false` rejects it. */
+    onPermission?: (request: { tool: string; detail?: string }) => Promise<boolean>;
   }): Promise<KimiTurnHandle>;
 }
 
@@ -42,9 +44,10 @@ const CAPABILITIES: RuntimeCapabilities = {
   inProcess: false,
   structuredEvents: false,
   streaming: false,
-  // The wire protocol has an ApprovalRequest, but huginn does not answer it yet;
-  // an unattended caller must pass `auto` or the turn fails closed (below).
-  permissions: "none",
+  // The wire protocol asks through ApprovalRequest; the answer goes back through
+  // Turn.approve. Without a handler (or with `auto`) the old fail-closed path
+  // stays: reject and say why.
+  permissions: "interactive",
   sessionHistory: true,
   sessionResume: false,
   modelCatalog: "none",
@@ -87,13 +90,27 @@ export function createKimiSdkPort(adapter: KimiSdkAdapter = createDefaultKimiAda
     },
 
     async createSession(options: RuntimeSessionOptions): Promise<RuntimeSession> {
+      const sink = options.sink;
+      const id = randomUUID();
+      let asked = 0;
+      const onPermission = options.onPermission
+        ? async (request: { tool: string; detail?: string }): Promise<boolean> => {
+            const permissionRequest = {
+              id: `${id}:perm:${(asked += 1)}`,
+              title: request.tool,
+              detail: request.detail,
+            };
+            sink?.({ type: "permission.request", request: permissionRequest });
+            const decision = await options.onPermission!(permissionRequest);
+            return decision !== "deny";
+          }
+        : undefined;
       const turn = await adapter.startTurn({
         cwd: options.directory,
         model: options.model,
         permissions: options.permissions,
+        onPermission,
       });
-      const sink = options.sink;
-      const id = randomUUID();
       return {
         id,
         resumable: false,
@@ -144,7 +161,7 @@ export function createDefaultKimiAdapter(): KimiSdkAdapter {
       }
     },
 
-    async startTurn({ cwd, model, permissions }) {
+    async startTurn({ cwd, model, permissions, onPermission }) {
       const { createSession, isLoggedIn } = await sdk();
       // Selecting a runtime probes once, but a direct `--agent kimi` skips that:
       // without credentials the CLI would sit waiting on auth until the timeout,
@@ -181,18 +198,32 @@ export function createDefaultKimiAdapter(): KimiSdkAdapter {
             let text = "";
             for await (const event of turn as AsyncIterable<{
               type?: string;
-              payload?: { type?: string; text?: string; requestId?: string };
+              payload?: { type?: string; text?: string; id?: string; action?: string; description?: string };
             }>) {
               if (event.type === "ContentPart" && event.payload?.type === "text") {
                 text += event.payload.text ?? "";
               }
               if (event.type === "ApprovalRequest") {
-                // No approval channel is wired: refusing to answer silently would
-                // hang the turn, so stop it and say what to do instead.
-                await turn.interrupt().catch(() => undefined);
-                throw new Error(
-                  "kimi asked for tool approval, which huginn cannot answer yet; re-run with --permissions auto",
-                );
+                const request = event.payload as {
+                  id?: string;
+                  action?: string;
+                  description?: string;
+                };
+                if (onPermission && request.id) {
+                  const allowed = await onPermission({
+                    tool: request.action ?? "tool",
+                    detail: request.description,
+                  });
+                  await turn.approve(request.id, allowed ? "approve" : "reject");
+                } else {
+                  // No answerer: refusing silently would hang the turn, so reject
+                  // and stop it with what to do instead.
+                  if (request.id) await turn.approve(request.id, "reject").catch(() => undefined);
+                  await turn.interrupt().catch(() => undefined);
+                  throw new Error(
+                    "kimi asked for tool approval and no permission handler is wired; re-run with --permissions auto",
+                  );
+                }
               }
             }
             const result = await turn.result;

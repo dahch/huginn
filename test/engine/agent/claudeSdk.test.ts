@@ -59,10 +59,10 @@ describe("claude SDK driver specifics", () => {
     expect(port.id).toBe("claude");
     expect(port.capabilities.sessionHistory).toBe(true);
     expect(port.capabilities.interrupt).toBe(true);
-    // The non-OSS SDK is optional and external; it advertises no catalog, no
-    // approvals (canUseTool is not wired) and no resume yet.
+    // The non-OSS SDK is optional and external; it advertises no catalog and no
+    // resume yet, but it does answer approvals through canUseTool now.
     expect(port.capabilities.modelCatalog).toBe("none");
-    expect(port.capabilities.permissions).toBe("none");
+    expect(port.capabilities.permissions).toBe("interactive");
     expect(port.capabilities.sessionResume).toBe(false);
     expect(port.capabilities.inProcess).toBe(false);
   });

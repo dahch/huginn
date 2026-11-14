@@ -470,7 +470,8 @@ describe("Phase 2C · CLI gate for --permissions (REV-2C-001/REV-2C-004)", () =>
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
         vi.spyOn(console, "log").mockImplementation(() => {});
 
-        const args = [command, "--project", dir, "--agent", "claude", "--permissions", mode];
+        // codex declares no permission channel; claude/qwen/kimi now answer one.
+        const args = [command, "--project", dir, "--agent", "codex", "--permissions", mode];
         if (command === "run") {
           args.push("--thinker", "anthropic/claude-opus-4-5", "--executor", "opencode/gpt-5.1-codex");
         }
@@ -478,7 +479,7 @@ describe("Phase 2C · CLI gate for --permissions (REV-2C-001/REV-2C-004)", () =>
         await expect(main(args)).rejects.toThrow(/process\.exit\(1\)/);
         expect(process.exit).toHaveBeenCalledWith(1);
         const stderr = errorSpy.mock.calls.flat().join(" ");
-        expect(stderr).toContain(`--permissions ${mode} is not supported for the "claude" subprocess runtime`);
+        expect(stderr).toContain(`--permissions ${mode} is not supported for the "codex" subprocess runtime`);
         expect(stderr).toContain(`Use "auto" (default) or choose the opencode runtime.`);
       });
     }

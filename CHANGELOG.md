@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Claude, Qwen and Kimi can answer `--permissions ask|deny`.** Each driver now declares
+  `permissions: "interactive"` and forwards the SDK's own channel: `canUseTool` for claude and qwen,
+  and `Turn.approve` for kimi's `ApprovalRequest`. The session's `PermissionHandler` receives the
+  request, a `permission.request` event reaches the console, and the answer goes back as
+  allow/deny. With no handler the old fail-closed path stays — kimi rejects and stops with
+  "re-run with --permissions auto" instead of hanging — so the capability is claimed only where it
+  can be delivered. Two contract tests per driver pin the translation and the capability
+  implication.
+
+
 - **Kimi Code is a runtime of its own.** `@moonshot-ai/kimi-agent-sdk` 0.1.8 (a wire protocol to the
   Kimi CLI) gets the same seam as Qwen and Claude: text/`done`, per-turn model and timeout,
   `interrupt()` mapped to `Turn.interrupt()`, and the CLI session closed with the driver's. Eight

@@ -106,7 +106,6 @@ describe("qwen driver contract", () => {
     const session = await port.createSession({ ...OPTIONS, sink: (event) => events.push(event) });
     await session.prompt({ text: "hi" });
     expect(port.capabilities.usageCost).toBe(false);
-    expect(port.capabilities.permissions).toBe("none");
     expect(events.some((event) => event.type === "usage")).toBe(false);
   });
 });
@@ -132,4 +131,42 @@ describeConformance("qwen driver conformance", () => {
       await testCase.run();
     });
   }
+});
+
+describe("qwen permission wiring", () => {
+  async function capture(decision: "allow-once" | "deny") {
+    const events: RuntimeEvent[] = [];
+    const captured: { onPermission?: (request: { tool: string; detail?: string }) => Promise<boolean> } = {};
+    const adapter = {
+      probe: async () => {},
+      startTurn: async (options: { onPermission?: (request: { tool: string; detail?: string }) => Promise<boolean> }) => {
+        captured.onPermission = options.onPermission;
+        return fakeTurn();
+      },
+    };
+    const port = createQwenSdkPort(adapter as never);
+    await port.createSession({
+      ...OPTIONS,
+      sink: (event) => events.push(event),
+      onPermission: async () => decision,
+    });
+    return { events, captured };
+  }
+
+  it("asks through the session handler and maps the decision to a boolean", async () => {
+    const allowed = await capture("allow-once");
+    expect(allowed.captured.onPermission).toBeTypeOf("function");
+    expect(await allowed.captured.onPermission!({ tool: "Write" })).toBe(true);
+    const event = allowed.events.find((e) => e.type === "permission.request");
+    expect(event && event.type === "permission.request" && event.request.title).toBe("Write");
+
+    const denied = await capture("deny");
+    expect(await denied.captured.onPermission!({ tool: "Write" })).toBe(false);
+  });
+
+  it("declares interactive permissions and therefore interrupt", () => {
+    const port = createQwenSdkPort(fakeAdapter());
+    expect(port.capabilities.permissions).toBe("interactive");
+    expect(port.capabilities.interrupt).toBe(true);
+  });
 });

@@ -36,6 +36,8 @@ export interface ClaudeSdkAdapter {
     cwd?: string;
     model?: string;
     permissions?: "auto" | "ask" | "deny";
+    /** Asked before a tool runs; resolved `false` means deny (fail closed). */
+    onPermission?: (request: { tool: string; detail?: string }) => Promise<boolean>;
   }): Promise<ClaudeTurnHandle>;
 }
 
@@ -44,9 +46,9 @@ const CAPABILITIES: RuntimeCapabilities = {
   inProcess: false,
   structuredEvents: false,
   streaming: false,
-  // Approvals need the SDK's canUseTool control channel; huginn does not feed it
-  // yet, so ask|deny keeps failing closed.
-  permissions: "none",
+  // `canUseTool` is wired through the session's PermissionHandler; an unanswered
+  // request denies, and with no handler at all the SDK's own mode decides.
+  permissions: "interactive",
   sessionHistory: true,
   sessionResume: false,
   modelCatalog: "none",
@@ -91,13 +93,27 @@ export function createClaudeSdkPort(adapter: ClaudeSdkAdapter = createDefaultCla
     },
 
     async createSession(options: RuntimeSessionOptions): Promise<RuntimeSession> {
+      const sink = options.sink;
+      const id = randomUUID();
+      let asked = 0;
+      const onPermission = options.onPermission
+        ? async (request: { tool: string; detail?: string }): Promise<boolean> => {
+            const permissionRequest = {
+              id: `${id}:perm:${(asked += 1)}`,
+              title: request.tool,
+              detail: request.detail,
+            };
+            sink?.({ type: "permission.request", request: permissionRequest });
+            const decision = await options.onPermission!(permissionRequest);
+            return decision !== "deny";
+          }
+        : undefined;
       const turn = await adapter.startTurn({
         cwd: options.directory,
         model: options.model,
         permissions: options.permissions,
+        onPermission,
       });
-      const sink = options.sink;
-      const id = randomUUID();
       return {
         id,
         resumable: false,
@@ -151,7 +167,7 @@ export function createDefaultClaudeAdapter(): ClaudeSdkAdapter {
       await sdk();
     },
 
-    async startTurn({ cwd, model, permissions }) {
+    async startTurn({ cwd, model, permissions, onPermission }) {
       const { query } = await sdk();
       // The CLI's own session id, captured from the result stream so later turns
       // of the *same* huginn session resume the conversation instead of starting
@@ -183,6 +199,18 @@ export function createDefaultClaudeAdapter(): ClaudeSdkAdapter {
                   ? {
                       permissionMode: "bypassPermissions" as const,
                       allowDangerouslySkipPermissions: true,
+                    }
+                  : {}),
+                // Only a caller with an answerer gets the control channel; with
+                // none the SDK keeps its own policy instead of an allow-all stub.
+                ...(onPermission && permissions !== "auto"
+                  ? {
+                      canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+                        const allowed = await onPermission({ tool: toolName });
+                        return allowed
+                          ? { behavior: "allow" as const, updatedInput: input }
+                          : { behavior: "deny" as const, message: "denied by huginn" };
+                      },
                     }
                   : {}),
               },
