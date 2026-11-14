@@ -696,8 +696,9 @@ Eleven display conventions a TUI change must follow:
   `copyToTerminal` — never the wrapped rows. The panel title carries the same `▲ +N` / `▼ bottom`
   indicator as the conversation.
   **`v` changes what the panel is, not how wide it is.** Off, the panel renders the phase that is
-  running (`phaseStart` clears the buffer). On, it renders the run: every `phaseStream` is also
-  appended to `traceBuf`, each `phaseStart` writes a `──── PHASE · iter n/m · attempt k ────`
+  running (`phaseStart` clears the buffer). On, it renders the run. The trace is recorded **always**,
+  not only while verbose is on: toggling `v` on after a phase ended used to show an empty panel
+  until the next event, so every `phaseStream` is appended to `traceBuf` unconditionally, each `phaseStart` writes a `──── PHASE · iter n/m · attempt k ────`
   separator, a `phaseEnd` with no streamed text appends the phase's report (a subprocess runtime
   buffers its output, so a transcript without it would have holes), and the buffer is trimmed at
   `MAX_TRACE_CHARS` (400 000). The key handler seeds the trace from the running phase so turning it

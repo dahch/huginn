@@ -939,6 +939,35 @@ describe("run dashboard output panel: transcript mode and scrolling", () => {
     expect(output).not.toContain("FIRST-PHASE-MARKER");
   });
 
+  it("records phases that finished while verbose was off", async () => {
+    // The trace is a run log, not a verbose-only buffer: turning `v` on after a
+    // phase already ended used to show an empty panel until the next event.
+    const stdout = stdoutOf();
+    let output = "";
+    stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    const stdin = createMockStdin();
+    const instance = render(React.createElement(Dashboard, { engine: engineOf(), cfg: configOf(), autoExit: false }), {
+      stdout,
+      stdin,
+      patchConsole: false,
+    });
+    await sleep(80);
+    events.emit("phaseStart", { iteration: 1, totalIterations: 1, phase: "SPEC_AUDIT", attempt: 1 } as never);
+    events.emit("phaseEnd", {
+      result: { phase: "SPEC_AUDIT", verdict: "blocked", model: "m", raw: "EARLIER-PHASE-REPORT" },
+    } as never);
+    await sleep(120);
+    stdin.write("v");
+    await sleep(150);
+    instance.unmount();
+    await sleep(60);
+    expect(output).toContain("[VERBOSE]");
+    expect(output).toContain("──── SPEC_AUDIT");
+    expect(output).toContain("EARLIER-PHASE-REPORT");
+  });
+
   it("keeps every phase, with a separator, when verbose is on", async () => {
     const output = await runPhases({ verbose: true });
     expect(output).toContain("FIRST-PHASE-MARKER");

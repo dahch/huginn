@@ -343,15 +343,17 @@ export function Dashboard({
         }
         pendingStreamChars = 0;
         streamBuf.current = "";
-        if (verboseRef.current) {
+        {
+          // The trace is a run log, not a verbose-only buffer: recording it
+          // always is what lets `v` show the phases that already finished
+          // instead of an empty panel until the next phase emits something.
           const where = e.totalIterations
             ? `iter ${e.iteration}/${e.totalIterations}`
             : `iter ${e.iteration}`;
           traceAppend(`\n──── ${e.phase} · ${where} · attempt ${e.attempt} ────\n`);
-          flushStream();
-        } else {
-          setStreamLines([]);
         }
+        if (verboseRef.current) flushStream();
+        else setStreamLines([]);
         setStreamScroll(0);
         setUi((s) => ({
           ...s,
@@ -371,7 +373,7 @@ export function Dashboard({
       }),
       events.on("phaseStream", (e) => {
         streamBuf.current += e.text;
-        if (verboseRef.current) traceAppend(e.text);
+        traceAppend(e.text);
         pendingStreamChars += e.text.length;
         const now = Date.now();
         if (now - lastFlushTime >= 60) {
@@ -384,7 +386,9 @@ export function Dashboard({
         // A subprocess runtime buffers its output: the phase's report is what the
         // panel would show, so a transcript that dropped it would be a transcript
         // with holes.
-        if (verboseRef.current && streamBuf.current.trim().length === 0 && r.result.raw) {
+        // A subprocess runtime streams nothing: its report is the only thing the
+        // phase produced, so a transcript without it would have holes.
+        if (streamBuf.current.trim().length === 0 && r.result.raw) {
           traceAppend(`\n${r.result.raw.trimEnd()}\n`);
         }
         flushStream();
@@ -647,13 +651,10 @@ export function Dashboard({
     } else if (input === "v") {
       const next = !ui.verbose;
       verboseRef.current = next;
-      if (next) {
-        // Turning it on keeps what the phase already wrote: a transcript that
-        // started empty on a keypress would look like the output was lost.
-        traceBuf.current = streamBuf.current;
-        traceAppend("\n──── transcript on ────\n");
-        flushRef.current();
-      }
+      // Both directions repaint now: turning it off must bring back the current
+      // phase (or its report) instead of leaving the transcript on screen until
+      // the next event happens to flush.
+      flushRef.current();
       setUi((s) => ({ ...s, verbose: next }));
       setStreamScroll(0);
     } else if (key.escape || input === "q") {

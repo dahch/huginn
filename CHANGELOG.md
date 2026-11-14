@@ -16,6 +16,12 @@
   console's measured-surface rules (one title row, one footer row, no pictographs).
 
 
+- **The run transcript is recorded even while it is hidden.** `v` used to build its buffer only when
+  it was already on, so turning it on mid-phase showed "transcript on" and nothing else — with `pi`
+  (which streams nothing) that could last the whole phase. The trace is now appended on every
+  `phaseStart`/`phaseStream`/`phaseEnd` regardless, and toggling in either direction repaints
+  immediately, so off shows the current phase (or its report) instead of leaving the transcript on
+  screen until the next event.
 - **Verbose is a transcript now, and the output panel actually scrolls.** `v` in `huginn run` used to
   widen the panel by seven percent and print `[VERBOSE]` — it changed nothing you could read. It now
   switches the panel from *the phase that is running* to *the whole run*: every phase's stream with a
