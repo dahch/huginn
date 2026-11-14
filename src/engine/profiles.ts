@@ -190,6 +190,25 @@ export function parseProfileAdvice(text: string): ProfileAdvice | null {
   return reason ? { profile: candidate, reason } : { profile: candidate };
 }
 
+/**
+ * The note `huginn run` prints when the plan's proposal and the profile that is
+ * actually running disagree — for example a plan drafted under `CI`, where nobody
+ * was asked, or an explicit `--profile` that overrides it. A warning only: an
+ * accepted proposal already lives in the config, so this is the case where the
+ * proposal was skipped, not a reason to change behaviour mid-run.
+ */
+export function profileMismatchNote(
+  advice: ProfileAdvice | null,
+  effective: ProfileName,
+): string | null {
+  if (!advice || advice.profile === effective) return null;
+  const reason = advice.reason ? ` (${advice.reason})` : "";
+  return (
+    `the plan proposes profile "${advice.profile}"${reason} but this run uses "${effective}". ` +
+    `Adopt it with --profile ${advice.profile}, or ignore this note.`
+  );
+}
+
 /** One-line-per-profile summary for a console offer. */
 export function describeProfileChoice(name: ProfileName): string {
   const spec = profileSpec(name);

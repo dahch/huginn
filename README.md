@@ -854,7 +854,9 @@ deterministic `VERIFY` phase before its commit:
   `.huginn/config.json`, and declining keeps your config untouched. Non-interactive runs (`CI` or no
   TTY) never write: the proposal is printed together with the `--profile` that would adopt it. In the
   live console the proposal is part of the draft-approval decision, and `/profile <id>` applies it.
-  `--profile` always wins over a proposal.
+  `--profile` always wins over a proposal, and `run` tells you when they disagree: `note: the plan
+  proposes profile "odd" (one file) but this run uses "huginn"` — a warning, never a silent switch, so
+  a plan drafted under `CI` (where nobody was asked) cannot quietly change how the run behaves.
 - **Announced**: the active profile is printed in the CLI banner (e.g. `profile=huginn`) and shown as
   the **Methodology** row in the `/status` box, so you always know which cycle is running.
 - **Frozen evidence (`rdd` / `strict-tdd`)**: on iteration success a receipt is written to

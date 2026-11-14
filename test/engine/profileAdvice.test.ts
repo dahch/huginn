@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateDraftFormat } from "../../src/engine/planMode";
-import { parseProfileAdvice, PROFILE_NAMES } from "../../src/engine/profiles";
+import { parseProfileAdvice, PROFILE_NAMES, profileMismatchNote } from "../../src/engine/profiles";
 
 const COMPLETE = [
   "# Plan: demo",
@@ -54,6 +54,25 @@ describe("parseProfileAdvice", () => {
     for (const id of PROFILE_NAMES) {
       expect(parseProfileAdvice(`**Profile:** ${id}`)?.profile).toBe(id);
     }
+  });
+});
+
+describe("profileMismatchNote", () => {
+  it("stays quiet when the proposal is the profile that runs", () => {
+    expect(profileMismatchNote({ profile: "rdd", reason: "small" }, "rdd")).toBeNull();
+    expect(profileMismatchNote(null, "huginn")).toBeNull();
+  });
+
+  it("names both sides and the flag that adopts it", () => {
+    const note = profileMismatchNote({ profile: "odd", reason: "one file" }, "huginn");
+    expect(note).toContain('proposes profile "odd"');
+    expect(note).toContain("(one file)");
+    expect(note).toContain('uses "huginn"');
+    expect(note).toContain("--profile odd");
+  });
+
+  it("works without a reason", () => {
+    expect(profileMismatchNote({ profile: "sdd" }, "huginn")).toContain('proposes profile "sdd"');
   });
 });
 

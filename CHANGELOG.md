@@ -12,7 +12,9 @@
   `.huginn/config.json`; declining leaves your config untouched; an explicit `--profile` still wins;
   `CI` and a missing TTY never write, they print the proposal plus how to adopt it. In the live
   console the proposal rides in the draft-approval decision and `/profile <id>` applies it — no
-  silent switch.
+  silent switch. When the proposal and the running profile disagree — an explicit `--profile`, or a
+  plan drafted under `CI` where nobody was asked — `huginn run` prints a one-line note naming both and
+  the flag that adopts the proposal; it never changes the run.
 
 
 - **Codex declares what it can actually do about approvals, and pi says what it cannot.** The

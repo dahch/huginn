@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
 import {
@@ -15,8 +15,10 @@ import { MAIN_PHASES, type PhaseName } from "./engine/types";
 import {
   DEFAULT_PROFILE,
   isProfileName,
+  parseProfileAdvice,
   PROFILE_NAMES,
   PROFILE_PHASES,
+  profileMismatchNote,
   type ProfileName,
 } from "./engine/profiles";
 import { loadPlan } from "./plan/parser";
@@ -878,6 +880,18 @@ export async function main(argv: string[]): Promise<void> {
     phase: state ? state.currentPhase : "START",
   };
 
+  const profileNote = (() => {
+    try {
+      return profileMismatchNote(
+        parseProfileAdvice(readFileSync(cfg.planPath, "utf8")),
+        cfg.profile ?? DEFAULT_PROFILE,
+      );
+    } catch {
+      // A plan that cannot be read is `run`'s problem elsewhere; this is a note.
+      return null;
+    }
+  })();
+
   if (!cfg.tui) {
     printBanner(bannerInfo);
     void maybePrintUpdateReminder();
@@ -887,6 +901,7 @@ export async function main(argv: string[]): Promise<void> {
         `[huginn] iterations=${plan.iterations.length}` +
         (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
     );
+    if (profileNote) console.log(chalk.dim(`[huginn] note: ${profileNote}`));
   } else {
     events.emit("log", {
       level: "info",
@@ -895,6 +910,7 @@ export async function main(argv: string[]): Promise<void> {
         `iterations=${plan.iterations.length}` +
         (state ? ` (resuming at iteration ${state.currentIteration}, phase ${state.currentPhase})` : ""),
     });
+    if (profileNote) events.emit("log", { level: "warn", message: profileNote });
   }
 
   if (cfg.port === 0) cfg.port = await getFreePort();

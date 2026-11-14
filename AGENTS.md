@@ -119,7 +119,11 @@ broken iteration still reports first). `huginn plan` prints the proposal and off
 `promptYesNo`; accepting writes `profile` into the project config, declining leaves it alone, and
 `--yes` accepts without asking. `CI`/no-TTY never write. The live console shows the proposal in the
 `approve-draft` decision instead of silently switching, and `/profile <id>` applies it. An explicit
-`--profile` always wins, because it is resolved from the flag before the config.
+`--profile` always wins, because it is resolved from the flag before the config. When it does — or
+when the proposal was never accepted, e.g. a plan drafted under `CI` — `run` prints
+`profileMismatchNote` once (a dim `note:` line, or a `warn` log row in the TUI) naming both profiles
+and the `--profile` that would adopt the proposal. It is a note, never a switch: the run behaves
+exactly as the resolved profile says.
 
 **Increments, not layers.** `planPrompt` / `remainingPlanPrompt` (`src/engine/planMode.ts`) carry the
 shared `INCREMENT_CONTRACT`: every iteration is a vertical, runnable slice with no forward dependency,
