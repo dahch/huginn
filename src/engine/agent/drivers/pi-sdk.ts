@@ -263,10 +263,11 @@ export function mergePiConfiguredListings(
 /**
  * The in-process pi driver.
  *
- * Advertised capabilities are deliberately conservative for this first cut: the
- * session is real (it keeps history and survives across prompts), but events,
- * permissions and resume are not wired yet, so they are declared `false` rather
- * than promised and dropped.
+ * Advertised capabilities are deliberately conservative: the session is real (it
+ * keeps history and survives across prompts), but events are not surfaced and
+ * resume is not wired, so they are declared `false` rather than promised and
+ * dropped. Permissions are `none` because 1.5.2 exposes no approval API at all —
+ * a gap in the SDK, recorded where it can be checked.
  */
 export function createPiSdkPort(
   adapter?: PiSdkAdapter,

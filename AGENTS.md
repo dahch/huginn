@@ -227,7 +227,7 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 1. **Bun** (the bin is `#!/usr/bin/env bun`; the bundle is Bun-target).
 2. **An agent CLI on `$PATH`** — huginn has 13 **provisioning targets** but only six supported
    **runtimes** (`pi`, `codex`, `claude`, `opencode`, `qwen`, `kimi`); `generic` still exists as a deprecated bridge
-   for the nine CLI-only targets and is not part of the support contract
+   for the seven CLI-only targets and is not part of the support contract
    ([RUNTIMES.md](RUNTIMES.md)). `opencode` is the default; `opencode`, `claude`, `qwen` and `kimi` answer
    `--permissions ask|deny` through their own channel; `codex` is a `gate` (a policy fixed at
    thread start, no callback) and `pi`/`generic` fail closed because their SDKs expose no approval
@@ -281,9 +281,9 @@ nothing either. `mcpStatus` reads those same files as the honest probe, so a fai
 reports `⚪ n configured` (and a listing row in `error` keeps its peers and names the failure)
 instead of `none`. The default session
 uses pi's `DefaultResourceLoader`, so pi's own MCP servers, skills (`~/.agents/skills`, `.pi/skills`)
-and `AGENTS.md` are already available to the phase prompt; huginn only reports them. Its events,
-permissions and resume are **not** wired yet, so it declares `streaming`, `structuredEvents` and
-`sessionResume` false.
+and `AGENTS.md` are already available to the phase prompt; huginn only reports them. Its events are
+not surfaced and resume is not wired, so it declares `streaming`, `structuredEvents` and
+`sessionResume` false; permissions are `none` because 1.5.2 exposes no approval API.
 
 **The engines speak only the port.** `CycleEngine` and `LiveEngine` call
 `createSession({ sink, onPermission, onQuestion })` and `session.prompt(...)`;
@@ -308,14 +308,16 @@ migration); model/MCP listing is no longer wired for them, so discovery honestly
 empty catalog and the MCP panel falls back to config discovery.
 
 `codex` is the second native driver (`drivers/codex-sdk.ts`): a persisted `Thread` from
-`@openai/codex-sdk`, so `sessionHistory` is real, while `sessionResume`, streaming and approvals
-are declared false — the SDK exposes no abort and huginn does not feed its approval options yet.
+`@openai/codex-sdk`, so `sessionHistory` is real, while `sessionResume` and streaming are
+declared false — the SDK exposes no abort. Its permissions are a `gate`, not a channel: huginn
+passes `approvalPolicy` when the thread starts (`auto`→`never`, `ask`→`on-request`,
+`deny`→`untrusted`), which is a posture, not an answer to a question asked later.
 
 `claude` is the third native driver (`drivers/claude-sdk.ts`) and the only one whose SDK is **not
 open source**: it lives in `optionalDependencies` (an install failure is tolerated), is never bundled,
 and is imported only by its own adapter. `interrupt` is real (an AbortController cancels the query);
-approvals need `canUseTool`, which huginn does not feed yet, so `ask|deny` keeps failing closed, and
-streaming, resume and the catalog are declared false.
+approvals go through `canUseTool`, mapped onto the session's `PermissionHandler` (an unanswered
+request denies), so `ask|deny` is honoured; streaming, resume and the catalog stay declared false.
 
 **The model is requested per prompt, not per session.** The engine asks for the thinker on a fix
 and the executor on everything else, and a driver that drops that request runs whatever the tool has
@@ -325,7 +327,8 @@ configured in pi), `claude` passes it to each turn's query, and `codex` cannot: 
 when the thread starts, so it ignores the request and the thread keeps its own. That last one is a
 known gap, recorded next to the code.
 
-All three SDKs are `--external` in the build, so pi, codex and claude stay out of the bundle.
+All five SDKs are `--external` in the build, so pi, codex, claude, qwen and kimi stay out of the
+bundle and are loaded from `node_modules` at run time.
 
 `filesystemIsolation` says what the driver keeps the agent out of — `none`, `worktree` or
 `home-read-only`. Every driver here declares `worktree`, which is the truth: the agent is *pointed* at

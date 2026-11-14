@@ -103,15 +103,15 @@ The claim is deliberately narrow: the process leaves evidence, and the evidence 
 ## Requirements
 
 - [Bun](https://bun.sh) >= 1.0 (runtime)
-- An AI coding agent CLI on `$PATH`. Huginn has **13 provisioning targets** but **5 runtimes**:
-  - dedicated drivers: [opencode](https://opencode.ai) (default; the only one with a native
-    permission subscriber, server-side session history and incremental output),
-    [Claude Code](https://claude.ai/code) (`claude`), [OpenAI Codex](https://github.com/openai/codex)
-    (`codex`) and Pi (`pi`);
+- An AI coding agent CLI on `$PATH`. Huginn has **13 provisioning targets** but **6 runtimes**:
+  - dedicated drivers: [opencode](https://opencode.ai) (default; the only one with server-side
+    session history and incremental output), [Claude Code](https://claude.ai/code) (`claude`),
+    [OpenAI Codex](https://github.com/openai/codex) (`codex`), Pi (`pi`), Qwen Code (`qwen`)
+    and Kimi Code (`kimi`). opencode, claude, qwen and kimi answer `--permissions ask|deny`
+    through their SDK's own channel; codex fixes a policy at thread start (`gate`) and pi has none;
   - the `generic` bridge, which runs the remaining CLI-only targets with their own verified argv:
     Cursor (`cursor`), Antigravity CLI (`agy`), Command Code (`commandcode`), Devin (`devin`),
-    Kimi Code CLI (`kimi`), MiniMax Code (`mcode`), MiMo Code (`mimo`), Oh My Pi (`omp`) and
-    Qwen Code (`qwen`).
+    MiniMax Code (`mcode`), MiMo Code (`mimo`) and Oh My Pi (`omp`).
 - `git` on `$PATH` (module inference, diffs, worktree sandboxing). A directory that is inside **no**
   work tree is initialized in place by `run`/`plan`/`live` unless `--no-git-init` is passed.
 

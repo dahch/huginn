@@ -216,7 +216,7 @@ export async function resolveAgent(sources: AgentResolutionSources = {}): Promis
   /**
    * A *persisted* agent that was **removed** must not break the run: warn and
    * fall through to detection, so an old `.huginn/config.json` keeps working
-   * (AC-35.3). Since M4b this includes the eight CLI-only runtimes: they remain
+   * (AC-35.3). Since M4b this includes the CLI-only runtimes: they remain
    * provisioning targets and an explicit `--agent <target>` still runs them
    * through the generic bridge, but a *stored* value migrates to auto-detection.
    * An arbitrary unknown value is still rejected, so a hostile config cannot

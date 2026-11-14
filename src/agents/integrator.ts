@@ -52,12 +52,12 @@ export type AgentTarget = ProvisioningTarget;
 /**
  * The id of a **runtime** — what actually executes a prompt.
  *
- * Five drivers exist after M4b: three native SDK drivers (`pi`, `codex`,
- * `claude`), the opencode daemon (`opencode`) and one configured subprocess
- * bridge (`generic`). The eight CLI-only provisioning targets (`agy`,
- * `commandcode`, `devin`, `kimi`, `mcode`, `mimo`, `omp`, `qwen`) plus
- * `cursor` are all served by `generic`: they keep their provisioning row, but
- * they are no longer separate runtime classes.
+ * Six drivers exist: five native SDK drivers (`pi`, `codex`, `claude`, `qwen`,
+ * `kimi`), the opencode daemon (`opencode`) and one configured subprocess
+ * bridge (`generic`). The seven remaining CLI-only provisioning targets
+ * (`agy`, `commandcode`, `devin`, `mcode`, `mimo`, `omp`, `cursor`) are
+ * served by `generic`: they keep their provisioning row, but are not separate
+ * runtime classes.
  */
 export type RuntimeId = "pi" | "opencode" | "codex" | "claude" | "qwen" | "kimi" | "generic";
 
@@ -112,9 +112,9 @@ export type McpFormat = "mcpServers" | "opencode" | "toml";
  * dangerous` — was carried over), so an old `"agent": "windsurf"` config maps to
  * `devin` through the same warn-and-detect path as `gemini` → `agy`.
  *
- * M4b retires the eight CLI-only **runtimes**: `agy`, `commandcode`, `devin`,
- * `kimi`, `mcode`, `mimo`, `omp` and `qwen` now run through the generic
- * bridge and are no longer selectable from a persisted config. They stay in
+ * M4b retires the CLI-only **runtimes** — `agy`, `commandcode`, `devin`, `mcode`,
+ * `mimo` and `omp` (qwen and kimi got native drivers afterwards) — which run
+ * through the generic bridge and are no longer selectable from a persisted config. They stay in
  * {@link AGENT_TARGETS} (and therefore in `huginn setup --status`), and an
  * explicit `--agent <target>` still runs them through the generic bridge; only a
  * *stored* value warns and falls back to auto-detection.

@@ -211,7 +211,7 @@ export async function fetchMcpStatusWithTimeout(
   });
 
   // 1. The active agent's own enumeration, when it has one. The cache is keyed
-  // by id *and* target: nine CLI-only targets share the `generic` runtime id, so
+  // by id *and* target: the CLI-only targets share the `generic` runtime id, so
   // keying by id alone would serve one target's listing to another.
   const listMcpServers =
     typeof source.listMcpServers === "function" ? source.listMcpServers.bind(source) : undefined;

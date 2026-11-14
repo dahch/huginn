@@ -14,7 +14,7 @@ and conflating them is how a target without a driver came to look supported.
 Only agents with a **real SDK** are kept as runtimes. A CLI wrapped in a
 subprocess is not a runtime: it cannot report events, cannot answer a
 permission, cannot resume, and every capability is a guess. The `generic` bridge
-still exists for the nine CLI-only targets and is **deprecated**: it runs, but it
+still exists for the seven CLI-only targets and is **deprecated**: it runs, but it
 promises nothing beyond "a prompt went in and text came out".
 
 ## Supported runtimes
