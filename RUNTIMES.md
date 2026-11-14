@@ -22,7 +22,7 @@ promises nothing beyond "a prompt went in and text came out".
 | Runtime | SDK | Declared capabilities | Verified here (2026-11-14) |
 |---|---|---|---|
 | `pi` | `@earendil-works/pi-coding-agent` 1.5.2, in-process | history, interrupt, dynamic catalog, MCP listing | **one turn works with an explicit model** (`commandcode/deepseek/deepseek-v4.1-flash` → `pong`). The SDK does **not** enumerate the providers declared in `~/.pi/agent/models.json`, so the catalog is empty and availability carries a note instead of a refusal |
-| `codex` | `@openai/codex-sdk` 0.169.0 | history | **one turn works out of the box** (`pong` in 4.1 s). No abort, no streaming, no approvals, no catalog |
+| `codex` | `@openai/codex-sdk` 0.169.0 | history, **permissions: gate** | **one turn works out of the box** (`pong` in 4.1 s). No abort, no streaming, no approvals, no catalog |
 | `qwen` | `@qwen-code/sdk` 0.1.33 (bundles its CLI) | history, interrupt, interactive permissions | **driver verified by contract + conformance, provider not verified here.** The SDK loads, but a real turn returns `401 Invalid 'Authorization' header or token` on this machine: there are no Qwen credentials configured. That message now reaches the caller verbatim instead of collapsing into "qwen failed" |
 | `kimi` | `@moonshot-ai/kimi-agent-sdk` 0.1.8 (wire protocol to the Kimi CLI) | history, interrupt, interactive permissions | **driver verified by contract + conformance, provider not verified here.** `isLoggedIn()` is part of the probe *and* of `startTurn`, so a machine without credentials says "not logged in; run kimi login" instead of hanging until the timeout |
 | `claude` | `@anthropic-ai/claude-agent-sdk` 0.3.325 (optional, external) | history, interrupt, interactive permissions | **driver verified by contract tests, provider not verified here.** `test/engine/agent/claudeSdk.test.ts` and `claudeContract.test.ts` prove the turn construction, text/done mapping, error propagation, per-prompt model and timeout, abort, and the `canUseTool` translation — all through the injected adapter, with no account and no CLI. The real round-trip is unverified on this machine because the CLI answers "Not logged in"; one `--prompt` with a signed-in account settles it |
@@ -83,7 +83,10 @@ conformance run, and an entry in this table. It is not a configuration change.
 
 - **`ask`/`deny` where the SDK has no channel.** `pi`, `codex` and the deprecated
   `generic` bridge fail closed when asked for `ask`/`deny` rather than pretending
-  the flag was honoured. `claude`, `qwen`, `kimi` and `opencode` do answer: a
+  the flag was honoured. Codex is a **gate**, not a channel: its SDK accepts an
+  `approvalPolicy` when the thread starts but has no callback, so the posture is
+  declared up front and a question asked later cannot be answered. `pi`'s 1.5.2
+  surface exposes no approval API at all — that is a gap in the SDK, not a choice. `claude`, `qwen`, `kimi` and `opencode` do answer: a
   `permission.request` event reaches the console and the decision goes back through
   `canUseTool` (claude, qwen) or `Turn.approve` (kimi).
 - **Resume outside `opencode`.** No other SDK exposes enough to reopen a stored

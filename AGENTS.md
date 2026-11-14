@@ -229,8 +229,9 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
    **runtimes** (`pi`, `codex`, `claude`, `opencode`, `qwen`, `kimi`); `generic` still exists as a deprecated bridge
    for the nine CLI-only targets and is not part of the support contract
    ([RUNTIMES.md](RUNTIMES.md)). `opencode` is the default; `opencode`, `claude`, `qwen` and `kimi` answer
-   `--permissions ask|deny` through their own channel, while `pi`, `codex` and `generic` fail
-   closed. `opencode` also has server-side session history and an
+   `--permissions ask|deny` through their own channel; `codex` is a `gate` (a policy fixed at
+   thread start, no callback) and `pi`/`generic` fail closed because their SDKs expose no approval
+   surface. `opencode` also has server-side session history and an
    incremental output channel (`RuntimeCapabilities.streaming`, true only there — every subprocess
    CLI buffers stdout and resolves once, so a surface shows the phase report instead of pretending to
    stream); when it is used, huginn starts it itself via

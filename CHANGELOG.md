@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Codex declares what it can actually do about approvals, and pi says what it cannot.** The
+  capability enum now distinguishes `gate` from `none` in `port.ts`: codex accepts an
+  `approvalPolicy` when the thread starts (`auto`→`never`, `ask`→`on-request`,
+  `deny`→`untrusted`) but exposes no callback, so it is a gate — a posture fixed up front — and
+  `ask|deny` still fails closed at the CLI. pi's 1.5.2 surface (config, cli, bundle) has no
+  approval API at all, which is recorded next to the capability instead of being left as an
+  unexplained `none`. `huginn runtime list --check` prints the distinction.
+
+
 - **Claude, Qwen and Kimi can answer `--permissions ask|deny`.** Each driver now declares
   `permissions: "interactive"` and forwards the SDK's own channel: `canUseTool` for claude and qwen,
   and `Turn.approve` for kimi's `ApprovalRequest`. The session's `PermissionHandler` receives the

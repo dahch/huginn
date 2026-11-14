@@ -57,7 +57,9 @@ describe("codex SDK driver specifics", () => {
     // The SDK exposes no abort and no catalog; both say so.
     expect(port.capabilities.interrupt).toBe(false);
     expect(port.capabilities.modelCatalog).toBe("none");
-    expect(port.capabilities.permissions).toBe("none");
+    // A policy can be fixed at thread start, but there is no callback to answer a
+    // question mid-turn: that is `gate`, not `interactive`.
+    expect(port.capabilities.permissions).toBe("gate");
   });
 
   it("carries the thread's answer and hands the model to the SDK", async () => {
@@ -67,6 +69,7 @@ describe("codex SDK driver specifics", () => {
     expect(startThread).toHaveBeenCalledWith({
       model: "gpt-5.1-codex",
       workingDirectory: undefined,
+      permissions: undefined,
     });
     const result = await session.prompt({ text: "hola" });
     expect(result.text).toBe("codex says: hola");

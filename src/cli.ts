@@ -463,7 +463,9 @@ export function assertPermissionModeSupported(runtimeId: string, permissions: Pe
  * ask mid-turn, so the check no longer needs to know the runtime's name.
  */
 function assertPortPermissionModeSupported(runtime: RuntimePort, permissions: PermissionMode): void {
-  if (runtime.capabilities.permissions !== "none" || permissions === "auto") return;
+  // Only a runtime with a real callback can honour `ask`/`deny`; `gate` means the
+  // policy is fixed up front, which is not an answer to a question asked later.
+  if (runtime.capabilities.permissions === "interactive" || permissions === "auto") return;
   console.error(subprocessPermissionMessage(runtime.target ?? runtime.id, permissions));
   process.exit(1);
 }

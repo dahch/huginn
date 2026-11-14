@@ -22,10 +22,23 @@ export interface CodexThreadHandle {
  * imports `@openai/codex-sdk`, so the driver is unit-testable without the CLI,
  * credentials or a provider.
  */
+/**
+ * Codex's approval policy, as the SDK names it.
+ *
+ * There is no per-tool callback in this SDK: the policy is fixed when the thread
+ * starts, so the runtime can *declare* a posture but cannot answer a prompt
+ * mid-turn. That is exactly what the `gate` capability means.
+ */
+export type CodexApprovalPolicy = "never" | "on-request" | "on-failure" | "untrusted";
+
 export interface CodexSdkAdapter {
   /** Resolve the SDK (and its bundled CLI) without starting a turn. */
   probe(): Promise<void>;
-  startThread(options: { model?: string; workingDirectory?: string }): Promise<CodexThreadHandle>;
+  startThread(options: {
+    model?: string;
+    workingDirectory?: string;
+    permissions?: "auto" | "ask" | "deny";
+  }): Promise<CodexThreadHandle>;
 }
 
 const CAPABILITIES: RuntimeCapabilities = {
@@ -33,9 +46,10 @@ const CAPABILITIES: RuntimeCapabilities = {
   inProcess: false,
   structuredEvents: false,
   streaming: false,
-  // Approvals live in the SDK's thread options; huginn does not feed them yet,
-  // so `ask|deny` keeps failing closed.
-  permissions: "none",
+  // The SDK accepts a policy at thread start (approvalPolicy) but exposes no
+  // callback, so this is `gate`: a posture can be declared, a question cannot be
+  // answered mid-turn. `ask|deny` keeps failing closed at the CLI gate.
+  permissions: "gate",
   // Threads are persisted under ~/.codex/sessions and continue across turns.
   sessionHistory: true,
   sessionResume: false,
@@ -57,6 +71,22 @@ const CAPABILITIES: RuntimeCapabilities = {
  * the real thing: a `Thread` keeps the conversation server-side. Resume by id is
  * possible in the SDK but not wired here, so it is not advertised.
  */
+/**
+ * The policy a huginn `--permissions` mode maps onto.
+ *
+ * `auto` runs without asking (the CLI gate refuses `ask|deny` for this runtime
+ * anyway, because there is no answer channel), and the other modes are mapped so
+ * the declaration in the capability table is not fiction if codex ever gains a
+ * callback.
+ */
+export function codexApprovalPolicy(
+  permissions: "auto" | "ask" | "deny" | undefined,
+): CodexApprovalPolicy {
+  if (permissions === "ask") return "on-request";
+  if (permissions === "deny") return "untrusted";
+  return "never";
+}
+
 export function createCodexSdkPort(adapter: CodexSdkAdapter = createDefaultCodexAdapter()): RuntimePort {
   return {
     id: "codex",
@@ -93,6 +123,7 @@ export function createCodexSdkPort(adapter: CodexSdkAdapter = createDefaultCodex
       let thread = await adapter.startThread({
         model: options.model,
         workingDirectory: options.directory,
+        permissions: options.permissions,
       });
       let threadModel = options.model;
       const sink = options.sink;
@@ -112,6 +143,7 @@ export function createCodexSdkPort(adapter: CodexSdkAdapter = createDefaultCodex
               thread = await adapter.startThread({
                 model: request.model,
                 workingDirectory: options.directory,
+                permissions: options.permissions,
               });
               threadModel = request.model;
             }
@@ -163,12 +195,13 @@ export function createDefaultCodexAdapter(): CodexSdkAdapter {
       new Codex();
     },
 
-    async startThread({ model, workingDirectory }) {
+    async startThread({ model, workingDirectory, permissions }) {
       const { Codex } = await sdk();
       const codex = new Codex();
       const thread = codex.startThread({
         ...(model ? { model } : {}),
         ...(workingDirectory ? { workingDirectory } : {}),
+        approvalPolicy: codexApprovalPolicy(permissions),
       });
       return {
         currentId() {

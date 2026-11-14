@@ -29,6 +29,12 @@ export interface RuntimeCapabilities {
    * cannot be honoured and must fail closed. `gate` — allow/deny decided up front
    * from the configured policy. `interactive` — the driver can ask per tool call.
    */
+  /**
+   * `none` — no permission surface at all (pi, generic).
+   * `gate` — the runtime accepts a *policy* at start (codex's approvalPolicy) but
+   *   cannot ask huginn mid-turn, so `ask|deny` still fails closed.
+   * `interactive` — a real callback: the driver asks and waits for the answer.
+   */
   readonly permissions: "none" | "gate" | "interactive";
   /** The backend keeps the conversation; later turns ride on it. */
   readonly sessionHistory: boolean;

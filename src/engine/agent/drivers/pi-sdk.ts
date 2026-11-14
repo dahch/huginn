@@ -98,8 +98,10 @@ const CAPABILITIES: RuntimeCapabilities = {
   // Event mapping (text deltas, tool calls, usage) lands with the engine switch.
   structuredEvents: false,
   streaming: false,
-  // pi's approval UI is extension-driven; until huginn feeds it, `ask|deny` must
-  // keep failing closed rather than pretending to be honoured.
+  // Verified against 1.5.2: the SDK surface (config, cli, bundle) exposes no
+  // approval callback or policy hook — pi's approval flow is extension UI, out of
+  // the SDK contract. `ask|deny` therefore keeps failing closed; this is a gap in
+  // the SDK, not a decision to skip the wiring.
   permissions: "none",
   sessionHistory: true,
   sessionResume: false,
