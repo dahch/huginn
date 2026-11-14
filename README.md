@@ -4,10 +4,10 @@
 
 > ### 3.0.1-rc.2 — the SDK rewrite, out for testing
 >
-> Huginn executes cycles through **five SDK-backed runtimes** — `pi` and `codex` run their SDK
+> Huginn executes cycles through **six SDK-backed runtimes** — `pi` and `codex` run their SDK
 > in-process or over their app-server, `claude` uses its agent SDK (optional, external, and the only
-> non-OSS one), `qwen` bundles its CLI inside the SDK, `opencode` keeps its daemon — instead of
-> driving thirteen agent CLIs. Every other
+> non-OSS one), `qwen` bundles its CLI inside the SDK, `kimi` speaks its wire protocol, `opencode`
+> keeps its daemon — instead of driving thirteen agent CLIs. Every other
 > target is **provisioning only**: the `generic` bridge can still run a CLI, but it is deprecated and
 > promises nothing. [RUNTIMES.md](RUNTIMES.md) is the per-agent truth. The memory engine lives in
 > [dahch/muninn](https://github.com/dahch/muninn).

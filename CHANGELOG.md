@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Kimi Code is a runtime of its own.** `@moonshot-ai/kimi-agent-sdk` 0.1.8 (a wire protocol to the
+  Kimi CLI) gets the same seam as Qwen and Claude: text/`done`, per-turn model and timeout,
+  `interrupt()` mapped to `Turn.interrupt()`, and the CLI session closed with the driver's. Eight
+  contract tests plus the conformance suite run without credentials. `isLoggedIn()` guards both the
+  probe and `startTurn` — a machine without credentials says "not logged in; run kimi login" instead
+  of hanging until the timeout, which is what a raw `--agent kimi` used to do. An `ApprovalRequest`
+  fails the turn closed with "re-run with --permissions auto", because huginn has no approval channel
+  on this runtime yet.
+
+
 - **Qwen Code is a runtime of its own.** `@qwen-code/sdk` 0.1.33 (the CLI ships inside the
   package) gets the same treatment as the others: a native driver with an injected adapter, the same
   text/`done` contract, a model reference stripped of its provider prefix, and `abortController`

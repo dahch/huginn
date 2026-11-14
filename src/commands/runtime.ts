@@ -16,6 +16,7 @@ const RUNTIMES: Array<{ id: RuntimeId; kind: string }> = [
   { id: "claude", kind: "native (SDK, optional)" },
   { id: "opencode", kind: "daemon (HTTP)" },
   { id: "qwen", kind: "native (SDK)" },
+  { id: "kimi", kind: "native (SDK)" },
   { id: "generic", kind: "CLI bridge (no dedicated driver, deprecated)" },
 ];
 

@@ -225,8 +225,8 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 ## 5. Runtime requirements
 
 1. **Bun** (the bin is `#!/usr/bin/env bun`; the bundle is Bun-target).
-2. **An agent CLI on `$PATH`** — huginn has 13 **provisioning targets** but only five supported
-   **runtimes** (`pi`, `codex`, `claude`, `opencode`, `qwen`); `generic` still exists as a deprecated bridge
+2. **An agent CLI on `$PATH`** — huginn has 13 **provisioning targets** but only six supported
+   **runtimes** (`pi`, `codex`, `claude`, `opencode`, `qwen`, `kimi`); `generic` still exists as a deprecated bridge
    for the nine CLI-only targets and is not part of the support contract
    ([RUNTIMES.md](RUNTIMES.md)). `opencode` is the default and the only runtime
    with a native permission channel (`--permissions ask|deny`), server-side session history, and an
@@ -235,8 +235,8 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
    stream); when it is used, huginn starts it itself via
    `opencode serve --port <n> --hostname 127.0.0.1` in the project dir (logs to
    `.harness/logs/server.log`). `getAgentRuntime()` still builds the CLI-shaped adapter for every
-   provisioning target; the eight without a dedicated driver (`cursor`, `agy`, `commandcode`,
-   `devin`, `kimi`, `mcode`, `mimo`, `omp`) are one configured
+   provisioning target; the seven without a dedicated driver (`cursor`, `agy`, `commandcode`,
+   `devin`, `mcode`, `mimo`, `omp`) are one configured
    `GenericSubprocessRuntimeAdapter` from `src/engine/agent/genericTargets.ts`.
 3. **`git` on `$PATH`** — used for module inference, diffs, base commits, doc staging and worktree
    sandboxing. The project directory does **not** have to be a repository: `run`/`plan`/`live`
@@ -248,8 +248,8 @@ The `--thinker` / `--executor` split is enforced in `src/engine/phases.ts` + `sr
 
 ### The runtime port
 
-> **The support contract lives in [RUNTIMES.md](RUNTIMES.md).** Only the five SDK-backed runtimes
-> (`pi`, `codex`, `claude`, `opencode`, `qwen`) execute cycles; the `generic` bridge is deprecated and
+> **The support contract lives in [RUNTIMES.md](RUNTIMES.md).** Only the six SDK-backed runtimes
+> (`pi`, `codex`, `claude`, `opencode`, `qwen`, `kimi`) execute cycles; the `generic` bridge is deprecated and
 > promises nothing. A capability table is a claim, so `scripts/probe-runtimes.ts --prompt` reproduces
 > the per-agent evidence (and `huginn runtime list --check` prints the declarations).
 
@@ -260,12 +260,12 @@ record, `isAvailable()`, `listModels()`, `resolveModel()` and `createSession()` 
 `interrupt()`, idempotent `close()`).
 
 M4b split the two concepts. `ProvisioningTarget` (`AgentTarget`) is where `setup`/`doctor`
-register Muninn — 13 values, unchanged. `RuntimeId` is what executes the cycle — six values
-(`pi`, `opencode`, `codex`, `claude`, `qwen`, `generic`), mapped by `runtimeIdForTarget()`. The engines no
+register Muninn — 13 values, unchanged. `RuntimeId` is what executes the cycle — seven values
+(`pi`, `opencode`, `codex`, `claude`, `qwen`, `kimi`, `generic`), mapped by `runtimeIdForTarget()`. The engines no
 longer touch `IAgentRuntime`; that interface survives as the CLI-shaped adapter contract behind
 `getAgentRuntime` and as the input `asRuntimePort` bridges.
 
-`getRuntimePort()` returns the native driver for `pi`, `codex`, `claude`, `qwen` and
+`getRuntimePort()` returns the native driver for `pi`, `codex`, `claude`, `qwen`, `kimi` and
 `opencode`, or a bridged configured generic adapter for every other target.
 `getGenericRuntimePort()` is the `generic` catalog entry used by `huginn runtime list` (it probes
 whether any generic-target CLI is installed; `createSession` there says it needs a concrete target).
@@ -298,8 +298,8 @@ typed events out to its sessions, answers permissions through the session's `onP
 the stream and the log, `usage` to the new event (and `state.usage`), and nothing for `done`.
 `permissionHandlerFor()` is the one mapping from `--permissions` to a handler.
 
-The seven CLI-only targets retired as **runtimes** (`agy`, `commandcode`, `devin`, `kimi`,
-`mcode`, `mimo`, `omp`) remain **provisioning targets**: `huginn setup --status` still
+The six CLI-only targets retired as **runtimes** (`agy`, `commandcode`, `devin`, `mcode`,
+`mimo`, `omp`) remain **provisioning targets**: `huginn setup --status` still
 lists all 13, their MCP paths/rules rows are unchanged, and `--agent <target>` still runs them
 through `generic`. Only a *stored* config value warns and falls back to auto-detection (M4b
 migration); model/MCP listing is no longer wired for them, so discovery honestly returns an explained

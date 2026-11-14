@@ -59,10 +59,18 @@ export type AgentTarget = ProvisioningTarget;
  * `cursor` are all served by `generic`: they keep their provisioning row, but
  * they are no longer separate runtime classes.
  */
-export type RuntimeId = "pi" | "opencode" | "codex" | "claude" | "qwen" | "generic";
+export type RuntimeId = "pi" | "opencode" | "codex" | "claude" | "qwen" | "kimi" | "generic";
 
 /** Every runtime, in the order `huginn runtime list` shows them. */
-export const RUNTIME_IDS: readonly RuntimeId[] = ["pi", "codex", "claude", "opencode", "qwen", "generic"];
+export const RUNTIME_IDS: readonly RuntimeId[] = [
+  "pi",
+  "codex",
+  "claude",
+  "opencode",
+  "qwen",
+  "kimi",
+  "generic",
+];
 
 /**
  * Which runtime serves each provisioning target.
@@ -76,11 +84,11 @@ export const AGENT_TARGET_RUNTIME: Record<ProvisioningTarget, RuntimeId> = {
   codex: "codex",
   claude: "claude",
   qwen: "qwen",
+  kimi: "kimi",
   cursor: "generic",
   agy: "generic",
   commandcode: "generic",
   devin: "generic",
-  kimi: "generic",
   mcode: "generic",
   mimo: "generic",
   omp: "generic",

@@ -20,6 +20,7 @@
   "dependencies": {
     "@dahch/muninn": "^0.1.0",
     "@earendil-works/pi-coding-agent": "1.5.2",
+    "@moonshot-ai/kimi-agent-sdk": "0.1.8",
     "@openai/codex-sdk": "0.169.0",
     "@opencode-ai/sdk": "^1.19.5",
     "@qwen-code/sdk": "0.1.33",

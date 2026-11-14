@@ -34,13 +34,14 @@ describe("huginn runtime list", () => {
     const getPort = vi.fn((_id: RuntimeId) => port());
     silent();
     await handleRuntimeCommand("list", {}, { getPort });
-    expect(getPort).toHaveBeenCalledTimes(6);
+    expect(getPort).toHaveBeenCalledTimes(7);
     expect(getPort.mock.calls.map((c) => c[0])).toEqual([
       "pi",
       "codex",
       "claude",
       "opencode",
       "qwen",
+      "kimi",
       "generic",
     ]);
   });

@@ -24,6 +24,7 @@ promises nothing beyond "a prompt went in and text came out".
 | `pi` | `@earendil-works/pi-coding-agent` 1.5.2, in-process | history, interrupt, dynamic catalog, MCP listing | **one turn works with an explicit model** (`commandcode/deepseek/deepseek-v4.1-flash` → `pong`). The SDK does **not** enumerate the providers declared in `~/.pi/agent/models.json`, so the catalog is empty and availability carries a note instead of a refusal |
 | `codex` | `@openai/codex-sdk` 0.169.0 | history | **one turn works out of the box** (`pong` in 4.1 s). No abort, no streaming, no approvals, no catalog |
 | `qwen` | `@qwen-code/sdk` 0.1.33 (bundles its CLI) | history, interrupt | **driver verified by contract + conformance, provider not verified here.** The SDK loads, but a real turn returns `401 Invalid 'Authorization' header or token` on this machine: there are no Qwen credentials configured. That message now reaches the caller verbatim instead of collapsing into "qwen failed" |
+| `kimi` | `@moonshot-ai/kimi-agent-sdk` 0.1.8 (wire protocol to the Kimi CLI) | history, interrupt | **driver verified by contract + conformance, provider not verified here.** `isLoggedIn()` is part of the probe *and* of `startTurn`, so a machine without credentials says "not logged in; run kimi login" instead of hanging until the timeout |
 | `claude` | `@anthropic-ai/claude-agent-sdk` 0.3.325 (optional, external) | history, interrupt, usage | **driver verified by contract tests, provider not verified here.** `test/engine/agent/claudeSdk.test.ts` proves the turn construction, text/done/usage mapping, error propagation, per-prompt model and timeout, and abort — all through the injected adapter, with no account and no CLI. The real round-trip is unverified on this machine because the CLI answers "Not logged in"; one `--prompt` with a signed-in account settles it |
 | `opencode` | `@opencode-ai/sdk` 1.19.5 + `opencode serve` | history, resume, streaming, interactive permissions, dynamic catalog, usage, MCP, interrupt | **v2 verified end to end** against v2.3.0: bootstrap, Basic auth, session creation, the asynchronous prompt (`POST /api/session/{id}/prompt`) resolved through the event stream, text deltas reaching the sink and a `done` event, with tokens and cost captured. Permissions on v2 are **not exercised yet** — the response path is the SDK's, and no real permission prompt was triggered |
 
@@ -71,7 +72,7 @@ runtime cannot emit.
 
 | Agent | SDK | Status |
 |---|---|---|
-| `kimi` | `@moonshot-ai/kimi-agent-sdk` (0.1.8) | **Planned.** Not integrated yet; still a provisioning target through the deprecated `generic` bridge |
+| `antigravity` | Python only | **Excluded by decision** (see above) |
 | `antigravity` | Python only | **Excluded by decision.** Its SDK has no TypeScript distribution, and a Python bridge would add a second runtime language for one agent. Not a provisioning target either |
 | `cursor`, `agy`, `commandcode`, `devin`, `mcode`, `mimo`, `omp` | none published | Provisioning targets only. `commandcode` is reachable **through** `pi`/`opencode` models, not as a runtime of its own |
 
