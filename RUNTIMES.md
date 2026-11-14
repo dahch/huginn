@@ -24,7 +24,7 @@ promises nothing beyond "a prompt went in and text came out".
 | `pi` | `@earendil-works/pi-coding-agent` 1.5.2, in-process | history, interrupt, dynamic catalog, MCP listing | **one turn works with an explicit model** (`commandcode/deepseek/deepseek-v4.1-flash` → `pong`). The SDK does **not** enumerate the providers declared in `~/.pi/agent/models.json`, so the catalog is empty and availability carries a note instead of a refusal |
 | `codex` | `@openai/codex-sdk` 0.169.0 | history | **one turn works out of the box** (`pong` in 4.1 s). No abort, no streaming, no approvals, no catalog |
 | `claude` | `@anthropic-ai/claude-agent-sdk` 0.3.325 (optional, external) | history, interrupt | **not verified on this machine**: the SDK loads but the CLI answers "Not logged in · Please run /login". The driver is wired; the credential is not |
-| `opencode` | `@opencode-ai/sdk` 1.19.5 + `opencode serve` | history, resume, streaming, interactive permissions, dynamic catalog, usage, MCP, interrupt | **v2 is mapped and the driver migration is in progress.** The installed v2.3.0 speaks `/api/*` with **HTTP Basic auth** (`opencode:<password printed by serve>`); `scripts/probe-opencode-v2.ts` reproduces it. Until the driver lands, a v2 binary is refused with that reason instead of timing out |
+| `opencode` | `@opencode-ai/sdk` 1.19.5 + `opencode serve` | history, resume, streaming, interactive permissions, dynamic catalog, usage, MCP, interrupt | **v2 partially verified.** Bootstrap, Basic auth, `/api` root and session creation work against v2.3.0 (`scripts/probe-opencode-v2.ts`). The remaining piece is the prompt path: v2's `POST /api/session/{id}/prompt` returns immediately and the answer arrives on the event stream, while the SDK's generated helper still targets the v1 `/message` + `parts` shape |
 
 ### The opencode v2 migration (in progress)
 
@@ -63,9 +63,9 @@ runtime cannot emit.
 
 | Agent | SDK | Status |
 |---|---|---|
-| `qwen` | Qwen Code TypeScript SDK | Not integrated. Still a provisioning target, executed through the deprecated `generic` bridge |
-| `kimi` | Kimi Agent SDK | Not integrated, same |
-| `antigravity` | Antigravity SDK | Not integrated, not a provisioning target yet |
+| `qwen` | `@qwen-code/sdk` (0.1.33) | **Planned.** Not integrated yet; still a provisioning target through the deprecated `generic` bridge |
+| `kimi` | `@moonshot-ai/kimi-agent-sdk` (0.1.8) | **Planned.** Not integrated yet, same |
+| `antigravity` | Python only | **Excluded by decision.** Its SDK has no TypeScript distribution, and a Python bridge would add a second runtime language for one agent. Not a provisioning target either |
 | `cursor`, `agy`, `commandcode`, `devin`, `mcode`, `mimo`, `omp` | none published | Provisioning targets only. `commandcode` is reachable **through** `pi`/`opencode` models, not as a runtime of its own |
 
 Adding one of these means a new driver in `src/engine/agent/drivers/`, a

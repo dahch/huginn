@@ -37,11 +37,14 @@ import type { McpServerListing, McpStatusReport, ModelCatalog, PromptResult } fr
  */
 export function opencodeVersionRefusal(version: string | undefined): string | undefined {
   const major = version ? opencodeMajorVersion(version) : undefined;
-  if (major === undefined || major < 2) return undefined;
+  // v1 (no auth, paths at the root) and v2 (/api + Basic auth) are both handled
+  // by the bootstrap and the client. Anything newer is unknown on purpose: the
+  // driver refuses with the version rather than guessing at a third API.
+  if (major === undefined || major <= 2) return undefined;
   const label = version!.replace(/^opencode\s+/i, "");
   return (
-    `opencode ${label} speaks the v2 API; this driver targets v1.x. ` +
-    `Install the v1 line (opencode@1) or wait for the v2 driver.`
+    `opencode ${label} speaks an API newer than this driver knows (v1 and v2 are supported). ` +
+    `Pin the CLI to v2 or update the driver.`
   );
 }
 
@@ -353,9 +356,10 @@ export function createOpencodePort(options: OpencodePortOptions = {}): RuntimePo
       if (!available) {
         return { ok: false, reason: "the opencode binary is not installed or is not on PATH" };
       }
-      // The driver speaks the v1 HTTP API (/global/*, /session). A v2 CLI serves
-      // /api/* and answers unknown paths with the web app's HTML, so a v1 health
-      // check cannot tell a wrong API from a broken server — it just times out.
+      // v2 is the target now: the password the server prints is captured by the
+      // bootstrap and every /api/* call carries Basic auth. A v1 binary still
+      // works through the same SDK (no password, paths at the root), so the only
+      // refusal left is for a version we cannot parse and a server we cannot reach.
       const version = (options.versionProbe ?? probeOpencodeVersion)();
       const refusal = opencodeVersionRefusal(version);
       if (refusal) return { ok: false, reason: refusal };

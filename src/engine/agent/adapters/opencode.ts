@@ -377,7 +377,7 @@ export class OpencodeRuntimeAdapter implements IAgentRuntime {
       }
     };
     this.serverHandle = handle;
-    this._client = createClient(handle.url);
+    this._client = createClient(handle.url, handle.password);
   }
 
   /**

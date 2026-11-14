@@ -21,6 +21,11 @@ export interface ServerExitInfo {
 export interface ServerHandle {
   url: string;
   port: number;
+  /**
+   * The password v2 prints on startup and every /api/* call must present as HTTP
+   * Basic (user `opencode`). `undefined` for a v1 server, which needs none.
+   */
+  password?: string;
   close(): Promise<void>;
   /**
    * Liveness of the supervised child (AC-30.4). `false` once it exited
@@ -149,14 +154,35 @@ export async function findFreePort(): Promise<number> {
   });
 }
 
-async function waitForHealth(url: string, timeoutMs: number): Promise<void> {
+/**
+ * Health of the local server, for both API lines.
+ *
+ * v1 exposed `GET /global/health` returning JSON and needed no auth. v2 serves
+ * `/api/*` behind HTTP Basic (user `opencode`, the password printed on stdout)
+ * and has **no** health route: `/api/session` is the cheap JSON probe, while an
+ * unknown path answers the web app's HTML with status 200 — which is why a v1
+ * check can only time out against a v2 server.
+ */
+async function waitForHealth(
+  url: string,
+  timeoutMs: number,
+  getPassword: () => string | undefined = () => undefined,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
   const started = Date.now();
   let lastHeartbeat = started;
   while (Date.now() < deadline) {
+    // The password may not have been printed yet on the first iterations: probe
+    // whichever API the evidence supports *now* instead of waiting for it. A v1
+    // stub that prints nothing therefore answers /global/health immediately.
+    const password = getPassword();
+    const headers: Record<string, string> = password
+      ? { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64") }
+      : {};
+    const probe = password ? `${url}/api/session` : `${url}/global/health`;
     try {
-      const res = await fetch(`${url}/global/health`);
+      const res = await fetch(probe, { headers });
       if (res.ok) {
         const contentType = res.headers.get("content-type") ?? "";
         if (contentType.includes("text/html")) {
@@ -198,7 +224,16 @@ export async function startServer(
   // a path escaping the project) — the server still runs, it just writes no log.
   const logFile = prepareServerLog(projectPath);
 
+  // v2 prints "server password <value>" on stdout and requires HTTP Basic for
+  // every /api/* call. The password is captured here, before the health probe,
+  // because the probe itself needs it.
+  let password: string | undefined;
+
   const append = (chunk: string) => {
+    if (!password) {
+      const match = /password\s+(\S+)/.exec(chunk);
+      if (match) password = match[1];
+    }
     if (!logFile) return;
     try {
       // `O_APPEND` + `O_NOFOLLOW`: append through a descriptor that can never
@@ -246,7 +281,7 @@ export async function startServer(
 
   const url = `http://127.0.0.1:${port}`;
   try {
-    await waitForHealth(url, timeoutMs);
+    await waitForHealth(url, timeoutMs, () => password);
   } catch (err) {
     const code = await Promise.race([exited, Promise.resolve(undefined)]);
     if (code !== undefined) {
@@ -269,6 +304,7 @@ export async function startServer(
   const handle: ServerHandle = {
     url,
     port,
+    password,
     isHealthy: () => state.healthy && !state.closing,
     async close() {
       state.closing = true;
@@ -313,7 +349,7 @@ export async function startServer(
       proc = spawnChild();
       exited = proc.exited.catch(() => null);
 
-      const health = waitForHealth(url, RESTART_HEALTH_TIMEOUT_MS).then(
+      const health = waitForHealth(url, RESTART_HEALTH_TIMEOUT_MS, () => password).then(
         (): RestartOutcome => ({ kind: "healthy" }),
         (err: unknown): RestartOutcome => ({
           kind: "timeout",

@@ -69,12 +69,39 @@ function withTimeout<T>(
   });
 }
 
-export function createClient(baseUrl: string): OpencodeClient {
+/**
+ * The SDK client, authenticated when the server needs it.
+ *
+ * opencode v2 requires HTTP Basic (user `opencode`, the password printed by
+ * `serve`) on every /api/* call; v1 required nothing, so the header is only
+ * added when a password is known.
+ */
+export function createClient(baseUrl: string, password?: string): OpencodeClient {
+  // The generated SDK paths are relative to the API root ("/session/…",
+  // "/event"), and v2 serves them under "/api" — v1 served them at the root.
+  const root = password ? baseUrl.replace(/\/+$/, "") + "/api" : baseUrl;
   return createOpencodeClient({
-    baseUrl,
+    baseUrl: root,
     throwOnError: true,
     responseStyle: "data",
+    ...(password
+      ? { headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64") } }
+      : {}),
   });
+}
+
+/**
+ * Unwrap the v2 response envelope.
+ *
+ * The generated v2 helpers return `{ data: … }` (the server's body shape), while
+ * the v1 helpers returned the body itself. Unwrapping here keeps every caller on
+ * one shape and is a no-op for a response that has no `data` key.
+ */
+export function unwrapData<T>(value: T): T extends { data: infer D } ? D : T {
+  if (value && typeof value === "object" && "data" in (value as Record<string, unknown>)) {
+    return (value as unknown as { data: unknown }).data as never;
+  }
+  return value as never;
 }
 
 export function extractText(parts: Array<{ type?: string; text?: string }>): string {
@@ -104,7 +131,7 @@ export async function createSession(
     body: { title },
     ...(directory ? { query: { directory } } : {}),
   });
-  return (res as unknown as { id: string });
+  return unwrapData(res as unknown as { id: string });
 }
 
 export async function sessionExists(client: OpencodeClient, sessionId: string): Promise<boolean> {
@@ -246,12 +273,16 @@ export async function prompt(
   return withTimeout(
     opts.timeoutMs,
     async (signal) => {
-      const res = (await client.session.prompt({
-        path: { id: sessionId },
-        body: body as never,
-        signal: signal as AbortSignal | undefined,
-        ...(opts.directory ? { query: { directory: opts.directory } } : {}),
-      } as never)) as unknown as { info: { id: string; error?: unknown }; parts: Array<{ type?: string; text?: string }> };
+      // v2 wraps every body in { data }, so the envelope is unwrapped before the
+      // fields are read; a v1 body (no `data`) passes through unchanged.
+      const res = unwrapData(
+        (await client.session.prompt({
+          path: { id: sessionId },
+          body: body as never,
+          signal: signal as AbortSignal | undefined,
+          ...(opts.directory ? { query: { directory: opts.directory } } : {}),
+        } as never)) as unknown as { info: { id: string; error?: unknown }; parts: Array<{ type?: string; text?: string }> },
+      );
 
       if (res.info?.error) {
         throw new Error(`Agent message failed: ${JSON.stringify(res.info.error)}`);
@@ -285,12 +316,14 @@ export async function runCommand(
   return withTimeout(
     opts.timeoutMs,
     async (signal) => {
-      const res = (await client.session.command({
-        path: { id: sessionId },
-        body: body as never,
-        signal: signal as AbortSignal | undefined,
-        ...(opts.directory ? { query: { directory: opts.directory } } : {}),
-      } as never)) as unknown as { info: { id: string; error?: unknown }; parts: Array<{ type?: string; text?: string }> };
+      const res = unwrapData(
+        (await client.session.command({
+          path: { id: sessionId },
+          body: body as never,
+          signal: signal as AbortSignal | undefined,
+          ...(opts.directory ? { query: { directory: opts.directory } } : {}),
+        } as never)) as unknown as { info: { id: string; error?: unknown }; parts: Array<{ type?: string; text?: string }> },
+      );
 
       if (res.info?.error) {
         throw new Error(`Command /${opts.command} failed: ${JSON.stringify(res.info.error)}`);

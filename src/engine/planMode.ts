@@ -463,7 +463,7 @@ export async function runPlanMode(opts: PlanModeOptions): Promise<void> {
   const thinkerLabel = formatModel(thinker);
 
   const server = await startServer(opts.projectPath, opts.port, opts.serverTimeoutMs);
-  const client = createClient(server.url);
+  const client = createClient(server.url, server.password);
   const stopStream = streamToStdout(client);
 
   try {

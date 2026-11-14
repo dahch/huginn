@@ -16,11 +16,12 @@ describe("opencode version gate", () => {
     expect(opencodeMajorVersion("")).toBeUndefined();
   });
 
-  it("refuses v2 and accepts v1", () => {
-    expect(opencodeVersionRefusal("opencode v2.3.0")).toContain("v2 API");
-    expect(opencodeVersionRefusal("opencode v2.3.0")).toContain("v1.x");
+  it("accepts v1 and v2, and refuses only an API newer than it knows", () => {
+    expect(opencodeVersionRefusal("opencode v2.3.0")).toBeUndefined();
     expect(opencodeVersionRefusal("opencode v1.18.14")).toBeUndefined();
     expect(opencodeVersionRefusal("1.0.0")).toBeUndefined();
+    // A third API line is not guessed at.
+    expect(opencodeVersionRefusal("opencode v3.0.0")).toContain("newer than this driver knows");
   });
 
   it("does not invent a refusal when the version is unreadable", () => {
