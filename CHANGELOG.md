@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased
+## 3.0.0-rc.3
+
+> Twenty-one commits since `3.0.1-rc.2`, 66 files: `src` +2603/−92, `test` +1443/−16, docs
+> +394/−43, and +205/−38 across scripts and workflows. The SDK rewrite stops being an aspiration:
+> six runtimes with capabilities that are declared, conformance-checked and printed, two of them
+> (qwen, kimi) new, approvals answered wherever the SDK has a channel, and a console that finally
+> tells what the engine proved from what a model judged.
+
+A release candidate is a claim list, so this one is organized around what changed *and* what was
+verified. **Runtimes**: `RUNTIMES.md` is now the support contract, and `scripts/probe-runtimes.ts`
+reproduces every claim with a real turn (`--prompt`) instead of asserting it. qwen and kimi join
+through their SDKs; claude, qwen and kimi answer `--permissions ask|deny` through `canUseTool` or
+`Turn.approve`; codex declares the weaker truth — a `gate` whose `approvalPolicy` is fixed when the
+thread starts — and pi declares `none` because its SDK exposes no approval surface at all. opencode
+v2 completes a real turn, authentication included. **Evidence**: every phase is classified by producer
+and the receipt records the split, so `huginn report` and `huginn stats` can say what a run proved
+without a human remembering which phases were opinions. **Methodology**: the thinker that drafts the
+plan now proposes its own profile, and accepting that proposal is a real action in both `huginn plan`
+and the live console — the over-engineering a small task used to pay for. **Console**: verbose became a
+transcript, the arrows scroll a finished phase's report, `i` lists the plan's iterations on demand,
+and the progress bar is weighted by phases so a one-iteration plan no longer starts at 100%.
 
 ### Added
 
@@ -11,40 +31,29 @@
   from the active profile (`iterationPhases`), de-duplicated for `strict-tdd`'s repeated
   `TEST_MODULE`.
 
-
-- **`i` shows the plan's iteration list in `huginn run`, including after a live handoff.** The list
-  reads the titles from `plan.md` when the caller does not pass them (the live console swaps in the
-  run dashboard on `/go` without them), and when there is no plan to read it logs why instead of
-  silently ignoring the key.
 - **`i` shows the plan's iteration list in `huginn run`.** A read-only checklist of every iteration
   title, opened on the one that is running (`>` marks it) and closed by default, so it costs no rows
   until you ask: `i` opens and closes it, `Esc` closes it, `↑`/`↓` move the window, and the subtitle
   names how many titles are hidden above/below. It makes exactly one claim — which iteration is
   running — and never marks earlier ones as done. It renders through the shared modal frame and the
-  console's measured-surface rules (one title row, one footer row, no pictographs).
+  console's measured-surface rules (one title row, one footer row, no pictographs). After a live
+  handoff the titles are read from `plan.md` (the console swaps the dashboard in without them), and
+  when there is no plan to read the key logs why instead of doing nothing.
 
-
-- **The run transcript is recorded even while it is hidden.** `v` used to build its buffer only when
-  it was already on, so turning it on mid-phase showed "transcript on" and nothing else — with `pi`
-  (which streams nothing) that could last the whole phase. The trace is now appended on every
-  `phaseStart`/`phaseStream`/`phaseEnd` regardless, and toggling in either direction repaints
-  immediately, so off shows the current phase (or its report) instead of leaving the transcript on
-  screen until the next event.
 - **Verbose is a transcript now, and the output panel actually scrolls.** `v` in `huginn run` used to
   widen the panel by seven percent and print `[VERBOSE]` — it changed nothing you could read. It now
   switches the panel from *the phase that is running* to *the whole run*: every phase's stream with a
   `──── PHASE · iter n/m · attempt k ────` separator, the report of any phase that streamed nothing,
-  and a 400k-character cap so the buffer stays bounded. The panel keeps its width in both modes.
+  and a 400k-character cap so the buffer stays bounded. The panel keeps its width in both modes. The
+  trace is recorded even while it is hidden — `v` used to build it only when already on, so turning it
+  on mid-phase showed "transcript on" and nothing else — and toggling in either direction repaints
+  immediately, so off shows the current phase (or its report) instead of leaving the transcript on
+  screen until the next event.
 - **The arrows scroll a phase report, not just a live stream.** `StreamCard`'s plain-report branch
   ignored the scroll offset and always drew the first rows, so with a runtime that buffers (every
   driver except `opencode`) a long report could not be read past its first screen. It now applies the
   same bottom-anchored window as the stream, and the panel title's `▲ +N` confirms where you are.
 
-
-- **Approving a live draft adopts the plan's profile.** The `[c]` in the draft-approval decision is
-  now the acceptance the CLI already had: the session takes the proposal and writes it to the project
-  config, with a log line naming the previous profile. Before this the proposal was only advice a
-  human had to retype, so a plan that recommended `odd` still ran the full cycle.
 - **The plan proposes its own profile, so a small task stops paying for the full cycle.** The thinker
   that drafts `plan.md` now has to state `**Profile:** <id>` and `**Profile reason:**` — the
   lightest methodology that keeps the run honest. `parseProfileAdvice` reads it, the plan draft
@@ -52,11 +61,12 @@
   `huginn plan` prints the proposal and asks. Accepting (`y`, or `--yes`) writes `profile` into
   `.huginn/config.json`; declining leaves your config untouched; an explicit `--profile` still wins;
   `CI` and a missing TTY never write, they print the proposal plus how to adopt it. In the live
-  console the proposal rides in the draft-approval decision and `/profile <id>` applies it — no
-  silent switch. When the proposal and the running profile disagree — an explicit `--profile`, or a
-  plan drafted under `CI` where nobody was asked — `huginn run` prints a one-line note naming both and
-  the flag that adopts the proposal; it never changes the run.
-
+  console the proposal rides in the draft-approval decision, and approving the draft (`[c]`) is the
+  acceptance the CLI already had: the session adopts it and writes it to the project config, with a
+  log line naming the previous profile — advice the user had to retype was how a plan that said `odd`
+  ran the full cycle. When the proposal and the running profile disagree — an explicit `--profile`, or
+  a plan drafted under `CI` where nobody was asked — `huginn run` prints a one-line note naming both
+  and the flag that adopts the proposal; it never changes the run.
 
 - **Codex declares what it can actually do about approvals, and pi says what it cannot.** The
   capability enum now distinguishes `gate` from `none` in `port.ts`: codex accepts an
@@ -65,7 +75,6 @@
   `ask|deny` still fails closed at the CLI. pi's 1.5.2 surface (config, cli, bundle) has no
   approval API at all, which is recorded next to the capability instead of being left as an
   unexplained `none`. `huginn runtime list --check` prints the distinction.
-
 
 - **Claude, Qwen and Kimi can answer `--permissions ask|deny`.** Each driver now declares
   `permissions: "interactive"` and forwards the SDK's own channel: `canUseTool` for claude and qwen,
@@ -76,7 +85,6 @@
   can be delivered. Two contract tests per driver pin the translation and the capability
   implication.
 
-
 - **Kimi Code is a runtime of its own.** `@moonshot-ai/kimi-agent-sdk` 0.1.8 (a wire protocol to the
   Kimi CLI) gets the same seam as Qwen and Claude: text/`done`, per-turn model and timeout,
   `interrupt()` mapped to `Turn.interrupt()`, and the CLI session closed with the driver's. Eight
@@ -86,7 +94,6 @@
   fails the turn closed with "re-run with --permissions auto", because huginn has no approval channel
   on this runtime yet.
 
-
 - **Qwen Code is a runtime of its own.** `@qwen-code/sdk` 0.1.33 (the CLI ships inside the
   package) gets the same treatment as the others: a native driver with an injected adapter, the same
   text/`done` contract, a model reference stripped of its provider prefix, and `abortController`
@@ -95,7 +102,6 @@
   account is configured, and that message now reaches the caller instead of collapsing into
   "qwen failed". `RuntimeId` grows to six, `huginn runtime list` shows it, and the generic bridge
   stops claiming it.
-
 
 - **The Claude driver has a contract test, runnable without an account.**
   `test/engine/agent/claudeContract.test.ts` pins what the injected
@@ -108,7 +114,6 @@
   thing the suite caught. What a contract test cannot prove — the provider
   round-trip — stays marked *not verified* in RUNTIMES.md.
 
-
 - **opencode v2 completes a real turn.** The bootstrap captures the password the
   server prints, sends HTTP Basic and points the SDK at `/api`; the prompt is
   asynchronous there (`POST /api/session/{id}/prompt` returns the user message and
@@ -117,7 +122,6 @@
   now reach the console sink, and tokens/cost are captured from the step event.
   Verified against v2.3.0: a real prompt returns its text and emits `text` then
   `done`. Permissions on v2 are not exercised yet.
-
 
 - **A runtime support contract, and the four SDKs it is built on are current.** `RUNTIMES.md` now
   states per agent what can execute a cycle, what was actually verified on the reference machine and
@@ -137,7 +141,6 @@
   reason. Two silent bugs behind it are fixed too: `--port 0` was passed straight through (the
   server bound an ephemeral port nobody learned), and the health check could not tell HTML from a
   JSON `{healthy}` body.
-
 
 - **A result now says what it is, not only whether it passed.** `src/engine/evidence.ts` classifies
   every phase by its producer: the engine runs `VERIFY`, `COMMIT_ALL` and `REPAIR_PROMOTION` and

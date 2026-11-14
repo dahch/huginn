@@ -70,6 +70,17 @@ jobs:
             npm publish --provenance
           fi
 
+      # `latest` is what `npm i -g` installs; `next` is the channel a preview
+      # reads. A candidate is both, so both tags must name it. OIDC trusted
+      # publishing covers `npm publish`; `dist-tag` is best-effort, and failing
+      # it must not turn a successful publish red.
+      - name: Point the next dist-tag at this candidate
+        if: steps.on-npm.outputs.exists != 'true'
+        continue-on-error: true
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          npm dist-tag add "@dahch/huginn@$version" next
+
   release:
     # A green publish is not a release: the tag needs its notes too. This job
     # copies the version's CHANGELOG section into a GitHub Release, so a tag is
