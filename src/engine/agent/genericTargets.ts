@@ -7,7 +7,7 @@ import type { AgentTarget } from "../../agents/integrator.js";
  *
  * - an {@link AgentTarget} is where `huginn setup`/doctor register Muninn (13
  *   targets, unchanged);
- * - a `RuntimeId` is what the cycle actually executes (5 runtimes: `pi`,
+ * - a `RuntimeId` is what the cycle actually executes (6 runtimes: `pi`,
  *   `opencode`, `codex`, `claude` and `generic`).
  *
  * The targets below keep their `AGENT_REGISTRY` row (MCP paths, rules file,
@@ -168,6 +168,10 @@ export const GENERIC_TARGET_SPECS: Record<GenericTarget, GenericTargetSpec> = {
     modelArgs: (model) => ["--model", model],
     permissionArgs: OMP_PERMISSION_ARGS,
   },
+  // `qwen` keeps its generic spec even though it now has a native runtime: the
+  // spec is what the provisioning/model-discovery view (`getAgentRuntime`) uses,
+  // and what a missing SDK falls back to. The *runtime* mapping is the source of
+  // truth for execution, and that one points at the SDK driver.
   qwen: {
     target: "qwen",
     name: "Qwen Code",

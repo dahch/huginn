@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Qwen Code is a runtime of its own.** `@qwen-code/sdk` 0.1.33 (the CLI ships inside the
+  package) gets the same treatment as the others: a native driver with an injected adapter, the same
+  text/`done` contract, a model reference stripped of its provider prefix, and `abortController`
+  wired to interrupt. Eight contract tests plus the full conformance suite run without credentials;
+  a real turn on this machine answers `401 Invalid 'Authorization' header or token` because no Qwen
+  account is configured, and that message now reaches the caller instead of collapsing into
+  "qwen failed". `RuntimeId` grows to six, `huginn runtime list` shows it, and the generic bridge
+  stops claiming it.
+
+
 - **The Claude driver has a contract test, runnable without an account.**
   `test/engine/agent/claudeContract.test.ts` pins what the injected
   `ClaudeSdkAdapter` seam must do — build the turn with the session's

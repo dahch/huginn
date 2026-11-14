@@ -30,8 +30,8 @@ function installCli(name: string): string {
 }
 
 describe("RuntimeId vs provisioning target (M4b)", () => {
-  it("keeps five runtimes and maps every provisioning target onto one", () => {
-    expect(RUNTIME_IDS).toEqual(["pi", "codex", "claude", "opencode", "generic"]);
+  it("keeps six runtimes and maps every provisioning target onto one", () => {
+    expect(RUNTIME_IDS).toEqual(["pi", "codex", "claude", "opencode", "qwen", "generic"]);
     for (const target of AGENT_TARGETS) {
       expect(RUNTIME_IDS).toContain(AGENT_TARGET_RUNTIME[target]);
       expect(runtimeIdForTarget(target)).toBe(AGENT_TARGET_RUNTIME[target]);
@@ -39,12 +39,16 @@ describe("RuntimeId vs provisioning target (M4b)", () => {
     expect(AGENT_TARGETS).toHaveLength(13);
   });
 
-  it("keeps the four dedicated drivers and routes the rest through generic", () => {
+  it("keeps the five dedicated drivers and routes the rest through generic", () => {
     expect(runtimeIdForTarget("pi")).toBe("pi");
     expect(runtimeIdForTarget("opencode")).toBe("opencode");
     expect(runtimeIdForTarget("codex")).toBe("codex");
     expect(runtimeIdForTarget("claude")).toBe("claude");
+    expect(runtimeIdForTarget("qwen")).toBe("qwen");
     for (const target of GENERIC_TARGETS) {
+      // qwen has a generic spec (provisioning + fallback) *and* a native runtime:
+      // the runtime mapping points at the SDK driver, which is what executes.
+      if (target === "qwen") continue;
       expect(runtimeIdForTarget(target)).toBe("generic");
     }
     expect(GENERIC_TARGETS).toEqual([

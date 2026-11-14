@@ -15,7 +15,8 @@ const RUNTIMES: Array<{ id: RuntimeId; kind: string }> = [
   { id: "codex", kind: "native (SDK)" },
   { id: "claude", kind: "native (SDK, optional)" },
   { id: "opencode", kind: "daemon (HTTP)" },
-  { id: "generic", kind: "CLI bridge (no dedicated driver)" },
+  { id: "qwen", kind: "native (SDK)" },
+  { id: "generic", kind: "CLI bridge (no dedicated driver, deprecated)" },
 ];
 
 export interface RuntimeCommandDeps {
@@ -101,7 +102,7 @@ export async function handleRuntimeCommand(
     chalk.dim(
       "\n  A capability that is not listed is not claimed: no surface waits for events a runtime cannot emit.\n" +
         "  \`generic\` runs every CLI-only provisioning target (agy, commandcode, devin, kimi, mcode,\n" +
-        "  mimo, omp, qwen, cursor); \`huginn setup\` still provisions all 13 targets.\n",
+        "  mimo, omp, cursor); \`huginn setup\` still provisions all 13 targets.\n",
     ),
   );
 }
