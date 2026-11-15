@@ -292,7 +292,7 @@ override the detected locations.
 | `--executor <m>` | resolved from config | model used for everything else (execution, gates, applying fixes, docs, commits) |
 | `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents (without the flag, `PLAN.md`/`SPEC.md`/`ADR.md` are found case-insensitively) |
 | `--mode auto\|supervised` | `auto` | `auto`: autonomous with a fix-retry budget, escalating to you only when it is exhausted; `supervised`: pause for your call at every blocked gate |
-| `--profile <id>` | `huginn` | Methodology profile: `huginn` (the **Huginn Cycle**, below) · `sdd` · `odd` · `rdd` · `strict-tdd` (see [Methodology profiles](#methodology-profiles)) |
+| `--profile <id>` | `huginn` | Methodology profile: `huginn` (the **Huginn Cycle**, below) · `sdd` · `odd` · `rdd` · `strict-tdd` · `quality` (see [Methodology profiles](#methodology-profiles)) |
 | `--commit <mode>` | profile (`deterministic`) | `deterministic`: huginn derives the commit message from the iteration and the changed paths (no model turn) · `agent`: the build agent groups the commits itself |
 | `--permissions auto\|ask\|deny` | `auto` | permission policy. Only a runtime that declares an interactive permission channel (`opencode`) can honour `ask`/`deny`; a **subprocess** runtime (`claude`, `codex`, …) fails closed with exit 1 on `ask`/`deny`, and an invalid value exits 1 |
 | `--max-retries <n>` | `3` | fix attempts per blocked gate before escalating to you |
@@ -353,7 +353,7 @@ The project config file is a JSON object with documented keys:
 
 - `agent` must be one of the registered agent targets (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`).
 - `thinker` / `executor` are model strings (`provider/model`); `mode` is `auto` or `supervised`.
-- `profile` is `huginn` (default), `sdd`, `odd`, `rdd` or `strict-tdd`; an unrecognised value is dropped with a warning rather than failing the run.
+- `profile` is `huginn` (default), `sdd`, `odd`, `rdd`, `strict-tdd` or `quality`; an unrecognised value is dropped with a warning rather than failing the run.
 - A persisted `agent` naming a **removed** target (`gemini`, superseded by `agy`; `windsurf`, renamed to `devin`) is not fatal: it warns and falls back to PATH detection.
 - Unknown keys are preserved verbatim, so third-party tooling can keep its own settings alongside.
 - The project file overrides the user file key-by-key; a missing file is treated as empty and a
@@ -839,6 +839,7 @@ deterministic `VERIFY` phase before its commit:
 | `odd` | Organic-Driven Development | execute → test-module → **verify** → commit-all (lightweight daily changes, no heavy gates) |
 | `rdd` | Receipt-Driven Development | execute → test-module → validate-step → **verify** → commit-all, where verification **freezes a receipt** the commit references |
 | `strict-tdd` | Strict TDD | test-module (**expected to fail**) → execute → test-module → validate-step → **verify** → commit-all, with a **frozen worktree snapshot** recorded as evidence |
+| `quality` | Quality Cycle | execute → **verify** → test-module → validate-step → secure-check → review → doc-sync → commit-all — the quality gates without the whole-document spec audit, for delta-scoped changes |
 
 - **Selecting it**: `--profile <id>` on `run` and `live`, `"profile"` in `.huginn/config.json`, or
   `huginn config set --profile <id>`. In the live console `/profile` opens the profile picker

@@ -11,7 +11,7 @@ import { type PhaseName } from "./types.js";
  * The default is the **Huginn Cycle**: the eight phases that made Huginn what it
  * is (audit the spec, build, gate, test, secure, review, document, commit).
  */
-export type ProfileName = "huginn" | "sdd" | "odd" | "rdd" | "strict-tdd";
+export type ProfileName = "huginn" | "sdd" | "odd" | "rdd" | "strict-tdd" | "quality";
 
 export const DEFAULT_PROFILE: ProfileName = "huginn";
 
@@ -21,6 +21,7 @@ export const PROFILE_NAMES: readonly ProfileName[] = [
   "odd",
   "rdd",
   "strict-tdd",
+  "quality",
 ];
 
 /** Evidence a profile freezes, so a claim cannot be hallucinated (AC-36.4). */
@@ -107,6 +108,31 @@ export const PROFILES: Record<ProfileName, ProfileSpec> = {
     name: "Receipt-Driven Development",
     description: "Implement, test, gate, and freeze a receipt the commit references",
     phases: ["EXECUTE", "TEST_MODULE", "VALIDATE_STEP", "VERIFY", "COMMIT_ALL"],
+    evidence: "receipt",
+  },
+  /**
+   * The quality phases without the whole-document spec audit.
+   *
+   * `huginn` is right when the repository has a spec to audit; a delta task
+   * (one bug, one option) has no whole-document contract to compare against, so
+   * that audit reads the delta as deviation. This profile keeps the phases the
+   * audit was never the point of — secure, review, docs — and drops only the
+   * phase that cannot be meaningful for the change.
+   */
+  quality: {
+    id: "quality",
+    name: "Quality Cycle",
+    description: "Build, verify, gate, test, secure, review, document, commit — without the whole-spec audit",
+    phases: [
+      "EXECUTE",
+      "VERIFY",
+      "TEST_MODULE",
+      "VALIDATE_STEP",
+      "SECURE_CHECK",
+      "REVIEW",
+      "DOC_SYNC",
+      "COMMIT_ALL",
+    ],
     evidence: "receipt",
   },
   "strict-tdd": {

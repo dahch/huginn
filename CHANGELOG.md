@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The `quality` profile: the quality phases without the whole-spec audit.** `huginn` starts with a
+  `SPEC_AUDIT` that compares the whole document against the repository, which is right when the
+  repository has a spec and wrong for a delta change (one bug, one option) — there, the audit reads
+  the delta as deviation and blocks before any code. `quality` keeps what the audit was never the
+  point of: `EXECUTE → VERIFY → TEST_MODULE → VALIDATE_STEP → SECURE_CHECK → REVIEW → DOC_SYNC →
+  COMMIT_ALL`, still pinned by a receipt. The plan prompt now knows it as the profile for a
+  delta-scoped change that must still pass the secure/review/docs gates, and the picker and
+  `/profile` accept it.
+
 ## 3.0.0-rc.3
 
 > Twenty-one commits since `3.0.1-rc.2`, 66 files: `src` +2603/−92, `test` +1443/−16, docs

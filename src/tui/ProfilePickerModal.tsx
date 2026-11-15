@@ -39,7 +39,7 @@ export function buildProfileRows(): ProfileRow[] {
 /**
  * Interactive methodology-profile picker (REQ-54 / ADR-53).
  *
- * The five profiles (`huginn`, `sdd`, `odd`, `rdd`, `strict-tdd`) existed but
+ * The six profiles (`huginn`, `sdd`, `odd`, `rdd`, `strict-tdd`, `quality`) existed but
  * could only be fixed before the run — the console merely displayed the resolved
  * value. This modal makes them selectable like runtimes and models: Enter applies
  * for the session, `p`/`g` also persist it to the project or the user config, and

@@ -49,7 +49,7 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
   });
 
   it("defines the four alternative methodologies over the existing vocabulary", () => {
-    expect(PROFILE_NAMES).toEqual(["huginn", "sdd", "odd", "rdd", "strict-tdd"]);
+    expect(PROFILE_NAMES).toEqual(["huginn", "sdd", "odd", "rdd", "strict-tdd", "quality"]);
 
     // ODD: lightweight — no heavy gates, but the increment is still verified.
     expect(phasesForProfile("odd")).toEqual(["EXECUTE", "TEST_MODULE", "VERIFY", "COMMIT_ALL"]);
@@ -57,6 +57,18 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
     // SDD: spec-first and archived through the docs.
     expect(phasesForProfile("sdd")[0]).toBe("SPEC_AUDIT");
     expect(phasesForProfile("sdd")).toContain("DOC_SYNC");
+
+    // QUALITY: the gates that a delta change still needs, minus the whole-spec audit.
+    expect(phasesForProfile("quality")).toEqual([
+      "EXECUTE",
+      "VERIFY",
+      "TEST_MODULE",
+      "VALIDATE_STEP",
+      "SECURE_CHECK",
+      "REVIEW",
+      "DOC_SYNC",
+      "COMMIT_ALL",
+    ]);
 
     // RDD: verification produces a receipt.
     expect(phasesForProfile("rdd")).toEqual([
