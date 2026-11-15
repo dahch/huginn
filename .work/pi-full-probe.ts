@@ -1,0 +1,11 @@
+import { createAgentSession, createAgentSessionServices, resolveCliModel } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
+import { join } from "node:path";
+const dir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+const services: any = await createAgentSessionServices({ cwd: "/tmp", agentDir: dir });
+const resolved: any = resolveCliModel({ cliProvider: "commandcode", cliModel: "deepseek/deepseek-v4.1-flash", modelRuntime: services.modelRuntime });
+console.log("resolved", resolved.error ?? resolved.model?.id);
+const { session } = await createAgentSession({ cwd: "/tmp", model: resolved.model, modelRuntime: services.modelRuntime });
+const text = await session.prompt("Reply with exactly: ok");
+console.log("OK", String(text).slice(0, 60));
+session.dispose();

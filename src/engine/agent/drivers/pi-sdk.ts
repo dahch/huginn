@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   McpListingStatus,
   McpServerListing,
@@ -414,9 +415,26 @@ export function createDefaultPiAdapter(options: PiPortOptions = {}): PiSdkAdapte
     return import("@earendil-works/pi-coding-agent");
   }
 
-  async function modelRuntime() {
+  /**
+   * The model runtime, built through the SDK's own service bootstrap.
+   *
+   * `ModelRuntime.create({})` was enough until 1.5.2: it now only knows the
+   * built-in providers, so a `models.json` provider registered by an extension
+   * (`~/.pi/agent/extensions`) resolved to zero models and the turn failed with
+   * "No API key found for the selected model". `createAgentSessionServices`
+   * loads that config and registers the extension providers, which is what the
+   * CLI does; huginn reuses the runtime it returns.
+   */
+  async function modelRuntime(cwd?: string) {
     if (!runtimePromise) {
-      runtimePromise = sdk().then((pi) => pi.ModelRuntime.create({}));
+      runtimePromise = sdk().then(async (pi) => {
+        const agentDir = options.homeDir ? join(options.homeDir, ".pi", "agent") : undefined;
+        const services = await pi.createAgentSessionServices({
+          cwd: cwd ?? options.projectPath ?? process.cwd(),
+          ...(agentDir ? { agentDir } : {}),
+        });
+        return services.modelRuntime;
+      });
     }
     return runtimePromise;
   }
@@ -424,7 +442,7 @@ export function createDefaultPiAdapter(options: PiPortOptions = {}): PiSdkAdapte
   return {
     async createSession({ cwd, model }) {
       const pi = await sdk();
-      const runtime = await modelRuntime();
+      const runtime = await modelRuntime(cwd);
       const resolved = model ? pi.resolveCliModel({ ...splitReferenceOrThrow(model), modelRuntime: runtime }) : undefined;
       const { session } = await pi.createAgentSession({
         cwd,
