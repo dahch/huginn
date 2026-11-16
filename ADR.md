@@ -2456,3 +2456,53 @@ avoids. They are ordered by how central the decision is to the design.
     row count under a saved offset (the clamp keeps the view in range); the 2 000-row cap drops the
     oldest rows of an exceptionally long stream; and every new output surface must use
     `markdownBlockRows` rather than introducing another wrapper.
+## ADR-76: Sandbox links are plumbing, and a poisoned branch is scrubbed deterministically
+
+- **Date**: 2026-11-16
+- **Status**: Accepted
+- **Context**: `linkSharedDeps` symlinks `node_modules`, `.env`, `.pi` and `.agents` from the
+  primary project into the iteration worktree — `.pi`/`.agents` because the in-process `pi` driver
+  loads its project-scoped MCP servers and skills from them, and because a worktree created from
+  `HEAD` does not carry untracked files. `commitAllPending` ran `git add -A`, so those links
+  entered the increment's commit. In a real run `.pi -> <project>/.pi` was committed, and the next
+  promotion aborted with *"updating the following directories would lose untracked files in them:
+  .pi"*: git cannot create a file where the user's untracked `.pi/` directory sits. Neither
+  recovery path could help. `[t]` retry re-runs the same deterministic integration, and `[p]`
+  repair is built for a *content* conflict — the merge of an already-ancestor `HEAD` is a no-op, so
+  the thinker had nothing to diagnose and the executor nothing to resolve. The increment stayed on a
+  preserved branch, and the aborting checkout had already cost the user's `.pi/mcp.json`.
+- **Decision**:
+  1. **Never stage an injected link.** `commitAllPending` excludes the *untracked* injected links
+     from its index update and reports `pending: false` when they were the only dirty entries;
+     `pendingChanges` hides the same rows, so `COMMIT_ALL`, the pre-promotion checkpoint and the
+     deterministic commit message agree that plumbing is not work. A path the project **tracks** is
+     never excluded, whatever it is named — git can only answer "is this tracked?" per path, so the
+     exclusion list is computed per repository, not from a static name list.
+  2. **Park the whole directory on a file-vs-directory collision.** `untrackedCollisions` compared
+     exact paths and missed a branch that turns an untracked directory into a file (or the reverse).
+     It now matches on path prefixes, keeps only the top-most path, and `parkEntry` renames a
+     directory into `.huginn/promotion-backup/<stamp>/` so every entry, mode and mtime survives;
+     `restoreEntry` renames it back when the integration still conflicts. A directory that holds
+     tracked files is refused instead of moved.
+  3. **Scrub, deterministically, on recovery.** `scrubSandboxArtifacts` drops a link an older huginn
+     already committed, archives it under `.huginn/promotion-backup/scrub-*`, commits only those
+     paths (never the iteration's staged work), and reports the change as a `warn` log row and in
+     `PromoteResult.scrubbed`. It runs when a preserved branch is reopened and at the top of
+     `promoteSandbox`, so `huginn promote --retry` — not only the thinker+executor repair — can
+     finish an iteration the previous version stranded. A path the primary `HEAD` tracks is never
+     scrubbed.
+- **Alternatives rejected**: (a) add `.pi` to each project's `.gitignore` — the link is created by
+  huginn, so the fix belongs to huginn, and a project-specific ignore cannot cover `node_modules` or
+  a future link; (b) teach `[p]` repair to resolve workspace collisions — it would spend thinker and
+  executor turns on something a `git rm` decides, and it still cannot help the deterministic retry;
+  (c) refuse to create a sandbox when a link's name is already untracked — that would disable the
+  documented behaviour for every project that configures MCP, which is most of them; (d) rewrite the
+  branch with `filter-branch` — a history rewrite for a path that is not source, when a single
+  scrub commit states exactly what happened.
+- **Consequences**:
+  - *Positive*: an iteration's diff contains only the iteration's work; a promotion can no longer
+    destroy an untracked directory; and a stranded increment is recoverable with no model turn.
+  - *Negative*: a project that already *tracks* `.pi`/`.agents` keeps working only because the
+    exclusion is untracked-only — that asymmetry must be preserved by any future change here — and the
+    scrub adds one `chore(iter-N): drop sandbox artifacts` commit to a branch, which shows up in
+    `git log` of a promoted iteration (by design: it is a real change).
