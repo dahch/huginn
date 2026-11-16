@@ -13,6 +13,31 @@
   delta-scoped change that must still pass the secure/review/docs gates, and the picker and
   `/profile` accept it.
 
+### Fixed
+
+- **A finished iteration can no longer be stranded by the links huginn injects into its sandbox.**
+  `linkSharedDeps` symlinks `.pi`/`.agents`/`node_modules`/`.env` from the primary project into
+  the iteration worktree so the agent keeps its MCP servers and skills; `commitAllPending`
+  (`git add -A`) then committed them. The live case: `.pi -> <project>/.pi` landed in the
+  iteration's commit, and the next promotion aborted with *"updating the following directories
+  would lose untracked files in them: .pi"* — `git` cannot create a file where the user has an
+  untracked directory. Nobody could recover: `[t]` retry replays the same deterministic
+  integration, and `[p]` repair finds no *content* conflict for a model to resolve, so the
+  increment stayed on a preserved branch forever. Three defects, three fixes:
+  - **The links are never staged.** `commitAllPending` excludes the *untracked* injected links from
+    its index update and reports `pending: false` when they were the only dirty entries, so
+    `COMMIT_ALL`, the checkpoint and `pendingChanges` all agree that plumbing is not work. A path
+    the project *tracks* is never excluded, whatever it is named.
+  - **File-vs-directory collisions are parked instead of fatal.** `untrackedCollisions` compared
+    exact paths, so it missed a branch that turns an untracked directory into a file (or the
+    reverse). It now matches on path prefixes and parks the directory whole (a rename, so every
+    entry, mode and mtime survives), restoring it if the integration still conflicts. A directory
+    that holds tracked files is refused rather than moved.
+  - **Recovery self-heals a poisoned branch, with no model turn.** `scrubSandboxArtifacts` drops a
+    link an older huginn already committed (archived under `.huginn/promotion-backup/scrub-*`,
+    reported as a `warn` log row and in `PromoteResult.scrubbed`), so `promote --retry` — not just
+    the thinker+executor repair — can finish an iteration the previous version stranded.
+
 ## 3.0.0-rc.3
 
 > Twenty-one commits since `3.0.1-rc.2`, 66 files: `src` +2603/−92, `test` +1443/−16, docs

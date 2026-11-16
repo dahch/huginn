@@ -8,6 +8,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -16,6 +17,7 @@ import {
 import { git, headCommit } from "./diff.js";
 import { sanitizeTerminalText } from "../util/text.js";
 import { assertDocPath, lstatOrUndefined } from "../util/docPath.js";
+import { SANDBOX_LINKS, isSandboxLinkPath } from "./sandboxLinks.js";
 
 /**
  * A git worktree sandbox created for a single iteration.
@@ -46,6 +48,12 @@ export interface PromoteResult {
    * path was parked; `manifest.json` inside records what it holds.
    */
   backups?: string[];
+  /**
+   * Sandbox links an older huginn had committed on this branch and that were
+   * dropped (deterministically, no model turn) before the integration. Their
+   * content is archived under `.huginn/promotion-backup/scrub-*`.
+   */
+  scrubbed?: string[];
   /** Why an integration failed, sanitized, when `promoted` is false. */
   detail?: string;
   /**
@@ -110,6 +118,8 @@ function isParkablePath(rel: string): boolean {
 interface ParkedEntry {
   rel: string;
   link: boolean;
+  /** A whole directory was parked (a file-vs-directory collision). */
+  dir?: boolean;
   tracked?: boolean;
   staged?: boolean;
   deleted?: boolean;
@@ -137,10 +147,14 @@ interface ParkedCollisions {
 }
 
 /**
- * Move one untracked file aside, preserving it exactly: a **symlink is backed up
+ * Move one untracked entry aside, preserving it exactly: a **symlink is backed up
  * as a link** (never followed, so its target is never read or clobbered), a
- * regular file is copied with its mode (minus setuid/setgid bits). Anything else
- * (a directory, a FIFO) is refused — huginn does not know how to restore it.
+ * regular file is copied with its mode (minus setuid/setgid bits), and a
+ * **directory is renamed whole** — the fix for a branch that adds a *file*
+ * where the primary tree has an untracked *directory* (e.g. `.pi`), which
+ * `git merge` refuses to overwrite and which used to strand the increment.
+ * Anything else (a FIFO, a socket) is refused: huginn does not know how to
+ * restore it.
  */
 function parkEntry(root: string, dir: string, rel: string): ParkedEntry {
   const source = join(root, rel);
@@ -148,6 +162,12 @@ function parkEntry(root: string, dir: string, rel: string): ParkedEntry {
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
 
   const stat = lstatSync(source);
+  if (stat.isDirectory()) {
+    // A rename keeps every entry, mode and mtime: no copy can forget one, and the
+    // restore is the same rename in reverse.
+    renameSync(source, target);
+    return { rel, link: false, dir: true };
+  }
   if (stat.isSymbolicLink()) {
     symlinkSync(readlinkSync(source), target);
     rmSync(source, { force: true });
@@ -246,6 +266,10 @@ function restoreEntry(root: string, dir: string, entry: ParkedEntry): void {
   if (!stat) throw new Error(`backup copy for ${entry.rel} is missing`);
   mkdirSync(dirname(target), { recursive: true });
   rmSync(target, { recursive: true, force: true });
+  if (entry.dir) {
+    renameSync(source, target);
+    return;
+  }
   if (entry.link) {
     symlinkSync(readlinkSync(source), target);
   } else {
@@ -271,7 +295,13 @@ function writeParkingManifest(dir: string, entries: ParkedEntry[]): void {
     createdAt: new Date().toISOString(),
     entries: entries.map((entry) => ({
       path: entry.rel,
-      kind: entry.deleted ? "deleted" : entry.link ? "symlink" : "file",
+      kind: entry.deleted
+        ? "deleted"
+        : entry.dir
+          ? "directory"
+          : entry.link
+            ? "symlink"
+            : "file",
       tracked: entry.tracked === true,
       staged: entry.staged === true,
     })),
@@ -306,20 +336,57 @@ const HARNESS_IDENTITY = {
  * the two can never drift apart, and `git()`'s refusal of `-c` makes the
  * environment the only correct way to supply the identity.
  */
+/**
+ * The paths `git status` reports in `repoPath`, minus the sandbox links huginn
+ * injected itself.
+ *
+ * A lone `.pi`/`.agents` row must never read as "this iteration has work to
+ * commit": the link is plumbing, and committing it is what broke promotion
+ * (ADR-48 follow-up). `-uall` expands an untracked directory to its files, so a
+ * link that was already committed by an older huginn shows up as `.pi` (a path
+ * change) and is filtered by the same rule.
+ */
+function pendingWorkPaths(repoPath: string): string[] {
+  const status = git(repoPath, ["status", "--porcelain", "-uall"]);
+  if (status.code !== 0) {
+    throw new WorktreeError(`Cannot inspect ${repoPath}: ${status.stderr || status.stdout}`);
+  }
+  return status.stdout
+    .split("\n")
+    .map((line) => ({ code: line.slice(0, 2), rel: line.slice(3).trim() }))
+    // Only an **untracked** link is plumbing: a path the project tracks is the
+    // project's file whatever it is named, and its changes always count.
+    .filter(({ code, rel }) => rel.length > 0 && !(code === "??" && isSandboxLinkPath(rel)))
+    .map(({ rel }) => rel);
+}
+
+/**
+ * The injected links that are **untracked** in `repoPath`, which are the only
+ * ones a commit may exclude: excluding a tracked path would silently stop
+ * committing a real file.
+ */
+function untrackedSandboxLinks(repoPath: string): string[] {
+  const untracked = git(repoPath, ["ls-files", "-z", "--others", "--exclude-standard"]);
+  if (untracked.code !== 0) return [];
+  return [...pathSet(untracked)].filter(isSandboxLinkPath);
+}
+
 export function commitAllPending(
   repoPath: string,
   message: string,
 ): { commit?: string; pending: boolean } {
-  const status = git(repoPath, ["status", "--porcelain"]);
-  if (status.code !== 0) {
-    throw new WorktreeError(`Cannot inspect ${repoPath}: ${status.stderr || status.stdout}`);
-  }
-  if (status.stdout.trim().length === 0) return { pending: false };
+  if (pendingWorkPaths(repoPath).length === 0) return { pending: false };
 
-  const add = git(repoPath, ["add", "-A"]);
+  // Stage everything except the **untracked** links huginn injected: they exist to
+  // keep the sandbox runnable, they are not part of the increment, and a committed
+  // one makes the next promotion die on a file-vs-directory collision.
+  const excludes = untrackedSandboxLinks(repoPath).map((rel) => `:(exclude,literal)${rel}`);
+  const add = git(repoPath, ["add", "-A", "--", ".", ...excludes]);
   if (add.code !== 0) {
     throw new WorktreeError(`Cannot stage ${repoPath}: ${add.stderr || add.stdout}`);
   }
+  const staged = git(repoPath, ["diff", "--cached", "--quiet"]);
+  if (staged.code === 0) return { pending: false };
   const commit = git(repoPath, ["commit", "--no-gpg-sign", "-m", message], {
     // A missing git identity (or a configured signing key) must not lose a
     // completed increment. This is a harness-authored commit, so it carries the
@@ -340,8 +407,13 @@ export function commitAllPending(
  * agent's own project-scoped resources (MCP servers and skills for the
  * in-process pi driver) available even when they are untracked and therefore
  * absent from a worktree created from HEAD.
+ *
+ * They are **plumbing**: `commitAllPending` never stages an untracked one, and
+ * `scrubSandboxArtifacts` drops one an older huginn already committed (see
+ * `src/engine/sandboxLinks.ts` for why this is not cosmetic).
  */
-const SHARED_DEPS = ["node_modules", ".env", ".pi", ".agents"] as const;
+const SHARED_DEPS = SANDBOX_LINKS;
+
 
 /** Branch name for a given iteration: `huginn/task-iter-<N>`. */
 export function sandboxBranch(iteration: number): string {
@@ -549,8 +621,12 @@ export class WorktreeManager {
       );
     }
 
+    const reopened = { iteration, path, branch, projectRoot: root, baseCommit };
+    // Recovery must not inherit the failure it is recovering from: drop any link
+    // an older huginn committed before the collisions are read.
+    this.scrubSandboxArtifacts(reopened);
     this.linkSharedDeps(root, path);
-    return { iteration, path, branch, projectRoot: root, baseCommit };
+    return reopened;
   }
 
   /**
@@ -726,6 +802,92 @@ export class WorktreeManager {
   }
 
   /**
+   * Drop the sandbox links an **older** huginn committed on this branch (`.pi`,
+   * `.agents`, `node_modules`, `.env`).
+   *
+   * `commitAllPending` no longer stages them, so a fresh iteration cannot produce
+   * one; a branch a previous version already poisoned still can, and that was the
+   * case where neither `[t]` retry nor the thinker+executor repair could recover:
+   * the integration failed on a workspace collision, not on a content conflict, so
+   * no model had anything to resolve and the retry replayed the same abort.
+   *
+   * Deterministic by design: the path is not source, and a model turn would only
+   * add a way for it to fail. The archived copy under
+   * `.huginn/promotion-backup/scrub-*` is the safety net for the (unlikely) case
+   * of a real file that happens to share a link's name — but a path the primary
+   * branch **tracks** is never scrubbed at all.
+   */
+  scrubSandboxArtifacts(sandbox: Sandbox): string[] {
+    const diff = git(sandbox.path, [
+      "diff",
+      "--name-only",
+      "-z",
+      `${sandbox.baseCommit}..${sandbox.branch}`,
+    ]);
+    if (diff.code !== 0) return [];
+    const candidates = [...pathSet(diff)].filter(isSandboxLinkPath);
+    if (candidates.length === 0) return [];
+
+    let dir: string | undefined;
+    const archived: ParkedEntry[] = [];
+    const removed: string[] = [];
+    for (const rel of candidates) {
+      // A tracked path is a real project file, never plumbing.
+      if (git(sandbox.projectRoot, ["cat-file", "-e", `HEAD:${rel}`]).code === 0) continue;
+
+      const source = join(sandbox.path, rel);
+      const stat = lstatOrUndefined(source);
+      if (stat) {
+        dir ??= promotionBackupDir(sandbox.projectRoot, `scrub-${timestamp()}`);
+        const target = join(dir, rel);
+        mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+        try {
+          renameSync(source, target);
+        } catch {
+          rmSync(source, { recursive: true, force: true });
+        }
+        archived.push({
+          rel,
+          link: stat.isSymbolicLink(),
+          ...(stat.isDirectory() ? { dir: true } : {}),
+        });
+      }
+      const staged = git(sandbox.path, ["rm", "--cached", "-r", "--quiet", "--", rel]);
+      if (staged.code !== 0) continue;
+      removed.push(rel);
+    }
+    if (removed.length === 0) return [];
+
+    // Commit **only** these paths: whatever else the sandbox has staged belongs to
+    // the iteration and keeps its own commit message.
+    const commit = git(
+      sandbox.path,
+      [
+        "commit",
+        "--no-gpg-sign",
+        "-m",
+        `chore(iter-${sandbox.iteration}): drop sandbox artifacts (${removed.join(", ")})`,
+        "--",
+        ...removed,
+      ],
+      { env: HARNESS_IDENTITY },
+    );
+    if (commit.code !== 0) {
+      console.warn(
+        `[huginn] worktree: could not drop sandbox artifact(s) ${removed.join(", ")} from ` +
+          `${sandbox.branch}: ${sanitizeTerminalText((commit.stderr || commit.stdout).trim())}`,
+      );
+      return [];
+    }
+    if (dir) writeParkingManifest(dir, archived);
+    console.warn(
+      `[huginn] worktree: dropped sandbox artifact(s) ${removed.join(", ")} that an older ` +
+        `huginn committed on ${sandbox.branch}; the increment itself is untouched`,
+    );
+    return removed;
+  }
+
+  /**
    * Integrate the sandbox commits into the primary working branch, then remove
    * the worktree and delete the ephemeral branch.
    *
@@ -745,6 +907,10 @@ export class WorktreeManager {
     // Record the active branch before promotion (used for diagnostics).
     const activeBranch = git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout;
 
+    // A branch an older huginn poisoned with an injected link must be cleaned
+    // before anything is measured: the scrub commit is part of the range.
+    const scrubbed = this.scrubSandboxArtifacts(sandbox);
+
     const { ok, commits } = this.sandboxCommits(root, sandbox);
     if (!ok) {
       // A git failure is not "no commits": never delete the branch on a read we
@@ -759,8 +925,8 @@ export class WorktreeManager {
     }
 
     if (commits.length === 0) {
-      const pending = git(sandbox.path, ["status", "--porcelain"]);
-      if (pending.code === 0 && pending.stdout.trim().length > 0) {
+      const pending = pendingWorkPaths(sandbox.path);
+      if (pending.length > 0) {
         // The caller should have checkpointed first. Never delete the only copy
         // of the iteration's work: report a failed promotion and keep the
         // worktree for recovery.
@@ -798,13 +964,20 @@ export class WorktreeManager {
         failure: "failed",
         detail: parked.error,
         backups: parked.backups,
+        ...(scrubbed.length > 0 ? { scrubbed } : {}),
       };
     }
 
     const ff = git(root, ["merge", "--ff-only", sandbox.branch]);
     if (ff.code === 0) {
       this.removeWorktreeAndBranch(root, sandbox);
-      return { promoted: true, method: "ff", commits, backups: parked.backups };
+      return {
+        promoted: true,
+        method: "ff",
+        commits,
+        backups: parked.backups,
+        ...(scrubbed.length > 0 ? { scrubbed } : {}),
+      };
     }
 
     // A range that carries a merge commit — the recovery path merges the primary
@@ -817,7 +990,13 @@ export class WorktreeManager {
       : git(root, ["cherry-pick", `${sandbox.baseCommit}..${sandbox.branch}`]);
     if (integration.code === 0) {
       this.removeWorktreeAndBranch(root, sandbox);
-      return { promoted: true, method, commits, backups: parked.backups };
+      return {
+        promoted: true,
+        method,
+        commits,
+        backups: parked.backups,
+        ...(scrubbed.length > 0 ? { scrubbed } : {}),
+      };
     }
 
     // Conflict: restore the primary tree to its pre-promotion state (including
@@ -842,6 +1021,7 @@ export class WorktreeManager {
       failure: "conflict",
       // Only a directory that still holds content is reported (NFR-17).
       backups: leftovers,
+      ...(scrubbed.length > 0 ? { scrubbed } : {}),
     };
   }
 
@@ -867,9 +1047,36 @@ export class WorktreeManager {
     if (branchFiles.size === 0) return [];
     const untracked = git(root, ["ls-files", "-z", "--others", "--exclude-standard"]);
     if (untracked.code !== 0) return [];
-    return [...pathSet(untracked)].filter(
-      (rel) => branchFiles.has(rel) && isParkablePath(rel),
-    );
+
+    const parked = new Set<string>();
+    for (const rel of pathSet(untracked)) {
+      if (!isParkablePath(rel)) continue;
+      if (branchFiles.has(rel)) {
+        parked.add(rel);
+        continue;
+      }
+
+      // A **file-vs-directory** collision: the branch turns an untracked
+      // directory into a file (`.pi` vs `.pi/mcp.json`), or adds a directory where
+      // the primary tree has an untracked file. Comparing exact paths missed both,
+      // and the first one stranded a finished iteration: `git merge` refuses to
+      // "lose untracked files" in the directory and aborts before anything is
+      // integrated (ADR-48 follow-up).
+      const clash = [...branchFiles].find(
+        (branchPath) =>
+          rel.startsWith(`${branchPath}/`) || branchPath.startsWith(`${rel}/`),
+      );
+      if (clash) parked.add(rel.length <= clash.length ? rel : clash);
+    }
+
+    // Only the top-most path of a directory is moved: parking `.pi` and then
+    // `.pi/mcp.json` would look for a directory that is no longer there.
+    return [...parked]
+      .filter(
+        (rel) =>
+          ![...parked].some((other) => other !== rel && rel.startsWith(`${other}/`)),
+      )
+      .sort();
   }
 
   /**
@@ -1003,6 +1210,14 @@ export class WorktreeManager {
       // `.gitignore` does not list `.huginn/`.
       writeFileSync(join(dir, ".gitignore"), "*\n", { mode: 0o600, flag: "w" });
       for (const rel of untracked) {
+        // A directory is only parkable when git tracks nothing inside it: moving a
+        // tracked file out from under the index would corrupt the user's tree.
+        if (lstatOrUndefined(join(root, rel))?.isDirectory()) {
+          const tracked = git(root, ["ls-files", "-z", "--", rel]);
+          if (tracked.code !== 0 || tracked.stdout.length > 0) {
+            throw new Error(`${rel} holds tracked files; refusing to park it`);
+          }
+        }
         parked.push(parkEntry(root, dir, rel));
       }
       for (const rel of tracked.conflicts) {

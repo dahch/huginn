@@ -1057,6 +1057,13 @@ export class CycleEngine {
         // conflict), so the sandbox is settled the moment it returns; the
         // finally must not double-clean (which would drop a preserved branch).
         settled = true;
+        if (result.scrubbed && result.scrubbed.length > 0) {
+          events.emit("log", {
+            level: "warn",
+            message: `[promote] iteration ${iteration.index}: dropped sandbox artifact(s) ${result.scrubbed.join(", ")} (links huginn injected, never part of the increment)`,
+            timestamp: new Date().toISOString(),
+          });
+        }
         const backupNote =
           result.backups && result.backups.length > 0
             ? ` (local change(s) parked under ${result.backups.join(", ")})`
@@ -1487,6 +1494,17 @@ export class CycleEngine {
     branch: string,
     result: PromoteResult,
   ): PromotionRetryResult {
+    // Recovery can drop a link an older huginn committed on the branch. Say so:
+    // it is a change to the branch history, not a silent cleanup.
+    if (result.scrubbed && result.scrubbed.length > 0) {
+      events.emit("log", {
+        level: "warn",
+        message:
+          `[promote] iteration ${iteration.index}: dropped sandbox artifact(s) ` +
+          `${result.scrubbed.join(", ")} from ${branch} before integrating (archived under .huginn/promotion-backup/)`,
+        timestamp: new Date().toISOString(),
+      });
+    }
     if (result.promoted) {
       indexIterationSourceFiles({
         projectPath: this.cfg.projectPath,

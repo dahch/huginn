@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import child_process from "node:child_process";
 import { events } from "./engineEvents";
 import { sanitizeTerminalText } from "../util/text";
+import { isSandboxLinkPath } from "./sandboxLinks";
 
 // ---------------------------------------------------------------------------
 // Hardened git invocation (SEC-001)
@@ -466,8 +467,12 @@ export function pendingChanges(projectPath: string): string[] {
   const status = git(projectPath, ["status", "--porcelain", "-uall"]);
   for (const line of status.stdout.split("\n")) {
     if (!line.trim()) continue;
+    const code = line.slice(0, 2);
     const p = line.slice(3).trim();
-    if (p && !p.startsWith('.harness')) files.add(p);
+    // An untracked sandbox link is plumbing huginn created, not a change.
+    if (!p || p.startsWith('.harness')) continue;
+    if (code === "??" && isSandboxLinkPath(p)) continue;
+    files.add(p);
   }
   const diff = git(projectPath, ["diff", "--name-only", "HEAD"]);
   for (const p of diff.stdout.split("\n")) {
