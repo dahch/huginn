@@ -367,6 +367,25 @@ export class CycleEngine {
     return this.state;
   }
 
+  /**
+   * Re-baseline the saved plan/spec/adr hash after an iteration is promoted.
+   *
+   * The iteration's own `DOC_SYNC` commits those documents, so the hash
+   * `run()` computed when the cycle started no longer matches the tree the
+   * *next* iteration will run from. Without this the guard in `huginn run` saw
+   * its own writes as a hand edit and refused to continue without
+   * `--ignore-plan-changes` after every single promoted increment. An edit made
+   * between two runs still mismatches (the baseline moves only on promotion), so
+   * the protection that guard exists for is intact.
+   */
+  private refreshPlanHash(): void {
+    this.state.planHash = computePlanHash([
+      this.cfg.planPath,
+      this.cfg.specPath,
+      this.cfg.adrPath,
+    ]);
+  }
+
   getOutcome(): { reason: "completed" | "aborted" | "error"; error?: string } {
     return this.outcome;
   }
@@ -1090,6 +1109,7 @@ export class CycleEngine {
             branch: sandbox.branch,
             backups: result.backups,
           };
+          this.refreshPlanHash();
           events.emit("log", {
             level: "info",
             message: `[sandbox] iteration ${iteration.index}: promoted via ${result.method} (${result.commits.length} commit(s))${backupNote}`,
@@ -1522,6 +1542,7 @@ export class CycleEngine {
         commit: headCommit(this.cfg.projectPath),
       });
       this.state.promotion = { status: "promoted", branch };
+      this.refreshPlanHash();
       // The increment is now in the primary tree, so the next run must continue
       // *after* it (exactly what `runLoop` does for a promoted iteration).
       this.state.currentIteration = iteration.index + 1;

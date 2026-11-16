@@ -33,6 +33,13 @@
     reverse). It now matches on path prefixes and parks the directory whole (a rename, so every
     entry, mode and mtime survives), restoring it if the integration still conflicts. A directory
     that holds tracked files is refused rather than moved.
+  - **`huginn run` no longer demands `--ignore-plan-changes` after every promoted increment.**
+    The saved `planHash` was computed once, when the cycle started, and never re-baselined — but
+    the iteration's own `DOC_SYNC` commits `spec.md`/`adr.md`/`plan.md`, so the very next
+    continuation saw its own writes as a hand edit and refused to resume unless the flag was passed.
+    `refreshPlanHash()` moves the baseline when an increment is promoted (in the run loop and in
+    `settlePromotion`, so the deterministic `promote --retry` path is covered too). An edit made
+    between two runs still mismatches, because the baseline only moves on promotion.
   - **Recovery self-heals a poisoned branch, with no model turn.** `scrubSandboxArtifacts` drops a
     link an older huginn already committed (archived under `.huginn/promotion-backup/scrub-*`,
     reported as a `warn` log row and in `PromoteResult.scrubbed`), so `promote --retry` — not just

@@ -5,7 +5,7 @@ import path from "node:path";
 import { git, headCommit } from "../../src/engine/diff.js";
 import { WorktreeManager } from "../../src/engine/worktree.js";
 import { CycleEngine } from "../../src/engine/cycle.js";
-import { freshState } from "../../src/state/store.js";
+import { computePlanHash, freshState } from "../../src/state/store.js";
 import { promotionRepairEligibility } from "../../src/engine/promotionRepair.js";
 import type { RunConfig } from "../../src/config.js";
 import type { Iteration } from "../../src/plan/types.js";
@@ -225,6 +225,30 @@ describe("retryPromotion — deterministic (ADR-62)", () => {
     expect(branchExists(preserved.root, preserved.branch)).toBe(false);
     expect(engine.getState().currentIteration).toBe(2);
     expect(engine.getState().promotion?.status).toBe("promoted");
+  }, 30000);
+
+  it("re-baselines the saved plan hash so the next run resumes without flags", async () => {
+    const { preserved, cfg, plan } = promotableAfterDocs(["test -f sandbox.txt"]);
+    const { engine } = makeEngine(cfg, plan, preserved.root, preserved, async () => ({
+      messageId: "unused",
+      text: "unused",
+    }));
+
+    // The iteration's own DOC_SYNC commits spec/adr/plan, so the documents move
+    // under the hash the run started with. Without a re-baseline the guard in
+    // `run` reads its own writes as a hand edit and refuses every continuation.
+    fs.writeFileSync(path.join(preserved.root, "plan.md"), "# plan.md\n\niteration 1 done\n");
+
+    const result = await engine.retryPromotion();
+
+    expect(result.promoted).toBe(true);
+    expect(engine.getState().planHash).toBe(
+      computePlanHash([
+        path.join(preserved.root, "plan.md"),
+        path.join(preserved.root, "spec.md"),
+        path.join(preserved.root, "adr.md"),
+      ]),
+    );
   }, 30000);
 
   it("keeps the branch and the primary tree when the integration conflicts again", async () => {
