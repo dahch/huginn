@@ -7,7 +7,7 @@ import { PickerList } from "./PickerList.js";
 import { THEME } from "./theme.js";
 
 /** Rows the list window may occupy before it scrolls (REQ-54 / AC-54.1). */
-export const VISIBLE_PROFILE_ROWS = 6;
+export const VISIBLE_PROFILE_ROWS = 7;
 
 /** Where a profile change is kept (AC-54.3). */
 export type ProfileScope = "session" | "project" | "global";
@@ -39,7 +39,7 @@ export function buildProfileRows(): ProfileRow[] {
 /**
  * Interactive methodology-profile picker (REQ-54 / ADR-53).
  *
- * The six profiles (`huginn`, `sdd`, `odd`, `rdd`, `strict-tdd`, `quality`) existed but
+ * The profiles (`huginn`, `sdd`, `odd`, `rdd`, `strict-tdd`, `quality`, `lite`) existed but
  * could only be fixed before the run — the console merely displayed the resolved
  * value. This modal makes them selectable like runtimes and models: Enter applies
  * for the session, `p`/`g` also persist it to the project or the user config, and

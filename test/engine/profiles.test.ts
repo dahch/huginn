@@ -49,7 +49,7 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
   });
 
   it("defines the four alternative methodologies over the existing vocabulary", () => {
-    expect(PROFILE_NAMES).toEqual(["huginn", "sdd", "odd", "rdd", "strict-tdd", "quality"]);
+    expect(PROFILE_NAMES).toEqual(["huginn", "sdd", "odd", "rdd", "strict-tdd", "quality", "lite"]);
 
     // ODD: lightweight — no heavy gates, but the increment is still verified.
     expect(phasesForProfile("odd")).toEqual(["EXECUTE", "TEST_MODULE", "VERIFY", "COMMIT_ALL"]);
@@ -85,6 +85,12 @@ describe("methodology profiles (REQ-36 / ADR-35)", () => {
     expect(tdd[0]).toBe("TEST_MODULE");
     expect(tdd.filter((p) => p === "TEST_MODULE")).toHaveLength(2);
     expect(profileSpec("strict-tdd").evidence).toBe("snapshot");
+
+    // LITE: the cheapest loop that still leaves a receipt.
+    expect(phasesForProfile("lite")).toEqual(["EXECUTE", "VERIFY", "COMMIT_ALL"]);
+    expect(profileSpec("lite").evidence).toBe("receipt");
+    // It is offered, never the CLI default (the Huginn Cycle stays the default).
+    expect(DEFAULT_PROFILE).toBe("huginn");
   });
 
   it("only ever names runnable phases, and fails closed on one it cannot (AC-36.6)", () => {
@@ -165,6 +171,28 @@ describe("frozen iteration evidence (AC-36.4)", () => {
     });
     expect(tdd!.evidence).toBe("snapshot");
     expect(tdd!.preExecuteTree).toBe("deadbeef");
+  });
+
+  it("never omits usage: measured tokens, or the explicit unavailable", () => {
+    const measured = buildIterationReceipt({
+      profile: "lite",
+      iteration: 1,
+      title: "measured",
+      projectPath: process.cwd(),
+      verdicts: [],
+      usage: { inputTokens: 1200, outputTokens: 300, costUsd: 0.02 },
+    })!;
+    expect(measured.usage).toEqual({ inputTokens: 1200, outputTokens: 300, costUsd: 0.02 });
+
+    // No measurement is a stated condition, never an absent field.
+    const unmeasured = buildIterationReceipt({
+      profile: "lite",
+      iteration: 2,
+      title: "unmeasured",
+      projectPath: process.cwd(),
+      verdicts: [],
+    })!;
+    expect(unmeasured.usage).toBe("unavailable");
   });
 
   it("writes the receipt to .huginn/receipts and never throws", () => {

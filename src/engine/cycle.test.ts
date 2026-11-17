@@ -20,6 +20,7 @@ import { MemoryService } from "@dahch/muninn";
 import type { RunConfig } from "../config";
 import type { Iteration } from "../plan/types";
 import type { IAgentRuntime, IAgentSession } from "./agent/types";
+import { createPiSdkPort } from "./agent/drivers/pi-sdk";
 
 let dir: string;
 
@@ -335,6 +336,55 @@ describe("CycleEngine run loop", () => {
     expect(phases).toContain("TEST_MODULE");
     expect(phases).toContain("COMMIT_ALL");
     expect(phases).not.toContain("SPEC_AUDIT");
+  });
+
+  it("completes a lite iteration and writes a receipt with measured usage", async () => {
+    // The `lite` contract end to end: one agent turn (EXECUTE), one deterministic
+    // VERIFY, one commit — and a receipt that states what the increment cost.
+    // The injected pi port reports cumulative stats, so this exercises the real
+    // usage path, not a stub receipt field.
+    let turns = 0;
+    const port = createPiSdkPort({
+      async createSession() {
+        return {
+          id: "pi-lite",
+          async prompt() {
+            turns += 1;
+            writeFileSync(join(dir, "feature.ts"), "export const answer = 42;\n");
+            return "implemented";
+          },
+          async setModel() {},
+          async interrupt() {},
+          async dispose() {},
+          usage() {
+            return { inputTokens: 1200, outputTokens: 300, costUsd: 0.02 };
+          },
+        };
+      },
+      async listModels() {
+        return [];
+      },
+    });
+
+    const engine = new CycleEngine({
+      cfg: makeCfg({ profile: "lite" }),
+      runtime: port,
+      plan: makePlan(),
+    });
+    const outcome = await engine.run();
+
+    expect(outcome.reason).toBe("completed");
+    expect(turns).toBe(1);
+    const phases = engine.getState().history.map((h) => h.phase);
+    expect(phases).toEqual(["EXECUTE", "VERIFY", "COMMIT_ALL"]);
+    // The increment really reached a commit.
+    expect(git(dir, ["rev-list", "--count", "HEAD"]).stdout.trim()).toBe("1");
+
+    const receipt = JSON.parse(
+      readFileSync(join(dir, ".huginn", "receipts", "iter-1.json"), "utf8"),
+    ) as { profile: string; usage: unknown };
+    expect(receipt.profile).toBe("lite");
+    expect(receipt.usage).toEqual({ inputTokens: 1200, outputTokens: 300, costUsd: 0.02 });
   });
 
   it("runs strict-tdd's tests before AND after EXECUTE (REV-002)", async () => {

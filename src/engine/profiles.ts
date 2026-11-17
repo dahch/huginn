@@ -11,7 +11,14 @@ import { type PhaseName } from "./types.js";
  * The default is the **Huginn Cycle**: the eight phases that made Huginn what it
  * is (audit the spec, build, gate, test, secure, review, document, commit).
  */
-export type ProfileName = "huginn" | "sdd" | "odd" | "rdd" | "strict-tdd" | "quality";
+export type ProfileName =
+  | "huginn"
+  | "sdd"
+  | "odd"
+  | "rdd"
+  | "strict-tdd"
+  | "quality"
+  | "lite";
 
 export const DEFAULT_PROFILE: ProfileName = "huginn";
 
@@ -22,6 +29,7 @@ export const PROFILE_NAMES: readonly ProfileName[] = [
   "rdd",
   "strict-tdd",
   "quality",
+  "lite",
 ];
 
 /** Evidence a profile freezes, so a claim cannot be hallucinated (AC-36.4). */
@@ -133,6 +141,24 @@ export const PROFILES: Record<ProfileName, ProfileSpec> = {
       "DOC_SYNC",
       "COMMIT_ALL",
     ],
+    evidence: "receipt",
+  },
+  /**
+   * The cheapest loop that still leaves evidence (2026-11 repositioning).
+   *
+   * `lite` is deliberately smaller than `odd`: no model turn beyond `EXECUTE`,
+   * one deterministic `VERIFY`, and the commit. It exists because the bench
+   * measured the heavy gates as cost without measured benefit on small deltas.
+   * Use it when the change is small, well-scoped and already covered by the
+   * repository's own suite; choose `odd` when a quick commit is enough, `rdd`
+   * when a gate must run, and `quality` when security/review/docs are the point.
+   */
+  lite: {
+    id: "lite",
+    name: "Lite Cycle",
+    description:
+      "Execute, verify, commit — the cheapest receipted loop; odd for a quick commit, rdd for a gate, quality when security/review/docs matter",
+    phases: ["EXECUTE", "VERIFY", "COMMIT_ALL"],
     evidence: "receipt",
   },
   "strict-tdd": {
