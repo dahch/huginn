@@ -422,6 +422,29 @@ describe("CycleEngine run loop", () => {
     expect(validate?.summary).toContain("read-only phase modified the working tree");
   });
 
+  it("does not spend fix rounds on a read-only violation (REV-001)", async () => {
+    // A fix round replays the executor against the same auditor that wrote; the
+    // violation is produced by the auditor, so it cannot be fixed. The iteration
+    // must fail once instead of burning the retry budget.
+    const { runtime } = makeMockRuntime((text) => {
+      if (isValidateStepPrompt(text)) {
+        writeFileSync(join(dir, "sneaky.ts"), "export const x: number = 1;\n");
+      }
+    });
+    const engine = new CycleEngine({ cfg: makeCfg({ maxRetries: 2 }), runtime, plan: makePlan() });
+    const off = events.on("decision", () => engine.resolveDecision("abort"));
+    try {
+      await engine.run();
+    } finally {
+      off();
+    }
+
+    const history = engine.getState().history;
+    const validate = history.find((h) => h.phase === "VALIDATE_STEP");
+    expect(validate?.verdict).toBe("blocked");
+    expect(history.some((h) => String(h.phase).startsWith("FIX_"))).toBe(false);
+  });
+
   it("blocks when the tree signature disappears mid-phase (fail closed)", async () => {
     // The "after" hash is unreadable: `treeHash` returns `undefined` and the
     // guard must treat that as a violation ("cannot prove nothing changed"),

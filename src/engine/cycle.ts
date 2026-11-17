@@ -83,6 +83,14 @@ type GatedPhaseResult = PhaseResult & {
   raw: string;
   forcedVerdict?: Verdict;
   authoritativeVerdict?: Verdict;
+  /**
+   * REV-001: the phase is read-only and the working tree moved while it ran.
+   * Terminal by nature — no fix round can repair a phase that wrote, and asking
+   * the executor to "fix" it just replays the same violation until the budget
+   * dies (measured on the latent-requirement bench: two REVIEW + two
+   * FIX_REVIEW rounds, then a 16-minute abort).
+   */
+  readOnlyViolation?: boolean;
   /** `VERIFY` only: a command died from a signal (see `PhaseOutput.crash`). */
   crash?: { command: string; signal: string };
   /**
@@ -1875,7 +1883,18 @@ export class CycleEngine {
       // output and the judge's action items (zero thinker tokens). Anything
       // architectural — or any repeat failure — is diagnosed read-only by the
       // thinker first, and the executor then applies that plan.
-      if (attemptRun < this.cfg.maxRetries && step.fixPhase) {
+      if (result.readOnlyViolation) {
+        // Retrying (or diagnosing) a read-only violation spends the whole retry
+        // budget on a phase that cannot be repaired: the writer is the auditor
+        // itself. Fail the iteration once, with the reason, and let the caller
+        // decide.
+        events.emit("log", {
+          level: "warn",
+          message:
+            `[${step.phase}] read-only violation: a fix round cannot repair a phase that mutated the tree; escalating without retry`,
+          timestamp: new Date().toISOString(),
+        });
+      } else if (attemptRun < this.cfg.maxRetries && step.fixPhase) {
         await this.waitIfPaused();
         if (this.abortRequested) return;
 
@@ -2076,7 +2095,7 @@ export class CycleEngine {
       finishedAt,
       // A read-only violation wins over the phase's own structured verdict.
       ...(readOnlyViolation
-        ? { forcedVerdict: "blocked" as Verdict }
+        ? { forcedVerdict: "blocked" as Verdict, readOnlyViolation: true }
         : res.authoritativeVerdict
           ? { authoritativeVerdict: res.authoritativeVerdict }
           : {}),
