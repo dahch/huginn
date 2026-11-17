@@ -2,6 +2,12 @@ import React from "react";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { Box } from "ink";
+// The rendered-table assertions need colour even when the caller exports
+// NO_COLOR; this file never tests the no-colour palette.
+// biome-ignore lint/style/noVar: vi.hoisted runs before the static imports.
+vi.hoisted(() => {
+  delete process.env.NO_COLOR;
+});
 import stringWidth from "string-width";
 import { render } from "./inkRender";
 import { Card, cardChrome } from "../../src/tui/Card";

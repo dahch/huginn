@@ -138,6 +138,9 @@ function composerRowColors(output: string, marker: string): { above: string; row
 
 describe("transcript search paints the composer with THEME.warn (REQ-72 / AC-72.4)", () => {
   beforeEach(() => {
+    // This suite pins HUGINN_THEME=dark and asserts painted escapes; an inherited
+    // NO_COLOR would empty the palette before the theme is read.
+    delete process.env.NO_COLOR;
     vi.resetModules();
   });
 

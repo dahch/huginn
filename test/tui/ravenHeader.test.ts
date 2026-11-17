@@ -36,6 +36,9 @@ import { THEME, ravenMoodToken } from "../../src/tui/theme.js";
 // assertions below must force it before this file's static imports resolve.
 vi.hoisted(() => {
   process.env.FORCE_COLOR = "3";
+  // A caller's NO_COLOR (CI, an agent harness) must not silently gut every colour
+  // assertion in this file; the NO_COLOR case below sets it explicitly.
+  delete process.env.NO_COLOR;
 });
 
 /** The eagle code point, written as an escape so the glyph is nowhere in the tree (AC-29.1). */
