@@ -163,12 +163,98 @@ function fillValidationTokens(ctx: StepContext, text: string): string {
  * iterations that do not exist yet. Falls back to the bounded file embed when
  * the plan cannot be read or its section cannot be located.
  */
-function planIndexForAudit(ctx: StepContext): string {
-  const read = readFileBounded(ctx.planPath, 200_000, ctx.projectPath);
-  if (read.kind !== "ok" && read.kind !== "empty") {
-    return embedFile(ctx.planPath, "plan", ctx.projectPath);
+function planIndexForAudit(ctx: StepContext, planText?: string): string {
+  if (planText === undefined) {
+    const read = readFileBounded(ctx.planPath, 200_000, ctx.projectPath);
+    if (read.kind !== "ok" && read.kind !== "empty") {
+      return embedFile(ctx.planPath, "plan", ctx.projectPath);
+    }
+    return planIndexFrom(ctx, read.kind === "ok" ? read.content : "");
   }
-  const content = read.kind === "ok" ? read.content : "";
+  return planIndexFrom(ctx, planText);
+}
+
+/**
+ * The plan's own schedule: which requirements each `## Iteration N` section names.
+ *
+ * `SPEC_AUDIT` runs *before* the iteration it precedes, so the plan is the only
+ * authority on what is **due**. A requirement the plan schedules for a later
+ * iteration cannot be an omission today — it is the task `EXECUTE` is about to
+ * receive. Requirements the plan names nowhere are left out: with no schedule to
+ * excuse them, the "only report what is due" rule keeps them out of the omission
+ * list as well.
+ */
+function scheduledRequirements(planText: string): Array<{ iteration: number; ids: string[] }> {
+  const sections: Array<{ iteration: number; ids: string[] }> = [];
+  let current: { iteration: number; ids: string[] } | undefined;
+  for (const line of planText.split(/\r?\n/)) {
+    const heading = /^##\s+(.*)$/.exec(line);
+    if (heading) {
+      const index = /iteration\s+(\d+)/i.exec(heading[1] ?? "");
+      current = index ? { iteration: Number(index[1]), ids: [] } : undefined;
+      if (current) sections.push(current);
+      continue;
+    }
+    if (!current) continue;
+    for (const match of line.matchAll(/\bREQ-(\d+)\b/gi)) {
+      const id = `REQ-${match[1]}`;
+      if (!current.ids.includes(id)) current.ids.push(id);
+    }
+  }
+  return sections;
+}
+
+/** `REQ-2, REQ-10` — numeric order, so the prompt reads like the ledger. */
+function requirementList(ids: string[]): string {
+  return [...ids]
+    .sort((a, b) => Number(a.slice(4)) - Number(b.slice(4)))
+    .join(", ");
+}
+
+/**
+ * The block that stops `SPEC_AUDIT` from reporting the current iteration as a
+ * deviation (the gate runs before the work exists).
+ *
+ * The live failure: iteration 3's audit found "the entire iteration 3 has not
+ * been started", counted four omissions, and returned 🔴 MAJOR DEVIATION — which
+ * sent the pipeline into a `FIX_SPEC` round (thinker + executor) whose only
+ * possible outcome was to explain that iteration 3 had not run yet. Every
+ * iteration paid that round. The one real finding in that report (an
+ * iteration-2 startup path that contradicts a later requirement) is exactly what
+ * additions/substitutions are still for.
+ */
+function auditDueScope(ctx: StepContext, planText: string): string {
+  const current = ctx.iteration.index;
+  const schedule = scheduledRequirements(planText);
+  const dueIds = [...new Set(schedule.filter((s) => s.iteration < current).flatMap((s) => s.ids))];
+  const dueSet = new Set(dueIds);
+  // A later section often re-cites an earlier requirement as context; it is already
+  // due, so repeating it under "not due yet" would only contradict the first list.
+  const laterIds = [
+    ...new Set(schedule.filter((s) => s.iteration >= current).flatMap((s) => s.ids)),
+  ].filter((id) => !dueSet.has(id));
+  const due = requirementList(dueIds);
+  const later = requirementList(laterIds);
+  return [
+    "## What this audit may report",
+    "",
+    "This phase runs at the **start of iteration " + current + "**, before `EXECUTE` writes a line: " +
+      "iteration " + current + "'s implementation cannot exist yet, and not finding it is not a deviation.",
+    "",
+    "- **Due now** — the plan schedules these for iteration 1.." + String(current - 1) + ": " +
+      (due.length > 0 ? due : "(none: no earlier iteration names a requirement)"),
+    "- **Not due yet** — the plan schedules these for iteration " + current + " or later: " +
+      (later.length > 0 ? later : "(none named)") +
+      ". Never report these as omissions; they are the task the next phase receives.",
+    "",
+    "Rules:",
+    "- An **omission** may only reference a requirement that is due now, or one the plan schedules nowhere but the spec presents as shipped.",
+    "- **Additions** and **substitutions** still apply to code that is already in the tree: report existing behavior that contradicts the spec, even when that behavior is older than this iteration.",
+    '- Never report "the iteration has not been implemented": that is the normal state at this point of the cycle, and it is what `EXECUTE` is for.',
+  ].join("\n");
+}
+
+function planIndexFrom(ctx: StepContext, content: string): string {
   const lines = content.split(/\r?\n/);
   const headingIndexes = lines
     .map((line, index) => (/^##\s+\S/.test(line) ? index : -1))
@@ -189,7 +275,7 @@ function planIndexForAudit(ctx: StepContext): string {
     "### Iteration index",
     ...headings.map((heading) => `- ${heading}`),
     "",
-    "### Current iteration",
+    "### Iteration that will run next",
     boundEmbedded(section, 24_000),
   ].join("\n");
   return embedUntrusted("plan (index + current iteration)", body);
@@ -200,13 +286,22 @@ function planIndexForAudit(ctx: StepContext): string {
  * state, ending on the exact `### Overall fidelity:` verdict contract.
  */
 export function specAuditPrompt(ctx: StepContext): string {
+  const planRead = readFileBounded(ctx.planPath, 200_000, ctx.projectPath);
+  const planText =
+    planRead.kind === "ok" || planRead.kind === "empty"
+      ? planRead.kind === "ok"
+        ? planRead.content
+        : ""
+      : undefined;
   return joinBlocks(
     ROLE_SPEC_AUDITOR,
     [
-      "## Task: audit this iteration against the spec",
+      `## Task: audit the repository's fidelity to the spec, at the start of iteration ${ctx.iteration.index}`,
       "",
-      "Audit semantic alignment between the spec/plan below and the current implementation.",
+      "Audit semantic alignment between the spec/plan below and the implementation that exists **now**.",
       "Evaluate **fidelity to intent** only — not code quality, style or performance.",
+      "",
+      auditDueScope(ctx, planText ?? ""),
       "",
       "## Spec",
       embedFile(ctx.specPath, "spec", ctx.projectPath),
@@ -215,9 +310,9 @@ export function specAuditPrompt(ctx: StepContext): string {
       embedFile(ctx.adrPath, "adr", ctx.projectPath),
       "",
       "## Plan",
-      planIndexForAudit(ctx),
+      planIndexForAudit(ctx, planText),
       "",
-      "## Current iteration to consider",
+      `## Iteration ${ctx.iteration.index} — the work this audit must not expect`,
       iterationHeading(ctx),
       "",
       memoryBlockFor(ctx),

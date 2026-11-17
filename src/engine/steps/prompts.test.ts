@@ -63,6 +63,48 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).toContain("never all three");
   });
 
+  it("specAuditPrompt refuses to count the current iteration as a deviation", () => {
+    writeFileSync(
+      join(dir, "plan.md"),
+      [
+        "# Plan",
+        "",
+        "## Iteration 1 — Scaffold",
+        "",
+        "Implements REQ-1 and REQ-2.",
+        "",
+        "## Iteration 2 — Providers",
+        "",
+        "Implements REQ-19, REQ-20 and REQ-22, and re-cites REQ-1.",
+        "",
+      ].join("\n"),
+    );
+
+    const p = specAuditPrompt(
+      ctx({ iteration: { index: 2, title: "Providers", prompt: "x", startLine: 6 } }),
+    );
+
+    // The phase runs before EXECUTE: saying so is the whole point of the block.
+    expect(p).toContain("before `EXECUTE` writes a line");
+    const dueLine = p.split("\n").find((line) => line.startsWith("- **Due now**")) ?? "";
+    const laterLine = p.split("\n").find((line) => line.startsWith("- **Not due yet**")) ?? "";
+    expect(dueLine).toContain("REQ-1, REQ-2");
+    expect(dueLine).not.toContain("REQ-19");
+    expect(laterLine).toContain("REQ-19, REQ-20, REQ-22");
+    // Re-cited context must not reappear as "not due": REQ-1 is already due.
+    expect(laterLine).not.toContain("REQ-1,");
+    expect(p).toContain('Never report "the iteration has not been implemented"');
+    // The existing tree is still auditable: that is where the real finding was.
+    expect(p).toContain("Additions** and **substitutions** still apply");
+  });
+
+  it("specAuditPrompt still refuses to encourage omissions on a plan with no schedule", () => {
+    const p = specAuditPrompt(ctx());
+    const dueLine = p.split("\n").find((line) => line.startsWith("- **Due now**")) ?? "";
+    expect(dueLine).toContain("no earlier iteration names a requirement");
+    expect(p).toContain("Never report \"the iteration has not been implemented\"");
+  });
+
   it("executePrompt keeps the profile preamble and the iteration instruction", () => {
     const p = executePrompt(ctx({ profilePreamble: "Work test-first.\n\n" }));
     expect(p).toContain("Execute the following iteration");

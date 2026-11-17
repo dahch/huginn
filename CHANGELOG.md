@@ -15,6 +15,19 @@
 
 ### Fixed
 
+- **`SPEC_AUDIT` no longer reports the iteration it runs before as a deviation.** The phase is
+  first in the cycle — it runs *before* `EXECUTE` — but its prompt was headed "audit this iteration
+  against the spec" and never told the auditor what was due. The role then did the only thing it
+  could: it found the current iteration unimplemented and returned 🔴 MAJOR DEVIATION. Iteration 2
+  paid a `FIX_SPEC` round for it ("No commits implement iteration 2", 14 omissions) and iteration 3
+  paid another ("the entire iteration 3 has not been started", 4 omissions). The prompt now carries
+  a due-scope block computed from the plan's own schedule: requirements named by iterations
+  `1..N-1` are due, requirements named by iteration `N` or later are not due yet (re-cited context
+  is subtracted, so a later section quoting an earlier requirement cannot move it), an omission may
+  only reference a due requirement, and "the iteration has not been implemented" is named as the
+  normal state at this point of the cycle. Additions and substitutions still apply to code that is
+  already in the tree — that is where the one real finding in those reports came from (an
+  iteration-2 startup path that contradicts a later persistence requirement).
 - **A finished iteration can no longer be stranded by the links huginn injects into its sandbox.**
   `linkSharedDeps` symlinks `.pi`/`.agents`/`node_modules`/`.env` from the primary project into
   the iteration worktree so the agent keeps its MCP servers and skills; `commitAllPending`

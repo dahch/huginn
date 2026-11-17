@@ -1429,7 +1429,7 @@ describe("SPEC_AUDIT cadence", () => {
           const body = params.body as { parts?: Array<{ text?: string }> } | undefined;
           const text = body?.parts?.[0]?.text ?? "";
           let reply = "REPORT\n\n### Audit status: 🟢 PASS";
-          if (text.includes("## Task: audit this iteration against the spec")) {
+          if (text.includes("## Task: audit the repository's fidelity to the spec")) {
             auditPrompts.push(text);
             reply = "SPEC-AUDIT\n\n### Overall fidelity: 🟢 ALIGNED";
           } else if (isValidateStepPrompt(text)) {
