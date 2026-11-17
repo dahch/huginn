@@ -64,3 +64,9 @@ El driver `pi` lee `getSessionStats()` y emite un evento `usage` por delta de
 turno. El recibo guarda `{inputTokens, outputTokens, costUsd}` o
 `"unavailable"`; `.harness/PROGRESS.md` muestra el acumulado. `huginn-bench`
 añade `tokens` y `humanReviewMinutes` (este último, manual) al resultado.
+
+## Recomendación
+
+**Reducir**: mantener Huginn como herramienta de fiabilidad operativa y usar
+`lite` como camino recomendado para deltas pequeños, sin retirar los perfiles
+pesados ni cambiar el defecto del CLI.
