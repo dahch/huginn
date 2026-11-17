@@ -176,14 +176,21 @@ export function Dashboard({
    * nothing to show. A missing or unparseable plan is the only empty case, and
    * `i` reports that in the log rather than doing nothing.
    */
-  const planTitles = useMemo<readonly string[]>(() => {
-    if (iterations.length > 0) return iterations;
+  const planInfo = useMemo<{ titles: readonly string[]; goals: readonly string[] }>(() => {
     try {
-      return loadPlan(cfg.planPath).iterations.map((iteration) => iteration.title);
+      const plan = loadPlan(cfg.planPath);
+      return {
+        titles: plan.iterations.map((iteration) => iteration.title),
+        // The goal is what the browser can actually show when you move the
+        // cursor; a plan without goals yields empty strings, and the modal then
+        // names the title instead of inventing a line.
+        goals: plan.iterations.map((iteration) => iteration.goal ?? ""),
+      };
     } catch {
-      return [];
+      return { titles: [], goals: [] };
     }
-  }, [iterations, cfg.planPath]);
+  }, [cfg.planPath]);
+  const planTitles = iterations.length > 0 ? iterations : planInfo.titles;
 
   const [ui, setUi] = useState<UiState>(() => {
     const st = engine.getState();
@@ -771,6 +778,7 @@ export function Dashboard({
       {iterating ? (
         <IterationListModal
           titles={planTitles}
+          goals={planInfo.goals}
           current={ui.currentIteration}
           focus={iterationFocus ?? 0}
           maxRows={iterationMaxRows}

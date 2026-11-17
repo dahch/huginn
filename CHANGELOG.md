@@ -15,6 +15,15 @@
 
 ### Fixed
 
+- **The iteration list (`i`) browses instead of pretending to scroll.** With fewer iterations than
+  rows the window never moved, the arrows changed a focus nobody could see, and the footer still
+  promised "Scroll" — a key that provably did nothing. The list now carries a cursor column of its
+  own (`›`), separate from the `>` that marks the running iteration so the two facts cannot
+  overwrite each other, and the subtitle names the focused iteration's **goal** from the plan (its
+  title when the plan declares no goal). The hint reads `[↑/↓] Browse`, the stale "decision N of M"
+  subtitle is now "iteration N of M", and a stored focus that outlives the plan is clamped instead of
+  rendering an empty row. The list stays read-only: no reordering and no verdicts, because the plan
+  is the plan.
 - **`SPEC_AUDIT` no longer reports the iteration it runs before as a deviation.** The phase is
   first in the cycle — it runs *before* `EXECUTE` — but its prompt was headed "audit this iteration
   against the spec" and never told the auditor what was due. The role then did the only thing it

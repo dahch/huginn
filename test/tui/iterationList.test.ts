@@ -81,6 +81,13 @@ describe("iteration list", () => {
     expect(iterationRowLabel(0, "First", 1)).toContain("1. First");
   });
 
+  it("marks the browsed iteration in its own column, never overwriting the running one", () => {
+    expect(iterationRowLabel(3, "Fourth", 4)).toBe(">   4. Fourth");
+    expect(iterationRowLabel(3, "Fourth", 4, true)).toBe(">›  4. Fourth");
+    // Browsing iteration 2 while iteration 4 runs: both facts stay visible.
+    expect(iterationRowLabel(1, "Second", 4, true)).toBe(" ›  2. Second");
+  });
+
   it("renders every title the budget allows and names what is hidden", () => {
     const stdout = new PassThrough() as any;
     let output = "";
@@ -174,6 +181,46 @@ describe("the run dashboard's iteration list", () => {
     await sleep(50);
     expect(output()).toContain("ITERATIONS");
     expect(output()).toContain("First stored title");
+  });
+
+  it("browses the focused iteration's goal with the arrows when every title fits", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "huginn-iter-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      [
+        "# Plan: demo",
+        "",
+        "## Iteration 1 — First",
+        "",
+        "modules: .",
+        "",
+        "**Goal:** Build the scaffold",
+        "",
+        "## Iteration 2 — Second",
+        "",
+        "modules: .",
+        "",
+        "**Goal:** Add the editor",
+        "",
+      ].join("\n"),
+    );
+    const { instance, stdin, output } = await mount(undefined, { iterations: [], planPath });
+
+    stdin.write("i");
+    await sleep(120);
+    // The arrows used to move an invisible window on a list that fit entirely.
+    stdin.write("\u001b[A");
+    await sleep(120);
+    instance.unmount();
+    await sleep(50);
+    const rendered = output();
+
+    // The last frame is the one Ink leaves on screen: the Up arrow browsed back to
+    // iteration 1, so its goal owns the subtitle and its row carries the cursor.
+    expect(rendered).toContain("Build the scaffold");
+    expect(rendered).toContain("›  1. First");
+    expect(rendered).not.toContain("Add the editor");
   });
 
   it("logs why i does nothing when there is no plan to read", async () => {

@@ -31,11 +31,22 @@ export function iterationListWindow(
 }
 
 /**
- * One row per iteration: `>` marks the one that is running, and nothing else is
- * claimed. An earlier iteration is not marked done — a resumed run may have
- * skipped it, and the title is the only fact the plan gives us.
+ * One row per iteration: `>` marks the one that is running, `›` the one the
+ * list is browsing, and nothing else is claimed. An earlier iteration is not
+ * marked done — a resumed run may have skipped it, and the title is the only
+ * fact the plan gives us.
+ *
+ * The two markers are separate columns so they can disagree: browsing iteration
+ * 2 while iteration 4 runs is a perfectly normal thing to do, and one mark
+ * overwriting the other would silently lie about which is which.
  */
-export function iterationRowLabel(index: number, title: string, current: number): string {
-  const mark = index === current - 1 ? ">" : " ";
-  return `${mark} ${String(index + 1).padStart(2, " ")}. ${title}`;
+export function iterationRowLabel(
+  index: number,
+  title: string,
+  current: number,
+  focused = false,
+): string {
+  const running = index === current - 1 ? ">" : " ";
+  const selected = focused ? "›" : " ";
+  return `${running}${selected} ${String(index + 1).padStart(2, " ")}. ${title}`;
 }
