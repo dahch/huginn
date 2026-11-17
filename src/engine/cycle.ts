@@ -62,7 +62,7 @@ import {
 } from "./homeGuard.js";
 import type { IAgentRuntime } from "./agent/types.js";
 import { createOpencodePort } from "./agent/drivers/opencode.js";
-import { createRuntimeSink, addUsage } from "./runtimeEvents";
+import { createRuntimeSink, addUsage, type UsageTotals } from "./runtimeEvents";
 import { permissionHandlerFor } from "./permissionPolicy";
 import { sanitizeTerminalText } from "../util/text.js";
 
@@ -324,6 +324,12 @@ export class CycleEngine {
   private running = false;
   /** Verdict of the most recently completed phase (for the iteration receipt). */
   private lastVerdict?: Verdict;
+  /**
+   * Tokens the driver reported during the *current* iteration, reset when it
+   * starts. Kept apart from `state.usage` (the run's cumulative total) so the
+   * receipt can state what this increment actually cost.
+   */
+  private iterationUsage?: UsageTotals;
   private abortRequested = false;
   private worktrees?: WorktreeManager;
   private sandboxEnabledCache?: boolean;
@@ -754,6 +760,9 @@ export class CycleEngine {
   }
 
   private async runIteration(iteration: Iteration): Promise<void> {
+    // A new increment starts a new measurement window; the run's cumulative
+    // total in `state.usage` is intentionally not reset here.
+    this.iterationUsage = undefined;
     // When sandboxing is enabled, isolate the iteration in a git worktree and
     // run every phase against `workPath`; the primary working tree is only
     // touched by `promoteSandbox` on success. The sandbox is created first so
@@ -1048,6 +1057,7 @@ export class CycleEngine {
         baseCommit: ctx.baseCommit,
         verdicts,
         preExecuteTree,
+        usage: this.iterationUsage,
       });
       if (receipt) {
         // A missing working-tree signature is the condition the read-only guard
@@ -1636,6 +1646,10 @@ export class CycleEngine {
       onUsage: (event) => {
         const current = this.state.usage ?? { inputTokens: 0, outputTokens: 0, costUsd: 0 };
         this.state.usage = addUsage(current, event);
+        this.iterationUsage = addUsage(
+          this.iterationUsage ?? { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+          event,
+        );
         this.persist();
       },
     });

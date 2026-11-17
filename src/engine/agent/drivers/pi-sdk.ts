@@ -32,6 +32,12 @@ export interface PiSessionHandle {
    * configured.
    */
   setModel?(reference: string): Promise<void>;
+  /**
+   * Cumulative token/cost totals for this session, when the SDK reports them.
+   * The driver diffs two readings, so one prompt's event carries only what that
+   * prompt spent — never the whole session twice.
+   */
+  usage?(): { inputTokens: number; outputTokens: number; costUsd: number } | undefined;
   interrupt(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -96,7 +102,7 @@ async function withTurnTimeout<T>(
 const CAPABILITIES: RuntimeCapabilities = {
   // The agent loop runs in huginn's own process: no CLI, no daemon.
   inProcess: true,
-  // Event mapping (text deltas, tool calls, usage) lands with the engine switch.
+  // Final text only; token usage is read from the session stats after each turn.
   structuredEvents: false,
   streaming: false,
   // Verified against 1.5.2: the SDK surface (config, cli, bundle) exposes no
@@ -108,7 +114,8 @@ const CAPABILITIES: RuntimeCapabilities = {
   sessionResume: false,
   modelCatalog: "dynamic",
   structuredOutput: false,
-  usageCost: false,
+  // `AgentSession.getSessionStats()` exposes billed input/output tokens and cost.
+  usageCost: true,
   // Config discovery is always available; `pi mcp list --json` adds real liveness.
   mcpListing: true,
   interrupt: true,
@@ -357,6 +364,13 @@ export function createPiSdkPort(
         model: options.model,
       });
       const sink = options.sink;
+      // Session stats are cumulative; keep the last reading so each prompt emits
+      // its own delta. A driver whose handle reports nothing emits nothing.
+      let lastUsage: { inputTokens: number; outputTokens: number; costUsd: number } = {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      };
       return {
         id: handle.id,
         resumable: false,
@@ -383,6 +397,18 @@ export function createPiSdkPort(
               : await handle.prompt(request.text);
             const result = { messageId: `${handle.id}:last`, text };
             if (text) sink?.({ type: "text", text });
+            const measured = handle.usage?.();
+            if (measured) {
+              const delta = {
+                inputTokens: Math.max(0, measured.inputTokens - lastUsage.inputTokens),
+                outputTokens: Math.max(0, measured.outputTokens - lastUsage.outputTokens),
+                costUsd: Math.max(0, measured.costUsd - lastUsage.costUsd),
+              };
+              lastUsage = measured;
+              if (delta.inputTokens > 0 || delta.outputTokens > 0 || delta.costUsd > 0) {
+                sink?.({ type: "usage", ...delta });
+              }
+            }
             sink?.({ type: "done", result });
             return result;
           } catch (err) {
@@ -468,6 +494,16 @@ export function createDefaultPiAdapter(options: PiPortOptions = {}): PiSdkAdapte
           // must never rewrite the model the user has configured in pi itself.
           await session.setModel(ticked.model, { persist: false });
           appliedModel = wanted;
+        },
+        usage() {
+          const stats = session.getSessionStats();
+          // Cache reads/writes are input tokens the provider billed too, so they
+          // belong in the "in" side; `output` already includes reasoning tokens.
+          return {
+            inputTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
+            outputTokens: stats.tokens.output,
+            costUsd: stats.cost,
+          };
         },
         async prompt(text: string) {
           await session.prompt(text);

@@ -205,7 +205,13 @@ export function conformanceCases(options: ConformanceOptions): ConformanceCase[]
         }
         assert(
           events.every(
-            (event) => event.type === "text" || event.type === "done" || event.type === "error",
+            (event) =>
+              event.type === "text" ||
+              event.type === "done" ||
+              event.type === "error" ||
+              // Usage is a typed event even when the driver forwards no text
+              // deltas or tool calls; it must not be confused with streaming.
+              (event.type === "usage" && port.capabilities.usageCost),
           ),
           "a driver that declares no structured events emitted one",
         );

@@ -208,6 +208,7 @@ describe("writeIterationReceipt — symlink containment (SEC-102)", () => {
     iteration: 1,
     title: "t",
     verdicts: [],
+    usage: "unavailable",
     createdAt: "2025-01-01T00:00:00.000Z",
   };
 

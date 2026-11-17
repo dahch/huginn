@@ -15,6 +15,9 @@ function fakeHandle(overrides: Partial<PiSessionHandle> = {}): PiSessionHandle {
     async setModel() {
       /* recorded by the test when it matters */
     },
+    usage() {
+      return { inputTokens: 100, outputTokens: 20, costUsd: 0.001 };
+    },
     async interrupt() {
       /* recorded by the test when it matters */
     },
@@ -81,6 +84,35 @@ describe("pi SDK driver specifics", () => {
     expect(result.text).toBe("pi says: hola");
     expect(result.messageId).toContain("pi-session-1");
     await session.close();
+  });
+
+  it("turns cumulative session stats into one usage event per prompt delta", async () => {
+    let input = 100;
+    let output = 20;
+    const pending: Array<{ type: string; inputTokens?: number; outputTokens?: number }> = [];
+    const port = createPiSdkPort(
+      fakeAdapter({
+        async createSession() {
+          return fakeHandle({
+            usage: () => ({ inputTokens: input, outputTokens: output, costUsd: 0 }),
+          });
+        },
+      }),
+    );
+    const session = await port.createSession({
+      title: "t",
+      sink: (event) => {
+        if (event.type === "usage") pending.push(event);
+      },
+    });
+    await session.prompt({ text: "first" });
+    input += 50;
+    output += 10;
+    await session.prompt({ text: "second" });
+    await session.close();
+    expect(pending).toHaveLength(2);
+    expect(pending[0]).toMatchObject({ inputTokens: 100, outputTokens: 20 });
+    expect(pending[1]).toMatchObject({ inputTokens: 50, outputTokens: 10 });
   });
 
   it("passes the working directory and model to the SDK adapter", async () => {

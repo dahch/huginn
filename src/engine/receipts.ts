@@ -17,6 +17,18 @@ import type { PhaseName, Verdict } from "./types.js";
  * against a hash instead of taken on faith. `strict-tdd` additionally records the
  * pre-`EXECUTE` tree, so "the tests were failing first" is evidenced too.
  */
+/**
+ * Token usage the driver actually reported for the iteration.
+ *
+ * There is no "zero means unknown" state: a receipt that could not measure says
+ * `"unavailable"`, so a reader never mistakes an omission for a free run.
+ */
+export interface ReceiptUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
 export interface IterationReceipt {
   profile: ProfileName;
   evidence: Exclude<ProfileEvidence, "none">;
@@ -47,6 +59,11 @@ export interface IterationReceipt {
   };
   /** What this receipt cannot prove, stated at write time (v2). */
   unproven?: string[];
+  /**
+   * Measured tokens for this iteration, or the explicit `"unavailable"` when the
+   * active driver cannot report them (v2). Never omitted.
+   */
+  usage: ReceiptUsage | "unavailable";
   createdAt: string;
 }
 
@@ -255,6 +272,8 @@ export function buildIterationReceipt(opts: {
   baseCommit?: string;
   verdicts: Array<{ phase: PhaseName; verdict?: Verdict }>;
   preExecuteTree?: string;
+  /** Tokens the driver reported for this iteration; omitted means it could not. */
+  usage?: ReceiptUsage;
 }): IterationReceipt | undefined {
   const spec = profileSpec(opts.profile);
   if (spec.evidence === "none") return undefined;
@@ -273,6 +292,8 @@ export function buildIterationReceipt(opts: {
     verdicts: opts.verdicts,
     lanes,
     unproven: unprovenClaims(opts.verdicts.map((entry) => entry.phase)),
+    // A receipt never lies by omission: no measurement is stated as such.
+    usage: opts.usage ?? "unavailable",
     createdAt: new Date().toISOString(),
   };
 }
