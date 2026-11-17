@@ -96,6 +96,9 @@ describe("step prompt builders (REQ-7)", () => {
     expect(p).toContain('Never report "the iteration has not been implemented"');
     // The existing tree is still auditable: that is where the real finding was.
     expect(p).toContain("Additions** and **substitutions** still apply");
+    // Authorized best-effort (a compositor refusing a global shortcut) must not be
+    // read as a demand for an implementation the plan never authorized.
+    expect(p).toContain("**Authorized best-effort is not a deviation.**");
   });
 
   it("specAuditPrompt still refuses to encourage omissions on a plan with no schedule", () => {

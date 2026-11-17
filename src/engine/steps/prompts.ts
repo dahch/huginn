@@ -251,6 +251,7 @@ function auditDueScope(ctx: StepContext, planText: string): string {
     "- An **omission** may only reference a requirement that is due now, or one the plan schedules nowhere but the spec presents as shipped.",
     "- **Additions** and **substitutions** still apply to code that is already in the tree: report existing behavior that contradicts the spec, even when that behavior is older than this iteration.",
     '- Never report "the iteration has not been implemented": that is the normal state at this point of the cycle, and it is what `EXECUTE` is for.',
+    "- **Authorized best-effort is not a deviation.** When the spec or the iteration authorizes a capability as best-effort, optional or environment-dependent (a global shortcut that a compositor may refuse, a compositor-specific replacement), an adapter that reports the capability as unavailable — with the documented fallback in place — is conformant: do not demand a platform implementation the plan did not authorize. A **status table that claims it Implemented is** the finding, as a substitution whose remedy is the document (status → Partial, with the evidence), and `🟡 MINOR DRIFT` is its honest verdict rather than a rewrite request.",
   ].join("\n");
 }
 

@@ -27,7 +27,12 @@
   only reference a due requirement, and "the iteration has not been implemented" is named as the
   normal state at this point of the cycle. Additions and substitutions still apply to code that is
   already in the tree — that is where the one real finding in those reports came from (an
-  iteration-2 startup path that contradicts a later persistence requirement).
+  iteration-2 startup path that contradicts a later persistence requirement). The same block also
+  says that an explicitly authorized *best-effort* capability is not a deviation: a compositor that
+  refuses a global shortcut, with the documented clipboard fallback in place, is conformant, and a
+  status table that calls it Implemented is the finding — a substitution whose remedy is the document
+  (status → Partial) and `🟡 MINOR DRIFT`, not a demand for a platform implementation the plan never
+  authorized.
 - **A finished iteration can no longer be stranded by the links huginn injects into its sandbox.**
   `linkSharedDeps` symlinks `.pi`/`.agents`/`node_modules`/`.env` from the primary project into
   the iteration worktree so the agent keeps its MCP servers and skills; `commitAllPending`
