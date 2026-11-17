@@ -303,6 +303,28 @@ export const greeting: string = 12345;
       expect(result.messageId).toBe("prompt_msg_id");
     });
 
+    it("does not hand a Qt Linguist .ts translation to the TypeScript compiler", async () => {
+      const i18nDir = path.join(tempDir, "src", "i18n");
+      fs.mkdirSync(i18nDir, { recursive: true });
+      // The artifact a Qt project is supposed to ship for REQ-25: XML, not code.
+      fs.writeFileSync(
+        path.join(i18nDir, "odrerir_es.ts"),
+        "<?xml version='1.0' encoding='utf-8'?>\n<TS version=\"2.1\" language=\"es_ES\">\n<context>\n    <message>\n        <translation>Guardar</translation>\n    </message>\n</context>\n</TS>\n",
+      );
+      fs.writeFileSync(path.join(tempDir, "src", "app.ts"), "export const ok: number = 1;\n");
+      // JSX legitimately starts with markup and must stay compilable.
+      fs.writeFileSync(
+        path.join(tempDir, "src", "view.tsx"),
+        "export const View = () => <div>hola</div>;\n",
+      );
+
+      const files = getIterationFiles(tempDir, ["src"]).map((file) => path.relative(tempDir, file));
+
+      expect(files).toContain(path.join("src", "app.ts"));
+      expect(files).toContain(path.join("src", "view.tsx"));
+      expect(files).not.toContain(path.join("src", "i18n", "odrerir_es.ts"));
+    });
+
     it("contains path traversal attempts in modules and ignores paths outside project root (REV-002)", async () => {
       const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "huginn-outside-"));
       try {

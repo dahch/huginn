@@ -1,4 +1,4 @@
-import { existsSync, statSync, readdirSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { OpencodeClient } from "@opencode-ai/sdk";
 import { formatModel, type Models } from "./modelRouter";
@@ -189,6 +189,45 @@ export function isIgnoredDirectory(dirName: string): boolean {
   return EXCLUDED_SCAN_DIRS.has(dirName) || dirName.startsWith(".");
 }
 
+/** File extensions the TypeScript contract gate may compile. */
+const SCRIPT_EXTENSION = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+/** JSX/TSX legitimately starts with `<`, so the XML sniff must not run on them. */
+const JSX_EXTENSION = /\.(tsx|jsx)$/;
+
+/** Up to `limit` bytes at the start of a file ("" when it cannot be read). */
+function readHead(filePath: string, limit = 512): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, "r");
+    const buffer = Buffer.alloc(limit);
+    const read = readSync(fd, buffer, 0, limit, 0);
+    return buffer.subarray(0, read).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Whether the TypeScript contract gate may compile this file.
+ *
+ * The extension alone is not the answer: **Qt Linguist** `.ts` files are XML
+ * translation sources (`<?xml version="1.0"?><TS version="2.1">…`), and a
+ * C++/Qt project that ships translations is *supposed* to contain one. `tsc`
+ * reads that markup as JavaScript and reports one "Unterminated regular
+ * expression literal" per XML line — the live case produced 13 208 diagnostics,
+ * blocked `VALIDATE_STEP` four times, and sent `FIX_VALIDATE` to "repair" a
+ * file that must not change at all. Sniffing the first bytes separates a
+ * translation source from a module without a per-language file list.
+ */
+export function isCompilableScript(filePath: string): boolean {
+  if (!SCRIPT_EXTENSION.test(filePath)) return false;
+  if (JSX_EXTENSION.test(filePath)) return true;
+  const head = readHead(filePath);
+  return !/^\uFEFF?\s*<(?:!|\?xml|\/?TS\b)/i.test(head);
+}
+
 function scanDirectoryForSourceFiles(dir: string, fileSet: Set<string>): void {
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
@@ -199,9 +238,8 @@ function scanDirectoryForSourceFiles(dir: string, fileSet: Set<string>): void {
         }
         scanDirectoryForSourceFiles(path.join(dir, entry.name), fileSet);
       } else if (entry.isFile()) {
-        if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(entry.name)) {
-          fileSet.add(path.join(dir, entry.name));
-        }
+        const full = path.join(dir, entry.name);
+        if (isCompilableScript(full)) fileSet.add(full);
       }
     }
   } catch {
@@ -224,9 +262,7 @@ export function getIterationFiles(projectPath: string, modules: string[]): strin
     try {
       const stat = statSync(fullPath);
       if (stat.isFile()) {
-        if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(fullPath)) {
-          fileSet.add(fullPath);
-        }
+        if (isCompilableScript(fullPath)) fileSet.add(fullPath);
       } else if (stat.isDirectory()) {
         // Exclude vendor & build directories in directory scan (REV-003)
         if (fullPath !== projectPath && isIgnoredDirectory(path.basename(fullPath))) {
@@ -243,14 +279,14 @@ export function getIterationFiles(projectPath: string, modules: string[]): strin
   try {
     const pending = pendingChanges(projectPath);
     for (const p of pending) {
-      if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(p)) {
+      {
         const fullPath = path.resolve(projectPath, p);
         const rel = path.relative(projectPath, fullPath);
         if (rel.startsWith("..") || path.isAbsolute(rel)) {
           continue;
         }
         // Only include if file actually exists on disk (avoid false-positives on deleted/renamed files)
-        if (existsSync(fullPath)) {
+        if (existsSync(fullPath) && isCompilableScript(fullPath)) {
           fileSet.add(fullPath);
         }
       }

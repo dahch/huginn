@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- **A Qt Linguist `.ts` translation is no longer compiled as TypeScript.** `VALIDATE_STEP` runs a deterministic contract gate that compiled every `.ts`/`.tsx`/`.js` file in the iteration's modules. In a C++/Qt project the localization artifact *is* `src/i18n/<app>_es.ts` — an XML translation source (`<?xml …?><TS version="2.1">`) — so `tsc` read markup as JavaScript and reported one "Unterminated regular expression literal" per XML line: 13 208 diagnostics blocked the gate four times, `FIX_VALIDATE` spent three rounds trying to "repair" a file that must not change, and the run stopped at "Retry / force-continue / abort". `getIterationFiles` now sniffs the first bytes of a script and skips an XML payload (Qt `<TS>`, HTML/XML misnamed `.ts`); `.tsx`/`.jsx` are exempt from the sniff because JSX legitimately starts with `<`.
 - **The iteration list (`i`) browses instead of pretending to scroll.** With fewer iterations than
   rows the window never moved, the arrows changed a focus nobody could see, and the footer still
   promised "Scroll" — a key that provably did nothing. The list now carries a cursor column of its
