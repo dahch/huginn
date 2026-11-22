@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- **The repository gets a door, and a filter.** Engineering is not discovered through a README: it is
+  discovered when someone recognises their own way of working in it. [HOW-I-WORK.md](HOW-I-WORK.md) is
+  that text — first person, the practice the tool is an appendix to: the plan as the unit of work, the
+  thinker/executor split, evidence over self-report, fail-closed gates including the read-only
+  violation that no longer burns fix rounds, memory outside the conversation, resumability, the console
+  as part of the evidence, and the self-audit that produced `lite`. It states the trade it is asking
+  the reader to accept (42/42 against 36 on the bench, at five to six times the wall clock and forty to
+  seventy times the added lines), names what the tool refuses to claim, and closes on who it is not
+  for. The README links it from the first screen, in the intro and in the navigation line.
+- **The README now says out loud who the tool is for.** New `## Is this you?`, before the quick start
+  and after the cost paragraph: five assumptions a reader can check against their own practice (an MCP
+  agent already in use, auditability valued over speed, willing to run plan → execute → audit, keeping
+  specs and decision logs, checking what a green mark proved) and five disqualifiers (wanting faster
+  autocomplete, believing the model is the bottleneck, needing a hosted service, wanting an industry
+  standard, refusing to write a plan). The negative half is the filter, and it is paired with the price
+  so nobody has to discover the trade after adopting it. `test/docs/media.test.ts` fails if either the
+  door or the filter disappears, if the filter slips below the quick start, or if the writeup stops
+  publishing its own cost.
+
 ## 3.0.0
 
 > **The first stable release since `1.2.0`** (2026-08-19). The eight published candidates in between

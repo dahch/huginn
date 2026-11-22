@@ -11,6 +11,9 @@ exact tree hash that was verified, every phase verdict and the usage it measured
 driver cannot report it, never omitted). Verdicts are **parsed**, not read, so an agent that forgets to report
 cannot pass by omission. An interrupted run restarts the phase it was on, in the sandbox it kept.
 
+**Why it looks like this:** this is not a product looking for a market — it is [how I work](HOW-I-WORK.md),
+written down and enforced by a program. If you want the reasoning before the manual, read that first.
+
 ![huginn's dashboard running the nine-phase Huginn Cycle](docs/media/huginn.gif)
 
 *Real engine, real dashboard, real `git` — the agent turn is scripted so the recording is reproducible, and
@@ -39,7 +42,37 @@ down with `--profile lite` instead of pretending the heavy gates are free. Metho
 [DECISION-2026-11](docs/DECISION-2026-11.md).
 
 **Start here:** [Quick start in 5 minutes](#quick-start-5-minutes) · [What you need](#requirements) ·
-[The receipt](#the-receipt) · [Runtimes](RUNTIMES.md) · [ADR](ADR.md) · [Spec](SPEC.md)
+[The receipt](#the-receipt) · [How I work](HOW-I-WORK.md) · [Runtimes](RUNTIMES.md) · [ADR](ADR.md) ·
+[Spec](SPEC.md)
+
+## Is this you?
+
+The honest version of the pitch has a negative half. Huginn assumes a way of working; if the
+assumptions do not hold, the tool is overhead, and no amount of documentation will fix that.
+
+**It fits if you…**
+
+- already drive at least one agent that speaks MCP, and you keep its context somewhere on purpose
+  rather than re-explaining the project every session;
+- value **auditability over speed**: you would rather spend five times the wall clock and be able to
+  re-derive why a commit exists than ship faster and hope the transcript is somewhere;
+- are willing to adopt **plan → execute → audit** as a cycle — writing `spec.md`/`adr.md`/`plan.md`
+  before the code, and reading the verdicts after it;
+- keep a spec, an ADR or a decision log because you know your future self reads them;
+- are the person who checks what a green check actually proved.
+
+**It does not fit if you…**
+
+- want faster autocomplete, or a one-shot prompt with no plan to write and no gate to satisfy — there
+  is no mode for that here;
+- believe the model is the bottleneck: in this tool the contract is the bottleneck, deliberately;
+- need a hosted service, a GUI or an account — this is a CLI and a console in your own terminal;
+- want a standard the industry will adopt. It is one person's way of working, enforced by a program;
+- will not write a plan. Without one there is nothing to audit, and the cycle has nothing to run.
+
+If the second list described you, that is a real answer and the cost paragraph above is why: **5–6× the
+wall clock and 40–70× the added lines** buy evidence and recoverability, not speed. [`lite`](#methodology-profiles)
+(execute → verify → commit) narrows the price, not the premise.
 
 ## Quick start (5 minutes)
 
@@ -1258,6 +1291,8 @@ fallback when the registry is unreachable. Set `HUGINN_NO_UPDATE_CHECK=1` to dis
 - [AGENTS.md](./AGENTS.md) — the roles and step prompts huginn composes, the runtime port contract,
   and the developer workflow (tests, toggles, debugging a single phase).
 - [MODULE_MAP.md](./MODULE_MAP.md) — module → requirement lookup for this codebase.
+- [HOW-I-WORK.md](./HOW-I-WORK.md) — the practice the tool is an appendix to: what I do
+  differently, what it costs me, who it is for and who it is not.
 - [CHANGELOG.md](./CHANGELOG.md) — release notes; a tag's section is the release text.
 - [docs/media/README.md](./docs/media/README.md) — the animated demos: what they are recorded from and
   how to regenerate them (`bun docs/media/capture.ts` + `python3 docs/media/render_media.py`).

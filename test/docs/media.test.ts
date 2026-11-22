@@ -126,6 +126,48 @@ describe("README adoption surface", () => {
     }
   });
 
+  it("opens the door to the writeup before the manual", () => {
+    // The repo is the appendix; the text is the door. A reader who wants the
+    // reasoning first must not have to scroll past nine hundred lines for it.
+    expect(firstSection).toContain("HOW-I-WORK.md");
+    expect(firstSection).toContain("how I work");
+    const writeup = join(ROOT, "HOW-I-WORK.md");
+    expect(existsSync(writeup), "HOW-I-WORK.md is the door but is missing").toBe(true);
+    expect(statSync(writeup).size).toBeGreaterThan(5_000);
+  });
+
+  it("says out loud who the tool is for, and who it is not", () => {
+    // An honest negative half filters better than a feature list, and it is the
+    // cheapest thing a newcomer can check against their own way of working.
+    const filter = blockFor("## Is this you?");
+    expect(filter, "the 'Is this you?' section is gone").toBeDefined();
+    const text = filter ?? "";
+    expect(text).toContain("It fits if you");
+    expect(text).toContain("It does not fit if you");
+    // The assumptions the tool actually makes.
+    expect(text).toContain("MCP");
+    expect(text).toContain("auditability over speed");
+    expect(text).toContain("plan → execute → audit");
+    // The filter must come before the onboarding path, not after it.
+    expect(readme.indexOf("## Is this you?")).toBeLessThan(readme.indexOf("## Quick start (5 minutes)"));
+  });
+
+  it("keeps the writeup honest rather than promotional", () => {
+    const writeup = readFileSync(join(ROOT, "HOW-I-WORK.md"), "utf8");
+    // It has to publish the cost it is asking the reader to pay.
+    expect(writeup).toContain("42 of 42");
+    expect(writeup).toContain("36");
+    expect(writeup).toContain("five to six times the wall clock");
+    // It has to name its own limits and the arguments it lost.
+    expect(writeup).toContain("What I refuse to claim");
+    expect(writeup).toContain("does not, and the bench");
+    // And it must point at the evidence, not at itself.
+    expect(writeup).toContain("DECISION-2026-11.md");
+    expect(writeup).toContain("ADR.md");
+    // A door, not a stub: the reasoning lives here.
+    expect(writeup.split("\n").length).toBeGreaterThan(100);
+  });
+
   it("documents every methodology profile it can be run with", () => {
     // `lite` shipped without a row in this table and without a mention in the
     // flag reference; a reader could run it and never find it. One assertion on
