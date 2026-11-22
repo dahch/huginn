@@ -1,8 +1,100 @@
 # Changelog
 
-## Unreleased
+## 3.0.0
+
+> **The first stable release since `1.2.0`** (2026-08-19). The eight published candidates in between
+> were the field test: since `3.0.0-rc.1` this series alone is **173 commits across 254 files**
+> (`src` +38 319/−4 939), and since `3.0.0-rc.3` — the candidate the field reports came from —
+> **16 commits and 56 files** (+3 026/−87). npm `latest` moves from `3.0.0-rc.3` to `3.0.0`.
+
+`3.0.0-rc.1` closed on "the final 3.0.0 follows the first field reports; the runtime list is the
+contract, not the implementation". The reports came in, the list held, and what they exposed was
+**fixed rather than re-shaped**: the last stretch is one audit finding per commit, not one interface
+change per commit. Seventy-six ADRs, 2 320 tests (490 `bun test` + 1 830 `vitest`), and a receipt for
+every iteration the engine has run.
+
+### What 3.0.0 is, and what each part buys
+
+**Six runtimes behind one port, with capabilities that are declared instead of guessed.** `pi`,
+`opencode`, `codex`, `claude`, `qwen` and `kimi` execute a cycle; the other seven targets stay
+provisioning targets and `generic` is a deprecated bridge that promises nothing. Each driver states
+what it can do — streaming, structured events, session resume, model catalog, approvals
+(`interactive` / `gate` / `none`), usage, and `filesystemIsolation` — and a conformance suite fails a
+driver that claims more than it delivers. *The value:* one install, whichever agent you already pay
+for, no subagents or slash commands to install, and no silent degradation when an agent cannot do
+something: `huginn runtime list --check` says so before a run spends a token.
+
+**Evidence instead of self-report.** Every phase ends on a verdict that is *parsed* from a mandatory
+marker, and a missing marker is `blocked`, never a pass. The tree is hashed before and after every
+read-only phase, so an auditor that edits cannot pass. The iteration receipt (v2) pins the base
+commit, the head commit, the verified tree hash and every verdict; it classifies phases into what the
+engine *ran* (`VERIFY`, `COMMIT_ALL`, `REPAIR_PROMOTION` — real exit codes) and what a model
+*judged*, records the measured usage (or `"unavailable"`, never omitting it), and lists the claims it
+cannot make. `huginn report` and `huginn stats` read those back without an engine or a model.
+*The value:* after the fact you can answer "did this increment pass, on which tree, and who decided?"
+without trusting the transcript.
+
+**Methodology as data, so a delta stops paying for a repo-wide cycle.** Seven profiles over one phase
+vocabulary: `huginn` (nine phases), `sdd`, `odd`, `rdd`, `strict-tdd`, `quality` and `lite`. Switching
+methodology changes what runs and in what order, never how a phase works, and the pipeline is
+composed only from the profile's phases — no hidden `if`. The thinker that drafts `plan.md` must now
+propose the lightest profile that keeps the run honest, and accepting the proposal is a real action in
+`huginn plan` and in the live console's draft approval. *The value:* the cheapest loop that still
+leaves a receipt (`lite`: execute → verify → commit) is one flag away, and the choice is made with the
+whole scope in view instead of guessed from the task size.
+
+**Gates that cannot be flattered.** The `SPEC_AUDIT` compares against what the plan says is *due* at
+this iteration, so it no longer blocks on work that has not been scheduled yet; an explicitly
+authorized best-effort capability is not a deviation; `VALIDATE_STEP` computes its own verdict and
+rewrites the report so the conclusion that survives is huginn's; the judge turn runs only when a
+marker is non-green; and the TypeScript execution contract short-circuits to `blocked`. A read-only
+violation skips diagnosis and fix rounds entirely, because replaying the executor cannot un-write an
+auditor. *The value:* a green gate means the work passed a check huginn performed, not that a model
+sounded confident.
+
+**Recovery instead of reruns.** Each iteration runs in its own git worktree; a failed promotion keeps
+the branch and `huginn promote --retry` re-attempts the integration with no model turn, while
+`--repair` diagnoses a real content conflict. The links huginn injects into the sandbox (`.pi`,
+`.agents`, `node_modules`, `.env`) are plumbing and are never staged, file-versus-directory collisions
+are parked instead of fatal, and a branch poisoned by an older huginn is scrubbed on retry. The saved
+plan hash is re-baselined on promotion, so the next continuation does not mistake the cycle's own
+`DOC_SYNC` commit for a hand edit. An interrupted run parks its sandbox and restarts the step it was
+on. *The value:* a bad iteration costs one iteration, not an afternoon.
+
+**A console that is an instrument, not a log viewer.** One measured chrome table
+(`primary`/`secondary`/`tertiary`) so a card cannot guess its height, a decision modal that windows its
+body inside the rows it can pay for, one wrapping formatter shared by conversation, stream and report
+so scrolling counts terminal rows, and a visual contract that is a test: both surfaces at 80×24
+through 160×50 with colour, under `NO_COLOR` and in the dark theme, plus all seven modals, refusing a
+pictograph, one column too many or one row too few. *The value:* the dashboard tells you what is
+running, what it cost and what it proved, at any terminal size, without lying by truncation.
+
+**Memory that outlives the session.** Muninn (`@dahch/muninn` from npm, same
+`.huginn/muninn.db` and `.huginn/memories.jsonl` paths) is registered as an MCP server for every
+supported agent, with a session bootstrap, durable observations with supersession, a symbol graph, and
+a handoff record a different agent can pick up. *The value:* the second session on a project starts
+where the first stopped instead of re-reading the repository.
+
 
 ### Added
+
+- **The `lite` profile: the cheapest loop that still leaves evidence.** `EXECUTE → VERIFY →
+  COMMIT_ALL`, pinned by a receipt, offered by `--profile`, `/profile` and the picker, and
+  deliberately *not* the CLI default. It exists because the 2026-11 bench measured the heavy gates as
+  cost without measured benefit on small deltas: `VALIDATE_STEP` blocked 11 of 16 increments and added
+  ~50 % of the lines and ~40 % of the time with no measured advantage, while `VERIFY` — the plan's own
+  commands, gated on real exit codes — is where the cheap proof actually lived. Its one-line
+  description says where it sits against `odd` (a quick commit), `rdd` (a gate) and `quality`
+  (security/review/docs). `test/engine/profiles.test.ts` pins the phase list, the receipt and the
+  reach of the picker.
+
+- **An iteration receipt now answers what the increment cost.** A receipt could name the commits and
+  the verdicts but not the price. The `pi` driver reads `AgentSession.getSessionStats()` after each
+  turn and emits a `usage` delta; the engine accumulates the iteration's tokens separately from the
+  run total, so `.huginn/receipts/iter-<n>.json` carries `usage: {inputTokens, outputTokens,
+  costUsd}` for *that* increment and `.harness/PROGRESS.md` keeps the cumulative figure. When the
+  active driver cannot report usage the receipt says `usage: "unavailable"` explicitly instead of
+  omitting the field, because a missing key reads as "nothing spent".
 
 - **The `quality` profile: the quality phases without the whole-spec audit.** `huginn` starts with a
   `SPEC_AUDIT` that compares the whole document against the repository, which is right when the
@@ -14,6 +106,25 @@
   `/profile` accept it.
 
 ### Fixed
+
+- **A read-only violation no longer spends fix rounds on a fix that cannot exist.** The second bench
+  arm ran `quality` for the first time and `REVIEW` tripped its read-only guard (it wrote a probe file
+  while checking `AbortSignal.any` support). Huginn then treated the violation like any other blocked
+  gate: it ran `DIAGNOSE` and `FIX_REVIEW` twice and aborted after 16 minutes with the same violation
+  and no fix. A read-only violation cannot be repaired by replaying the executor — the writer is the
+  auditor itself — so the result now carries `readOnlyViolation`, the retry path skips diagnosis and
+  fix rounds for it, logs why, and the iteration fails once with the reason. The test pins that no
+  `FIX_*` phase runs while the phase is still recorded as `blocked`.
+
+- **`--agent pi` resolves provider models again.** A bench arm failed every `EXECUTE` with "No API key
+  found for the selected model". The driver built its `ModelRuntime` with `ModelRuntime.create({})`,
+  which in 1.5.2 knows only the built-in providers; a provider declared in `~/.pi/agent/models.json`
+  (the live case: `commandcode`) is registered by a pi extension, and only
+  `createAgentSessionServices` loads that config and registers it. With an empty catalog
+  `resolveCliModel` returned no model, so the session silently ran pi's *default* model — which had no
+  stored key. The runtime is now created once through the service bootstrap (honouring `homeDir` for
+  the agent directory) and shared by `createSession`, `setModel` and `listModels`; verified with a real
+  in-process turn that resolves and answers.
 
 - **A Qt Linguist `.ts` translation is no longer compiled as TypeScript.** `VALIDATE_STEP` runs a deterministic contract gate that compiled every `.ts`/`.tsx`/`.js` file in the iteration's modules. In a C++/Qt project the localization artifact *is* `src/i18n/<app>_es.ts` — an XML translation source (`<?xml …?><TS version="2.1">`) — so `tsc` read markup as JavaScript and reported one "Unterminated regular expression literal" per XML line: 13 208 diagnostics blocked the gate four times, `FIX_VALIDATE` spent three rounds trying to "repair" a file that must not change, and the run stopped at "Retry / force-continue / abort". `getIterationFiles` now sniffs the first bytes of a script and skips an XML payload (Qt `<TS>`, HTML/XML misnamed `.ts`); `.tsx`/`.jsx` are exempt from the sniff because JSX legitimately starts with `<`.
 - **The iteration list (`i`) browses instead of pretending to scroll.** With fewer iterations than
@@ -104,6 +215,48 @@
   - `test/docs/media.test.ts` guards the surface: the hero line's position, the bench numbers, both
     images existing on disk, every profile having a table row, and every command the quick start
     teaches still being listed by `huginn --help --all`.
+
+### Upgrading
+
+Nothing in a 1.2.0 install has to be rewritten, and two things must be re-decided:
+
+- **The runtime list is the breaking change.** `--agent` used to accept thirteen adapters; the cycle
+  now executes six runtimes (`pi`, `opencode`, `codex`, `claude`, `qwen`, `kimi`) and treats the other
+  seven targets as provisioning-only. `--agent <target>` for one of those still starts through the
+  deprecated `generic` bridge, but it declares nothing beyond interrupt — a stored config naming a
+  retired adapter warns and falls back to PATH detection instead of failing, and `huginn runtime list`
+  is the authoritative answer for a given machine. `gemini` is now `agy` and `windsurf` is now
+  `devin`.
+- **Step prompts are built in.** There are no subagents or slash commands to install any more;
+  `huginn install` is a documented no-op so existing scripts keep exiting 0, and the `templates/`
+  directory and `HUGINN_TEMPLATES_DIR` are gone. A global install and a source checkout behave
+  identically.
+- **Muninn is a package.** The memory engine is consumed as `@dahch/muninn` (npm) rather than a
+  release asset, and the database (`.huginn/muninn.db`) and export (`.huginn/memories.jsonl`) paths
+  are unchanged, so an existing memory file is read in place.
+- **New surfaces, all opt-in:** `--profile` (7 methodologies, `huginn` still the default),
+  `.huginn/receipts/iter-<n>.json` for profiles with evidence, `huginn report`, `huginn stats`,
+  `huginn promote --retry|--repair`, `huginn runtime list`, and the live-first CLI (`huginn` with no
+  subcommand opens the console; on a repository that never ran huginn it opens the init wizard).
+  `config.json` gains `profile`, `commit`, `verify` and `agent`, and unknown keys are still preserved
+  verbatim.
+- **Requirements are unchanged and narrow:** Bun ≥ 1, git, and one agent runtime on `$PATH`.
+
+The release also re-grounds the pitch, which is a documentation break of its own: `README.md` now
+opens on the differentiator (the gate is huginn's, and every increment leaves a receipt), publishes
+what the cycle *costs* (42/42 against 36/42 on the bench, 4/4 against 0/4 latent requirements, at 5–6×
+wall-clock and 40–70× added lines) and gets a newcomer to a receipt in five minutes, with two demos
+recorded from the real engine (`docs/media/`). `docs/DECISION-2026-11.md` records the thesis and its
+limits.
+
+### Verification at tag time
+
+- `bun run build`, `bun run typecheck`, `bun run typecheck:test`.
+- `bun test src` — 490 tests, 34 files; `vitest run` — 1 830 tests, 98 files. No failures.
+- `bun run media` regenerates both README demos from the committed scripts.
+- The publish workflow refuses a tag whose version disagrees with `package.json`, builds and tests
+  again, publishes with npm provenance over OIDC (Node 24) and turns this section into the GitHub
+  release.
 
 ## 3.0.0-rc.3
 

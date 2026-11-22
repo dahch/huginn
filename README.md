@@ -98,7 +98,7 @@ resuming costs, which of the thirteen agents can run the cycle — keep reading 
 
 ## Status
 
-> ### 3.0.0-rc.3 — the SDK rewrite, out for testing
+> ### 3.0.0 — the stable release
 >
 > Huginn executes cycles through **six SDK-backed runtimes** — `pi` and `codex` run their SDK
 > in-process or over their app-server, `claude` uses its agent SDK (optional, external, and the only
@@ -108,9 +108,9 @@ resuming costs, which of the thirteen agents can run the cycle — keep reading 
 > promises nothing. [RUNTIMES.md](RUNTIMES.md) is the per-agent truth. The memory engine lives in
 > [dahch/muninn](https://github.com/dahch/muninn).
 >
-> A runtime only advertises what it can deliver — `huginn runtime list` prints the contract. This is a
-> **release candidate**: the stable release follows the first field reports, and the runtime list is
-> the contract, not the implementation.
+> A runtime only advertises what it can deliver — `huginn runtime list` prints the contract. 3.0.0 is
+> the first stable release since `1.2.0`: the eight published candidates in between were the field test that made
+> the runtime list the contract, and what they exposed was fixed rather than re-shaped.
 
 Huginn **owns the cycle**: it composes every step's instruction itself (`src/engine/steps/`) and sends
 it to whichever agent runtime you configured (opencode, Claude Code, Codex, …) as a plain prompt, so a

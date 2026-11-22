@@ -1,6 +1,6 @@
 {
   "name": "@dahch/huginn",
-  "version": "3.0.0-rc.3",
+  "version": "3.0.0",
   "description": "CLI/TUI orchestrator for the agent-driven spec \u2192 execute \u2192 validate \u2192 test \u2192 secure \u2192 review \u2192 doc \u2192 commit cycle",
   "type": "module",
   "bin": {
