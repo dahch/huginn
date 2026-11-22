@@ -9,7 +9,10 @@ import path from "node:path";
  * (`src` only) — it is the pipeline gate. The wider `typecheck:test` is a
  * separate, developer-facing gate that must cover `src` + `test` under the same
  * strict options, and it must be wired into `test`/`prepublishOnly` so a type
- * error in a test can never reach a release.
+ * error in a test can never reach a release. It also covers `docs`: the README
+ * demo pipeline (`docs/media/capture.ts`) drives the real engine and the real
+ * dashboard, so it is code, not prose, and a change to either must not leave it
+ * silently uncompiled.
  */
 
 const root = process.cwd();
@@ -33,8 +36,8 @@ describe("tsconfig.test.json", () => {
     expect(testConfig.extends).toBe("./tsconfig.json");
   });
 
-  it("includes both the source tree and the test tree", () => {
-    expect(testConfig.include).toEqual(["src", "test"]);
+  it("includes the source tree, the test tree and the media scripts", () => {
+    expect(testConfig.include).toEqual(["src", "test", "docs"]);
   });
 
   it("does not relax strict mode through a compilerOptions override", () => {

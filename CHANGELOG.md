@@ -73,6 +73,38 @@
     reported as a `warn` log row and in `PromoteResult.scrubbed`), so `promote --retry` — not just
     the thinker+executor repair — can finish an iteration the previous version stranded.
 
+### Documentation
+
+- **The README now opens on the differentiator, shows the product working, and gets a newcomer to a
+  receipt in five minutes.** Three adoption gaps were closed at the top of the file:
+  - **The claim is the first line.** `**The gate is huginn's, not the model's — every increment
+    leaves a receipt you can check, or it does not ship.**` sits directly under the title, followed by
+    four one-line properties (fail-closed gates, evidence, resumability, one cycle over six runtimes
+    and thirteen targets) and the measured trade the wedge rests on: 42/42 against 36/42 on the bench,
+    4/4 versus 0/4 latent requirements, at 5–6× wall-clock and 40–70× added lines, linked to
+    [DECISION-2026-11](docs/DECISION-2026-11.md). The 3.0.0-rc.3 release banner moved below it into
+    its own `## Status` section — version news is not the reason to care.
+  - **A quick start that ends in evidence.** New `## Quick start (5 minutes)`: install, an agent CLI,
+    `huginn init`, one idea for `huginn plan`, then `huginn run --profile lite` — with what each phase
+    actually does (`EXECUTE` is the one model turn, `VERIFY` gates on real exit codes, `COMMIT_ALL` is
+    deterministic) and `huginn report` to read the receipt back. It points at `live`, `quality`, `rdd`
+    and `strict-tdd` for the cases the cheap loop does not cover.
+  - **Two animated demos, produced from the product.** `docs/media/huginn.gif` (the nine-phase Huginn
+    Cycle: every verdict, the commit, the receipt, then `huginn report` in its two lanes) and
+    `docs/media/lite.gif` (the same iteration under `lite`), plus MP4s for video-first channels and the
+    dashboard PNG as a preview. They are recordings, not drawings: `docs/media/capture.ts` mounts the
+    real `Dashboard` on a captured stream and runs the real `CycleEngine` against a throwaway git
+    repository with a scripted `RuntimePort`, so the gates, `bun test`, the worktree promotion, the
+    deterministic commit and the receipt are the engine's own; `docs/media/render_media.py` replays the
+    captured ANSI through a small terminal emulator and renders the frames. Both are documented in
+    [docs/media/README.md](docs/media/README.md) with a "what is real and what is scripted" table, and
+    `bun run media` regenerates them.
+  - The `lite` profile was missing from the methodology-profile table, from the `--profile` flag
+    reference and from the documented `profile` config values; all three now list it.
+  - `test/docs/media.test.ts` guards the surface: the hero line's position, the bench numbers, both
+    images existing on disk, every profile having a table row, and every command the quick start
+    teaches still being listed by `huginn --help --all`.
+
 ## 3.0.0-rc.3
 
 > Twenty-one commits since `3.0.1-rc.2`, 66 files: `src` +2603/−92, `test` +1443/−16, docs

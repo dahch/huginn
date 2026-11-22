@@ -2,6 +2,102 @@
 
 [![npm](https://img.shields.io/npm/v/%40dahch%2Fhuginn)](https://www.npmjs.com/package/@dahch/huginn) [![license](https://img.shields.io/github/license/dahch/huginn)](https://github.com/dahch/huginn/blob/main/LICENSE) [![ci](https://img.shields.io/github/actions/workflow/status/dahch/huginn/publish.yml)](https://github.com/dahch/huginn/actions) [![stars](https://img.shields.io/github/stars/dahch/huginn)](https://github.com/dahch/huginn/stargazers) [![issues](https://img.shields.io/github/issues/dahch/huginn)](https://github.com/dahch/huginn/issues) [![bun](https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun)](https://bun.sh) [![TypeScript](https://img.shields.io/badge/stack-TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
+**The gate is huginn's, not the model's — every increment leaves a receipt you can check, or it does not ship.**
+
+Huginn is a CLI/TUI orchestrator that drives a coding agent through a gated build cycle —
+`spec-audit → execute → verify → validate-step → test-module → secure-check → review → doc-sync → commit-all`
+— and pins each iteration to `.huginn/receipts/iter-<n>.json`: the base commit, the resulting commit, the
+exact tree hash that was verified, every phase verdict and the usage it measured (`unavailable` when the
+driver cannot report it, never omitted). Verdicts are **parsed**, not read, so an agent that forgets to report
+cannot pass by omission. An interrupted run restarts the phase it was on, in the sandbox it kept.
+
+![huginn's dashboard running the nine-phase Huginn Cycle](docs/media/huginn.gif)
+
+*Real engine, real dashboard, real `git` — the agent turn is scripted so the recording is reproducible, and
+`bun test` is the verification command the plan declared. Regenerate it with
+[`docs/media`](docs/media/README.md); the 10-second video is
+[`docs/media/huginn.mp4`](docs/media/huginn.mp4).*
+
+- **Fail closed.** No marker, no pass: a report without its machine-readable verdict is `blocked`, auditors
+  cannot edit the tree (it is hashed before and after), and a broken TypeScript execution contract
+  short-circuits the gate instead of softening into a warning.
+- **Evidence, not claims.** The receipt names the base commit, the head commit, the verified tree hash, every
+  phase verdict and the usage. `huginn report` reads it back in two lanes — what the engine *ran* and what a
+  model *judged* — and lists what the receipt cannot prove.
+- **Recoverable by construction.** State lives on disk (`.harness/state.json`, `.huginn/receipts/`), so
+  `huginn run` resumes the step it was on inside the worktree it kept, and a failed integration keeps its
+  branch for `huginn promote --retry`.
+- **One cycle, every agent.** Six SDK-backed runtimes (opencode, Claude Code, Codex, Pi, Qwen, Kimi) and the
+  CLI-only targets behind one port; huginn composes the step prompts itself, so there are no subagents or
+  slash commands to install and a global install behaves like a source checkout.
+
+**What it costs — measured, not asserted.** On a 59-cell bench against a direct agent prompt on the same
+tasks, huginn solved **42/42** where the plain agent solved **36/42**, and carried **4/4** of the spec's latent
+requirements into the documents where the plain agent carried **0/4** — at **5–6×** the wall-clock and **40–70×**
+the added lines. That trade is the product: reliability and recoverability, not tokens per feature. Scale it
+down with `--profile lite` instead of pretending the heavy gates are free. Method, evidence and limits:
+[DECISION-2026-11](docs/DECISION-2026-11.md).
+
+**Start here:** [Quick start in 5 minutes](#quick-start-5-minutes) · [What you need](#requirements) ·
+[The receipt](#the-receipt) · [Runtimes](RUNTIMES.md) · [ADR](ADR.md) · [Spec](SPEC.md)
+
+## Quick start (5 minutes)
+
+A concrete case: **a repository whose cart needs discount codes**, without handing an agent six files and
+hoping. Five steps, one receipt, and no configuration file to learn.
+
+```sh
+# 1 — install (the runtime is Bun >= 1; the package ships one bundle)
+npm install -g @dahch/huginn
+
+# 2 — one agent CLI on $PATH; opencode is the default runtime
+npm install -g opencode-ai
+
+# 3 — in your repository: choose the agent and models, register the Muninn MCP server
+cd ~/src/my-app
+huginn init
+
+# 4 — one sentence of scope: the thinker drafts spec.md, adr.md and plan.md
+huginn plan "discount codes: SAVE10 takes 10% off a cart total, SAVE20 takes 20%, unknown codes are ignored"
+
+# 5 — run the cheapest receipted loop: execute -> verify -> commit
+huginn run --profile lite
+```
+
+![the lite profile: execute, verify, commit — three phases, one receipt](docs/media/lite.gif)
+
+*`lite` is the smallest loop that still leaves evidence: one agent turn, your own verification command, one
+deterministic commit. ([`docs/media/lite.mp4`](docs/media/lite.mp4))*
+
+What just happened, phase by phase:
+
+- **`huginn plan`** wrote the three documents and **proposed the lightest profile that keeps the run honest**
+  (`lite` for one small function). You accept the proposal or override it with `--profile`.
+- **`EXECUTE`** is the only model turn: the agent implements the iteration from `plan.md`.
+- **`VERIFY`** is deterministic — huginn runs the `Verification:` commands the plan declares and gates on their
+  **exit codes**, so "it works" is not a model's opinion.
+- **`COMMIT_ALL`** commits deterministically from the iteration and the changed paths: no extra model turn, and
+  `git log` stays reproducible from the plan.
+- **`.huginn/receipts/iter-1.json`** is written before promotion. Read it, or let huginn read it back:
+
+```sh
+huginn report     # two lanes: what the engine ran, what a model judged, and what neither proves
+```
+
+Need more than that? The same plan runs under any profile, and nothing extra has to be installed: `huginn run`
+is the nine-phase Huginn Cycle, `--profile quality` drops the whole-spec audit, `--profile rdd` adds the gate
+back to a small change, and `--profile strict-tdd` runs the tests before the code.
+
+**Want to argue about the scope first?** `huginn live` is the same cycle as a conversation: refine the idea with
+the thinker, draft, approve the diff in `git diff`, then build — in one dashboard. `huginn live --continue`
+picks a session up after a restart, and a bare `huginn "add discount codes"` opens that console directly.
+
+You do not need the rest of this file to try it. When you want the details — the gate rules, the sandbox, what
+resuming costs, which of the thirteen agents can run the cycle — keep reading from
+[Why the gates](#why-the-gates); nothing above is a prerequisite.
+
+## Status
+
 > ### 3.0.0-rc.3 — the SDK rewrite, out for testing
 >
 > Huginn executes cycles through **six SDK-backed runtimes** — `pi` and `codex` run their SDK
@@ -15,10 +111,6 @@
 > A runtime only advertises what it can deliver — `huginn runtime list` prints the contract. This is a
 > **release candidate**: the stable release follows the first field reports, and the runtime list is
 > the contract, not the implementation.
-
-CLI/TUI orchestrator for the agent-driven build cycle:
-
-> **spec-audit → execute → verify → validate-step → test-module → secure-check → review → doc-sync → commit-all**
 
 Huginn **owns the cycle**: it composes every step's instruction itself (`src/engine/steps/`) and sends
 it to whichever agent runtime you configured (opencode, Claude Code, Codex, …) as a plain prompt, so a
@@ -292,7 +384,7 @@ override the detected locations.
 | `--executor <m>` | resolved from config | model used for everything else (execution, gates, applying fixes, docs, commits) |
 | `--plan / --spec / --adr <file>` | `plan.md`/`spec.md`/`adr.md` | input documents (without the flag, `PLAN.md`/`SPEC.md`/`ADR.md` are found case-insensitively) |
 | `--mode auto\|supervised` | `auto` | `auto`: autonomous with a fix-retry budget, escalating to you only when it is exhausted; `supervised`: pause for your call at every blocked gate |
-| `--profile <id>` | `huginn` | Methodology profile: `huginn` (the **Huginn Cycle**, below) · `sdd` · `odd` · `rdd` · `strict-tdd` · `quality` (see [Methodology profiles](#methodology-profiles)) |
+| `--profile <id>` | `huginn` | Methodology profile: `huginn` (the **Huginn Cycle**, below) · `sdd` · `odd` · `rdd` · `strict-tdd` · `quality` · `lite` (see [Methodology profiles](#methodology-profiles)) |
 | `--commit <mode>` | profile (`deterministic`) | `deterministic`: huginn derives the commit message from the iteration and the changed paths (no model turn) · `agent`: the build agent groups the commits itself |
 | `--permissions auto\|ask\|deny` | `auto` | permission policy. Only a runtime that declares an interactive permission channel (`opencode`) can honour `ask`/`deny`; a **subprocess** runtime (`claude`, `codex`, …) fails closed with exit 1 on `ask`/`deny`, and an invalid value exits 1 |
 | `--max-retries <n>` | `3` | fix attempts per blocked gate before escalating to you |
@@ -353,7 +445,7 @@ The project config file is a JSON object with documented keys:
 
 - `agent` must be one of the registered agent targets (`opencode`, `claude`, `codex`, `omp`, `commandcode`, `qwen`, `kimi`, `pi`, `cursor`, `devin`, `agy`, `mcode`, `mimo`).
 - `thinker` / `executor` are model strings (`provider/model`); `mode` is `auto` or `supervised`.
-- `profile` is `huginn` (default), `sdd`, `odd`, `rdd`, `strict-tdd` or `quality`; an unrecognised value is dropped with a warning rather than failing the run.
+- `profile` is `huginn` (default), `sdd`, `odd`, `rdd`, `strict-tdd`, `quality` or `lite`; an unrecognised value is dropped with a warning rather than failing the run.
 - A persisted `agent` naming a **removed** target (`gemini`, superseded by `agy`; `windsurf`, renamed to `devin`) is not fatal: it warns and falls back to PATH detection.
 - Unknown keys are preserved verbatim, so third-party tooling can keep its own settings alongside.
 - The project file overrides the user file key-by-key; a missing file is treated as empty and a
@@ -840,6 +932,7 @@ deterministic `VERIFY` phase before its commit:
 | `rdd` | Receipt-Driven Development | execute → test-module → validate-step → **verify** → commit-all, where verification **freezes a receipt** the commit references |
 | `strict-tdd` | Strict TDD | test-module (**expected to fail**) → execute → test-module → validate-step → **verify** → commit-all, with a **frozen worktree snapshot** recorded as evidence |
 | `quality` | Quality Cycle | execute → **verify** → test-module → validate-step → secure-check → review → doc-sync → commit-all — the quality gates without the whole-document spec audit, for delta-scoped changes |
+| `lite` | Lite Cycle | execute → **verify** → commit-all — the cheapest loop that still leaves a receipt: one model turn, the plan's own commands, one deterministic commit. `odd` when a quick commit is enough, `rdd` when a gate must run, `quality` when security/review/docs are the point |
 
 - **Selecting it**: `--profile <id>` on `run` and `live`, `"profile"` in `.huginn/config.json`, or
   `huginn config set --profile <id>`. In the live console `/profile` opens the profile picker
@@ -1166,6 +1259,8 @@ fallback when the registry is unreachable. Set `HUGINN_NO_UPDATE_CHECK=1` to dis
   and the developer workflow (tests, toggles, debugging a single phase).
 - [MODULE_MAP.md](./MODULE_MAP.md) — module → requirement lookup for this codebase.
 - [CHANGELOG.md](./CHANGELOG.md) — release notes; a tag's section is the release text.
+- [docs/media/README.md](./docs/media/README.md) — the animated demos: what they are recorded from and
+  how to regenerate them (`bun docs/media/capture.ts` + `python3 docs/media/render_media.py`).
 
 ## Development
 

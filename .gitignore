@@ -31,3 +31,9 @@ opencode.jsonc
 # already in the CHANGELOG, the ADRs and git history; the files are scratch.
 /plan.upgrade.md
 /plan.fix.md
+
+# Scratch space for the README demo pipeline: the captured ANSI streams, the
+# throwaway demo repositories and the rendered frame sequences. Only the GIFs,
+# the MP4s and the poster PNGs in docs/media/ are repository content.
+/docs/media/build/
+/.work/
